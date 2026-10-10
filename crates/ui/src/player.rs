@@ -735,12 +735,26 @@ impl SwfPlayer {
             return None;
         }
 
+        let mut player = self.player.lock().unwrap();
+        // The bridge's name set records what the host registered; the
+        // SWF can unregister behind it — AVM2
+        // `ExternalInterface.addCallback(name, null)` removes the
+        // callback from ruffle's registry. Query the registry itself so
+        // a stale name reads as "gone" instead of reaching
+        // `call_internal_interface`'s unknown-callback warn + Null, and
+        // prune it so `available_callbacks` stays truthful.
+        let registered = player.mutate_with_update_context(|context| {
+            context.external_interface.get_callback(name).is_some()
+        });
+        if !registered {
+            drop(player);
+            self.host_bridge.prune_callback(name);
+            return None;
+        }
+
         let arguments = arguments.into_iter().map(ExternalValue::from);
-        let result = self
-            .player
-            .lock()
-            .unwrap()
-            .call_internal_interface(name, arguments);
+        let result = player.call_internal_interface(name, arguments);
+        drop(player);
         self.invalidate();
         Some(ScaleformValue::from(&result))
     }

@@ -561,6 +561,13 @@ pub(crate) fn import_asset_paths_from_tags(
             continue;
         };
         let relative = url.to_string_lossy(swf::UTF_8);
+        // "FP does not attempt to load the url if it is empty" — upstream
+        // ruffle skips empty ImportAssets records the same way
+        // (movie_clip.rs::import_assets). Joining an empty relative URL
+        // would resolve to the movie itself and emit a bogus archive path.
+        if relative.is_empty() {
+            continue;
+        }
         let resolved = movie_url
             .join(&relative.replace('\\', "/"))
             .map_err(|error| {

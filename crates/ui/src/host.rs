@@ -398,6 +398,14 @@ impl ScaleformHostBridge {
         self.state.borrow().callbacks.contains(name)
     }
 
+    /// Forget a recorded callback name that no longer exists in ruffle's
+    /// registry (the SWF unregistered it with
+    /// `ExternalInterface.addCallback(name, null)`, which removes
+    /// upstream). Keeps [`Self::available_callbacks`] truthful.
+    pub(crate) fn prune_callback(&self, name: &str) {
+        self.state.borrow_mut().callbacks.remove(name);
+    }
+
     /// Completed Fallout 4 `onCodeObjDestruction` hooks observed by the bridge.
     ///
     /// The count remains available on cloned bridge handles after a
