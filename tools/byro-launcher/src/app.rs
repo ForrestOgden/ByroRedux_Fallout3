@@ -129,9 +129,13 @@ impl LauncherApp {
         self.settings.reload();
     }
 
-    fn browse(&mut self) {
+    fn browse(&mut self, frame: &eframe::Frame) {
         let Some(folder) = rfd::FileDialog::new()
             .set_title("Select a game's Data folder")
+            // Parent the portal dialog to the launcher window so it stacks
+            // above it instead of floating free (rfd's `wayland` feature is
+            // what honours the parent on Wayland).
+            .set_parent(frame)
             .pick_folder()
         else {
             return;
@@ -159,7 +163,7 @@ impl eframe::App for LauncherApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
@@ -169,7 +173,7 @@ impl eframe::App for LauncherApp {
                         self.status = format!("{} game(s) found.", self.state.entries.len());
                     }
                     if ui.button("Add game folder…").clicked() {
-                        self.browse();
+                        self.browse(frame);
                     }
                     if ui.button("Settings").clicked() {
                         // #5162 — show what is on disk now, not the

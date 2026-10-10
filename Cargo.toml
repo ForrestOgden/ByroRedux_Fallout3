@@ -253,8 +253,12 @@ egui = "0.36"
 # Launcher only. `glow` (OpenGL) rather than the wgpu backend: it must run
 # where Vulkan init fails, and the tree already carries wgpu 30 via Ruffle.
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
-# Launcher only. `xdg-portal` avoids a GTK build dependency on Linux.
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# Launcher only. `xdg-portal` avoids a GTK build dependency on Linux; `wayland`
+# is rfd's own default and is what makes `set_parent` honour a Wayland parent.
+# Minimum 0.17.1: 0.17.0 returned percent-encoded xdg-desktop-portal paths,
+# which breaks picking folders whose names contain spaces (the lock already
+# carries 0.17.2 — the floor protects a fresh resolve).
+rfd = { version = "0.17.1", default-features = false, features = ["xdg-portal", "wayland"] }
 egui-winit = { version = "0.36", default-features = false, features = ["links", "wayland", "x11"] }
 egui-ash-renderer = { version = "0.13", features = ["gpu-allocator"] }
 
