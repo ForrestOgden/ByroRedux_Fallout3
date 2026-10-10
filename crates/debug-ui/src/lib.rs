@@ -227,13 +227,25 @@ impl DebugUiState {
     }
 
     /// Show or hide the overlay explicitly (scripted captures).
+    /// Drop a stashed `FullOutput` the way egui 0.36 requires: textures
+    /// discarded without being applied. egui debug-asserts that a dropped
+    /// `TexturesDelta` was drained. In practice these paths run with no
+    /// frame pending — the renderer takes the output right after `run` —
+    /// so the take is a no-op net, but it keeps the assert unreachable
+    /// even if that ordering ever changes.
+    fn discard_last_output(&mut self) {
+        if let Some(output) = self.last_output.take() {
+            output.drop_without_applying_deltas();
+        }
+    }
+
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
         if !self.visible {
             // Drop any stashed FullOutput so the renderer sees the
             // overlay as cleanly hidden — otherwise a one-frame
             // ghost panel could linger.
-            self.last_output = None;
+            self.discard_last_output();
         }
     }
 
@@ -255,7 +267,7 @@ impl DebugUiState {
         if self.game_menu.visible {
             self.game_menu.page = GameMenuPage::Pause;
         } else {
-            self.last_output = None;
+            self.discard_last_output();
         }
         self.game_menu.visible
     }
@@ -285,7 +297,7 @@ impl DebugUiState {
     pub fn close_game_menu(&mut self) {
         self.game_menu.visible = false;
         self.game_menu.page = GameMenuPage::Pause;
-        self.last_output = None;
+        self.discard_last_output();
     }
 
     /// Native pause/settings owns every gameplay input event while open,

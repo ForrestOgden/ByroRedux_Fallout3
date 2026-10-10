@@ -1453,7 +1453,7 @@ impl VulkanContext {
         } else {
             // No overlay pass to upload into. egui 0.36 debug-asserts that a
             // dropped `TexturesDelta` was drained, so discard explicitly.
-            output.textures_delta.clear();
+            output.drop_without_applying_deltas();
         }
     }
 }

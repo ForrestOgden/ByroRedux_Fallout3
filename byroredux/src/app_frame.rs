@@ -843,8 +843,11 @@ impl App {
             byroredux_debug_ui::egui::FullOutput,
         )>,
     ) {
-        if let Some((_, mut output)) = egui_frame {
-            output.textures_delta.clear();
+        if let Some((_, output)) = egui_frame {
+            // egui 0.36 debug-asserts that a dropped `TexturesDelta` was
+            // drained — discard through the sanctioned drop, not a bare
+            // `textures_delta.clear()` on a value that then drops.
+            output.drop_without_applying_deltas();
         }
         self.shutdown(event_loop);
     }
