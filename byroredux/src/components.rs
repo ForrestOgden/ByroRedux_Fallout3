@@ -1238,21 +1238,14 @@ impl DalcCubeYup {
     /// to interpolate between adjacent TOD slot pairs (sunrise→day,
     /// day→sunset, …).
     pub(crate) fn lerp(a: &Self, b: &Self, t: f32) -> Self {
-        fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-            [
-                a[0] + (b[0] - a[0]) * t,
-                a[1] + (b[1] - a[1]) * t,
-                a[2] + (b[2] - a[2]) * t,
-            ]
-        }
         Self {
-            pos_x: lerp3(a.pos_x, b.pos_x, t),
-            neg_x: lerp3(a.neg_x, b.neg_x, t),
-            pos_y: lerp3(a.pos_y, b.pos_y, t),
-            neg_y: lerp3(a.neg_y, b.neg_y, t),
-            pos_z: lerp3(a.pos_z, b.pos_z, t),
-            neg_z: lerp3(a.neg_z, b.neg_z, t),
-            specular: lerp3(a.specular, b.specular, t),
+            pos_x: crate::helpers::lerp_f32x3(a.pos_x, b.pos_x, t),
+            neg_x: crate::helpers::lerp_f32x3(a.neg_x, b.neg_x, t),
+            pos_y: crate::helpers::lerp_f32x3(a.pos_y, b.pos_y, t),
+            neg_y: crate::helpers::lerp_f32x3(a.neg_y, b.neg_y, t),
+            pos_z: crate::helpers::lerp_f32x3(a.pos_z, b.pos_z, t),
+            neg_z: crate::helpers::lerp_f32x3(a.neg_z, b.neg_z, t),
+            specular: crate::helpers::lerp_f32x3(a.specular, b.specular, t),
             fresnel_power: a.fresnel_power + (b.fresnel_power - a.fresnel_power) * t,
         }
     }

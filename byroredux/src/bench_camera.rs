@@ -198,7 +198,10 @@ impl BenchCameraPath {
             },
             Self::Pan => CameraPose {
                 position: origin,
-                forward: yaw_about_up(forward, Self::PAN_SWEEP_RADIANS * progress),
+                // The engine's cameras are yaw/pitch rigs with no roll, so a
+                // world-up rotation is the correct notion of "turn" and keeps
+                // the horizon level through the whole path.
+                forward: forward.rotate_y(Self::PAN_SWEEP_RADIANS * progress),
             },
             Self::Orbit => {
                 // Orbit the point the camera already looks at, so the subject
@@ -206,7 +209,7 @@ impl BenchCameraPath {
                 let radius = subject_distance;
                 let target = origin + forward * radius;
                 let angle = Self::ORBIT_ARC_RADIANS * progress;
-                let offset = yaw_about_up(origin - target, angle);
+                let offset = (origin - target).rotate_y(angle);
                 let position = target + offset;
                 CameraPose {
                     position,
@@ -383,14 +386,6 @@ impl FromStr for BenchCameraPath {
             }
         }
     }
-}
-
-/// Rotate `v` about world up (+Y). The engine's cameras are yaw/pitch rigs
-/// with no roll, so a world-up rotation is the correct notion of "turn" and
-/// keeps the horizon level through the whole path.
-fn yaw_about_up(v: Vec3, radians: f32) -> Vec3 {
-    let (sin, cos) = radians.sin_cos();
-    Vec3::new(v.x * cos + v.z * sin, v.y, -v.x * sin + v.z * cos)
 }
 
 /// Normalize, or fall back when the input is degenerate. A zero forward

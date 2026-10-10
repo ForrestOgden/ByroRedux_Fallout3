@@ -11,6 +11,21 @@ use byroredux_core::ecs::{Children, World};
 const MIRROR_ROUGHNESS: f32 = 0.04;
 const MIRROR_METALNESS: f32 = 1.0;
 
+/// Per-component linear interpolation of an `[f32; 3]`, in `a + (b - a) * t`
+/// form. Deliberately NOT `FloatExt::lerp`: glam 0.33.11 changed that
+/// formula to `a * (1 - t) + b * t`, which is not bitwise-identical in
+/// floating point, and every consumer here feeds deterministic output
+/// (TOD sky/weather slots, water day/night colors, golden-frame captures).
+/// The three per-file copies this replaces (`components.rs`, `weather.rs`,
+/// `water.rs`) were character-for-character the same math.
+pub(crate) fn lerp_f32x3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
 fn is_mirror_pane(
     mesh_name: Option<&str>,
     texture_path: Option<&str>,

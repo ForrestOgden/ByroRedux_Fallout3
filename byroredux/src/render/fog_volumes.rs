@@ -4,7 +4,7 @@ use byroredux_core::combustion::AEROSOL_LINGER_SECONDS;
 use byroredux_core::ecs::{
     CombustionState, FogProfile, FogShape, FogVolume, GlobalTransform, TotalTime, World,
 };
-use byroredux_core::math::Vec3;
+use byroredux_core::math::{FloatExt, Vec3};
 use byroredux_core::radiometry::{blackbody_chromaticity_srgb, linear_srgb_luminance};
 use byroredux_renderer::vulkan::volumetrics::{
     FOG_VOLUME_PROFILE_EXPLOSION, FOG_VOLUME_PROFILE_EXPLOSION_NUCLEAR,
@@ -261,11 +261,11 @@ fn explosion_emission_state(
     } else {
         COOLED_SMOKE_TEMPERATURE_K
     };
-    let cooling = smoothstep(COOLING_START_AGE, COOLING_END_AGE, age);
+    let cooling = age.smoothstep(COOLING_START_AGE, COOLING_END_AGE);
     let temperature = (source_temperature
         + (COOLED_SMOKE_TEMPERATURE_K - source_temperature) * cooling)
         .clamp(700.0, 4200.0);
-    let visible_fire = 1.0 - smoothstep(VISIBLE_FIRE_START_AGE, VISIBLE_FIRE_END_AGE, age);
+    let visible_fire = 1.0 - age.smoothstep(VISIBLE_FIRE_START_AGE, VISIBLE_FIRE_END_AGE);
     let thermal_energy = (temperature / source_temperature).powi(4);
     let luminance = linear_srgb_luminance(base_emission) * thermal_energy * visible_fire;
     let emission = blackbody_chromaticity_srgb(temperature)
@@ -279,11 +279,6 @@ fn explosion_emission_state(
         })
         .unwrap_or([0.0; 3]);
     (emission, temperature)
-}
-
-fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
-    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Clamp one emitted-radiance channel into a finite, non-negative value.

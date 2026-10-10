@@ -261,15 +261,6 @@ pub(crate) fn night_factor_for_hour(hour: f32, tod_hours: [f32; 4]) -> f32 {
 }
 
 #[inline]
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
-}
-
-#[inline]
 fn lerp1(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -455,7 +446,7 @@ type WthrColors = (
 ///
 /// Pulled out of `weather_system` so the current-snapshot path and the
 /// cross-fade target path share one implementation — saves seven copy-pasted
-/// `lerp3` calls each on a 6-tuple of indices.
+/// `crate::helpers::lerp_f32x3` calls each on a 6-tuple of indices.
 #[inline]
 fn sample_wthr_colors(
     sky_colors: &[[[f32; 3]; 6]; 10],
@@ -465,33 +456,33 @@ fn sample_wthr_colors(
 ) -> WthrColors {
     use byroredux_plugin::esm::records::weather::*;
     (
-        lerp3(
+        crate::helpers::lerp_f32x3(
             sky_colors[SKY_UPPER][slot_a],
             sky_colors[SKY_UPPER][slot_b],
             t,
         ),
-        lerp3(
+        crate::helpers::lerp_f32x3(
             sky_colors[SKY_HORIZON][slot_a],
             sky_colors[SKY_HORIZON][slot_b],
             t,
         ),
-        lerp3(
+        crate::helpers::lerp_f32x3(
             sky_colors[SKY_LOWER][slot_a],
             sky_colors[SKY_LOWER][slot_b],
             t,
         ),
-        lerp3(sky_colors[SKY_SUN][slot_a], sky_colors[SKY_SUN][slot_b], t),
-        lerp3(
+        crate::helpers::lerp_f32x3(sky_colors[SKY_SUN][slot_a], sky_colors[SKY_SUN][slot_b], t),
+        crate::helpers::lerp_f32x3(
             sky_colors[SKY_AMBIENT][slot_a],
             sky_colors[SKY_AMBIENT][slot_b],
             t,
         ),
-        lerp3(
+        crate::helpers::lerp_f32x3(
             sky_colors[SKY_SUNLIGHT][slot_a],
             sky_colors[SKY_SUNLIGHT][slot_b],
             t,
         ),
-        lerp3(sky_colors[SKY_FOG][slot_a], sky_colors[SKY_FOG][slot_b], t),
+        crate::helpers::lerp_f32x3(sky_colors[SKY_FOG][slot_a], sky_colors[SKY_FOG][slot_b], t),
     )
 }
 
@@ -522,7 +513,7 @@ fn sample_weather_sky(
             lerp1(alpha_a, alpha_b, t),
         ];
     }
-    sampled.stars_color = lerp3(
+    sampled.stars_color = crate::helpers::lerp_f32x3(
         weather.sky_colors[byroredux_plugin::esm::records::weather::SKY_STARS][slot_a],
         weather.sky_colors[byroredux_plugin::esm::records::weather::SKY_STARS][slot_b],
         t,
@@ -554,9 +545,9 @@ fn lerp_weather_sky(a: WeatherSkyState, b: WeatherSkyState, t: f32) -> WeatherSk
             lerp1(a.precipitation[1], b.precipitation[1], t),
         ],
         thunder_frequency: lerp1(a.thunder_frequency, b.thunder_frequency, t),
-        lightning_color: lerp3(a.lightning_color, b.lightning_color, t),
-        stars_color: lerp3(a.stars_color, b.stars_color, t),
-        sunlight_color: lerp3(a.sunlight_color, b.sunlight_color, t),
+        lightning_color: crate::helpers::lerp_f32x3(a.lightning_color, b.lightning_color, t),
+        stars_color: crate::helpers::lerp_f32x3(a.stars_color, b.stars_color, t),
+        sunlight_color: crate::helpers::lerp_f32x3(a.sunlight_color, b.sunlight_color, t),
         sun_glare: lerp1(a.sun_glare, b.sun_glare, t),
         moon_glare: lerp1(a.moon_glare, b.moon_glare, t),
         aurora_intensity: lerp1(a.aurora_intensity, b.aurora_intensity, t),
@@ -999,13 +990,13 @@ pub(crate) fn weather_system(world: &World, dt: f32) {
             (None, None) => None,
         };
         (
-            lerp3(zenith, target_zenith, transition_t),
-            lerp3(horizon, target_horizon, transition_t),
-            lerp3(lower, target_lower, transition_t),
-            lerp3(sun_col, target_sun_col, transition_t),
-            lerp3(ambient, target_ambient, transition_t),
-            lerp3(sunlight, target_sunlight, transition_t),
-            lerp3(fog_col, target_fog_col, transition_t),
+            crate::helpers::lerp_f32x3(zenith, target_zenith, transition_t),
+            crate::helpers::lerp_f32x3(horizon, target_horizon, transition_t),
+            crate::helpers::lerp_f32x3(lower, target_lower, transition_t),
+            crate::helpers::lerp_f32x3(sun_col, target_sun_col, transition_t),
+            crate::helpers::lerp_f32x3(ambient, target_ambient, transition_t),
+            crate::helpers::lerp_f32x3(sunlight, target_sunlight, transition_t),
+            crate::helpers::lerp_f32x3(fog_col, target_fog_col, transition_t),
             lerp1(fog_near, target_fog_near, transition_t),
             lerp1(fog_far, target_fog_far, transition_t),
             fog_medium.lerp(target_fog_medium, transition_t),
