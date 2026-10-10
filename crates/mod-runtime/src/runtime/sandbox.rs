@@ -179,6 +179,16 @@ impl SandboxRuntime {
         engine_config.wasm_component_model(true);
         engine_config.consume_fuel(true);
         engine_config.max_wasm_stack(config.max_wasm_stack_bytes);
+        // Pin the guest proposal set to what standard wasm32-wasip1/wasip2
+        // toolchains emit. wasmtime 49 turned wide-arithmetic on by default
+        // (47 had it off), and relaxed-SIMD lowers differently per CPU —
+        // neither is produced by the default LLVM wasm backends, so both
+        // stay off: the pin restores 47's instruction surface and removes
+        // the one CPU-dependent lowering a guest could reach. Everything
+        // the component model needs (function references, reference types,
+        // SIMD, bulk memory) keeps its default.
+        engine_config.wasm_wide_arithmetic(false);
+        engine_config.wasm_relaxed_simd(false);
 
         let engine =
             Engine::new(&engine_config).map_err(|error| SandboxError::Engine(error.to_string()))?;
@@ -395,6 +405,16 @@ impl SandboxRuntime {
         store
             .set_fuel(self.config.fuel_per_entry)
             .map_err(|error| SandboxError::Instantiate(error.to_string()))?;
+        // wasmtime's default hostcall fuel is 128 MiB — the amount of
+        // guest data a host call may lift per call. The `String` args of
+        // the WIT interfaces (log's message, console's write_line) are
+        // lifted into host memory BEFORE the per-message size checks run,
+        // so an unbounded guest could make the host allocate its whole
+        // memory for one message the 16 KiB check then rejects.
+        // max_log_message_bytes is the largest guest→host payload any
+        // interface accepts (console lines cap at 4 KiB); +1 KiB covers
+        // the rest of a call's argument-lifting overhead.
+        store.set_hostcall_fuel(self.config.max_log_message_bytes + 1024);
 
         let bindings = Extension::instantiate(&mut store, &compiled.component, &self.linker)
             .map_err(|error| SandboxError::Instantiate(format!("{error:#}")))?;
