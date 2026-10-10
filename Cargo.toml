@@ -136,9 +136,11 @@ uuid = { version = "1", features = ["v5", "serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
-# Format-preserving edits of user-owned TOML (#5166). Already `toml` 0.8's own
-# parser backend, so this adds no crate to the build.
-toml_edit = "0.23"
+# Format-preserving edits of user-owned TOML (#5166). 0.25 (2026-10 refresh):
+# the lock already carried 0.25.17 through proc-macro-crate, so the bump
+# removes the duplicate and puts game-detect's validate-then-edit path on the
+# same TOML grammar as the rest of the graph.
+toml_edit = "0.25"
 semver = { version = "1", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 
