@@ -201,11 +201,14 @@ walkdir = "2.5"
 # Symphonia's 1:1 (a container feature no longer implies its codec — `wav`
 # needs `pcm`, `ogg` needs `vorbis`), and 0.12.2 added `cpal-realtime` +
 # `cpal-realtime-dbus` to the defaults, which link libdbus on Linux (a
-# build dependency CI does not install). This is the 0.10 default set:
-# the cpal backend plus WAV/PCM, OGG/Vorbis (vanilla SFX), MP3 (Oblivion
+# build dependency CI does not install). This is the 0.10 default set plus
+# `cpal-realtime` WITHOUT `-dbus`: real-time audio-thread priority where
+# the platform supports it (Windows), a no-op on Linux, and no libdbus.
+# The cpal backend plus WAV/PCM, OGG/Vorbis (vanilla SFX), MP3 (Oblivion
 # and FO3/FNV music) and FLAC.
 kira = { version = "0.12", default-features = false, features = [
     "cpal",
+    "cpal-realtime",
     "wav",
     "pcm",
     "ogg",
