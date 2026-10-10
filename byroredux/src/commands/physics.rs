@@ -213,6 +213,10 @@ impl ConsoleCommand for PhysStatsCommand {
         // #5246 — third-offence articulation detaches: the escalation end
         // of the clamp ladder, one line per persistently exploding rig.
         let explosive_detaches = pw.explosive_detaches_total();
+        // rapier 0.36 fills PhysicsPipeline::counters by default; the
+        // contact trio is the live solve's shape (a runaway count is what
+        // the recovery counters below it usually precede).
+        let (contact_pairs, contacts, constraints) = pw.contact_counts();
         drop(pw);
 
         let mut lines = vec![
@@ -229,6 +233,10 @@ impl ConsoleCommand for PhysStatsCommand {
             format!("  ragdoll seed refusals: total={seed_refused}"),
             format!("  velocity clamps: total={velocity_clamps}"),
             format!("  explosive detaches: total={explosive_detaches}"),
+            format!(
+                "  contacts (last step): pairs={contact_pairs} contacts={contacts} \
+                 constraints={constraints}"
+            ),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene
         // fast path's condition, so surfacing both together tells the

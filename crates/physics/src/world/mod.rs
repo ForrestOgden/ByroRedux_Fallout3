@@ -537,6 +537,21 @@ impl PhysicsWorld {
             })
     }
 
+    /// `(contact pairs, contacts, constraints)` from the last
+    /// `pipeline.step`. rapier 0.36 fills `PhysicsPipeline::counters` by
+    /// default (`Counters::new(true)`), so this reads the live solve —
+    /// zeroes only before the very first step. Surfaced through
+    /// `phys.stats` so a contact explosion is readable next to the
+    /// recovery counters it tends to precede.
+    pub fn contact_counts(&self) -> (usize, usize, usize) {
+        let counters = &self.pipeline.counters;
+        (
+            counters.cd.ncontact_pairs,
+            counters.solver.ncontacts,
+            counters.solver.nconstraints,
+        )
+    }
+
     /// Whether the last step left any dynamic body awake. Rapier's active set
     /// mixes dynamics with kinematics (which never leave it), so emptiness of
     /// the set itself says nothing — only its dynamic members do.
