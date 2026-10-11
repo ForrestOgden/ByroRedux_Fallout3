@@ -1,5 +1,7 @@
 //! Authored ALCH effect chains. Parsing is not a runtime capability check.
-use super::super::condition::{push_ctda, ConditionList};
+use super::super::condition::{
+    ctda_has_unknown_run_on, push_ctda, ConditionList, CTDA_KNOWN_LENGTHS,
+};
 use super::super::misc::MagicEffectItem;
 use super::*;
 
@@ -72,14 +74,12 @@ pub(super) fn parse_effects(
                 });
             }
             b"CTDA" => {
-                if pending.is_some() || !matches!(sub.data.len(), 20 | 24 | 28 | 32) {
+                if pending.is_some() || !CTDA_KNOWN_LENGTHS.contains(&sub.data.len()) {
                     return None;
                 }
                 // The generic parser maps unknown Run-On values to Subject.
                 // Never let that fallback change who a consumable tests.
-                if sub.data.len() >= 28
-                    && u32::from_le_bytes(sub.data[20..24].try_into().unwrap()) > 7
-                {
+                if ctda_has_unknown_run_on(&sub.data) {
                     return None;
                 }
                 let effect = effects.last_mut()?;

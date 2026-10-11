@@ -127,8 +127,9 @@ pub enum RunOn {
 }
 
 impl RunOn {
-    fn from_u32(value: u32) -> Self {
-        match value {
+    /// Strict decode: `None` for a value no known game authors.
+    pub(crate) fn try_from_u32(value: u32) -> Option<Self> {
+        Some(match value {
             0 => Self::Subject,
             1 => Self::Target,
             2 => Self::Reference,
@@ -137,13 +138,43 @@ impl RunOn {
             5 => Self::QuestAlias,
             6 => Self::PackageData,
             7 => Self::EventData,
-            // Unknown run-on falls back to Subject. The function will
-            // evaluate against the wrong target but won't crash; mod
-            // authoring errors surface as gameplay-visible behaviour
-            // bugs rather than parse panics.
-            _ => Self::Subject,
-        }
+            _ => return None,
+        })
     }
+
+    fn from_u32(value: u32) -> Self {
+        // Unknown run-on falls back to Subject. The function will
+        // evaluate against the wrong target but won't crash; mod
+        // authoring errors surface as gameplay-visible behaviour
+        // bugs rather than parse panics. Callers that must not accept
+        // that fallback use [`Self::try_from_u32`] /
+        // [`ctda_has_unknown_run_on`].
+        Self::try_from_u32(value).unwrap_or(Self::Subject)
+    }
+}
+
+/// The CTDA payload lengths any known game authors: Oblivion's 24, FNV's
+/// short 20, FO3/FNV's 28 and Skyrim+'s 32 (#1548, #1550).
+pub(crate) const CTDA_KNOWN_LENGTHS: [usize; 4] = [20, 24, 28, 32];
+
+/// Offset of the Run-On `u32`; present only on the FO3+ layouts, i.e. a
+/// payload at least [`CTDA_RUN_ON_MIN_LEN`] bytes long (the reference form
+/// id follows it, so the field is only meaningful when both fit).
+const CTDA_RUN_ON_OFFSET: usize = 20;
+const CTDA_RUN_ON_MIN_LEN: usize = 28;
+
+/// `true` when `data` carries a Run-On value [`RunOn::from_u32`] would have
+/// silently mapped to `Subject`. Gates that must never change who a
+/// condition tests (consumable effect chains) reject the whole record on it.
+pub(crate) fn ctda_has_unknown_run_on(data: &[u8]) -> bool {
+    data.len() >= CTDA_RUN_ON_MIN_LEN
+        && RunOn::try_from_u32(u32::from_le_bytes([
+            data[CTDA_RUN_ON_OFFSET],
+            data[CTDA_RUN_ON_OFFSET + 1],
+            data[CTDA_RUN_ON_OFFSET + 2],
+            data[CTDA_RUN_ON_OFFSET + 3],
+        ]))
+        .is_none()
 }
 
 /// Right-hand side of the comparison.
@@ -351,7 +382,7 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     // Anything else is parsed best-effort against the 20-byte prefix but is a
     // layout signal worth surfacing rather than silently absorbing — this is
     // the trap that hid the Oblivion 24-byte case (#1548) for so long.
-    if !matches!(data.len(), 20 | 24 | 28 | 32) {
+    if !CTDA_KNOWN_LENGTHS.contains(&data.len()) {
         log::debug!(
             "CTDA unexpected payload length {} (expected 20/24/28/32) — \
              parsing against the 20-byte prefix; possible per-game layout drift",
@@ -383,8 +414,13 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
     // 20-byte FNV short form and Oblivion's 24-byte records they are absent
     // → default Subject / 0. `param_1`/`param_2` above need no length gate:
     // they live at 12..20, entirely inside the shortest accepted form.
-    let (run_on, reference_form_id) = if data.len() >= 28 {
-        let run_on_raw = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
+    let (run_on, reference_form_id) = if data.len() >= CTDA_RUN_ON_MIN_LEN {
+        let run_on_raw = u32::from_le_bytes([
+            data[CTDA_RUN_ON_OFFSET],
+            data[CTDA_RUN_ON_OFFSET + 1],
+            data[CTDA_RUN_ON_OFFSET + 2],
+            data[CTDA_RUN_ON_OFFSET + 3],
+        ]);
         (
             RunOn::from_u32(run_on_raw),
             u32::from_le_bytes([data[24], data[25], data[26], data[27]]),
@@ -545,6 +581,40 @@ pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap
 mod tests {
     use super::*;
     use crate::esm::reader::SubRecord;
+
+    /// The strict Run-On decode, the lenient `from_u32` and the
+    /// consumable gate's [`ctda_has_unknown_run_on`] must agree on which
+    /// values are authored (#5616). The exhaustive match fails to compile
+    /// when a `RunOn` variant is added, pointing here before the gate can
+    /// silently reject (or accept) the new value.
+    #[test]
+    fn run_on_decode_gate_and_enum_agree_on_the_known_range() {
+        let known = |r: RunOn| match r {
+            RunOn::Subject
+            | RunOn::Target
+            | RunOn::Reference
+            | RunOn::CombatTarget
+            | RunOn::LinkedReference
+            | RunOn::QuestAlias
+            | RunOn::PackageData
+            | RunOn::EventData => (),
+        };
+        for raw in 0..=7u32 {
+            let r = RunOn::try_from_u32(raw).expect("0..=7 are authored");
+            known(r);
+            assert_eq!(RunOn::from_u32(raw), r);
+            let rec = make_ctda_28(0, [0; 4], 1, 0, 0, raw, 0);
+            assert!(!ctda_has_unknown_run_on(&rec.data), "run_on {raw}");
+        }
+        assert!(RunOn::try_from_u32(8).is_none());
+        assert_eq!(RunOn::from_u32(8), RunOn::Subject, "lenient fallback kept");
+        let rec = make_ctda_28(0, [0; 4], 1, 0, 0, 8, 0);
+        assert!(ctda_has_unknown_run_on(&rec.data));
+        // The 20/24-byte layouts carry no Run-On field at all.
+        assert!(!ctda_has_unknown_run_on(&rec.data[..24]));
+        assert!(!ctda_has_unknown_run_on(&rec.data[..20]));
+        assert_eq!(CTDA_KNOWN_LENGTHS, [20, 24, 28, 32]);
+    }
 
     /// Build a synthetic CTDA payload at the FO3 / FNV 28-byte layout.
     fn make_ctda_28(
