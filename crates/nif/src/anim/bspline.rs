@@ -92,12 +92,16 @@ impl BsplineSampling {
     /// bounded sample count, and charges `keys_per_sample × n_samples`
     /// against the aggregate budget. `None` when the budget is spent —
     /// the caller falls back to the interpolator's static pose.
+    ///
+    /// The returned window keeps the interpolator's *own* span as the
+    /// curve's parameter domain (#5572): clamping decides which times
+    /// are emitted, never which part of the curve a time maps to.
     pub fn reserve(
         &mut self,
         interp_start: f32,
         interp_stop: f32,
         keys_per_sample: usize,
-    ) -> Option<(f32, f32, usize)> {
+    ) -> Option<BsplineWindow> {
         let (mut start, mut stop) = (interp_start, interp_stop);
         if let Some((seq_start, seq_stop)) = self.seq_span {
             start = start.max(seq_start);
@@ -121,7 +125,50 @@ impl BsplineSampling {
             return None;
         }
         self.remaining_keys -= cost;
-        Some((start, stop, n_samples))
+        Some(BsplineWindow {
+            start,
+            stop,
+            n_samples,
+            interp_start,
+            interp_stop,
+        })
+    }
+}
+
+/// One channel's reserved sampling window (#5572). `start..stop` is the
+/// interpolator's span intersected with the owning sequence's; the
+/// spline's parameter `u ∈ [0, u_max]` always spans the interpolator's
+/// *own* `[interp_start, interp_stop]`. Mapping `u` over the clamped
+/// window instead (the #5486 first cut) stretched the whole curve into
+/// the trimmed window and time-warped every interpolator wider than its
+/// sequence.
+#[derive(Debug, Clone, Copy)]
+pub struct BsplineWindow {
+    pub start: f32,
+    pub stop: f32,
+    pub n_samples: usize,
+    interp_start: f32,
+    interp_stop: f32,
+}
+
+impl BsplineWindow {
+    /// Key time and curve parameter of sample `i`. A window the sequence
+    /// leaves empty (disjoint spans) holds the curve's nearest end —
+    /// `u` is clamped to `[0, u_max]`.
+    pub fn sample(&self, i: usize, u_max: f32) -> (f32, f32) {
+        let duration = (self.stop - self.start).max(0.0);
+        let t = if self.n_samples > 1 {
+            self.start + duration * (i as f32 / (self.n_samples - 1) as f32)
+        } else {
+            self.start
+        };
+        let interp_duration = self.interp_stop - self.interp_start;
+        let u = if interp_duration.is_finite() && interp_duration > f32::EPSILON {
+            (((t - self.interp_start) / interp_duration) * u_max).clamp(0.0, u_max)
+        } else {
+            0.0
+        };
+        (t, u)
     }
 }
 
@@ -312,26 +359,14 @@ pub fn extract_float_channel_bspline(
     // #5486 — the sampled span is the interpolator's own ∩ the owning
     // sequence's, bounded by the per-channel ceiling and the per-import
     // aggregate budget. Budget exhaustion takes the static pose.
-    let Some((start_time, stop_time, n_samples)) =
-        sampling.reserve(interp.start_time, interp.stop_time, 1)
-    else {
+    let Some(window) = sampling.reserve(interp.start_time, interp.stop_time, 1) else {
         return static_fallback();
     };
-    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
-    let mut keys = Vec::with_capacity(n_samples);
-    for i in 0..n_samples {
-        let t = if n_samples > 1 {
-            start_time + duration * (i as f32 / (n_samples - 1) as f32)
-        } else {
-            start_time
-        };
-        let u = if duration > f32::EPSILON {
-            ((t - start_time) / duration) * u_max
-        } else {
-            0.0
-        };
+    let mut keys = Vec::with_capacity(window.n_samples);
+    for i in 0..window.n_samples {
+        let (t, u) = window.sample(i, u_max);
         let p = deboor_cubic(&cps, n_cp, 1, u);
         // #3765 (SAFE-2026-08-30-D9-01) belt-and-braces — `channel_slice`
         // already rejects a non-finite offset/half_range before this
@@ -402,30 +437,18 @@ pub fn extract_transform_channel_bspline(
     );
 
     // A transform channel emits three key vectors (T/R/S) per sample.
-    let Some((start_time, stop_time, n_samples)) =
-        sampling.reserve(interp.start_time, interp.stop_time, 3)
-    else {
+    let Some(window) = sampling.reserve(interp.start_time, interp.stop_time, 3) else {
         return Some(static_transform_channel(interp));
     };
-    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
-    let mut translation_keys = Vec::with_capacity(n_samples);
-    let mut rotation_keys = Vec::with_capacity(n_samples);
-    let mut scale_keys = Vec::with_capacity(n_samples);
+    let mut translation_keys = Vec::with_capacity(window.n_samples);
+    let mut rotation_keys = Vec::with_capacity(window.n_samples);
+    let mut scale_keys = Vec::with_capacity(window.n_samples);
 
-    for i in 0..n_samples {
-        let t = if n_samples > 1 {
-            start_time + duration * (i as f32 / (n_samples - 1) as f32)
-        } else {
-            start_time
-        };
-        // Parameter u in [0, n-d] corresponding to t in [start, stop].
-        let u = if duration > f32::EPSILON {
-            ((t - start_time) / duration) * u_max
-        } else {
-            0.0
-        };
+    for i in 0..window.n_samples {
+        // Parameter u in [0, n-d] over the interpolator's own span (#5572).
+        let (t, u) = window.sample(i, u_max);
 
         // Translation. Bspline payload absent → pose-value fallback. If
         // the pose itself is the FLT_MAX sentinel ("axis inactive"),

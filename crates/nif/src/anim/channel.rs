@@ -321,26 +321,14 @@ pub fn sample_color_keys_bspline_point3(
     // #5486 — span ∩ owning sequence + ceiling + aggregate budget. The
     // color sampler takes the static fallback on exhaustion, same as an
     // invalid handle.
-    let Some((start_time, stop_time, n_samples)) =
-        sampling.reserve(interp.start_time, interp.stop_time, 1)
-    else {
+    let Some(window) = sampling.reserve(interp.start_time, interp.stop_time, 1) else {
         return static_fallback();
     };
-    let duration = (stop_time - start_time).max(0.0);
     let u_max = (n_cp - BSPLINE_DEGREE) as f32;
 
-    let mut keys = Vec::with_capacity(n_samples);
-    for i in 0..n_samples {
-        let t = if n_samples > 1 {
-            start_time + duration * (i as f32 / (n_samples - 1) as f32)
-        } else {
-            start_time
-        };
-        let u = if duration > f32::EPSILON {
-            ((t - start_time) / duration) * u_max
-        } else {
-            0.0
-        };
+    let mut keys = Vec::with_capacity(window.n_samples);
+    for i in 0..window.n_samples {
+        let (t, u) = window.sample(i, u_max);
         let p = deboor_cubic(&cps, n_cp, 3, u);
         keys.push(AnimColorKey {
             time: t,

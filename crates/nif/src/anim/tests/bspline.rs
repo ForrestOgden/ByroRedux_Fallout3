@@ -348,11 +348,11 @@ mod amplification_tests {
         sampling.seq_span = Some((0.0, 1.0));
         // The audit repro's numbers: interpolator claims 1e9 s, the
         // owning sequence is 1 s. Pre-fix: 30 M samples (clamped to 1 M).
-        let (start, stop, n) = sampling
+        let window = sampling
             .reserve(0.0, 1.0e9, 3)
             .expect("well within budget");
-        assert_eq!((start, stop), (0.0, 1.0));
-        assert_eq!(n, 30, "1 s at 30 Hz");
+        assert_eq!((window.start, window.stop), (0.0, 1.0));
+        assert_eq!(window.n_samples, 30, "1 s at 30 Hz");
     }
 
     #[test]
@@ -360,11 +360,11 @@ mod amplification_tests {
         let mut sampling = BsplineSampling::new();
         // No owning sequence (embedded-controller path): only the
         // ceiling bounds the span.
-        let (_, _, n) = sampling
+        let window = sampling
             .reserve(0.0, 1.0e9, 1)
             .expect("within budget");
-        assert_eq!(n, BSPLINE_MAX_SAMPLES_PER_CHANNEL);
-        assert_eq!(n, 108_000, "30 Hz × 1 h (#5486 sizing)");
+        assert_eq!(window.n_samples, BSPLINE_MAX_SAMPLES_PER_CHANNEL);
+        assert_eq!(window.n_samples, 108_000, "30 Hz × 1 h (#5486 sizing)");
     }
 
     #[test]
@@ -387,6 +387,58 @@ mod amplification_tests {
         // shared interpolator can no longer multiply the cost past it.
         assert!(sampling.reserve(0.0, 0.0, 1).is_none());
         assert!(sampling.reserve(0.0, 100.0, 3).is_none());
+    }
+
+    /// #5572 — the curve parameter spans the interpolator's own span, so
+    /// clamping to the sequence trims *which* part of the curve is
+    /// sampled instead of stretching the whole curve into the window.
+    #[test]
+    fn clamped_window_samples_the_visible_part_of_the_curve() {
+        let mut sampling = BsplineSampling::new();
+        sampling.seq_span = Some((0.0, 1.0));
+        // Interpolator [0, 2] s, sequence [0, 1] s: the sequence sees the
+        // first half of the curve (u ∈ [0, u_max / 2]), not all of it.
+        let window = sampling.reserve(0.0, 2.0, 1).expect("within budget");
+        let u_max = 4.0;
+        let (t0, u0) = window.sample(0, u_max);
+        let (t_last, u_last) = window.sample(window.n_samples - 1, u_max);
+        assert_eq!((t0, u0), (0.0, 0.0));
+        assert_eq!(t_last, 1.0);
+        assert!(
+            (u_last - 2.0).abs() < 1e-5,
+            "t=1 of a [0,2] curve is half way (u={u_last}), not the curve's end"
+        );
+    }
+
+    #[test]
+    fn unclamped_window_maps_the_whole_curve() {
+        let mut sampling = BsplineSampling::new();
+        sampling.seq_span = Some((0.0, 10.0));
+        let window = sampling.reserve(2.0, 4.0, 1).expect("within budget");
+        let u_max = 6.0;
+        let (_, first) = window.sample(0, u_max);
+        let (_, last) = window.sample(window.n_samples - 1, u_max);
+        assert_eq!(first, 0.0);
+        assert!((last - u_max).abs() < 1e-5);
+    }
+
+    /// Disjoint interpolator / sequence spans leave an empty window: it
+    /// holds the curve's nearest end instead of replaying the curve start.
+    #[test]
+    fn disjoint_spans_hold_the_nearest_curve_end() {
+        let u_max = 4.0;
+        let mut after = BsplineSampling::new();
+        after.seq_span = Some((20.0, 30.0));
+        let w = after.reserve(0.0, 10.0, 1).expect("within budget");
+        for i in 0..w.n_samples {
+            assert_eq!(w.sample(i, u_max).1, u_max, "curve ended before the sequence began");
+        }
+        let mut before = BsplineSampling::new();
+        before.seq_span = Some((0.0, 10.0));
+        let w = before.reserve(20.0, 30.0, 1).expect("within budget");
+        for i in 0..w.n_samples {
+            assert_eq!(w.sample(i, u_max).1, 0.0, "curve starts after the sequence ended");
+        }
     }
 
     /// The audit's end-to-end repro through the public `import_kf`:
