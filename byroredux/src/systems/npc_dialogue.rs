@@ -24,7 +24,16 @@
 //!   form id) stands in as the opening line.
 //! - A topic inside a branch that is not its starting topic, or the start of
 //!   a branch with neither flag, is reached only through a link.
-//! - Oblivion authors no branches, so its topics are all list entries.
+//! - Oblivion authors no branches and no DIAL flags byte, and its menu is
+//!   the player's *known-topics* list (#5350): topics enter it through an
+//!   INFO's `NAME` "Add Topics" or a script `AddTopic`, while a topic named
+//!   only by an INFO's `TCLT` "Choices" is link-only. The classifier below
+//!   cannot see that set yet, so today every branch-less Oblivion topic
+//!   classifies as a list entry — latent, because Oblivion has no quest
+//!   aliases and so no NPC owns a topic. Oblivion's census: 1,761 of
+//!   Oblivion.esm's 3,184 Topic DIALs are `TCLT` targets and never `NAME`
+//!   targets. When Oblivion ownership is wired, `topic_entry` needs an
+//!   Oblivion arm returning `LinkOnly` for those.
 //!   FO3/FNV author no branches either, but their DIAL `DATA` carries a
 //!   flags byte (#5224): only the `Top-level` (0x02) topics are list
 //!   entries — 844 of Fallout3.esm's 5,130 Topic DIALs — and the rest are
@@ -144,7 +153,10 @@ enum TopicEntry {
     /// A list entry: a Top-Level branch's starting topic, or a topic with no
     /// branch (Oblivion, or a branch the loaded plugins do not define). On
     /// FO3/FNV a branch-less topic is only a list entry when its DIAL
-    /// `DATA` flags carry `Top-level` (#5224).
+    /// `DATA` flags carry `Top-level` (#5224). On Oblivion this is a
+    /// placeholder, not the rule: the real opening list is the known-topic
+    /// set (`NAME` / `AddTopic`), which this classifier does not model
+    /// yet (#5350).
     TopLevel,
     /// Reached only through another INFO's `TCLT` link.
     LinkOnly,
