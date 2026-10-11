@@ -243,6 +243,49 @@ pub(crate) fn default_water_for_worldspace(
     }
 }
 
+/// What the distant (LOD) water mesh draws from, settled at the translate
+/// boundary (#5335 / #5337).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DistantWaterSource {
+    /// Height an exterior cell with no XCLW inherits — the SAME value the
+    /// full-detail cell resolves (`default_water_for_worldspace`'s `DNAM`, or
+    /// Oblivion's sea level), so an inherit cell's water does not step in
+    /// height at the streaming boundary. `None` = inherit cells are dry, as
+    /// they are near.
+    pub inherit_height: Option<f32>,
+    /// The single height `water.dump` reports as the worldspace default.
+    pub display_height: f32,
+    /// WATR form for the distant plane's appearance: the authored LOD form
+    /// (`NAM3`) when there is one, else the full-detail default (`NAM2`).
+    pub form: Option<u32>,
+}
+
+/// Combine the LOD-ring pair ([`translate_lod_water`]) with the full-detail
+/// pair ([`default_water_for_worldspace`]) into what the distant mesh uses.
+/// `None` when the worldspace authors neither — no water at distance.
+///
+/// Two quantities, two sources, one rule each:
+/// * **Inherit height** is the full-detail default. `NAM4` is *not* it: the
+///   two are genuinely distinct on real content (NAM4 ≠ DNAM on 22/30
+///   `Skyrim.esm` worldspaces; FO3 MegatonWorld inherits Wasteland's DNAM
+///   10500 but owns NAM4 = 0), and a near cell draws at DNAM.
+/// * **Form** prefers the authored LOD form, falling back to the full-detail
+///   one — which is how Oblivion, whose WRLD authors `NAM2` but no
+///   `NAM3`/`NAM4`/`DNAM`, gets distant water at all (#5335).
+pub(crate) fn resolve_distant_water(
+    lod: (Option<f32>, Option<u32>),
+    default: (Option<f32>, Option<u32>),
+) -> Option<DistantWaterSource> {
+    let (lod_height, lod_form) = lod;
+    let (default_height, default_form) = default;
+    let display_height = default_height.or(lod_height)?;
+    Some(DistantWaterSource {
+        inherit_height: default_height,
+        display_height,
+        form: lod_form.or(default_form),
+    })
+}
+
 /// Resolve a worldspace's LOD-ring water (`NAM3`/`NAM4`) — the distant
 /// counterpart of [`default_water_for_worldspace`]'s `NAM2`/`DNAM`.
 /// Returns `(LOD water height, LOD water type form)`.
@@ -2352,6 +2395,51 @@ mod tests {
             default_water_for_worldspace(&solo(wrld.clone()), "w", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00AB))
         );
+    }
+
+    /// #5335 — Oblivion's WRLD authors `NAM2` and no `NAM3`/`NAM4`/`DNAM`.
+    /// Distant water must still exist: sea level 0 and the NAM2 form come
+    /// from the full-detail resolver, through the one translate-boundary
+    /// rule — not a game branch in the streamer.
+    #[test]
+    fn oblivion_gets_distant_water_from_the_full_detail_default() {
+        let wrld = WorldspaceRecord {
+            water_form: Some(0x0000_0A11),
+            ..Default::default()
+        };
+        let worldspaces = solo(wrld);
+        let lod = translate_lod_water(&worldspaces, "w");
+        assert_eq!(lod, (None, None), "Oblivion authors no LOD water fields");
+        let default = default_water_for_worldspace(&worldspaces, "w", GameKind::Oblivion);
+        assert_eq!(
+            resolve_distant_water(lod, default),
+            Some(DistantWaterSource {
+                inherit_height: Some(0.0),
+                display_height: 0.0,
+                form: Some(0x0000_0A11),
+            })
+        );
+    }
+
+    /// #5337 — an inherit cell far-draws at the height the near cell uses
+    /// (`DNAM`), not `NAM4`. FO3 MegatonWorld: inherits Wasteland's DNAM
+    /// 10500 but owns NAM4 = 0.
+    #[test]
+    fn distant_inherit_height_is_the_full_detail_default_not_nam4() {
+        let source = resolve_distant_water(
+            (Some(0.0), Some(0x0000_00B2)),       // NAM4 / NAM3
+            (Some(10500.0), Some(0x0000_00B1)),   // DNAM / NAM2
+        )
+        .expect("water");
+        assert_eq!(source.inherit_height, Some(10500.0));
+        assert_eq!(source.form, Some(0x0000_00B2), "authored LOD form wins");
+        // A worldspace with LOD water but no default water: inherit cells
+        // are dry at distance exactly as they are near.
+        let lod_only = resolve_distant_water((Some(-500.0), None), (None, None)).expect("water");
+        assert_eq!(lod_only.inherit_height, None);
+        assert_eq!(lod_only.display_height, -500.0);
+        // Neither authored: no distant water.
+        assert_eq!(resolve_distant_water((None, None), (None, None)), None);
     }
 
     // ── PNAM parent inheritance (#2735) ──────────────────────────

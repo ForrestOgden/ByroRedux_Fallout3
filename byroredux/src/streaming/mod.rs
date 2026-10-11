@@ -112,12 +112,16 @@ pub struct LodWaterPlane {
     /// NAM2–4 noise-map handles acquired for the LOD material. Zero entries
     /// are the shared fallback and are not refcounted.
     pub noise_map_handles: [u32; 3],
-    /// The worldspace `NAM3`/`NAM4` default water height the mesh was
-    /// spawned with — what absent-XCLW cells inherit on rebuild.
-    pub default_height: f32,
-    /// Player grid the mesh was built around; the next grid crossing
-    /// triggers the rebuild that re-centers the hole.
+    /// The default water height absent-XCLW cells inherit — the SAME value
+    /// the full-detail cell resolves (`DNAM` / Oblivion sea level), not
+    /// `NAM4` (#5337). `None` = inherit cells are dry.
+    pub default_height: Option<f32>,
+    /// Player grid the mesh was last (re)built for — recorded on every
+    /// attempt, failed or not (#5339).
     pub center_grid: (i32, i32),
+    /// When the last rebuild was attempted; throttles residency-driven
+    /// rebuilds (`WorldStreamingState::LOD_WATER_REBUILD_INTERVAL`).
+    pub last_rebuilt: Option<std::time::Instant>,
     /// The worldspace's exterior cells projected to what the distant builder
     /// reads (grid, water tri-state, LAND minimum), computed ONCE at spawn
     /// (#5289). It is a pure function of record data that never changes
@@ -417,6 +421,9 @@ pub struct WorldStreamingState {
     /// needs recomputing when this is set, since its only input is
     /// `loaded`'s key set (#3688).
     pub(crate) loaded_residency_changed: bool,
+    /// The distant-water mesh's hole no longer matches the resident set and
+    /// is waiting out [`Self::LOD_WATER_REBUILD_INTERVAL`] (#5334).
+    pub(crate) lod_water_dirty: bool,
     /// Boundary-to-ready and apply-slice aggregates. Read by the benchmark
     /// summary; otherwise passive, bounded runtime diagnostics.
     pub telemetry: StreamingTelemetry,
@@ -522,6 +529,7 @@ impl WorldStreamingState {
             applied_region_ambient: None,
             lod_reconcile_pending: false,
             loaded_residency_changed: false,
+            lod_water_dirty: false,
             telemetry: StreamingTelemetry::default(),
             worker: Some(worker),
             request_tx: Some(request_tx),
@@ -564,9 +572,18 @@ impl WorldStreamingState {
         let Some(player_grid) = self.last_player_grid else {
             return;
         };
-        let (Some(height), lod_water_form) = crate::env_translate::translate_lod_water(
-            &self.wctx.record_index.cells.worldspaces,
-            &self.wctx.worldspace_key,
+        // #5335 / #5337 — the default height and appearance come from the
+        // full-detail resolver (which gives Oblivion sea level + `NAM2`),
+        // with `NAM3`/`NAM4` only where the LOD data is authored.
+        let Some(source) = crate::env_translate::resolve_distant_water(
+            crate::env_translate::translate_lod_water(
+                &self.wctx.record_index.cells.worldspaces,
+                &self.wctx.worldspace_key,
+            ),
+            (
+                self.wctx.default_water_height,
+                self.wctx.default_water_type_form,
+            ),
         ) else {
             return;
         };
@@ -581,45 +598,69 @@ impl WorldStreamingState {
             .exterior_cells
             .get(&self.wctx.worldspace_key)
             .unwrap_or(&empty);
+        let loaded = &self.loaded;
         self.lod_water = crate::cell_loader::spawn_lod_water_plane(
             world,
             ctx,
             &self.tex_provider,
             &self.wctx.record_index.waters,
-            height,
-            lod_water_form,
+            &source,
             cells,
             player_grid,
-            self.radius_unload,
+            |grid| loaded.contains_key(&grid),
             self.wctx.record_index.game,
         );
+        // Spawn can precede the initial cells' residency; rebuild once it
+        // settles (#5334).
+        self.lod_water_dirty = self.lod_water.is_some();
     }
 
-    /// Keep the distant-water mesh's hole centered on the current
-    /// full-detail streaming area. The hole is *which cells are skipped*, so
-    /// a grid crossing rebuilds the mesh (`rebuild_lod_water_mesh`) — only
+    /// Minimum spacing of residency-driven distant-water rebuilds (#5334).
+    /// Cells apply one at a time over several frames after a crossing; each
+    /// rebuild is a ring re-selection plus one fence-waited upload, so
+    /// rebuilding per applied cell would multiply the cost #5289 removed.
+    /// Coalescing leaves a few frames of coincident same-height quads over a
+    /// freshly applied cell, or a brief gap over a just-unloaded one.
+    pub const LOD_WATER_REBUILD_INTERVAL: std::time::Duration =
+        std::time::Duration::from_millis(250);
+
+    /// Keep the distant-water mesh's hole equal to the actual resident set
+    /// (#5334). The hole is *which cells are skipped*, so a residency change
+    /// or a grid crossing rebuilds the mesh (`rebuild_lod_water_mesh`) — only
     /// the mesh handle swaps; the entity, material, and textures persist.
-    pub fn recenter_lod_water(
+    /// Called once per streaming step; it is two comparisons when nothing
+    /// moved. `residency_changed` is this step's `loaded_residency_changed`.
+    pub fn refresh_lod_water(
         &mut self,
         world: &mut World,
         ctx: &mut VulkanContext,
         player_grid: (i32, i32),
+        residency_changed: bool,
     ) {
+        self.lod_water_dirty |= residency_changed;
         let Some(plane) = self.lod_water.as_mut() else {
             return;
         };
-        if plane.center_grid == player_grid {
+        if !self.lod_water_dirty && plane.center_grid == player_grid {
             return;
         }
-        let default_height = plane.default_height;
+        if plane
+            .last_rebuilt
+            .is_some_and(|at| at.elapsed() < Self::LOD_WATER_REBUILD_INTERVAL)
+        {
+            return;
+        }
+        // The attempt consumes the dirty flag whether it succeeds or not
+        // (#5339): a failed upload is retried on the next real change.
+        self.lod_water_dirty = false;
+        let loaded = &self.loaded;
         crate::cell_loader::rebuild_lod_water_mesh(
             world,
             ctx,
             plane,
-            default_height,
             self.wctx.record_index.game,
             player_grid,
-            self.radius_unload,
+            |grid| loaded.contains_key(&grid),
         );
     }
 

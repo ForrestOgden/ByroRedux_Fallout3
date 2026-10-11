@@ -1233,8 +1233,9 @@ mod tests {
             mesh_handle: Some(15),
             normal_map_handle: Some(21),
             noise_map_handles: [22, 23, 24],
-            default_height: -2300.0,
+            default_height: Some(-2300.0),
             center_grid: (0, 0),
+            last_rebuilt: None,
             projection: Vec::new().into(),
         });
 

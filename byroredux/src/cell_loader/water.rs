@@ -848,22 +848,6 @@ pub(super) fn apply_placed_water_type(
     targets.len()
 }
 
-/// The distant-water hole radius: the streaming boundary itself (#5244).
-/// Full-detail water exists for loaded cells (Chebyshev ≤ `radius_unload`);
-/// the distant mesh skips exactly those and emits from
-/// `radius_unload + 1` out — contiguous by construction. The old
-/// one-cell margin (#1871 heritage) guarded the single-sheet annulus of the
-/// wrong-height era, where overlap with near water double-blended visibly;
-/// with per-cell matching heights (#5243) its only effect was a permanent
-/// one-cell waterless ring at every boundary. The residual cost of
-/// exact contiguity is a few frames of coincident same-height quads
-/// between a grid crossing and the reconcile that unloads the now-distant
-/// ring — imperceptible next to that ring.
-#[inline]
-fn distant_water_hole_radius(radius_unload: i32) -> i32 {
-    radius_unload.max(0)
-}
-
 /// The per-cell inputs the distant-water builder needs — a projection of
 /// `CellData`'s XCLW tri-state (`water_height` + `water_height_is_explicit`)
 /// plus the cell's LAND minimum, so the builder is unit-testable without
@@ -892,27 +876,31 @@ pub(super) struct DistantWaterGeometry {
 
 /// Build the distant (LOD) water mesh per cell at each cell's **effective**
 /// water height (#5243): explicit XCLW → that height; authored dry sentinel →
-/// skipped; absent → the worldspace default (`None` default → skipped).
+/// skipped; absent → `default_height` (`None` → skipped).
 ///
-/// The prior single-sheet annulus at the worldspace default was wrong on
-/// both sides of the census: FNV WastelandNV, Skyrim Tamriel and FO4
-/// Commonwealth author **zero** inherit cells (every wet cell is an
-/// override), so the default sheet painted phantom ocean across their
-/// authored-dry basins while distant Lake Mead / rivers rendered at the
-/// default height, buried below their own terrain. Quads are emitted only
-/// for cells between the streaming hole (`hole_radius`, Chebyshev) and the
-/// terrain-LOD ring's reach, and are skipped when the cell's LAND minimum
-/// sits above the effective water (the terrain fully occludes the quad).
-/// Cells whose landscape did not parse keep their quad — conservative, and
-/// correct for LAND-less open ocean.
+/// `default_height` must be the SAME default the full-detail cell resolves
+/// for an absent XCLW (`default_water_for_worldspace`'s `DNAM` / Oblivion
+/// sea level, #5337) so an inherit cell's water does not step in height at
+/// the streaming boundary.
 ///
-/// Pure over the inputs (no `VulkanContext`) so the tri-state, hole, reach
-/// and LAND-mask logic is unit-testable.
+/// The hole is the **resident set** (#5334), not a radius: a quad is emitted
+/// for every wet cell within `reach` (Chebyshev from the player grid) that is
+/// not `is_resident`. Streaming only ever requests cells out to `radius_load`
+/// and unloads only beyond `radius_unload`, so the ring at `radius_load + 1`
+/// is resident only as hysteresis — a radius hole left it with neither
+/// full-detail nor distant water at worldspace entry and along the leading
+/// edge of travel. This mirrors terrain LOD's set-based `cell_is_full_detail`.
+/// Quads are skipped when the cell's LAND minimum sits above the effective
+/// water (the terrain fully occludes the quad); cells whose landscape did not
+/// parse keep their quad — conservative, and correct for LAND-less open ocean.
+///
+/// Pure over the inputs (no `VulkanContext`) so the tri-state, residency,
+/// reach and LAND-mask logic is unit-testable.
 pub(super) fn build_distant_water_mesh(
     cells: &[DistantWaterCell],
     default_height: Option<f32>,
     player_grid: (i32, i32),
-    hole_radius: i32,
+    is_resident: impl Fn((i32, i32)) -> bool,
     reach: i32,
 ) -> DistantWaterGeometry {
     // UVs are relative to the player grid's corner, matching the old
@@ -929,7 +917,7 @@ pub(super) fn build_distant_water_mesh(
     for cell in cells {
         let distance =
             (cell.grid.0 - player_grid.0).abs().max((cell.grid.1 - player_grid.1).abs());
-        if distance <= hole_radius || distance > reach {
+        if distance > reach || is_resident(cell.grid) {
             continue;
         }
         let effective = if cell.explicit {
@@ -1016,15 +1004,18 @@ fn lod_quad_heights(hist: &[(f32, u32)]) -> ([(f32, u32); 8], u8) {
 /// Spawn the worldspace-wide distant LOD water mesh (#2449 / EXAL-01, per
 /// cell since #5243) — one quad per distant cell at that cell's
 /// **effective** water height (explicit XCLW → that height, absent → the
-/// WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped), built by
-/// [`build_distant_water_mesh`]. The ring runs from just past the
-/// streaming boundary (`radius_unload`, exactly contiguous with the loaded
-/// full-detail cells — see [`distant_water_hole_radius`], #5244) out to
-/// the distant-terrain LOD ring's total reach
+/// worldspace default, authored dry sentinel → skipped), built by
+/// [`build_distant_water_mesh`]. The default and the appearance form come
+/// from [`crate::env_translate::DistantWaterSource`] (#5335 / #5337): the
+/// full-detail resolver's `DNAM`/`NAM2` — Oblivion included — with
+/// `NAM3`/`NAM4` only where the LOD data is authored. The ring is every wet
+/// cell that is not resident at full detail (#5334) out to the
+/// distant-terrain LOD ring's total reach
 /// (`super::terrain_lod::lod_ring_reach_cells`) for visual consistency.
-/// Called once at worldspace entry; grid crossings rebuild the mesh
-/// through [`rebuild_lod_water_mesh`] — see [`LodWaterPlane`]'s doc for
-/// why the hole follows the player by rebuild, not by translation.
+/// Called once at worldspace entry; residency changes and grid crossings
+/// rebuild the mesh through [`rebuild_lod_water_mesh`] — see
+/// [`LodWaterPlane`]'s doc for why the hole follows the player by rebuild,
+/// not by translation.
 ///
 /// Uses the SAME safe upload path [`spawn_water_plane`] does
 /// (`rt_enabled: false`, per-mesh buffer) — see [`LodWaterPlane`]'s doc for
@@ -1038,13 +1029,14 @@ pub(crate) fn spawn_lod_water_plane(
     ctx: &mut VulkanContext,
     tex_provider: &TextureProvider,
     waters: &HashMap<u32, esm::records::misc::WatrRecord>,
-    lod_height: f32,
-    lod_water_form: Option<u32>,
+    source: &crate::env_translate::DistantWaterSource,
     cells: &HashMap<(i32, i32), esm::cell::CellData>,
     player_grid: (i32, i32),
-    radius_unload: i32,
+    is_resident: impl Fn((i32, i32)) -> bool,
     game: esm::reader::GameKind,
 ) -> Option<LodWaterPlane> {
+    let lod_water_form = source.form;
+    let lod_height = source.display_height;
     let (material, kind, flow, normal_texture_path, noise_texture_paths) =
         crate::env_translate::resolve_water_material(waters, lod_water_form, game);
 
@@ -1056,19 +1048,16 @@ pub(crate) fn spawn_lod_water_plane(
     // `terrain_lod` keeps the distant water from falling short of the terrain
     // it is supposed to meet.
     let reach = super::terrain_lod::lod_ring_reach_cells(game);
-    let hole_radius = distant_water_hole_radius(radius_unload);
-    // Degenerate: the streamed area already covers (or exceeds) the LOD
-    // ring's own radius — no ring left to draw. Not expected on real content
-    // (the LOD ring is sized far larger than any sane streaming radius), but
-    // a corrupt/extreme config must not build a zero-area mesh.
-    if hole_radius >= reach {
-        return None;
-    }
     // #5289 — projected once here and kept on the plane; every later
-    // crossing re-selects the ring from it.
+    // rebuild re-selects the ring from it.
     let projection: std::sync::Arc<[DistantWaterCell]> = distant_water_cells(cells).into();
-    let geometry =
-        build_distant_water_mesh(&projection, Some(lod_height), player_grid, hole_radius, reach);
+    let geometry = build_distant_water_mesh(
+        &projection,
+        source.inherit_height,
+        player_grid,
+        is_resident,
+        reach,
+    );
     if geometry.indices.is_empty() {
         return None;
     }
@@ -1173,13 +1162,14 @@ pub(crate) fn spawn_lod_water_plane(
     let quads: u32 = height_histogram.iter().map(|(_, n)| n).sum();
     log::info!(
         "LOD water mesh spawned: {quads} quads, heights {} (worldspace default \
-         {lod_height}), hole={hole_radius} cells, reach={reach} cells @ grid \
+         {:?}, display {lod_height}), reach={reach} cells @ grid \
          {player_grid:?}, kind={kind:?}",
         height_histogram
             .iter()
             .map(|(h, n)| format!("{h}×{n}"))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
+        source.inherit_height,
     );
 
     Some(LodWaterPlane {
@@ -1187,39 +1177,46 @@ pub(crate) fn spawn_lod_water_plane(
         mesh_handle: Some(mesh_handle),
         normal_map_handle: (resolved_normal_idx != 0).then_some(resolved_normal_idx),
         noise_map_handles: resolved_noise,
-        default_height: lod_height,
+        default_height: source.inherit_height,
         center_grid: player_grid,
         projection,
+        last_rebuilt: Some(std::time::Instant::now()),
     })
 }
 
-/// Rebuild the distant-water mesh around a new player grid (#5243). The
-/// per-cell mesh's hole is which cells are skipped, so following the player
-/// across a grid boundary means rebuilding — the translated-hole trick the
-/// old single-sheet annulus used would drag every distant quad's world
-/// position with it. The entity, material, and texture handles are reused;
-/// only the mesh swaps. The per-cell projection (including each cell's LAND
-/// minimum) is the plane's, computed once at spawn (#5289) — a crossing only
-/// re-selects the ring. Returns `false` when the new mesh is empty (nothing
-/// wet in the ring): the old mesh is then released and the entity keeps
-/// living mesh-less until a later crossing finds water again.
-#[allow(clippy::too_many_arguments)]
+/// Rebuild the distant-water mesh for the current player grid and resident
+/// set (#5243, #5334). The per-cell mesh's hole is which cells are skipped,
+/// so following the player — and the streaming set filling in behind a
+/// crossing — means rebuilding; the translated-hole trick the old
+/// single-sheet annulus used would drag every distant quad's world position
+/// with it. The entity, material, and texture handles are reused; only the
+/// mesh swaps. The per-cell projection (including each cell's LAND minimum)
+/// is the plane's, computed once at spawn (#5289) — a rebuild only
+/// re-selects the ring.
+///
+/// Returns `true` when the mesh was swapped. `false` means it was not: the
+/// new ring is empty (nothing wet — the old mesh is then released and the
+/// entity lives mesh-less until a later rebuild finds water again) or the
+/// upload failed (the previous mesh is kept). Either way the attempt is
+/// recorded on the plane (`center_grid`, `last_rebuilt`), so a failure is
+/// retried on the next real residency change or crossing, never every frame
+/// (#5339).
 pub(crate) fn rebuild_lod_water_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,
     plane: &mut LodWaterPlane,
-    default_height: f32,
     game: esm::reader::GameKind,
     player_grid: (i32, i32),
-    radius_unload: i32,
+    is_resident: impl Fn((i32, i32)) -> bool,
 ) -> bool {
+    plane.center_grid = player_grid;
+    plane.last_rebuilt = Some(std::time::Instant::now());
     let reach = super::terrain_lod::lod_ring_reach_cells(game);
-    let hole_radius = distant_water_hole_radius(radius_unload);
     let geometry = build_distant_water_mesh(
         &plane.projection,
-        Some(default_height),
+        plane.default_height,
         player_grid,
-        hole_radius,
+        is_resident,
         reach,
     );
     let DistantWaterGeometry {
@@ -1232,14 +1229,20 @@ pub(crate) fn rebuild_lod_water_mesh(
             ctx.mesh_registry.drop_mesh(handle);
         }
         world.remove::<MeshHandle>(plane.entity);
-        plane.center_grid = player_grid;
+        // #5339 — `water.dump` must not keep reporting the last non-empty
+        // histogram for a mesh that no longer exists.
+        if let Some(mut lod) = world.query_mut::<WaterLodInfo>() {
+            if let Some(info) = lod.get_mut(plane.entity) {
+                info.quad_heights = [(0.0, 0); 8];
+                info.quad_height_count = 0;
+            }
+        }
         log::info!("LOD water mesh emptied: no wet distant cells @ grid {player_grid:?}");
         return false;
     }
     let quads: u32 = height_histogram.iter().map(|(_, n)| n).sum();
     log::info!(
-        "LOD water mesh rebuilt: {quads} quads, hole={hole_radius} cells, reach={reach} cells \
-         @ grid {player_grid:?}"
+        "LOD water mesh rebuilt: {quads} quads, reach={reach} cells @ grid {player_grid:?}"
     );
     let allocator = match ctx.allocator.as_ref() {
         Some(a) => a,
@@ -1291,7 +1294,6 @@ pub(crate) fn rebuild_lod_water_mesh(
             info.quad_height_count = count;
         }
     }
-    plane.center_grid = player_grid;
     true
 }
 
@@ -1758,6 +1760,42 @@ mod tests {
         );
     }
 
+    /// #5339 — a rebuild that fails (upload error) or empties the ring must
+    /// not leave the caller seeing "still not rebuilt for this grid" on every
+    /// following frame, and an emptied ring must zero the `water.dump`
+    /// histogram. Source-shape pin on the rebuild body: the attempt is
+    /// recorded before the first early `return`, and the empty arm clears
+    /// `quad_height_count`.
+    #[test]
+    fn failed_or_emptied_lod_water_rebuild_records_the_attempt_and_clears_the_histogram() {
+        let src = include_str!("water.rs");
+        let start = src
+            .find("pub(crate) fn rebuild_lod_water_mesh")
+            .expect("rebuild fn");
+        let end = src
+            .find("pub(crate) fn unload_lod_water_plane")
+            .expect("unload fn");
+        let body = strip_comments_and_strings(&src[start..end]);
+        let record = body
+            .find("plane.center_grid = player_grid;")
+            .expect("attempt recorded on the plane");
+        let first_return = body.find("return false").expect("an early return exists");
+        assert!(
+            record < first_return,
+            "the attempted grid must be recorded before any early return"
+        );
+        assert!(
+            body.contains("plane.last_rebuilt ="),
+            "the attempt time must be recorded for the rebuild throttle"
+        );
+        let empty_arm = &body[body.find("indices.is_empty()").expect("empty arm")..];
+        let empty_arm = &empty_arm[..empty_arm.find("return false").unwrap()];
+        assert!(
+            empty_arm.contains("quad_height_count = 0"),
+            "an emptied ring must zero the dump histogram"
+        );
+    }
+
     #[test]
     fn interior_water_placement_converts_horizontal_axes_and_adds_margin() {
         // Bethesda Z-up: source X is renderer X and source Y becomes
@@ -1928,16 +1966,65 @@ mod tests {
         }
     }
 
-    /// #5244 — the hole is the streaming boundary itself, no extra margin:
-    /// the loaded full-detail set covers ≤ `radius_unload`, the distant mesh
-    /// emits ≥ `radius_unload`+1, so the two are exactly contiguous. The
-    /// old +1 margin left a permanent one-cell waterless ring at every
-    /// boundary.
+    /// A radius-`r` resident disc, for tests that only care about the window.
+    fn disc(center: (i32, i32), r: i32) -> impl Fn((i32, i32)) -> bool {
+        move |g| (g.0 - center.0).abs().max((g.1 - center.1).abs()) <= r
+    }
+
+    /// #5334 — the hole is the actual resident set, not a radius. Streaming
+    /// requests cells only out to `radius_load` (3 here) and unloads only
+    /// beyond `radius_unload` (4), so at worldspace entry the ring at
+    /// `radius_load + 1` is NOT resident. A radius-`radius_unload` hole left
+    /// that ring with neither full-detail nor distant water; the set-based
+    /// hole must give every non-resident wet cell within reach a quad.
     #[test]
-    fn distant_water_hole_is_exactly_the_streaming_boundary() {
-        assert_eq!(distant_water_hole_radius(4), 4);
-        assert_eq!(distant_water_hole_radius(0), 0);
-        assert_eq!(distant_water_hole_radius(-3), 0, "degenerate configs clamp");
+    fn distant_water_covers_every_non_resident_wet_cell_up_to_reach() {
+        let radius_load = 3;
+        // Entry: exactly the (2·radius_load+1)² requested square is resident.
+        let resident = disc((0, 0), radius_load);
+        let mut cells = Vec::new();
+        for x in -6..=6 {
+            for y in -6..=6 {
+                cells.push(distant_cell((x, y), None, false));
+            }
+        }
+        let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), resident, 6);
+        let drawn: std::collections::BTreeSet<(i32, i32)> = geometry
+            .vertices
+            .chunks_exact(4)
+            .map(|quad| {
+                (
+                    (quad[0].position[0] / EXTERIOR_CELL_UNITS) as i32,
+                    (-quad[0].position[2] / EXTERIOR_CELL_UNITS) as i32,
+                )
+            })
+            .collect();
+        for cell in &cells {
+            let resident_here = disc((0, 0), radius_load)(cell.grid);
+            assert_eq!(
+                drawn.contains(&cell.grid),
+                !resident_here,
+                "cell {:?}: exactly the non-resident wet cells get a quad (the \
+                 radius_load+1 ring included)",
+                cell.grid
+            );
+        }
+        assert!(drawn.contains(&(4, 0)), "the radius_load + 1 ring is covered");
+    }
+
+    /// #5334 — a cell that is resident only as hysteresis (inside
+    /// `radius_unload`, requested by an earlier position) is holed; a cell
+    /// the same distance out that was never requested is not.
+    #[test]
+    fn distant_water_holes_only_actual_residency() {
+        let cells = [
+            distant_cell((4, 0), None, false), // trailing edge: hysteresis resident
+            distant_cell((-4, 0), None, false), // leading edge: never requested
+        ];
+        let resident = |g: (i32, i32)| g == (4, 0);
+        let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), resident, 8);
+        assert_eq!(geometry.indices.len(), 6, "one quad");
+        assert!(geometry.vertices.iter().all(|v| v.position[0] < 0.0));
     }
 
     /// The XCLW tri-state is the whole fix (#5243): an override cell's quad
@@ -1954,7 +2041,7 @@ mod tests {
             distant_cell((0, -6), None, false),       // inherit
             distant_cell((-6, 0), Some(42.0), false), // non-explicit value: inherits
         ];
-        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), 2, 8);
+        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), disc((0, 0), 2), 8);
         // Two heights: the 2600 override and the inherited -2300 (twice) —
         // the dry sentinel contributes nothing.
         assert_eq!(geometry.indices.len(), 3 * 6);
@@ -1985,13 +2072,13 @@ mod tests {
         assert!(!quad_cells.iter().any(|((col, _), _)| *col == 6));
 
         // No worldspace default → inherit cells are dry too.
-        let geometry = build_distant_water_mesh(&cells, None, (0, 0), 2, 8);
+        let geometry = build_distant_water_mesh(&cells, None, (0, 0), disc((0, 0), 2), 8);
         assert_eq!(geometry.indices.len(), 6, "the 2600 override only");
     }
 
-    /// The ring runs from just outside the streaming hole to the terrain-LOD
-    /// reach: the hole-radius cell itself is skipped (its full-detail plane
-    /// covers it) and so is everything beyond the reach.
+    /// The ring runs from the resident set's edge to the terrain-LOD reach:
+    /// a resident cell is skipped (its full-detail plane covers it) and so is
+    /// everything beyond the reach.
     #[test]
     fn distant_water_hole_and_reach_window() {
         let cells = [
@@ -2002,7 +2089,7 @@ mod tests {
             distant_cell((2, 2), None, false),   // Chebyshev == hole radius: skipped
             distant_cell((3, -3), None, false),  // Chebyshev hole+1: kept
         ];
-        let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), 2, 8);
+        let geometry = build_distant_water_mesh(&cells, Some(0.0), (0, 0), disc((0, 0), 2), 8);
         assert_eq!(geometry.indices.len(), 3 * 6);
         // Each quad's first vertex is its min corner, whose cell id divides
         // exactly.
@@ -2030,7 +2117,7 @@ mod tests {
         let mut visible = distant_cell((4, 0), None, false);
         visible.land_min = Some(-5000.0);
         let cells = [occluded, visible];
-        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), 2, 8);
+        let geometry = build_distant_water_mesh(&cells, Some(-2300.0), (0, 0), disc((0, 0), 2), 8);
         assert_eq!(geometry.indices.len(), 6, "only the visible quad");
         // All surviving vertices are on the +X axis.
         assert!(geometry.vertices.iter().all(|v| v.position[0] > 0.0));
@@ -2043,7 +2130,7 @@ mod tests {
     #[test]
     fn distant_water_positions_and_uvs_follow_the_conventions() {
         let cells = [distant_cell((1, -2), Some(-1234.5), true)];
-        let geometry = build_distant_water_mesh(&cells, None, (0, 0), 0, 8);
+        let geometry = build_distant_water_mesh(&cells, None, (0, 0), |_| false, 8);
         assert_eq!(geometry.vertices.len(), 4);
         assert_eq!(geometry.indices, [0, 1, 2, 1, 3, 2]);
         for v in &geometry.vertices {
@@ -2098,7 +2185,7 @@ mod tests {
             &distant_water_cells(cells),
             Some(-2300.0),
             player_grid,
-            4,
+            disc(player_grid, 4),
             reach,
         );
         assert!(

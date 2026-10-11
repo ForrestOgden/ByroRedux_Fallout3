@@ -136,7 +136,6 @@ impl App {
             {
                 ectx.grid = player_grid;
             }
-            state.recenter_lod_water(&mut self.world, ctx, player_grid);
             state.lod_reconcile_pending = true;
             state
                 .telemetry
@@ -268,6 +267,16 @@ impl App {
                 ctx.log_memory_usage();
             }
         }
+
+        // Distant water's hole is the resident set (#5334): follow residency
+        // changes and the crossing itself, coalesced inside the call. Before
+        // the LOD early return below, which idle frames take.
+        state.refresh_lod_water(
+            &mut self.world,
+            ctx,
+            player_grid,
+            state.loaded_residency_changed,
+        );
 
         // ── 3. Progress the three distant-LOD rings ─────────────────
         //
