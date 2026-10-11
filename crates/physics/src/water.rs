@@ -1280,6 +1280,7 @@ mod tests {
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         let position = Vec3::new(0.0, 2.0, 0.0);
@@ -1691,6 +1692,7 @@ mod tests {
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         world.insert(
@@ -2141,6 +2143,7 @@ mod tests {
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         world.insert(
@@ -2243,6 +2246,7 @@ mod tests {
                     linear_damping: 0.0,
                     angular_damping: 0.0,
                     collidable: true,
+                    surface_material: 0,
                 },
             );
             world.insert(
@@ -2266,6 +2270,7 @@ mod tests {
                     linear_damping: 0.0,
                     angular_damping: 0.0,
                     collidable: true,
+                    surface_material: 0,
                 },
             );
             world.insert(
@@ -2375,6 +2380,7 @@ mod tests {
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         world.insert(
@@ -2398,6 +2404,7 @@ mod tests {
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         world.insert(

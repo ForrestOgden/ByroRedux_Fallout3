@@ -1175,6 +1175,7 @@ fn spawn_player_body(
                 linear_damping: 0.0,
                 angular_damping: 0.0,
                 collidable: true,
+                surface_material: 0,
             },
         );
         // #1846 / SAVE-03 — attach a FormIdComponent built from the

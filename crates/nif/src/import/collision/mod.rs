@@ -449,6 +449,11 @@ fn extract_from_classic(
         linear_damping: body.linear_damping,
         angular_damping: body.angular_damping,
         collidable,
+        // Body-level reduction of the shape tree's authored Havok material
+        // (see `first_shape_material`) — the surface-aware footsteps /
+        // impacts consumer reads "what kind of ground this body is".
+        surface_material: shape::first_shape_material(scene, body.shape_ref, &mut visited)
+            as u8,
     };
 
     Some((shape, body_data))

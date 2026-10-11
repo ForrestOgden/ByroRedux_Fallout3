@@ -271,7 +271,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// so a restored quest's `FromEvent` aliases re-fill after a load. A pre-v35
 /// save carries no record of those events, so its restored SM quests would
 /// silently keep unbound aliases; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 35;
+///
+/// v35 -> v36 (Wave 4, dependency-followups plan): `RigidBodyData` gained
+/// the required `surface_material` byte — the body-level reduction of the
+/// collision authoring's Havok material, carried through the NIF import
+/// for the surface-aware footstep consumer (`surface_material_under`).
+/// A registered column with no `serde(default)`: a pre-v36 save has no
+/// key to read and is rejected, per the blanket rule.
+pub const FORMAT_MAJOR: u16 = 36;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

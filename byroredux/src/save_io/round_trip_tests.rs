@@ -651,6 +651,7 @@ fn rigid_body_data_survives_save_load_round_trip() {
             linear_damping: 0.1,
             angular_damping: 0.05,
             collidable: true,
+            surface_material: 0,
         },
     );
 

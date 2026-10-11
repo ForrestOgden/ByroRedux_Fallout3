@@ -3163,6 +3163,38 @@ mod tests {
         }
     }
 
+    /// The Wave-4 surface-material query: the authored Havok material
+    /// rides the collider's user-data at registration
+    /// (`sync.rs` packs `RigidBodyData::surface_material` the same way),
+    /// and a downward ray from above the floor reads it back. `None`
+    /// when nothing solid is in range — the footstep consumer falls back
+    /// to its default sound there.
+    #[test]
+    fn surface_material_under_reads_the_hit_colliders_material() {
+        let mut w = PhysicsWorld::new();
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .user_data(7u128)
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        assert_eq!(
+            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 64.0),
+            Some(7),
+            "the ray reads the hit collider's material"
+        );
+        assert_eq!(
+            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 5.0),
+            None,
+            "nothing solid within range reads as None"
+        );
+    }
+
     /// Test helper: a 100×40×4 BU wall at `pos`, optionally a sensor.
     /// Mirrors what `register_newcomers` builds for a Havok layer-15
     /// (`*_NONCOLLIDABLE`) body since #2549.

@@ -209,6 +209,27 @@ impl PhysicsWorld {
             .map(|(_handle, toi)| origin.y - toi)
     }
 
+    /// Surface material of the solid ground below `origin`, read from the
+    /// hit collider's Havok material byte (packed into its user-data at
+    /// registration — see [`RigidBodyData::surface_material`]). Same
+    /// fixed/non-sensor filter and query-pipeline refresh contract as
+    /// [`Self::cast_ray_down`]. `None` when nothing solid is in range;
+    /// the consumer falls back to its default sound. The Wave-4
+    /// surface-aware footstep consumer calls this at footstep cadence
+    /// (~2–4 Hz per walker), never per frame.
+    pub fn surface_material_under(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        max_distance: f32,
+    ) -> Option<u8> {
+        use rapier3d::prelude::*;
+        let ray = Ray::new(origin, Vector::NEG_Y);
+        let (collider, _toi) = self
+            .queries(solid_probe_filter())
+            .cast_ray(&ray, max_distance, /* solid = */ true)?;
+        Some(self.colliders.get(collider)?.user_data as u8)
+    }
+
     /// Cast a normalized gameplay ray against solid colliders.
     ///
     /// Sensors are excluded because trigger volumes do not obstruct sight.

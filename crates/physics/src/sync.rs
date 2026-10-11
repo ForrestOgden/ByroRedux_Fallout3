@@ -1131,6 +1131,11 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 .restitution(n.body_data.restitution)
                 .friction_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
                 .restitution_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
+                // The authored Havok surface material rides the collider
+                // (user-data dies with it) for the surface-aware footstep
+                // query — `surface_material_under`. Rapier's user-data is
+                // u128; the material keeps the low byte.
+                .user_data(u128::from(n.body_data.surface_material))
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .collision_groups(groups)
@@ -1463,6 +1468,7 @@ mod phase_sync_tests {
             entity,
             RigidBodyData {
                 collidable: false,
+                surface_material: 0,
                 ..RigidBodyData::STATIC
             },
         );

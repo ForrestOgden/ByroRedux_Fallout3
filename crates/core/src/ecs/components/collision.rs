@@ -115,6 +115,15 @@ pub struct RigidBodyData {
     /// water planes, the player's own kinematic capsule, …), none of
     /// which carry Havok layer authoring at all. #2549.
     pub collidable: bool,
+    /// The Havok surface material the collision authoring carries, as the
+    /// per-game material enum's numeric value (Oblivion/Fallout3/Skyrim
+    /// HavokMaterial — nif.xml's per-game `bhkMaterial` wrappers; they
+    /// share the STONE-is-0 start and fit a byte). Body-level reduction of
+    /// the shape tree's first non-zero material; gameplay consumers are
+    /// surface-aware footsteps and impacts, which need "what kind of
+    /// ground is this", not the per-triangle split. `0` = STONE, and the
+    /// default for every non-NIF-derived body.
+    pub surface_material: u8,
 }
 
 impl RigidBodyData {
@@ -127,6 +136,7 @@ impl RigidBodyData {
         linear_damping: 0.0,
         angular_damping: 0.0,
         collidable: true,
+        surface_material: 0,
     };
 }
 

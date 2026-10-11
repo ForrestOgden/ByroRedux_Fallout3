@@ -72,6 +72,129 @@ pub(super) fn resolve_shape(
     result
 }
 
+/// First non-zero Havok surface material in the bhk shape tree, following
+/// the same container dispatch `resolve_shape` does (a shape's own
+/// `HavokMaterial` u32 wins; containers recurse into their children).
+/// This is the body-level reduction the surface-material consumer wants
+/// — "what kind of ground is this body" — not the per-triangle split a
+/// trimesh's per-subshape materials could give; that mapping is the
+/// Wave-4 plan's next step and stays unresolved here. Same cycle guard
+/// (`visited`) and depth accounting as `resolve_shape`, since both walks
+/// traverse the identical tree. Returns 0 (STONE in every game's
+/// HavokMaterial enum) when the tree carries no authored material.
+pub(super) fn first_shape_material(
+    scene: &NifScene,
+    shape_ref: BlockRef,
+    visited: &mut HashSet<usize>,
+) -> u32 {
+    let Some(idx) = shape_ref.index() else {
+        return 0;
+    };
+    if !visited.insert(idx) {
+        return 0;
+    }
+    if visited.len() > MAX_COLLISION_SHAPE_DEPTH {
+        visited.remove(&idx);
+        return 0;
+    }
+    let material = first_shape_material_inner(scene, idx, visited);
+    visited.remove(&idx);
+    material
+}
+
+fn first_shape_material_inner(scene: &NifScene, idx: usize, visited: &mut HashSet<usize>) -> u32 {
+    let Some(block) = scene.get(idx) else {
+        return 0;
+    };
+
+    // Leaf shapes that carry their own material.
+    macro_rules! leaf_material {
+        ($ty:ty) => {
+            if let Some(s) = block.as_any().downcast_ref::<$ty>() {
+                return s.material;
+            }
+        };
+    }
+    leaf_material!(BhkSphereShape);
+    leaf_material!(BhkMultiSphereShape);
+    leaf_material!(BhkBoxShape);
+    leaf_material!(BhkCapsuleShape);
+    leaf_material!(BhkCylinderShape);
+    leaf_material!(BhkConvexVerticesShape);
+    leaf_material!(BhkNiTriStripsShape);
+    // Packed tri strips carry materials per sub-part on the shape itself.
+    if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
+        return s
+            .sub_shapes
+            .iter()
+            .find(|part| part.material != 0)
+            .map(|part| part.material)
+            .unwrap_or(0);
+    }
+
+    // Containers: the shape's own material wins when authored, else the
+    // children answer — the same precedence Havok's contact resolution
+    // walks the shape tree with.
+    if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
+        if s.material != 0 {
+            return s.material;
+        }
+        for sub_ref in &s.sub_shape_refs {
+            let material = first_shape_material(scene, *sub_ref, visited);
+            if material != 0 {
+                return material;
+            }
+        }
+        return 0;
+    }
+    if let Some(s) = block.as_any().downcast_ref::<BhkConvexListShape>() {
+        if s.material != 0 {
+            return s.material;
+        }
+        for sub_ref in &s.sub_shapes {
+            let material = first_shape_material(scene, *sub_ref, visited);
+            if material != 0 {
+                return material;
+            }
+        }
+        return 0;
+    }
+    if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
+        if s.material != 0 {
+            return s.material;
+        }
+        return first_shape_material(scene, s.shape_ref, visited);
+    }
+    if let Some(s) = block.as_any().downcast_ref::<BhkConvexSweepShape>() {
+        if s.material != 0 {
+            return s.material;
+        }
+        return first_shape_material(scene, s.shape_ref, visited);
+    }
+    // MOPP wraps another shape (no material of its own on the bv-tree).
+    if let Some(s) = block.as_any().downcast_ref::<BhkMoppBvTreeShape>() {
+        return first_shape_material(scene, s.shape_ref, visited);
+    }
+    // Compressed mesh (Skyrim+): materials are per chunk in the data
+    // block's chunk_materials pairs — the first non-zero entry is the
+    // body-level reduction.
+    if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
+        let Some(data_idx) = s.data_ref.index() else {
+            return 0;
+        };
+        if let Some(data) = scene.get_as::<BhkCompressedMeshShapeData>(data_idx) {
+            return data
+                .chunk_materials
+                .iter()
+                .find(|pair| pair[0] != 0)
+                .map(|pair| pair[0])
+                .unwrap_or(0);
+        }
+        return 0;
+    }
+    0
+}
+
 /// Inner body of `resolve_shape`. Extracted so the outer function can
 /// own the `visited` insert/remove bookkeeping at a single entry/exit
 /// point regardless of which match arm returns.
@@ -825,6 +948,58 @@ mod cycle_tests {
             material: 0,
             radius,
         })
+    }
+
+    #[test]
+    fn first_shape_material_prefers_the_container_then_the_first_authored_child() {
+        // Scene:
+        //   [0] BhkListShape { material 0, children [1, 2] }
+        //   [1] BhkSphereShape { material 0 }  (STONE default — not authored)
+        //   [2] BhkSphereShape { material 3 }
+        // The first AUTHORED material in the walk answers: the container's
+        // own material when non-zero, else the first non-zero child. This
+        // is the body-level reduction RigidBodyData::surface_material
+        // carries to the surface-aware footstep consumer.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene
+            .blocks
+            .push(list_shape(vec![BlockRef(1u32), BlockRef(2u32)]));
+        scene.blocks.push(sphere_shape(0.5));
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 3,
+            radius: 0.5,
+        }));
+        let mut visited = HashSet::new();
+        assert_eq!(
+            first_shape_material(&scene, BlockRef(0u32), &mut visited),
+            3,
+            "the first non-zero child material answers when the container is unauthored"
+        );
+
+        // A container-authored material wins over its children's.
+        scene.blocks[0] = Box::new(BhkListShape {
+            sub_shape_refs: vec![BlockRef(1u32), BlockRef(2u32)],
+            material: 7,
+            filters: Vec::new(),
+        });
+        let mut visited = HashSet::new();
+        assert_eq!(
+            first_shape_material(&scene, BlockRef(0u32), &mut visited),
+            7,
+            "the container's own material wins when authored"
+        );
+
+        // A tree with nothing authored stays STONE (0) — the same value
+        // every non-NIF-derived body defaults to.
+        scene.blocks[0] = list_shape(vec![BlockRef(1u32)]);
+        scene.blocks[2] = sphere_shape(0.5);
+        let mut visited = HashSet::new();
+        assert_eq!(
+            first_shape_material(&scene, BlockRef(0u32), &mut visited),
+            0,
+            "an unauthored tree reduces to STONE"
+        );
     }
 
     #[test]

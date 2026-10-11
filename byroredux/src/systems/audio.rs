@@ -255,6 +255,22 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     let triggers = std::mem::take(&mut scratch.triggers);
     drop(scratch);
 
+    // Wave-4 surface-aware footsteps: resolve each trigger's ground
+    // material while the only guard held is a PhysicsWorld read (one
+    // resource lock at a time — same discipline as the scratch note
+    // above). A trigger with no solid ground in range (airborne edge,
+    // streaming gap) reads `None` and takes the default sound. At
+    // footstep cadence this is a handful of ray casts per tick.
+    let surface_materials: Vec<Option<u8>> =
+        if let Some(pw) = world.try_resource::<byroredux_physics::PhysicsWorld>() {
+            triggers
+                .iter()
+                .map(|pos| pw.surface_material_under(*pos, 128.0))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         // Audio gone — restore the scratch buffer for next frame
         // (preserves the heap allocation) and bail. Re-acquiring the
@@ -265,9 +281,15 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
         }
         return;
     };
-    for pos in &triggers {
+    for (pos, surface) in triggers.iter().zip(surface_materials) {
+        // Per-surface sound when one is authored for the material the
+        // walker stands on; the default otherwise. The map is empty
+        // until IPDS decoding lands, so every surface currently takes
+        // the default — the selection itself is pinned by
+        // `footstep_selects_the_surface_sound_when_authored`.
+        let sound = select_footstep_sound(world, surface, &sound);
         audio_world.play_oneshot(
-            std::sync::Arc::clone(&sound),
+            sound,
             *pos,
             byroredux_audio::Attenuation {
                 // Tighter attenuation than the default — footsteps
@@ -286,6 +308,24 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     if let Some(mut scratch) = world.try_resource_mut::<FootstepScratch>() {
         scratch.triggers = triggers;
     }
+}
+
+/// The sound one footstep plays: the authored per-surface entry for the
+/// material under the walker when [`FootstepConfig`] carries one, else
+/// the default. `surface` is `None` when no solid ground was in probe
+/// range (airborne edge, streaming gap) — the default plays there too.
+fn select_footstep_sound(
+    world: &World,
+    surface: Option<u8>,
+    default: &std::sync::Arc<byroredux_audio::Sound>,
+) -> std::sync::Arc<byroredux_audio::Sound> {
+    surface
+        .and_then(|material| {
+            world
+                .try_resource::<crate::components::FootstepConfig>()
+                .and_then(|config| config.surface_sounds.get(&material).cloned())
+        })
+        .unwrap_or_else(|| std::sync::Arc::clone(default))
 }
 
 /// Dispatch one-shot water sounds emitted by the water interaction system.
@@ -451,12 +491,58 @@ mod footstep_tests {
         world.insert_resource(FootstepConfig {
             default_sound: Some(Arc::clone(&sound)),
             volume,
+            surface_sounds: std::collections::BTreeMap::new(),
         });
         // Test stride/event logic without opening the host's audio device.
         // Headless playback is discarded; FootstepScratch records triggers.
         world.insert_resource(byroredux_audio::AudioWorld::headless());
         world.insert_resource(FootstepScratch::default());
         (world, sound)
+    }
+
+    /// The Wave-4 surface selection: an authored per-material entry wins,
+    /// and an unauthored material — or no ground in probe range — falls
+    /// back to the default sound. Pointer identity distinguishes the two
+    /// sounds; the map ships empty in production until IPDS decoding
+    /// lands, so every surface currently takes the default.
+    #[test]
+    fn footstep_selects_the_surface_sound_when_authored() {
+        let (mut world, default) = synth_world(0.5);
+        let surface = Arc::new(Sound {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![Frame {
+                    left: 0.0,
+                    right: 0.0
+                }]
+                .into_boxed_slice(),
+            ),
+            settings: SoundSettings::default(),
+            slice: None,
+        });
+        world
+            .resource_mut::<FootstepConfig>()
+            .surface_sounds
+            .insert(3, Arc::clone(&surface));
+
+        assert!(
+            Arc::ptr_eq(
+                &select_footstep_sound(&world, Some(3), &default),
+                &surface
+            ),
+            "the authored per-material entry must win"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &select_footstep_sound(&world, Some(9), &default),
+                &default
+            ),
+            "an unauthored material falls back to the default"
+        );
+        assert!(
+            Arc::ptr_eq(&select_footstep_sound(&world, None, &default), &default),
+            "no ground in probe range falls back to the default"
+        );
     }
 
     /// First tick on a fresh `FootstepEmitter` must seed

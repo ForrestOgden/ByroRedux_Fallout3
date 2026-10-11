@@ -1812,9 +1812,11 @@ impl FootstepEmitter {
 }
 
 /// Resource — engine-wide footstep configuration. Today carries one
-/// hardcoded sound (loaded at startup from a vanilla BSA when
-/// available). Phase 3.5b replaces the single sound with a per-
-/// material lookup (FOOT records).
+/// hardcoded default sound (loaded at startup from a vanilla BSA when
+/// available) plus the per-surface map the Wave-4 material carry-through
+/// feeds; the map stays empty until authored impact data (IPDS) is
+/// decoded into a material→sound mapping, and an absent entry falls back
+/// to the default sound — exactly the pre-Wave-4 behavior.
 pub(crate) struct FootstepConfig {
     /// Default footstep sound. `None` when the BSA-load failed
     /// (no archive on disk, decode error, audio inactive).
@@ -1823,6 +1825,10 @@ pub(crate) struct FootstepConfig {
     /// footsteps mixed below dialogue / weapons / music; tweak per
     /// gameplay feel.
     pub(crate) volume: f32,
+    /// Footstep sound per Havok surface material
+    /// (`RigidBodyData::surface_material` — the per-game HavokMaterial
+    /// enum's byte, read from the collider the walker stands on).
+    pub(crate) surface_sounds: std::collections::BTreeMap<u8, Arc<Sound>>,
 }
 
 impl Resource for FootstepConfig {}
@@ -1832,6 +1838,7 @@ impl Default for FootstepConfig {
         Self {
             default_sound: None,
             volume: 0.6,
+            surface_sounds: std::collections::BTreeMap::new(),
         }
     }
 }
