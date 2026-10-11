@@ -1097,6 +1097,39 @@ mod tests {
         );
     }
 
+    /// #5552 — the ragdoll bone builder is the second collider producer the
+    /// Havok-parity combine rule must reach (`config.rs` claims both apply it
+    /// "so they cannot drift apart"). A bone pair that loses it takes rapier's
+    /// `Average` against another unruled collider, and rapier resolves a
+    /// mismatched pair by priority, so a single producer dropping the rule is
+    /// invisible to any test that hand-builds its colliders.
+    #[test]
+    fn every_ragdoll_collider_carries_the_havok_contact_combine_rule() {
+        use rapier3d::prelude::CoefficientCombineRule::GeometricMean;
+
+        let mut pw = PhysicsWorld::new();
+        let spec = RagdollSpec {
+            bodies: vec![ball_body(42, 0.0, 1000.0), ball_body(43, 50.0, 1000.0)],
+            constraints: vec![loose_ragdoll(0, 1)],
+        };
+        let rag = build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        assert_eq!(rag.bodies.len(), 2);
+        let colliders: Vec<_> = pw.colliders.iter().collect();
+        assert!(colliders.len() >= 2, "one collider per bone at least");
+        for (handle, collider) in colliders {
+            assert_eq!(
+                collider.friction_combine_rule(),
+                GeometricMean,
+                "ragdoll collider {handle:?} lost the friction combine rule"
+            );
+            assert_eq!(
+                collider.restitution_combine_rule(),
+                GeometricMean,
+                "ragdoll collider {handle:?} lost the restitution combine rule"
+            );
+        }
+    }
+
     /// #5161 — every built ragdoll body carries a default evidence-log
     /// label naming its bone entity, and `remove_body` (via
     /// `remove_ragdoll`) drops it again so the map cannot accumulate one

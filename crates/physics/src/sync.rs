@@ -1662,6 +1662,79 @@ mod phase_sync_tests {
         );
     }
 
+    /// #5552 — the Havok-parity contact combine rule is a property of EVERY
+    /// collider `register_newcomers` builds, and it is what makes the rule
+    /// effective at all: `GeometricMean` wins rapier's combine-rule priority,
+    /// so losing it at this producer reverts every clutter-on-architecture and
+    /// clutter-on-terrain pair to `Average` (a restitution-0 body rebounds at
+    /// 0.4 off a 0.8 floor) while `restitution_zero_body_does_not_bounce_on_
+    /// restitution_floor`, which builds its colliders by hand, stays green.
+    /// Registers one body of each motion type, a multi-part compound and a
+    /// trimesh through the production path and checks every inserted collider.
+    #[test]
+    fn every_registered_collider_carries_the_havok_contact_combine_rule() {
+        use rapier3d::prelude::CoefficientCombineRule::GeometricMean;
+
+        let mut world = physics_world();
+        let compound = CollisionShape::Compound {
+            children: vec![
+                (Vec3::ZERO, Quat::IDENTITY, Box::new(CollisionShape::Ball { radius: 1.0 })),
+                (Vec3::new(5.0, 0.0, 0.0), Quat::IDENTITY, Box::new(unit_box())),
+            ],
+        };
+        let trimesh = CollisionShape::TriMesh {
+            vertices: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(10.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+            ],
+            indices: vec![[0, 1, 2], [1, 3, 2]],
+        };
+        let cases = [
+            (MotionType::Static, unit_box()),
+            (MotionType::Dynamic, compound),
+            (MotionType::Keyframed, unit_box()),
+            (MotionType::Static, trimesh),
+        ];
+        for (i, (motion_type, shape)) in cases.into_iter().enumerate() {
+            let pos = Vec3::new(i as f32 * 100.0, 0.0, 0.0);
+            let e = world.spawn();
+            world.insert(e, Transform::new(pos, Quat::IDENTITY, 1.0));
+            world.insert(e, GlobalTransform::new(pos, Quat::IDENTITY, 1.0));
+            world.insert(e, shape);
+            world.insert(
+                e,
+                RigidBodyData {
+                    motion_type,
+                    mass: if motion_type == MotionType::Dynamic { 5.0 } else { 0.0 },
+                    ..RigidBodyData::static_body()
+                },
+            );
+        }
+        assert_eq!(register_newcomers_and_refresh_queries(&world), 4);
+
+        let physics = world.resource::<PhysicsWorld>();
+        let colliders: Vec<_> = physics.colliders.iter().collect();
+        assert!(
+            colliders.len() >= 5,
+            "the compound contributes two parts: got {} colliders",
+            colliders.len()
+        );
+        for (handle, collider) in colliders {
+            assert_eq!(
+                collider.friction_combine_rule(),
+                GeometricMean,
+                "collider {handle:?} lost the friction combine rule"
+            );
+            assert_eq!(
+                collider.restitution_combine_rule(),
+                GeometricMean,
+                "collider {handle:?} lost the restitution combine rule"
+            );
+        }
+    }
+
         fn unit_box() -> CollisionShape {
         CollisionShape::Cuboid {
             half_extents: Vec3::splat(1.0),

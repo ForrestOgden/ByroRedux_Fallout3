@@ -70,9 +70,13 @@ impl Default for TriMeshFlagBits {
 /// Applied at both collider producers — `sync.rs::register_newcomers`
 /// (every streamed or imported collider, including the synthesized terrain
 /// and architecture trimeshes) and the ragdoll bone builders in
-/// `ragdoll.rs` — so they cannot drift apart. Pinned by
+/// `ragdoll.rs` — so they cannot drift apart. The rule's effect is pinned by
 /// `restitution_zero_body_does_not_bounce_on_restitution_floor` in
-/// `world/mod.rs`.
+/// `world/mod.rs`; that each producer actually applies it is pinned by
+/// `every_registered_collider_carries_the_havok_contact_combine_rule`
+/// (`sync.rs`) and `every_ragdoll_collider_carries_the_havok_contact_combine_rule`
+/// (`ragdoll.rs`), which read the rule back off the colliders the production
+/// paths insert (#5552).
 pub const CONTACT_COEFFICIENT_COMBINE_RULE: CoefficientCombineRule =
     CoefficientCombineRule::GeometricMean;
 
