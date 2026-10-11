@@ -330,10 +330,16 @@ pub fn sample_color_keys_bspline_point3(
     for i in 0..window.n_samples {
         let (t, u) = window.sample(i, u_max);
         let p = deboor_cubic(&cps, n_cp, 3, u);
-        keys.push(AnimColorKey {
-            time: t,
-            value: [p[0], p[1], p[2]],
-        });
+        // #5576 — same belt-and-braces as the float / transform samplers
+        // (#3765): `channel_slice` rejects a non-finite offset/half_range,
+        // but a huge finite pair can still overflow through the blending.
+        // Skip the sample; the sampler interpolates across the gap.
+        if p.iter().all(|v| is_key_value_sane(*v)) {
+            keys.push(AnimColorKey {
+                time: t,
+                value: [p[0], p[1], p[2]],
+            });
+        }
     }
     keys
 }

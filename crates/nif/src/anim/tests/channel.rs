@@ -875,6 +875,61 @@ fn resolve_color_keys_at_samples_bspline_comp_point3() {
     }
 }
 
+/// #5576 — a finite-but-huge quantisation pair can overflow to inf
+/// through the de Boor blending. The Point3 sampler must skip such a
+/// sample like the float / transform samplers (#3765), never push a
+/// non-finite or FLT_MAX-sentinel colour into an `AnimColorKey`.
+#[test]
+fn bspline_point3_color_sampler_skips_overflowed_samples() {
+    use crate::blocks::interpolator::{
+        NiBSplineBasisData, NiBSplineCompPoint3Interpolator, NiBSplineData,
+    };
+    use crate::types::BlockRef;
+
+    // Fixture sanity: this offset/half_range overflows on dequant.
+    assert!(is_key_value_sane(1.0e38) && is_key_value_sane(2.9e38));
+    assert!(!dequant(32767, 1.0e38, 2.9e38).is_finite());
+
+    let mut cps: Vec<i16> = Vec::with_capacity(12);
+    cps.extend([0, 0, 0]);
+    cps.extend([32767, 32767, 32767]);
+    cps.extend([-32767, -32767, -32767]);
+    cps.extend([0, 0, 0]);
+    let scene = NifScene {
+        blocks: vec![
+            Box::new(NiBSplineData {
+                float_control_points: Vec::new(),
+                compact_control_points: cps,
+            }),
+            Box::new(NiBSplineBasisData {
+                num_control_points: 4,
+            }),
+        ],
+        ..NifScene::default()
+    };
+    let interp = NiBSplineCompPoint3Interpolator {
+        start_time: 0.0,
+        stop_time: 1.0,
+        spline_data_ref: BlockRef(0),
+        basis_data_ref: BlockRef(1),
+        value: [0.0, 0.0, 0.0],
+        handle: 0,
+        position_offset: 1.0e38,
+        position_half_range: 2.9e38,
+    };
+
+    let keys = sample_color_keys_bspline_point3(
+        &scene,
+        &interp,
+        &mut super::super::bspline::BsplineSampling::new(),
+    );
+    for k in &keys {
+        for &c in &k.value {
+            assert!(is_key_value_sane(c), "poisoned colour key reached the clip: {c}");
+        }
+    }
+}
+
 /// Regression: #983. A `NiPointLight` with all four `NiLight*Controller`
 /// types chained off its `controller_ref` must surface as an
 /// `AnimationClip` carrying:
