@@ -985,6 +985,7 @@ mod tests {
                 .map(|&form_id| SmQuestLink {
                     form_id,
                     reset_hours: 0.0,
+                    ..Default::default()
                 })
                 .collect(),
             policies,
@@ -1171,7 +1172,7 @@ mod tests {
             // must continue past the declined node onto it.
             previous_sibling: 0,
             kind: SmNodeKind::Quest,
-            quests: vec![SmQuestLink { form_id: 0x666, reset_hours: 0.0 }],
+            quests: vec![SmQuestLink { form_id: 0x666, reset_hours: 0.0, ..Default::default() }],
             conditions: vec![Condition {
                 function_index: 145, // uncatalogued — the vacuous shape
                 comparator: ComparisonOp::Eq,
@@ -1226,7 +1227,7 @@ mod tests {
                 parent: 10,
                 previous_sibling: 0,
                 kind: SmNodeKind::Quest,
-                quests: vec![SmQuestLink { form_id: 0x888, reset_hours: 0.0 }],
+                quests: vec![SmQuestLink { form_id: 0x888, reset_hours: 0.0, ..Default::default() }],
                 conditions: vec![Condition {
                     function_index: 56, // GetQuestRunning
                     comparator: ComparisonOp::Eq,
@@ -1363,7 +1364,7 @@ fn event_data_killer_condition_gates_the_start() {
         parent: 10,
         previous_sibling: 0,
         kind: SmNodeKind::Quest,
-        quests: vec![SmQuestLink { form_id: 0x555, reset_hours: 0.0 }],
+        quests: vec![SmQuestLink { form_id: 0x555, reset_hours: 0.0, ..Default::default() }],
         conditions: vec![Condition {
             function_index: 72, // GetIsID
             comparator: ComparisonOp::Eq,
@@ -1516,7 +1517,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         parent: 10,
         previous_sibling: 0,
         kind: SmNodeKind::Quest,
-        quests: vec![SmQuestLink { form_id: 0x556, reset_hours: 0.0 }],
+        quests: vec![SmQuestLink { form_id: 0x556, reset_hours: 0.0, ..Default::default() }],
         conditions: vec![Condition {
             function_index: 72, // GetIsID
             comparator: ComparisonOp::Eq,
@@ -1916,10 +1917,12 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                 SmQuestLink {
                     form_id: 0x111,
                     reset_hours: 48.0,
+                    ..Default::default()
                 },
                 SmQuestLink {
                     form_id: 0x222,
                     reset_hours: 0.0,
+                    ..Default::default()
                 },
             ],
             policies: SmNodePolicies {

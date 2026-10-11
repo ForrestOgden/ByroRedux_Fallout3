@@ -73,12 +73,21 @@ pub enum SmNodeKind {
 /// 48 h, and `MQ304SovngardeScenes`'s raw 2.4/4.8 are the 0.1/0.2 h
 /// ambient-scene windows. It follows its `NNAM` in the subrecord
 /// stream. `0.0` = no reset check authored (the scale keeps it 0).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct SmQuestLink {
     pub form_id: u32,
     /// `RNAM` game-hours reset window; `0.0` when no `RNAM` follows the
     /// `NNAM` (the ignored-by-contract default).
     pub reset_hours: f32,
+    /// `FNAM` — **24 Hours Till Reset** bool (#5420, xEdit
+    /// `TES5.pas:7089-7094`: nested per quest, next to `NNAM`/`RNAM`).
+    /// TES5 only; raw u32, no runtime consumer yet. #5515 moved it off
+    /// the node — a node-level field made each later quest's value
+    /// overwrite the earlier ones'.
+    pub fnam: Option<u32>,
+    /// `UNAM` — **Priority** (#5420, xEdit `FO76.pas:11029-11035`:
+    /// nested per quest). FO76 only; raw u32, no runtime consumer.
+    pub unam: Option<u32>,
 }
 
 /// `DNAM` node-policy bits, decoded (#5366 Phase 3 census, 2026-10-07).
@@ -194,13 +203,6 @@ pub struct SmNodeRecord {
     /// Starfield `SMQN`s — a redundant authoring of the pool size, not
     /// a priority/repeat knob.
     pub qnam: Option<u32>,
-    /// `FNAM` — **24 Hours Till Reset** (#5420, xEdit `TES5.pas` SMQN
-    /// bool). TES5 only (5 vanilla `SMQN`s), raw u32; no runtime
-    /// consumer yet.
-    pub fnam: Option<u32>,
-    /// `UNAM` — **Priority** (#5420, xEdit FO76 SMQN, per quest). FO76
-    /// only; raw u32, no runtime consumer.
-    pub unam: Option<u32>,
     /// Unrecognized / pending-decode tail subrecords (FO4+ `HNAM`,
     /// `RNAM`, Starfield `MNAM`, …), preserved verbatim for the
     /// #5366 Phase-4 dialect pass.
@@ -243,6 +245,8 @@ pub fn parse_sm_node(
                     node.quests.push(SmQuestLink {
                         form_id: quest,
                         reset_hours: 0.0,
+                        fnam: None,
+                        unam: None,
                     });
                 }
             }
@@ -283,14 +287,30 @@ pub fn parse_sm_node(
             b"MNAM" if sub.data.len() >= 4 => {
                 node.mnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
             }
-            // #5420 — TES5's '24 Hours Till Reset' bool (5 vanilla SMQNs)
-            // and FO76's per-quest 'Priority'. Raw u32s, 4-byte payloads;
-            // shorter tails ride in extras like every other arm here.
+            // #5420 / #5515 — TES5's per-quest '24 Hours Till Reset' bool
+            // and FO76's per-quest 'Priority', nested inside the quest
+            // pool like RNAM (xEdit nests both in the per-quest struct,
+            // next to NNAM/RNAM). Filled on the most recent NNAM; a stray
+            // with no preceding link is malformed authoring — skip loudly.
+            // Raw u32s, 4-byte payloads; shorter tails ride in extras like
+            // every other arm here.
             b"FNAM" if sub.data.len() >= 4 => {
-                node.fnam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+                let value = u32::from_le_bytes(sub.data[..4].try_into().unwrap());
+                match node.quests.last_mut() {
+                    Some(link) => link.fnam = Some(value),
+                    None => log::warn!(
+                        "#5515: FNAM 24-hours-till-reset {value} with no preceding NNAM — dropped"
+                    ),
+                }
             }
             b"UNAM" if sub.data.len() >= 4 => {
-                node.unam = Some(u32::from_le_bytes(sub.data[..4].try_into().unwrap()));
+                let value = u32::from_le_bytes(sub.data[..4].try_into().unwrap());
+                match node.quests.last_mut() {
+                    Some(link) => link.unam = Some(value),
+                    None => log::warn!(
+                        "#5515: UNAM priority {value} with no preceding NNAM — dropped"
+                    ),
+                }
             }
             // CITC is the CTDA count; CTDA presence is authoritative, so
             // the counter itself is read past.
@@ -358,7 +378,8 @@ mod tests {
             node.quests,
             vec![SmQuestLink {
                 form_id: 0x000F_0A10,
-                reset_hours: 0.0
+                reset_hours: 0.0,
+                ..Default::default()
             }]
         );
         assert_eq!(node.conditions.len(), 1);
@@ -463,10 +484,44 @@ mod tests {
             vec![
                 // #5386 — stored × 24 (xEdit scale 1/24): raw 2.4/4.8 are
                 // the 0.1/0.2 h Sovngarde ambient-scene windows.
-                SmQuestLink { form_id: 0x000E_DF6A, reset_hours: 0.1 },
-                SmQuestLink { form_id: 0x000F_1A41, reset_hours: 0.2 },
-                SmQuestLink { form_id: 0x000F_1A44, reset_hours: 0.0 },
+                SmQuestLink { form_id: 0x000E_DF6A, reset_hours: 0.1, ..Default::default() },
+                SmQuestLink { form_id: 0x000F_1A41, reset_hours: 0.2, ..Default::default() },
+                SmQuestLink { form_id: 0x000F_1A44, reset_hours: 0.0, ..Default::default() },
             ]
+        );
+    }
+
+    /// #5515 — `FNAM` (TES5 '24 Hours Till Reset') and `UNAM` (FO76
+    /// 'Priority') are per-quest fields nested in the quest pool (xEdit
+    /// nests both inside the per-quest struct, next to `NNAM`/`RNAM`).
+    /// They pair with the most recent `NNAM`, so two quests carrying
+    /// different values keep their own — the node-level decode
+    /// overwrote the earlier quest's with the later one's.
+    #[test]
+    fn fnam_unam_pair_per_quest_not_node_level() {
+        let subs = vec![
+            // Stray: arrives before any NNAM — dropped loudly.
+            sub(b"FNAM", 1u32.to_le_bytes()),
+            sub(b"NNAM", 0x000A_0001u32.to_le_bytes()),
+            sub(b"FNAM", 1u32.to_le_bytes()),
+            sub(b"NNAM", 0x000A_0002u32.to_le_bytes()),
+            sub(b"FNAM", 0u32.to_le_bytes()),
+            // A link with neither field — both stay None.
+            sub(b"NNAM", 0x000A_0003u32.to_le_bytes()),
+            // FO76 shape: UNAM priority per quest.
+            sub(b"NNAM", 0x000A_0004u32.to_le_bytes()),
+            sub(b"UNAM", 7u32.to_le_bytes()),
+        ];
+        let node = parse_sm_node(SmNodeKind::Quest, 1, &subs, &None);
+        assert_eq!(
+            node.quests,
+            vec![
+                SmQuestLink { form_id: 0x000A_0001, fnam: Some(1), ..Default::default() },
+                SmQuestLink { form_id: 0x000A_0002, fnam: Some(0), ..Default::default() },
+                SmQuestLink { form_id: 0x000A_0003, ..Default::default() },
+                SmQuestLink { form_id: 0x000A_0004, unam: Some(7), ..Default::default() },
+            ],
+            "each quest keeps its own FNAM/UNAM — no last-one-wins"
         );
     }
 
@@ -485,8 +540,8 @@ mod tests {
         assert_eq!(
             node.quests,
             vec![
-                SmQuestLink { form_id: 0x0001_8245, reset_hours: 24.0 },
-                SmQuestLink { form_id: 0x0001_8246, reset_hours: 48.0 },
+                SmQuestLink { form_id: 0x0001_8245, reset_hours: 24.0, ..Default::default() },
+                SmQuestLink { form_id: 0x0001_8246, reset_hours: 48.0, ..Default::default() },
             ],
             "raw hours × 24 decodes to authored hours (#5386)"
         );
@@ -539,8 +594,14 @@ mod tests {
             sub(b"NNAM", 0x0001_7578u32.to_le_bytes()),
         ];
         let node = parse_sm_node(SmNodeKind::Quest, 0x0001_7579, &subs, &None);
-        assert_eq!(node.fnam, Some(1), "TES5 FNAM decodes instead of riding extras");
-        assert_eq!(node.unam, None);
+        // #5515 — FNAM is per-quest: authored before the NNAM array here,
+        // it lands on the first link (the xEdit corpus shape nests it
+        // per quest; a pre-array FNAM with no preceding NNAM is dropped).
+        assert_eq!(
+            node.quests[0].fnam,
+            None,
+            "a pre-array FNAM with no preceding NNAM is dropped loudly"
+        );
         assert!(node.policies.warn_if_no_child_quest_started);
         assert!(node.policies.shares_event);
         assert!(!node.policies.random);
@@ -548,7 +609,7 @@ mod tests {
         // 448/448 Skyrim census — not a priority knob.
         assert_eq!(node.qnam, Some(2));
         assert_eq!(node.quests.len(), 2);
-        assert!(node.extras.is_empty(), "FNAM no longer rides extras: {:?}", node.extras);
+        assert!(node.extras.is_empty(), "tail fields decode, nothing rides extras: {:?}", node.extras);
     }
 }
 

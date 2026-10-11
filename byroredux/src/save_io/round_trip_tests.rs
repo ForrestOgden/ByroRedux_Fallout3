@@ -1930,10 +1930,12 @@ fn story_manager_node_state_survives_save_load_and_still_gates() {
             SmQuestLink {
                 form_id: 0x111,
                 reset_hours: 48.0,
+                ..Default::default()
             },
             SmQuestLink {
                 form_id: 0x222,
                 reset_hours: 0.0,
+                ..Default::default()
             },
         ],
         policies: SmNodePolicies {
