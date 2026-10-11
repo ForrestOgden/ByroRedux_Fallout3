@@ -414,29 +414,38 @@ fn queue_midlife_imports(
 ) {
     // Every equipped root-less form per wearer, in encounter order and
     // deduped — the resolve loop below picks one per wearer.
+    //
+    // #5031 — a batch is a transition LOG, not a set: it is folded in order
+    // so an unequip cancels a queued equip of the same form (`[equip A,
+    // equip B displacing A]` imports B, never the now-unequipped A). The
+    // forms the pick leaves behind are not lost: the import's completion
+    // re-runs [`reconcile_worn_gear`], which re-derives the still-missing
+    // forms from the wearer's slots.
     let mut requests: Vec<(EntityId, Vec<u32>)> = Vec::new();
     for (wearer, batch) in changes {
         if world.get::<Dead>(*wearer).is_some() {
             continue;
         }
+        let mut forms: Vec<u32> = Vec::new();
         for change in batch {
             if !change.equipped {
+                forms.retain(|form_id| *form_id != change.item_form_id);
                 continue;
             }
             let has_root = gear_roots.iter().any(|&(owner, _, form_id)| {
                 owner == *wearer && form_id == change.item_form_id
             });
-            if has_root {
+            if has_root || forms.contains(&change.item_form_id) {
                 continue;
             }
-            match requests.iter_mut().find(|(w, _)| w == wearer) {
-                Some((_, forms)) => {
-                    if !forms.contains(&change.item_form_id) {
-                        forms.push(change.item_form_id);
-                    }
-                }
-                None => requests.push((*wearer, vec![change.item_form_id])),
-            }
+            forms.push(change.item_form_id);
+        }
+        if forms.is_empty() {
+            continue;
+        }
+        match requests.iter_mut().find(|(w, _)| w == wearer) {
+            Some((_, queued)) => queued.extend(forms),
+            None => requests.push((*wearer, forms)),
         }
     }
     if requests.is_empty() {
@@ -524,6 +533,36 @@ fn queue_midlife_imports(
 /// root-less equipped forms imports them one per frame, the same cadence
 /// the runtime event path gives a multi-equip burst.
 pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
+    reconcile_worn_gear_excluding(world, wearer, None);
+}
+
+/// The forms `wearer` is wearing right now: every occupied biped slot
+/// resolved through the live inventory, a zero-count row not worn, in slot
+/// order and deduped. `None` when the wearer carries no `EquipmentSlots` or
+/// no `Inventory` — the slots cannot say what is worn, which is not the
+/// same as "nothing is worn".
+fn equipped_forms(world: &World, wearer: EntityId) -> Option<Vec<u32>> {
+    let equipment = world.get::<EquipmentSlots>(wearer)?;
+    let inventory = world.get::<Inventory>(wearer)?;
+    let mut forms: Vec<u32> = Vec::new();
+    for stack in equipment
+        .occupants
+        .iter()
+        .filter_map(|slot| *slot)
+        .filter_map(|index| inventory.get(index))
+    {
+        if stack.count > 0 && !forms.contains(&stack.base_form_id) {
+            forms.push(stack.base_form_id);
+        }
+    }
+    Some(forms)
+}
+
+/// [`reconcile_worn_gear`] with one form held out of the import half — the
+/// form whose import just failed at the file level. Without the exclusion
+/// the reconcile would re-queue the same dead end every frame; with it, the
+/// forms *behind* the failure still get their turn (#5031).
+fn reconcile_worn_gear_excluding(world: &World, wearer: EntityId, failed_form: Option<u32>) {
     if world.get::<Dead>(wearer).is_some() {
         return;
     }
@@ -539,24 +578,7 @@ pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
     // queue — starved real armor imports of the single slot forever.
     // Nothing equipped means no reconcile: a stripped actor keeps
     // exactly the bare-skin look it was saved with.
-    let equipped_forms: Vec<u32> = world
-        .get::<EquipmentSlots>(wearer)
-        .map(|equipment| {
-            let indices = equipment.occupants.iter().filter_map(|slot| *slot);
-            world
-                .get::<Inventory>(wearer)
-                .map(|inventory| {
-                    let mut forms: Vec<u32> = Vec::new();
-                    for stack in indices.filter_map(|index| inventory.get(index)) {
-                        if stack.count > 0 && !forms.contains(&stack.base_form_id) {
-                            forms.push(stack.base_form_id);
-                        }
-                    }
-                    forms
-                })
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let equipped_forms: Vec<u32> = equipped_forms(world, wearer).unwrap_or_default();
     let roots: Vec<(EntityId, u32)> = world
         .query::<NpcEquipmentPart>()
         .map(|parts| {
@@ -607,6 +629,7 @@ pub(crate) fn reconcile_worn_gear(world: &World, wearer: EntityId) {
     let missing: Vec<byroredux_scripting::EquipmentChange> = equipped_forms
         .iter()
         .filter(|form_id| !roots.iter().any(|&(_, form)| form == **form_id))
+        .filter(|form_id| Some(**form_id) != failed_form)
         .map(|&form_id| byroredux_scripting::EquipmentChange {
             item_form_id: form_id,
             equipped: true,
@@ -898,6 +921,22 @@ impl GearImportLoader {
             world.remove::<PendingGearImport>(wearer);
             return;
         }
+        // #5031 — the request is a snapshot of the equip, and the slots can
+        // move on before (or between the paths of) a multi-ARMA drain: the
+        // item was unequipped, or displaced by another. Re-check the live
+        // slots before every path so an unequipped item never gets a worn
+        // mesh attached; whatever is worn now and still root-less is
+        // re-derived by the reconcile. A wearer whose slots cannot be read
+        // keeps the request as queued.
+        if equipped_forms(world, wearer).is_some_and(|forms| !forms.contains(&import.form_id)) {
+            world.remove::<PendingGearImport>(wearer);
+            log::debug!(
+                "mid-life gear: {:08X} no longer equipped on {wearer}; dropping its import",
+                import.form_id,
+            );
+            reconcile_worn_gear(world, wearer);
+            return;
+        }
         let Some(bones) = world
             .get::<NpcSkeletonBones>(wearer)
             .map(|bones| bones.0.clone())
@@ -915,6 +954,7 @@ impl GearImportLoader {
         let Some(bytes) = textures.extract_mesh(&path) else {
             world.remove::<PendingGearImport>(wearer);
             log::warn!("mid-life gear: missing {path}; item {wearer} wears no mesh for it");
+            reconcile_worn_gear_excluding(world, wearer, Some(import.form_id));
             return;
         };
         let first = world.next_entity_id();
@@ -952,14 +992,11 @@ impl GearImportLoader {
                 }
             }
             world.remove::<PendingGearImport>(wearer);
-            // Deliberately NOT chained into another reconcile: this form
-            // still resolves (it was queued), so a re-run would re-queue
-            // the same dead end once per frame. A per-wearer queue that
-            // skips failed forms is #5031's rework; until then a wearer
-            // whose FIRST missing form fails at the file level stalls the
-            // forms behind it (resolve-level dead ends no longer do —
-            // #5266 picks past them before the queue).
             log::warn!("mid-life gear: import failed {path}; item stays meshless");
+            // Chained with the failed form excluded (#5031): a plain re-run
+            // would re-queue this same dead end every frame, but the forms
+            // behind it must not stall on it.
+            reconcile_worn_gear_excluding(world, wearer, Some(import.form_id));
             return;
         };
 
@@ -1553,6 +1590,152 @@ mod tests {
             .expect("the armor behind a weapon change must still queue");
         assert_eq!(pending.form_id, 0xABC);
         assert_eq!(pending.paths, vec![r"meshes\armor\cuirass.nif"]);
+    }
+
+    /// A wearer holding `forms` (one stack each) with the armor `forms`
+    /// equipped into distinct biped bits, no roots, and every form indexed
+    /// as a legacy armor.
+    fn wearer_with_slots(forms: &[u32]) -> (World, EntityId) {
+        use super::super::{ActorBodyClass, PendingGearImport};
+        use byroredux_plugin::equip::Gender;
+
+        let mut world = World::new();
+        world.register::<NpcAppearanceHidden>();
+        world.register::<PendingGearImport>();
+        world.register::<super::super::ActorBodyClass>();
+        world.register::<EquipmentEventBatch>();
+        let wearer = world.spawn();
+        world.insert(
+            wearer,
+            Inventory {
+                items: forms.iter().map(|&form| ItemStack::new(form, 1)).collect(),
+            },
+        );
+        let mut slots = EquipmentSlots::new();
+        for (index, _) in forms.iter().enumerate() {
+            slots.equip(1 << index, InventoryIndex(index as u32));
+        }
+        world.insert(wearer, slots);
+        world.insert(
+            wearer,
+            ActorBodyClass {
+                gender: Gender::Male,
+                race_form_id: 0xD7,
+            },
+        );
+        install_items(
+            &mut world,
+            forms
+                .iter()
+                .map(|&form| legacy_armor(form, &format!(r"meshes\armor\{form:x}.nif")))
+                .collect(),
+        );
+        (world, wearer)
+    }
+
+    /// #5031 — a batch is a transition log: `[equip A, equip B, unequip A]`
+    /// (B displaced A) imports B. Pre-fix the unequipped A won the slot as
+    /// the first root-less equip and was drawn while B was dropped.
+    #[test]
+    fn an_unequip_in_the_batch_cancels_the_queued_equip() {
+        use super::super::PendingGearImport;
+
+        let (mut world, wearer) = wearer_with_slots(&[0xBBB]);
+        // A (0xAAA) was equipped then displaced; only B is still worn.
+        world.insert(
+            wearer,
+            EquipmentEventBatch(vec![
+                EquipmentChange { item_form_id: 0xAAA, equipped: true },
+                EquipmentChange { item_form_id: 0xBBB, equipped: true },
+                EquipmentChange { item_form_id: 0xAAA, equipped: false },
+            ]),
+        );
+        // 0xAAA must resolve too, or the test would pass for the wrong reason.
+        install_items(
+            &mut world,
+            vec![
+                legacy_armor(0xAAA, r"meshes\armor\a.nif"),
+                legacy_armor(0xBBB, r"meshes\armor\b.nif"),
+            ],
+        );
+
+        equipment_appearance_system(&world, 1.0 / 60.0);
+
+        let pending = world
+            .get::<PendingGearImport>(wearer)
+            .expect("the still-worn B must queue");
+        assert_eq!(pending.form_id, 0xBBB);
+    }
+
+    /// #5031 — a two-item batch keeps one request per wearer, but the second
+    /// item is not lost: once the first import completes (its root exists),
+    /// the chained reconcile queues the item the batch left behind.
+    #[test]
+    fn the_second_item_of_a_batch_follows_once_the_first_import_completes() {
+        use super::super::PendingGearImport;
+
+        let (mut world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+        world.insert(
+            wearer,
+            EquipmentEventBatch(vec![
+                EquipmentChange { item_form_id: 0xAAA, equipped: true },
+                EquipmentChange { item_form_id: 0xBBB, equipped: true },
+            ]),
+        );
+        equipment_appearance_system(&world, 1.0 / 60.0);
+        assert_eq!(world.get::<PendingGearImport>(wearer).unwrap().form_id, 0xAAA);
+
+        // The loader finished A: the pending request is gone, A has a root.
+        world.remove::<PendingGearImport>(wearer);
+        let root = world.spawn();
+        world.insert(
+            root,
+            NpcEquipmentPart {
+                actor: wearer,
+                form_id: 0xAAA,
+                intrinsic_skin: false,
+                hidden_biped_mask: 0,
+            },
+        );
+        reconcile_worn_gear(&world, wearer);
+        assert_eq!(
+            world.get::<PendingGearImport>(wearer).unwrap().form_id,
+            0xBBB,
+            "the item the batch left behind must queue next"
+        );
+    }
+
+    /// #5031 — a form whose import failed at the file level is held out of
+    /// the chained reconcile, so the forms behind it are not stalled and the
+    /// dead end is not re-queued every frame.
+    #[test]
+    fn a_failed_import_does_not_stall_the_forms_behind_it() {
+        use super::super::PendingGearImport;
+
+        let (world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+
+        reconcile_worn_gear_excluding(&world, wearer, Some(0xAAA));
+        assert_eq!(world.get::<PendingGearImport>(wearer).unwrap().form_id, 0xBBB);
+
+        // With only the failed form left, nothing queues.
+        let (world, wearer) = wearer_with_slots(&[0xAAA]);
+        reconcile_worn_gear_excluding(&world, wearer, Some(0xAAA));
+        assert!(world.get::<PendingGearImport>(wearer).is_none());
+    }
+
+    /// #5031 — the loader's mid-drain re-check reads the live slots:
+    /// `equipped_forms` names what is worn now, and is `None` (not "nothing
+    /// worn") for a wearer whose slots cannot be read.
+    #[test]
+    fn equipped_forms_reads_live_slots_and_distinguishes_unreadable() {
+        let (mut world, wearer) = wearer_with_slots(&[0xAAA, 0xBBB]);
+        assert_eq!(equipped_forms(&world, wearer), Some(vec![0xAAA, 0xBBB]));
+
+        world.get_mut::<EquipmentSlots>(wearer).unwrap().unequip(1);
+        assert_eq!(equipped_forms(&world, wearer), Some(vec![0xBBB]));
+
+        let bare = world.spawn();
+        assert_eq!(equipped_forms(&world, bare), None);
     }
 
     #[test]
