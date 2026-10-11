@@ -27,9 +27,21 @@
 //! TYPE       := class_count: u32
 //! CLAS       := name: i32, type: i32, flags: u16, field_count: u16,
 //!               field_count × { name: i32, type: i32, offset: u16, size: u16 }
-//! DIFF       := type: u32, (field_index: u16)*           // RDIF only
-//! OBJT/LIST/USER                                    // the instance values
+//! DIFF       := type: u32, (field_index: u16, value)*, 0xFFFF   // RDIF only
+//! OBJT/LIST/USER/USRD/MAPC                           // the instance values
 //! ```
+//!
+//! A `DIFF` is an object diff, not a flat index list (#5514): the type
+//! ref names the class (through its string-table name offset), then
+//! each overridden field follows as `(u16 index, inline value)` until
+//! the `0xFFFF` terminator. Inline value sizes follow the CDB reader's
+//! skip rules (`crates/sfmaterial/src/reader.rs`): built-ins by size,
+//! `String` by its `u16` length prefix, `Ref` by recursing its target,
+//! and a non-user class (struct) as a nested diff-pair stream — diff
+//! semantics propagate into overridden structs. Chunk-typed fields
+//! (List/Map built-ins, user-flagged classes) carry no inline bytes:
+//! their values ride the side chunks after the terminator, which the
+//! container census keeps counting as instance chunks.
 //!
 //! `name`/`type` refs are i32 string-table offsets, or the *negative*
 //! built-in type ids (`0xFFFFFF02` String, `0xFFFFFF0D` UInt32,
@@ -47,7 +59,7 @@
 //! (#5363's fallback).
 
 use super::common::{read_zstring, remap_fid};
-use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
+use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Built-in reflection type ids (xEdit `wbStringTableLookup`'s negative
@@ -78,11 +90,15 @@ pub fn builtin_type_label(raw: i32) -> Option<&'static str> {
 
 /// One field of a reflection class: name and type resolved through the
 /// string table (or the built-in label), plus the authored offset/size
-/// into the class's instance layout.
+/// into the class's instance layout. `type_ref` keeps the raw i32 —
+/// negative = built-in id, non-negative = the referenced class's
+/// string-table name offset — because inline value sizes (a DIFF walk,
+/// the future values reader) derive from the raw ref, not the label.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReflectionField {
     pub name: String,
     pub type_name: String,
+    pub type_ref: i32,
     pub offset: u16,
     pub size: u16,
 }
@@ -90,6 +106,9 @@ pub struct ReflectionField {
 /// One CLAS chunk: a named class with its field list.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReflectionClass {
+    /// The class's name string-table offset — the key a `DIFF` type ref
+    /// resolves through (Gibbed's `typeMap` is indexed by `NameOffset`).
+    pub name_offset: i32,
     pub name: String,
     /// Bit 2 `User`, bit 3 `Struct` (xEdit's flag table; vanilla roots
     /// mark `XMFLOAT4`-style value types as Struct).
@@ -111,12 +130,16 @@ pub struct BgsReflection {
     pub class_count: u32,
     /// Every `CLAS` chunk, in authored order.
     pub classes: Vec<ReflectionClass>,
-    /// `DIFF` field indices (RDIF blobs only): which fields of the
-    /// parent's class the child overrides. `None` when no DIFF chunk.
+    /// `DIFF` field indices (RDIF blobs only): the overridden fields the
+    /// diff pairs name, with each pair's inline value skipped by its
+    /// field type up to the `0xFFFF` terminator (#5514 — value bytes
+    /// and the terminator no longer pollute the list). `None` when the
+    /// blob carries no DIFF chunk, or the diff walk could not resolve
+    /// the class / ran past the chunk (vanilla never trips either).
     pub diff_field_indices: Option<Vec<u16>>,
-    /// The instance chunks (`OBJT`/`LIST`/`USER`), censused as
-    /// `(signature, payload size)` — the value half is the tracked
-    /// follow-up, and this census is the evidence base for it.
+    /// The instance chunks (`OBJT`/`LIST`/`USER`/`USRD`/`MAPC`),
+    /// censused as `(signature, payload size)` — the value half is the
+    /// tracked follow-up, and this census is the evidence base for it.
     pub instance_chunks: Vec<([u8; 4], usize)>,
     /// Signatures of chunks the walker did not recognize (skipped by
     /// size). Empty on vanilla data.
@@ -211,6 +234,7 @@ pub fn parse_bgs_reflection(blob: &[u8]) -> BgsReflection {
                 let flags = u16::from_le_bytes(payload[8..10].try_into().unwrap());
                 let field_count = u16::from_le_bytes(payload[10..12].try_into().unwrap()) as usize;
                 let mut class = ReflectionClass {
+                    name_offset: name,
                     name: resolve_ref(name, &table),
                     flags,
                     ..ReflectionClass::default()
@@ -218,12 +242,11 @@ pub fn parse_bgs_reflection(blob: &[u8]) -> BgsReflection {
                 let mut p = 12usize;
                 for _ in 0..field_count {
                     let Some(field) = payload.get(p..p + 12) else { break };
+                    let type_ref = i32::from_le_bytes(field[4..8].try_into().unwrap());
                     class.fields.push(ReflectionField {
                         name: resolve_ref(i32::from_le_bytes(field[0..4].try_into().unwrap()), &table),
-                        type_name: resolve_ref(
-                            i32::from_le_bytes(field[4..8].try_into().unwrap()),
-                            &table,
-                        ),
+                        type_ref,
+                        type_name: resolve_ref(type_ref, &table),
                         offset: u16::from_le_bytes(field[8..10].try_into().unwrap()),
                         size: u16::from_le_bytes(field[10..12].try_into().unwrap()),
                     });
@@ -232,13 +255,24 @@ pub fn parse_bgs_reflection(blob: &[u8]) -> BgsReflection {
                 out.classes.push(class);
             }
             b"DIFF" if payload.len() >= 4 => {
-                let indices = payload[4..]
-                    .chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                    .collect();
-                out.diff_field_indices = Some(indices);
+                // #5514 — object-diff walk, not a flat u16 list: the
+                // leading type ref names the class (by string-table
+                // name offset), then (u16 field index, inline value)
+                // pairs until the 0xFFFF terminator. Values are skipped
+                // by field type; chunk-typed fields defer to the side
+                // chunks the container census keeps counting.
+                let type_ref = i32::from_le_bytes(payload[0..4].try_into().unwrap());
+                let Some(class) = out.classes.iter().find(|c| c.name_offset == type_ref) else {
+                    // Unresolvable class — the diff layout is unknowable.
+                    // Leave `diff_field_indices` unset rather than guess.
+                    continue;
+                };
+                let class = class.clone();
+                if let Some(indices) = collect_diff_indices(payload, &class, &out.classes) {
+                    out.diff_field_indices = Some(indices);
+                }
             }
-            b"OBJT" | b"LIST" | b"USER" => {
+            b"OBJT" | b"LIST" | b"USER" | b"USRD" | b"MAPC" => {
                 out.instance_chunks.push((sig, size));
             }
             _ => {
@@ -251,6 +285,103 @@ pub fn parse_bgs_reflection(blob: &[u8]) -> BgsReflection {
     out
 }
 
+/// Walk a `DIFF` chunk payload (after its leading type ref) as the
+/// CDB reader does (`reader.rs`'s diff loop): collect each overridden
+/// field index, skip its inline value by field type, stop at `0xFFFF`.
+/// `None` when the stream truncates or names an out-of-range field —
+/// callers keep the unset state rather than a half-guessed list.
+fn collect_diff_indices(
+    payload: &[u8],
+    class: &ReflectionClass,
+    classes: &[ReflectionClass],
+) -> Option<Vec<u16>> {
+    let mut pos = 4usize;
+    let mut indices = Vec::new();
+    loop {
+        let idx = read_i16(payload, &mut pos)?;
+        if idx == 0xFFFF {
+            return Some(indices);
+        }
+        let field = class.fields.get(idx as usize)?;
+        indices.push(idx);
+        if !skip_diff_value(payload, &mut pos, field.type_ref, classes) {
+            return None;
+        }
+    }
+}
+
+/// Skip one inline diff value of `type_ref`, the CDB reader's rules
+/// (`skip_value`): built-ins by size, `String` by its `u16` length
+/// prefix, `Ref` by recursing its target (a List/Map ref is the null
+/// sentinel — nothing inline), user-flagged classes ride side chunks,
+/// and a non-user class (struct) carries a nested diff-pair stream —
+/// diff semantics propagate into overridden structs. Returns `false`
+/// on truncation.
+fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[ReflectionClass]) -> bool {
+    if type_ref >= 0 {
+        let Some(class) = classes.iter().find(|c| c.name_offset == type_ref) else {
+            return false;
+        };
+        if class.flags & 0b100 != 0 {
+            return true; // User class — side chunk, nothing inline.
+        }
+        // Struct — nested diff-pair stream (reader.rs' diff loop recurses
+        // with the same is_diff flag).
+        let mut nested_pos = *pos;
+        loop {
+            let Some(idx) = read_i16(src, &mut nested_pos) else {
+                return false;
+            };
+            if idx == 0xFFFF {
+                *pos = nested_pos;
+                return true;
+            }
+            let Some(field) = class.fields.get(idx as usize) else {
+                return false;
+            };
+            if !skip_diff_value(src, &mut nested_pos, field.type_ref, classes) {
+                return false;
+            }
+        }
+    }
+    match type_ref {
+        -255 => true,                                 // Null
+        -254 => match src.get(*pos..*pos + 2) {       // String: u16 len + bytes
+            Some(len) => {
+                let len = u16::from_le_bytes(len.try_into().unwrap()) as usize;
+                *pos += 2 + len;
+                *pos <= src.len()
+            }
+            None => false,
+        },
+        -251 => {                                     // Ref: i32 target + recurse
+            let Some(target) = src.get(*pos..*pos + 4) else {
+                return false;
+            };
+            *pos += 4;
+            let target = i32::from_le_bytes(target.try_into().unwrap());
+            if target == -253 || target == -252 {
+                return true; // List/Map ref → null sentinel, nothing inline.
+            }
+            skip_diff_value(src, pos, target, classes)
+        }
+        -248 | -247 | -240 => { *pos += 1; *pos <= src.len() } // i8/u8/bool
+        -246 | -245 => { *pos += 2; *pos <= src.len() }        // i16/u16
+        -244 | -243 | -239 => { *pos += 4; *pos <= src.len() } // i32/u32/float
+        -242 | -241 | -238 => { *pos += 8; *pos <= src.len() } // i64/u64/double
+        -253 | -252 => true,   // List/Map — chunk-typed, side chunk
+        _ => false,            // unknown built-in — refuse to guess
+    }
+}
+
+/// Read one little-endian u16 at `pos`, advancing it. `None` on
+/// truncation.
+fn read_i16(src: &[u8], pos: &mut usize) -> Option<u16> {
+    let bytes = src.get(*pos..*pos + 2)?;
+    *pos += 2;
+    Some(u16::from_le_bytes(bytes.try_into().unwrap()))
+}
+
 /// Parse a WTHS record from its sub-records. Starfield-only; the label
 /// is not routed here for other games (their `WTHR` arm stays the
 /// weather path).
@@ -259,7 +390,6 @@ pub fn parse_wths(
     subs: &[SubRecord],
     remap: &Option<FormIdRemap>,
 ) -> WeatherSettingsRecord {
-    let _ = GameKind::Starfield; // (kept for signature parity with siblings)
     let mut record = WeatherSettingsRecord {
         form_id,
         ..WeatherSettingsRecord::default()
@@ -343,6 +473,110 @@ mod tests {
         assert_eq!(refl.instance_chunks, vec![(*b"OBJT", 4)]);
         assert!(refl.unknown_chunks.is_empty());
         assert!(refl.diff_field_indices.is_none());
+    }
+
+    /// #5514 — a `DIFF` chunk is an object diff, not a flat index list:
+    /// each overridden field carries its inline value (skipped by field
+    /// type — `String` by length prefix, built-ins by size, structs as
+    /// nested diff-pair streams), and the walk stops at `0xFFFF`. The
+    /// pre-fix reader treated every `u16` as an index, so value bytes
+    /// and the terminator polluted `diff_field_indices`.
+    #[test]
+    fn diff_chunk_decodes_index_value_pairs_to_the_terminator() {
+        // Class layout (strtab offsets): "Root" @0, "Struct" @5, plus
+        // field names/types. Fields:
+        //   0 Name:  String   (-254)
+        //   1 Count: UInt32   (-243)
+        //   2 Nested: Struct  (class ref = name offset 5, non-user)
+        //   3 Bits:  Bool     (-240)
+        let strs = b"Root\0Struct\0Name\0Count\0Nested\0Bits\0";
+        let name_off = 0i32;
+        let struct_off = 5i32;
+        let field = |n: i32, t: i32, o: u16, s: u16| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&n.to_le_bytes());
+            v.extend_from_slice(&t.to_le_bytes());
+            v.extend_from_slice(&o.to_le_bytes());
+            v.extend_from_slice(&s.to_le_bytes());
+            v
+        };
+        let mut clas = Vec::new();
+        clas.extend_from_slice(&name_off.to_le_bytes()); // Root's name offset
+        clas.extend_from_slice(&0i32.to_le_bytes()); // type
+        clas.extend_from_slice(&0u16.to_le_bytes()); // flags (not User)
+        clas.extend_from_slice(&4u16.to_le_bytes()); // field count
+        clas.extend(field(11, -254, 0, 0)); // Name: String
+        clas.extend(field(16, -243, 0, 4)); // Count: UInt32
+        clas.extend(field(22, struct_off, 0, 0)); // Nested: Struct
+        clas.extend(field(29, -240, 4, 1)); // Bits: Bool
+        let mut struct_clas = Vec::new();
+        struct_clas.extend_from_slice(&struct_off.to_le_bytes()); // Struct's name offset
+        struct_clas.extend_from_slice(&0i32.to_le_bytes());
+        struct_clas.extend_from_slice(&0u16.to_le_bytes()); // not User → inline
+        struct_clas.extend_from_slice(&1u16.to_le_bytes());
+        struct_clas.extend(field(11, -243, 0, 4)); // Name (index 0): UInt32
+
+        // DIFF body: type ref = Root's name offset, then pairs:
+        //   0 → String len 3 "abc"
+        //   1 → u32 0x11223344 (a value whose low u16 bytes would have
+        //       been misread as indices pre-fix)
+        //   2 → nested struct diff: 0 → u32, 0xFFFF
+        //   3 → bool 1
+        //   0xFFFF terminator
+        let mut diff = Vec::new();
+        diff.extend_from_slice(&name_off.to_le_bytes());
+        diff.extend_from_slice(&0u16.to_le_bytes());
+        diff.extend_from_slice(&3u16.to_le_bytes());
+        diff.extend_from_slice(b"abc");
+        diff.extend_from_slice(&1u16.to_le_bytes());
+        diff.extend_from_slice(&0x1122_3344u32.to_le_bytes());
+        diff.extend_from_slice(&2u16.to_le_bytes());
+        diff.extend_from_slice(&0u16.to_le_bytes()); // nested pair index
+        diff.extend_from_slice(&0x5566_7788u32.to_le_bytes()); // nested value
+        diff.extend_from_slice(&0xFFFFu16.to_le_bytes()); // nested terminator
+        diff.extend_from_slice(&3u16.to_le_bytes());
+        diff.push(1u8); // bool
+        diff.extend_from_slice(&0xFFFFu16.to_le_bytes()); // terminator
+
+        let mut blob: Vec<u8> = Vec::new();
+        let chunk = |sig: &[u8; 4], payload: &[u8], out: &mut Vec<u8>| {
+            out.extend_from_slice(sig);
+            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            out.extend_from_slice(payload);
+        };
+        chunk(b"BETH", &4u32.to_le_bytes().iter().chain(&5u32.to_le_bytes()).copied().collect::<Vec<u8>>(), &mut blob);
+        chunk(b"STRT", strs, &mut blob);
+        chunk(
+            b"TYPE",
+            1u32.to_le_bytes().as_ref(),
+            &mut blob,
+        );
+        chunk(b"CLAS", &clas, &mut blob);
+        chunk(b"CLAS", &struct_clas, &mut blob);
+        chunk(b"DIFF", &diff, &mut blob);
+        // A side chunk the DIFF's chunk-typed fields would own — censused.
+        chunk(b"OBJT", &[0; 4], &mut blob);
+
+        let refl = parse_bgs_reflection(&blob);
+        assert_eq!(
+            refl.diff_field_indices,
+            Some(vec![0, 1, 2, 3]),
+            "only the authored field indices — value bytes and the \
+             terminator must not pollute the list"
+        );
+        assert!(refl.unknown_chunks.is_empty());
+        // USRD/MAPC are recognized instance chunks, not unknowns (#5514).
+        let refl_usrd = parse_bgs_reflection(
+            &{
+                let mut b = blob.clone();
+                b.extend_from_slice(b"USRD");
+                b.extend_from_slice(&8u32.to_le_bytes());
+                b.extend_from_slice(&[0u8; 8]);
+                b
+            },
+        );
+        assert_eq!(refl_usrd.instance_chunks.len(), 2);
+        assert!(refl_usrd.unknown_chunks.is_empty());
     }
 
     /// Built-in type refs (negative i32) resolve to their labels; the

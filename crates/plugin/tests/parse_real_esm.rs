@@ -1392,6 +1392,55 @@ fn starfield_wths_reflection_decodes_schema_and_resolves_wslt() {
         "the RDIF's DIFF chunk names the overridden fields"
     );
 
+    // #5514 — the DIFF object-diff walk, censused across every child:
+    // each decoded index is a real field of the diff's own class (the
+    // pre-fix flat-u16 read filed value bytes and the 0xFFFF terminator
+    // as indices — every chunk had at least one index past its class's
+    // field count), and USRD/MAPC land in the instance census instead
+    // of `unknown_chunks` (47 USRD chunks across 23 vanilla records).
+    let mut children_with_diff = 0usize;
+    let mut usrd_chunks = 0usize;
+    for w in index.weather_settings.values() {
+        let Some(diff) = w.reflection_diff.as_ref() else {
+            continue;
+        };
+        assert!(
+            diff.unknown_chunks.is_empty(),
+            "{}: chunk kinds the walker no longer recognizes: {:?}",
+            w.editor_id,
+            diff.unknown_chunks
+        );
+        usrd_chunks += diff
+            .instance_chunks
+            .iter()
+            .filter(|(sig, _)| sig == b"USRD")
+            .count();
+        let Some(indices) = diff.diff_field_indices.as_ref() else {
+            continue;
+        };
+        children_with_diff += 1;
+        // Every vanilla WTHS diff names the weather root's own fields,
+        // so the root class's field count bounds the indices.
+        let root = diff.weather_root_class().expect("schema decodes in RDIF too");
+        for &idx in indices {
+            assert!(
+                (idx as usize) < root.fields.len(),
+                "{}: DIFF index {idx} past the class's {} fields",
+                w.editor_id,
+                root.fields.len()
+            );
+        }
+    }
+    assert!(
+        children_with_diff >= 160,
+        "children whose DIFF decodes to clean field indices (census 163): \
+         {children_with_diff}"
+    );
+    assert!(
+        usrd_chunks >= 47,
+        "USRD chunks censused as instance chunks (census 47): {usrd_chunks}"
+    );
+
     // The climate tie-in: every WSLT row from #5363 now resolves into
     // the weather-settings map instead of dangling.
     let mut wslt_rows = 0usize;
