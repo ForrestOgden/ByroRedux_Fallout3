@@ -145,13 +145,26 @@ fn shape_leaf_materials_inner(
     leaf_material!(BhkCylinderShape);
     leaf_material!(BhkConvexVerticesShape);
     leaf_material!(BhkNiTriStripsShape);
-    // Packed tri strips carry materials per sub-part on the shape itself;
-    // the body-level reduction takes the first authored part, and the
-    // per-leaf sequence collapses the sub-parts onto the shape's one part.
+    // Packed tri strips carry materials per sub-part; the body-level
+    // reduction takes the first authored part, and the per-leaf sequence
+    // collapses the sub-parts onto the shape's one part. #5541 — the table
+    // lives on the SHAPE only until 20.0.0.5 (nif.xml `until`); from
+    // 20.2.0.7 it lives on `hkPackedNiTriStripsData`, where the FO3/FNV
+    // parser stores it as `sub_parts` (captured since #2550, read by
+    // nothing). Resolve the data block and take whichever table is
+    // populated — the dominant FO3/FNV MOPP collision shape
+    // (bhkMoppBvTreeShape → packed) reported STONE (0) for wood, metal
+    // and dirt floors otherwise.
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
+        let data_parts = s
+            .data_ref
+            .index()
+            .and_then(|idx| scene.get(idx))
+            .and_then(|data| data.as_any().downcast_ref::<HkPackedNiTriStripsData>());
         let material = s
             .sub_shapes
             .iter()
+            .chain(data_parts.map(|d| d.sub_parts.iter()).into_iter().flatten())
             .find(|part| part.material != 0)
             .map(|part| part.material)
             .unwrap_or(inherited);

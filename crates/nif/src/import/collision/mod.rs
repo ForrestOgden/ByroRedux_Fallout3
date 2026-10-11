@@ -452,8 +452,7 @@ fn extract_from_classic(
         // Body-level reduction of the shape tree's authored Havok material
         // (see `first_shape_material`) — the surface-aware footsteps /
         // impacts impacts consumer reads "what kind of ground this body is".
-        surface_material: shape::first_shape_material(scene, body.shape_ref, &mut visited)
-            as u8,
+        surface_material: shape::first_shape_material(scene, body.shape_ref, &mut visited),
         // Per-part materials, leaf-aligned with `collision_shape_to_parts`'s
         // output order, so a compound body whose bhk children carry
         // different materials puts each part's own material into its
@@ -462,7 +461,7 @@ fn extract_from_classic(
         part_surface_materials: {
             let mut leaves = Vec::new();
             shape::shape_leaf_materials(scene, body.shape_ref, &mut visited, 0, &mut leaves);
-            leaves.into_iter().map(|m| m as u8).collect()
+            leaves.into_iter().collect()
         },
     };
 
@@ -1457,6 +1456,72 @@ mod dispatch_tests {
         assert!(
             matches!(shape, CollisionShape::Compound { .. }),
             "a finite non-trivial CInfo offset must still produce a Compound: {shape:?}"
+        );
+    }
+
+    /// #5541 — the FO3/FNV packed-mesh layout: `sub_shapes` on the SHAPE
+    /// is empty (nif.xml authors that table only until 20.0.0.5) and the
+    /// material table lives on `hkPackedNiTriStripsData::sub_parts`
+    /// (captured since #2550, read by nothing). The material walker must
+    /// resolve the data block and take its table — pre-fix every
+    /// FO3/FNV MOPP-packed collider (the dominant static collision shape:
+    /// 7,468 FNV packed blocks in the vanilla meshes BSA) reported
+    /// STONE (0).
+    #[test]
+    fn fo3_packed_shape_materials_come_from_the_data_blocks_sub_parts() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_at(
+            2,
+            [0.0; 4],
+            [0.0, 0.0, 0.0, 1.0],
+            false,
+        )); // [1]
+        scene.blocks.push(Box::new(BhkPackedNiTriStripsShape {
+            // FO3+ (NIF 20.2.0.7): the shape-level table is NOT authored.
+            sub_shapes: Vec::new(),
+            data_ref: BlockRef(3u32),
+            scale: [1.0; 4],
+        })); // [2]
+        scene.blocks.push(Box::new(HkPackedNiTriStripsData {
+            vertices: vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+            triangles: vec![PackedTriangle {
+                v0: 0,
+                v1: 1,
+                v2: 2,
+                welding_info: 0,
+                normal: None,
+            }],
+            // Wood planking in the FO3 enum — the exact class of surface
+            // the STONE conflation erased.
+            sub_parts: vec![
+                HkSubPartData {
+                    havok_filter: 0,
+                    num_vertices: 3,
+                    material: 0,
+                },
+                HkSubPartData {
+                    havok_filter: 0,
+                    num_vertices: 3,
+                    material: 44,
+                },
+            ],
+        })); // [3]
+
+        let (shape, body) = extract_collision(&scene, BlockRef(0u32))
+            .expect("the packed mesh with real geometry must resolve");
+        assert!(
+            matches!(shape, CollisionShape::TriMesh { .. }),
+            "the packed data resolves to a trimesh: {shape:?}"
+        );
+        assert_eq!(
+            body.surface_material, 44,
+            "the data block's sub_parts table must reach the body-level material"
+        );
+        assert_eq!(
+            &*body.part_surface_materials,
+            &[44u32],
+            "and the per-part sequence"
         );
     }
 }
