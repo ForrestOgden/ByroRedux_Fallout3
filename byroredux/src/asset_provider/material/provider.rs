@@ -26,11 +26,11 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
         match args[i].as_str() {
             "--materials-ba2" => {
                 if let Some(path) = args.get(i + 1) {
-                    match Archive::open(path) {
-                        Ok(a) => {
+                    match Archive::open_shared(path) {
+                        Ok((a, reused)) => {
                             // #3637 — shadow-count diagnostic shared with
                             // TextureProvider's --bsa/--textures-bsa opens.
-                            log_opened_archive("materials", path, &a, &provider.archives);
+                            log_opened_archive("materials", path, &a, &provider.archives, reused);
                             // #1289 / SF-D3-NEW-01 → #1571 / SF-D3-03 —
                             // scan the archive for every Starfield component
                             // database (base `materials\materialsbeta.cdb`
@@ -53,8 +53,9 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
             // base path and never `--materials-ba2`. Scan those for CDBs
             // too, but do NOT push them as material archives: they're mesh
             // archives owned by the TextureProvider. Each archive is
-            // re-opened here purely to read its file table (the entry data
-            // isn't touched) and dropped after the scan.
+            // opened here purely to read its file table (the entry data
+            // isn't touched) — through the shared handle registry (#5288), so
+            // the table the texture provider just parsed is not parsed again.
             //
             // #2621 / SF-D3-04 — the texture provider covers Starfield's
             // zero-padded numeric-sibling series (`Meshes01.ba2` →
@@ -80,8 +81,8 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
                     for candidate in
                         cdb_scan_candidates(path, |p| std::path::Path::new(p).is_file())
                     {
-                        match Archive::open(&candidate) {
-                            Ok(a) => discover_starfield_cdbs(&a, &candidate, &mut provider),
+                        match Archive::open_shared(&candidate) {
+                            Ok((a, _)) => discover_starfield_cdbs(&a, &candidate, &mut provider),
                             Err(e) => log::warn!(
                                 "Failed to open '{}' for CDB discovery: {}",
                                 candidate,

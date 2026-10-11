@@ -1,9 +1,27 @@
-use std::collections::HashSet;
-use std::sync::Mutex;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A game archive that can extract files by path.
 /// Wraps either a BSA (Oblivion–Skyrim SE) or BA2 (FO4–Starfield) archive.
+///
+/// A cheap-clone handle (#5288): the opened file table lives behind an
+/// `Arc`, so [`Archive::open_shared`] can hand every provider rebuild the
+/// archives the previous one already parsed. Everything but construction is
+/// reached through `Deref` to [`ArchiveInner`].
+#[derive(Clone)]
 pub(crate) struct Archive {
+    inner: Arc<ArchiveInner>,
+}
+
+impl std::ops::Deref for Archive {
+    type Target = ArchiveInner;
+
+    fn deref(&self) -> &ArchiveInner {
+        &self.inner
+    }
+}
+
+pub(crate) struct ArchiveInner {
     backend: Backend,
     /// The path the archive was opened from — named in extract diagnostics
     /// (#4658), since neither backend reader keeps it.
@@ -12,6 +30,10 @@ pub(crate) struct Archive {
     /// `NotFound`, so [`Archive::extract_or_warn`] warns once per
     /// (archive, entry) rather than once per lookup.
     warned: Mutex<HashSet<String>>,
+    /// Starfield component-database entries this archive holds — a full
+    /// scan of the file table, so done once per opened archive rather than
+    /// once per provider rebuild (#5288).
+    cdb_paths: OnceLock<Vec<String>>,
 }
 
 enum Backend {
@@ -77,12 +99,89 @@ impl Archive {
                 .map_err(|e| format!("BSA '{}': {}", path, e))
         }
         .map(|backend| Archive {
-            backend,
-            path: path.to_string(),
-            warned: Mutex::new(HashSet::new()),
+            inner: Arc::new(ArchiveInner {
+                backend,
+                path: path.to_string(),
+                warned: Mutex::new(HashSet::new()),
+                cdb_paths: OnceLock::new(),
+            }),
         })
     }
 
+    /// [`Self::open`] through a process-wide registry (#5288): the file table
+    /// parse is paid once per archive per process instead of once per
+    /// `build_texture_provider` / `build_material_provider` call — and the
+    /// door cover, the destination apply and a save-load each make their own
+    /// pair. Returns the handle and whether it was reused.
+    ///
+    /// A cached entry is only reused while the file's length and mtime still
+    /// match what was opened, so an archive replaced on disk mid-session is
+    /// re-read rather than served stale. The lock is held for map access
+    /// only, never across the open itself.
+    pub(crate) fn open_shared(path: &str) -> Result<(Self, bool), String> {
+        let stamp = ArchiveStamp::of(path);
+        if let Some(stamp) = stamp {
+            let registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((cached_stamp, archive)) = registry.get(path) {
+                if *cached_stamp == stamp {
+                    return Ok((archive.clone(), true));
+                }
+            }
+        }
+        let archive = Self::open(path)?;
+        if let Some(stamp) = stamp {
+            let mut registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
+            if !registry.contains_key(path) && registry.len() >= SHARED_ARCHIVE_MAX {
+                if let Some(evicted) = registry.keys().next().cloned() {
+                    registry.remove(&evicted);
+                }
+            }
+            registry.insert(path.to_owned(), (stamp, archive.clone()));
+        }
+        Ok((archive, false))
+    }
+}
+
+/// What identifies an on-disk archive's content for [`Archive::open_shared`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ArchiveStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl ArchiveStamp {
+    fn of(path: &str) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: meta.len(),
+            modified: meta.modified().ok(),
+        })
+    }
+}
+
+/// Cap on [`shared_archives`]: far above any real load order (a
+/// Creation-heavy Starfield install is ~130 archives), so it only bounds a
+/// pathological or Studio-gallery run.
+const SHARED_ARCHIVE_MAX: usize = 1024;
+
+fn shared_archives() -> &'static Mutex<HashMap<String, (ArchiveStamp, Archive)>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, (ArchiveStamp, Archive)>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl ArchiveInner {
+    /// Paths of the Starfield component databases this archive holds
+    /// (#1571), memoised on the archive: scanning the file table for them is
+    /// O(entries) and the answer cannot change for an opened archive.
+    pub(crate) fn cdb_paths(&self) -> &[String] {
+        self.cdb_paths.get_or_init(|| {
+            self.list_files()
+                .into_iter()
+                .filter(|p| crate::asset_provider::is_materialsbeta_cdb_path(p))
+                .map(|p| p.to_owned())
+                .collect()
+        })
+    }
     pub(crate) fn extract(&self, path: &str) -> Result<Vec<u8>, std::io::Error> {
         match &self.backend {
             Backend::Bsa(a) => a.extract(path),
@@ -557,9 +656,9 @@ pub(crate) fn open_with_numeric_siblings(
         );
         return;
     }
-    match Archive::open(path) {
-        Ok(a) => {
-            log_opened_archive(kind, path, &a, archives);
+    match Archive::open_shared(path) {
+        Ok((a, reused)) => {
+            log_opened_archive(kind, path, &a, archives, reused);
             archives.push(a);
         }
         Err(e) => {
@@ -579,9 +678,9 @@ pub(crate) fn open_with_numeric_siblings(
             );
             continue;
         }
-        match Archive::open(&sibling) {
-            Ok(a) => {
-                log_opened_archive(kind, &sibling, &a, archives);
+        match Archive::open_shared(&sibling) {
+            Ok((a, reused)) => {
+                log_opened_archive(kind, &sibling, &a, archives, reused);
                 archives.push(a);
             }
             Err(e) => {
@@ -597,7 +696,20 @@ pub(crate) fn open_with_numeric_siblings(
 /// Called before the new archive is pushed, so `archives` is exactly "every
 /// archive opened before this one" — the precedence group `new` is about to
 /// join and start outranking.
-pub(crate) fn log_opened_archive(kind: &str, path: &str, new: &Archive, archives: &[Archive]) {
+pub(crate) fn log_opened_archive(
+    kind: &str,
+    path: &str,
+    new: &Archive,
+    archives: &[Archive],
+    reused: bool,
+) {
+    if reused {
+        // #5288 — the shadow count is an O(entries × archives) file-table
+        // walk; it was already reported when this archive was first opened,
+        // and the answer for a repeat open in the same order is the same.
+        log::info!("Opened {kind} archive: '{path}' (shared handle)");
+        return;
+    }
     let shadow_count = count_shadowed_entries(new, archives);
     if shadow_count > 0 {
         log::info!(
@@ -804,5 +916,59 @@ mod tests {
         assert!(extract_first(archives.iter().rev(), r"textures\absent.dds").is_none());
         assert_eq!(archives[1].warned.lock().unwrap().len(), 1);
         assert!(archives[0].warned.lock().unwrap().is_empty());
+    }
+
+    /// #5288 — every provider rebuild (door cover, destination apply,
+    /// save-load) used to re-parse every archive's file table. `open_shared`
+    /// hands back the handle the previous build already parsed, and only
+    /// while the file still has the length and mtime it was opened with.
+    #[test]
+    fn open_shared_reuses_an_unchanged_archive_and_rereads_a_replaced_one() {
+        let entry = r"textures\shared.dds";
+        let path = write_one_entry_ba2("shared", entry, b"first contents", false);
+
+        let (first, reused) = Archive::open_shared(&path).expect("first open");
+        assert!(!reused, "nothing to reuse on the first open");
+        let (second, reused) = Archive::open_shared(&path).expect("second open");
+        assert!(reused, "an unchanged archive must come from the registry");
+        assert!(
+            std::sync::Arc::ptr_eq(&first.inner, &second.inner),
+            "reuse must share the opened file table, not copy it"
+        );
+
+        // Replaced on disk with different content (and length): the stale
+        // handle must not be served.
+        let path2 = write_one_entry_ba2("shared", entry, b"replacement bytes, longer", false);
+        assert_eq!(path, path2, "fixture rewrites the same path");
+        let (third, reused) = Archive::open_shared(&path).expect("reopen after replace");
+        assert!(!reused, "a replaced archive must be re-read");
+        assert_eq!(
+            third.extract(entry).expect("extract").as_slice(),
+            b"replacement bytes, longer"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #5288 — the Starfield CDB scan of a file table is O(entries); it is
+    /// memoised on the archive, so a provider rebuild over the shared handle
+    /// does not repeat it.
+    #[test]
+    fn cdb_paths_are_scanned_once_per_opened_archive() {
+        let path = write_one_entry_ba2(
+            "cdbscan",
+            r"materials\materialsbeta.cdb",
+            b"BETH not really a cdb",
+            false,
+        );
+        let archive = Archive::open(&path).expect("open");
+        let _ = std::fs::remove_file(&path);
+
+        let first = archive.cdb_paths();
+        assert_eq!(first, [r"materials\materialsbeta.cdb".to_string()]);
+        let second = archive.cdb_paths();
+        assert!(
+            std::ptr::eq(first.as_ptr(), second.as_ptr()),
+            "the second call must return the memoised scan"
+        );
     }
 }

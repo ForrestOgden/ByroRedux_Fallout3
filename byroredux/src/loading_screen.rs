@@ -314,6 +314,16 @@ impl LoadingScreen {
         resolved: &ResolvedLoadScreenModel,
     ) -> bool {
         let args = crate::cli_args::effective_args();
+        // #5288 — a rebuild is ~0.1 ms once the archives are in the shared
+        // handle registry (`Archive::open_shared`), so the cover no longer
+        // pays a second full archive-index open ahead of its first frame.
+        // The parsed model is likewise cached across covers
+        // (`SceneImportCache`); what a repeat cover still pays is the mesh /
+        // texture registration + BLAS of `load_nif_bytes`. Keeping the
+        // spawned stage resident between covers (the image artwork's keyed
+        // reuse) would leave its entities, meshes and BLAS live in the world
+        // through gameplay, so it is not done here — it needs a path that
+        // keeps a dormant stage out of rendering, RT and the cell unload walk.
         let tex_provider = crate::asset_provider::build_texture_provider(&args);
         let mut mat_provider = crate::asset_provider::build_material_provider(&args);
         // STAT MODL paths are usually folder-relative; the archive lookup

@@ -149,8 +149,8 @@ fn build_cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialInd
     // for the process with no log line — indistinguishable from
     // "this material is not in any CDB". Match, warn with the
     // source/path/error, then memoize.
-    let archive = match Archive::open(source) {
-        Ok(archive) => archive,
+    let archive = match Archive::open_shared(source) {
+        Ok((archive, _)) => archive,
         Err(e) => {
             log::warn!(
                 "Starfield CDB '{inner}' in '{source}': archive open \
@@ -250,15 +250,10 @@ pub(crate) fn discover_starfield_cdbs(
     source: &str,
     provider: &mut MaterialProvider,
 ) {
-    // Collect the matching paths first so the immutable `list_files`
-    // borrow is released before the mutable `provider` borrow per extract.
-    let cdb_paths: Vec<String> = archive
-        .list_files()
-        .into_iter()
-        .filter(|p| is_materialsbeta_cdb_path(p))
-        .map(|p| p.to_owned())
-        .collect();
-    for path in cdb_paths {
+    // Copy the matching paths out first so the borrow of the archive's
+    // memoised scan (#5288) is released before the mutable `provider` borrow
+    // per extract.
+    for path in archive.cdb_paths().to_vec() {
         let cache_key = format!("{source}|{path}");
         let cached = sf_cdb_cache()
             .lock()

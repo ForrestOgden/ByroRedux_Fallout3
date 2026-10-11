@@ -134,7 +134,7 @@ impl TextureProvider {
         let mut paths: Vec<String> = self
             .mesh_archives
             .iter()
-            .flat_map(Archive::all_paths)
+            .flat_map(|archive| archive.all_paths())
             .filter(|path| path.ends_with(".nif") || path.ends_with(".spt"))
             .map(str::to_owned)
             .collect();

@@ -896,52 +896,37 @@ impl App {
     ///   `WorldStreamingState` for the destination worldspace,
     ///   stream initial radius, reposition camera.
     ///
-    /// Provider construction is per-transition: rebuilding from CLI
-    /// args matches the boot-time `scene::setup_scene` pattern. The
-    /// cost is a few-hundred-ms BSA re-open per transition, acceptable
-    /// for the single-trigger door flow reachable today only via the
-    /// `door.teleport` console command.
+    /// Provider construction is per-transition (here, the door cover's
+    /// `LoadingScreen::begin*`, and `save_io`): the `build_*_provider`
+    /// calls rebuild from CLI args, matching the boot-time
+    /// `scene::setup_scene` pattern.
     ///
-    /// ## #2039 / PERF-D7-02 — caching design note
+    /// ## #2039 / #5288 — what a rebuild costs now
     ///
-    /// `build_texture_provider`/`build_material_provider` (called fresh
-    /// here, and identically in [`crate::save_io::execute_pending_save_loads`])
-    /// discard the BGSM/BGEM template cache and `MaterialProvider::csg_cache`
-    /// on every call — each rebuild re-opens and re-parses the same
-    /// BSA/BA2 archives the previous provider already warmed. Fine for a
-    /// single console-triggered transition; becomes a real per-door cost
-    /// once Stage 4 interactive door activation ships (every door use pays
-    /// the rebuild).
+    /// The expensive part of a rebuild was re-opening every `--bsa` /
+    /// `--textures-bsa` / `--materials-ba2` archive (file-table parse, the
+    /// #3637 shadow-count walk, and Starfield's CDB path scan) — measured
+    /// ~125 ms per texture + material pair on FO4 with a warm page cache, and
+    /// paid twice per door (cover + destination apply). Interactive doors
+    /// (the deferral's trigger) have shipped, so that is now removed at the
+    /// archive layer: `Archive::open_shared` keeps the opened handles in a
+    /// process-wide registry validated by file length + mtime, and a repeat
+    /// `build_*_provider` over the same archives is ~0.1 ms. That also covers
+    /// every other rebuild site without threading an App-owned provider slot
+    /// through `InteriorCellApply` / `assemble_exterior_streaming` (which take
+    /// the providers by value).
     ///
-    /// #2706 (SF-D3-02) — this note previously also listed
-    /// `MaterialProvider::sf_cdbs` among the discarded caches; no such
-    /// field ever existed (`MaterialProvider::sf_cdb_count: usize` is
-    /// presence-only). The real Starfield CDB byte cache
-    /// (`asset_provider::material::sf_cdb_cache`, #2705) is deliberately
-    /// NOT provider-scoped — it lives at module scope precisely so it
-    /// keeps working across every rebuild this note describes, without
-    /// waiting on the whole-provider caching below.
+    /// What a rebuild still discards is the *derived* state: the
+    /// BGSM/BGEM template cache and `MaterialProvider::csg_cache` start cold.
+    /// Those refill lazily per material, which is cheap next to the archive
+    /// tables; an App-owned provider keyed on the plugin-set identity (the
+    /// design this note used to sketch) is only worth it if that warm-up
+    /// shows up in a measurement.
     ///
-    /// Not implemented yet — not urgent before Stage 4 — but the shape
-    /// this should take when it lands:
-    ///
-    /// * **Cache key**: the loaded-plugin-set identity (the `masters` +
-    ///   `esm_path` combination CLI args resolve to), not the CLI args
-    ///   string itself — two transitions with the same effective plugin
-    ///   set should share a provider even if `--esm`/`--master` ordering
-    ///   differs.
-    /// * **Storage**: an `Option<(PluginSetKey, TextureProvider,
-    ///   MaterialProvider)>` slot on `App` (this struct), checked before
-    ///   the `build_*_provider` calls here and in `save_io`'s sibling
-    ///   call site; rebuild only on a key miss.
-    /// * **Invalidation**: any plugin-set change (different `--esm`,
-    ///   added/removed `--master`) must miss the cache — stale archives
-    ///   held open across a plugin swap would resolve textures/materials
-    ///   against the wrong content.
-    /// * **Lifetime interaction**: `drain_streaming_state` currently
-    ///   drops the streaming state's owned providers as part of teardown;
-    ///   caching means that ownership needs to move to `App` instead, so
-    ///   teardown no longer implies "provider goes away."
+    /// #2706 (SF-D3-02) — the Starfield CDB byte cache
+    /// (`asset_provider::material::sf_cdb_cache`, #2705) and the built
+    /// material indexes (`sf_cdb_index_cache`, #5291) are module-scope for
+    /// the same reason: they survive every rebuild.
     pub(crate) fn step_cell_transition(&mut self) {
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
