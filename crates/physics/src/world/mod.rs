@@ -258,6 +258,10 @@ pub struct PhysicsWorld {
     /// reset would discard the water forces. Cleared at the top of every
     /// `apply_buoyancy` run.
     pub(crate) water_force_targets: std::collections::HashSet<RigidBodyHandle>,
+    /// Bodies whose buoyancy lift is re-derived at every fixed tick rather
+    /// than held for the whole render frame (#5547) — see
+    /// [`crate::water::WaterLift`]. Refilled by each `apply_buoyancy` run.
+    pub(crate) water_lift: Vec<crate::water::WaterLift>,
     /// Rapier 0.36's soft bodies (ropes, cloth). The engine authors none;
     /// the set exists because `PhysicsPipeline::step` and
     /// `RigidBodySet::remove` take it.
@@ -472,6 +476,7 @@ impl PhysicsWorld {
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
             water_force_targets: std::collections::HashSet::new(),
+            water_lift: Vec::new(),
             soft_bodies: SoftBodySet::new(),
             islands: IslandManager::new(),
             broad_phase: BroadPhaseBvh::new(),
@@ -1263,6 +1268,9 @@ impl PhysicsWorld {
     /// (do not spend further substeps on the same freshly-invalidated
     /// contact island) or the wall-clock budget ran out (#1698).
     fn run_substep(&mut self, loop_start: std::time::Instant, budget: f32) -> SubstepOutcome {
+        // #5547 — buoyancy lift follows the body's pose tick by tick instead
+        // of the frame-start pose held across every substep.
+        self.refresh_water_lift();
         // Newly activated ragdolls are absent from Rapier's active
         // islands until *after* their first pipeline step. Snapshot all
         // dynamics so their first solve is recoverable too. #4682 — the

@@ -149,6 +149,17 @@ Archimedes lift and submerged damping to every dynamic body inside a
 `WaterVolume` (the WATAL physics sink — see
 [watal.md](watal.md) for the model itself).
 
+The scan runs once per render frame, but the **lift** it registers
+(`water::WaterLift`) is re-derived at the top of every fixed substep
+(`PhysicsWorld::refresh_water_lift`, #5547) from the body's current pose and
+velocity, adding only the change to rapier's persistent user force. Holding
+the frame-start lift over up to `MAX_SUBSTEPS` × rapier's internal solver
+steps made the float-vs-sink threshold scale with the render frame rate
+(≈4.8 BU at 60 fps, ≈28 BU at 12 fps); a vertical heave damping
+(`heave_hold_damping`, ∝ 1/AABB height) covers the remaining K-step hold for
+bodies under ~7 BU. The wave-height sample and the other forces (current,
+wind, link drag) stay frame-held.
+
 The target set has **two** sources, not one. The first walks
 `RapierHandles` and keeps rows whose `RigidBodyData` says `Dynamic`. That
 misses every ragdoll body: `build_ragdoll` records their handles only on

@@ -156,6 +156,80 @@ const WAVE_WAKE_DEPTH_DELTA: f32 = 0.1;
 
 impl Resource for WaterContactScratch {}
 
+/// One awake wet body's buoyancy lift, kept so the physics step can re-derive
+/// it at EVERY fixed tick (#5547).
+///
+/// `apply_buoyancy` runs once per render frame, before the step, and used to
+/// add a lift derived from that frame's pose, held constant over every
+/// substep (up to `MAX_SUBSTEPS`) × rapier's internal solver steps. A stiff
+/// spring (lift ∝ submerged fraction; k = 1.67·m·|g|/h for an AABB height
+/// `h`) held that long over-integrates and adds energy each frame, so the
+/// float-vs-sink threshold scaled with the render frame rate (≈4.8 BU at 60
+/// fps, ≈11 BU at 30 fps, ≈28 BU at 12 fps) and thin clutter never settled.
+/// The scan records the non-lift forces once (they stay in rapier's
+/// persistent `user_force`) and registers the lift here; each substep adds
+/// only the CHANGE in lift, so the placed-current marker's force and every
+/// other contributor are left untouched.
+#[derive(Clone, Copy)]
+pub(crate) struct WaterLift {
+    pub(crate) body: rapier3d::prelude::RigidBodyHandle,
+    /// The collider the submerged fraction is measured on (the scan's
+    /// representative AABB).
+    pub(crate) collider: rapier3d::prelude::ColliderHandle,
+    pub(crate) surface_y: f32,
+    pub(crate) mass: f32,
+    pub(crate) gravity_y: f32,
+    pub(crate) density_ratio: f32,
+    /// Extra vertical (heave) damping, 1/s — see [`heave_hold_damping`].
+    pub(crate) heave_damping: f32,
+    /// Lift + heave force currently contributed to the body's user force.
+    pub(crate) applied: Vec3,
+}
+
+/// Heave damping needed to keep the lift spring stable over the K-step hold
+/// rapier's internal solver substeps impose, for a body of AABB height
+/// `height` (#5547). Zero for bodies tall enough that the submerged damping
+/// alone (`base`) already dissipates the hold's energy gain.
+///
+/// The hold adds a factor ≈ `ω²·h_s²·K(K−1)/2` per tick with `ω² = ρ·|g|/h`
+/// (here ≈ 1146/h) — it scales as `1/h`, hence `HEAVE_HOLD_COEFFICIENT / h`.
+pub(crate) fn heave_hold_damping(height: f32, base: f32) -> f32 {
+    (HEAVE_HOLD_COEFFICIENT / height.max(1.0e-3) - base).max(0.0)
+}
+
+/// 1/s·BU: see [`heave_hold_damping`]. Measured, not derived — the
+/// `thin_floats_settle_at_any_frame_rate` matrix pins it.
+const HEAVE_HOLD_COEFFICIENT: f32 = 11.0;
+
+impl PhysicsWorld {
+    /// Re-derive every registered lift from the body's CURRENT pose and
+    /// velocity and add the change to its user force (#5547). Called at the
+    /// top of each fixed substep. Sleeping bodies keep their last value.
+    pub(crate) fn refresh_water_lift(&mut self) {
+        for i in 0..self.water_lift.len() {
+            let lift = self.water_lift[i];
+            let Some(body) = self.bodies.get(lift.body) else {
+                continue;
+            };
+            if body.is_sleeping() || !body.is_dynamic() {
+                continue;
+            }
+            let vy = body.linvel().y;
+            let Some(collider) = self.colliders.get(lift.collider) else {
+                continue;
+            };
+            let aabb = collider.compute_aabb();
+            let frac = submerged_fraction(aabb.mins.y, aabb.maxs.y, lift.surface_y);
+            let mut now =
+                buoyancy_force(lift.mass, frac, lift.gravity_y, lift.density_ratio);
+            now.y -= lift.heave_damping * lift.mass * vy;
+            let delta = now - lift.applied;
+            self.add_force(lift.body, delta, false);
+            self.water_lift[i].applied = now;
+        }
+    }
+}
+
 /// Archimedes buoyancy force on a submerged dynamic body — engine
 /// world-space (Y-up), Bethesda-unit "Newtons".
 ///
@@ -652,6 +726,9 @@ fn apply_buoyancy_with_scratch(
         in_current_prev.clear();
         return;
     }
+    // #5547 — last frame's per-tick lift registrations are stale by
+    // definition (water may have streamed out, the scan may early-return).
+    world.resource_mut::<PhysicsWorld>().water_lift.clear();
     let consts = world
         .try_resource::<PhysicsWaterConstants>()
         .map(|r| *r)
@@ -986,6 +1063,7 @@ fn apply_buoyancy_with_scratch(
                     // own API rather than the raw Rapier body (#2889).
                     let mut pending_force: Option<Vec3> = None;
                     let mut pending_torque: Option<Vec3> = None;
+                    let mut pending_lift: Option<WaterLift> = None;
                     let frac = submerged_fraction(min_y, max_y, surface_y);
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
@@ -1038,6 +1116,25 @@ fn apply_buoyancy_with_scratch(
                                     gravity_y,
                                     consts.buoyancy_density_ratio,
                                 );
+                                // #5547 — the lift (and the heave damping
+                                // that stabilises its hold) is re-derived at
+                                // every fixed tick by `refresh_water_lift`;
+                                // this scan's value is the first tick's.
+                                let heave_damping = heave_hold_damping(
+                                    max_y - min_y,
+                                    consts.linear_damping_in,
+                                );
+                                f.y -= heave_damping * mass * b.linvel().y;
+                                pending_lift = Some(WaterLift {
+                                    body: t.handles.body,
+                                    collider: t.handles.collider,
+                                    surface_y,
+                                    mass,
+                                    gravity_y,
+                                    density_ratio: consts.buoyancy_density_ratio,
+                                    heave_damping,
+                                    applied: f,
+                                });
                                 if is_link {
                                     // Drag as a force: water coefficient +
                                     // the (stored-but-inert) authored one.
@@ -1088,6 +1185,9 @@ fn apply_buoyancy_with_scratch(
                         }
                         if let Some(f) = pending_force.take() {
                             pw.add_force(t.handles.body, f, false);
+                        }
+                        if let Some(lift) = pending_lift.take() {
+                            pw.water_lift.push(lift);
                         }
                         if let Some(torque) = pending_torque.take() {
                             pw.add_torque(t.handles.body, torque, false);
@@ -2452,6 +2552,122 @@ mod tests {
             "a float that slept in calm water must wake once the waves have moved it \
              0.1 BU from its settled depth, at 144 fps as at 30"
         );
+    }
+
+    /// Settle a thin float released slightly below equilibrium; returns
+    /// (peak-to-peak y over the last 3 s, asleep at the end).
+    fn thin_float_settle(height: f32, fps: f32) -> (f32, bool) {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::resources::TotalTime;
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.insert_resource(WaterContactScratch::default());
+        world.insert_resource(TotalTime(0.0));
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial {
+                    wave_amplitude: 0.0,
+                    ..WaterMaterial::default()
+                },
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, 0.0, 500.0],
+            },
+        );
+        let start_y = -0.1 * height - 1.0;
+        let body = world.spawn();
+        world.insert(body, CollisionShape::Ball { radius: height * 0.5 });
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+                surface_material: 0,
+                part_surface_materials: Box::new([]),
+            },
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, start_y, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(body, Transform::from_translation(Vec3::new(0.0, start_y, 0.0)));
+        let dt = 1.0 / fps;
+        let frames = (30.0 * fps) as usize;
+        let mut ys = Vec::new();
+        for f in 0..frames {
+            world.resource_mut::<TotalTime>().0 = f as f32 * dt;
+            physics_sync_system(&world, dt);
+            if f as f32 > (27.0 * fps) {
+                ys.push(world.get::<Transform>(body).unwrap().translation.y);
+            }
+        }
+        let (lo, hi) = ys
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, h), y| (l.min(*y), h.max(*y)));
+        let asleep = world.resource::<PhysicsWorld>().active_island_counts().0 == 0;
+        (hi - lo, asleep)
+    }
+
+    /// #5547 — thin floats (plates, books, coins) must settle and sleep at
+    /// any render frame rate. The lift was derived once per frame and held
+    /// over every substep, so the float-vs-sink threshold scaled with the
+    /// frame rate (≈4.8 BU at 60 fps, ≈11 BU at 30, ≈28 BU at 12) and thin
+    /// clutter bobbed forever. With the lift re-derived each fixed tick the
+    /// frame rate no longer matters for h ≥ 6 BU; below that the K-step hold
+    /// inside rapier's solver needs `heave_hold_damping`
+    /// (`HEAVE_HOLD_COEFFICIENT`, measured: 4 and 6 leave h = 2–4 BU
+    /// limit-cycling at 60 fps, 8 and above settle every cell of this grid).
+    /// Fails on the pre-fix scan (p2p 5.7 / 20 / 74 BU at h = 4).
+    #[test]
+    fn thin_floats_settle_and_sleep_at_any_frame_rate() {
+        for height in [2.0_f32, 3.0, 4.0, 6.0, 10.0, 20.0] {
+            for fps in [60.0_f32, 30.0, 12.0] {
+                let (p2p, asleep) = thin_float_settle(height, fps);
+                assert!(
+                    asleep && p2p < 0.05,
+                    "h={height} BU at {fps} fps: peak-to-peak {p2p} BU over the last 3 s, \
+                     asleep={asleep} — a thin float must come to rest regardless of frame rate"
+                );
+            }
+        }
+    }
+
+    /// #5547 — the heave damping is only what the hold needs: nothing for
+    /// bodies the submerged damping already covers, growing as 1/h below.
+    #[test]
+    fn heave_hold_damping_is_zero_for_tall_bodies_and_grows_as_one_over_h() {
+        assert_eq!(heave_hold_damping(20.0, 1.5), 0.0);
+        assert_eq!(heave_hold_damping(HEAVE_HOLD_COEFFICIENT / 1.5, 1.5), 0.0);
+        let thin = heave_hold_damping(2.0, 1.5);
+        let thinner = heave_hold_damping(1.0, 1.5);
+        assert!((thin - (HEAVE_HOLD_COEFFICIENT / 2.0 - 1.5)).abs() < 1e-5);
+        assert!(thinner > thin);
+        assert!(heave_hold_damping(0.0, 1.5).is_finite(), "degenerate AABB is finite");
     }
 
     /// #3268 — sibling of the wind-up test below, with its manual
