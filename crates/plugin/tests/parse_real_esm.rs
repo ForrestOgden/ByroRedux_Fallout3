@@ -5332,19 +5332,19 @@ fn dialogue_greeting_and_forcegreet_fnv_floor() {
     );
 }
 
-/// #5367 — the Skyrim force-greet dialect, censused through
-/// `PackRecord::force_greet`.
+/// #5367 / #5511 — the Skyrim force-greet dialect, censused through
+/// `PackRecord::force_greet` with the `PKCU` template resolved.
 ///
 /// Skyrim authors force-greet as a `ForceGreet` leaf in the type-19
 /// procedure tree, its topic riding the `Topic` data input's first
 /// type-0 `PDTO` FormID (the same authored role FO3/FNV's `PKDD` plays
-/// for procedure 15). Census 2026-10-08 over Skyrim.esm's 5,961 PACKs:
-/// exactly 5 carry a `ForceGreet` leaf; 2 author a topic
-/// (`dunWhiteRiverWatch_WatchmanForcegreetTemplate` 0x00108E85 →
-/// 0x000812F2, `OrcGuardOutsideForcegreetPackage` 0x000BBAA4 →
-/// 0x000BBA8B); the other 3 author only the type-1 `PDTO` constant and
-/// resolve to the generic greeting — the same authored-remainder shape
-/// as FNV's 69 topic-less proc-15 packs.
+/// for procedure 15). #5511 census 2026-10-11 over Skyrim.esm's 5,961
+/// PACKs (re-measured, matching the audit's `fg_census.py`): 339 carry
+/// a `ForceGreet` leaf in their own or their `PKCU` template's tree —
+/// 5 own-tree templates plus 334 template instances; 320 of the
+/// instances author their own type-0 `PDTO` topic, the other 14 inherit
+/// a template that authors none and resolve to the generic greeting
+/// (with the templates' own 3 topic-less packs, 17 generic in all).
 #[test]
 #[ignore = "needs installed Skyrim SE data"]
 fn force_greet_skyrim_tree_dialect_floor() {
@@ -5357,11 +5357,24 @@ fn force_greet_skyrim_tree_dialect_floor() {
 
     let mut force_greets = 0usize;
     let mut generic = 0usize;
+    let mut own_topic_instances = 0usize;
     let mut topics = Vec::new();
     for pack in index.packages.values() {
-        match pack.force_greet() {
+        let template = pack
+            .package_template_form_id
+            .and_then(|form_id| index.packages.get(&form_id))
+            .unwrap_or(pack);
+        let instance_of_force_greet = pack.procedures.is_empty()
+            && template
+                .procedures
+                .iter()
+                .any(|procedure| procedure.procedure_type == "ForceGreet");
+        match pack.force_greet(template) {
             ForceGreetLine::Topic(topic) => {
                 force_greets += 1;
+                if instance_of_force_greet {
+                    own_topic_instances += 1;
+                }
                 topics.push((pack.form_id, topic));
             }
             ForceGreetLine::GenericGreeting => {
@@ -5372,12 +5385,17 @@ fn force_greet_skyrim_tree_dialect_floor() {
         }
     }
     assert!(
-        force_greets >= 5,
-        "ForceGreet-leaf PACK floor (census 5): {force_greets}"
+        force_greets >= 339,
+        "force-greet PACK floor, own tree or template (census 339): {force_greets}"
     );
     assert!(
-        generic >= 3,
-        "topic-less ForceGreet floor (census 3): {generic}"
+        generic >= 17,
+        "topic-less force-greet floor, own or inherited (census 17): {generic}"
+    );
+    assert!(
+        own_topic_instances >= 320,
+        "template instances authoring their own PDTO topic (census 320): \
+         {own_topic_instances}"
     );
     assert!(
         topics.contains(&(0x0010_8E85, 0x0008_12F2)),
@@ -5387,6 +5405,11 @@ fn force_greet_skyrim_tree_dialect_floor() {
     assert!(
         topics.contains(&(0x000B_BAA4, 0x000B_BA8B)),
         "the Orc-guard pack must resolve its authored topic (got {topics:?})"
+    );
+    assert!(
+        topics.contains(&(0x000C_D613, 0x000B_30FA)),
+        "the Vigilant-of-Stendarr template instance must resolve its own \
+         PDTO topic through the template's leaf (got {topics:?})"
     );
 }
 

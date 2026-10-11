@@ -278,9 +278,16 @@ impl AmbientBehavior {
             // any Dialogue package unconditionally — it is the
             // drivable installer for gates and fixtures, not an
             // ambient behavior (#5367 Phase F's design).
-            // The Skyrim tree dialect is NOT wired here — vanilla
-            // lists no ForceGreet-tree package on NPC_ defaults
-            // (installed by quest scripts instead).
+            // The Skyrim tree dialect is NOT wired here — #5511's
+            // census: 41 ForceGreet-tree packages sit on NPC_ `PKID`
+            // default lists (87 NPC_ edges — VigilantofStendarr's
+            // Daedric greeting ×39, the cart drivers ×6, Paarthurnax,
+            // the Whiterun housecarls …), so unlike the FO3/FNV arm
+            // there IS a default-list population to serve. Installing
+            // them is deferred until the instance's condition lists
+            // are modeled — the same #5376 fail-open gate this arm
+            // already applies (an uncatalogued condition function
+            // must not arm a player-control takeover).
             // The player reference is the literal 0x00000014 (never
             // plugin-local — Bethesda's special player REFR), so the
             // static check is exact: a PTDT that names anything else

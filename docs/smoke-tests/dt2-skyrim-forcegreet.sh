@@ -8,10 +8,15 @@
 #      0x000BBAA4 through `dialogue.forcegreet` — the Skyrim dialect
 #      resolves the ForceGreet tree leaf's `Topic` data input
 #      (PDTO type 0) and must report topic 000BBA8B.
-#   3. The generic arm: install the topic-less ForceGreet package
+#   3. The instance arm (#5511): install VigilantofStendarrForcegreet-
+#      Daedric 0x000CD613 — a concrete package whose ForceGreet tree
+#      lives on its 0x0003C1C4 PKCU template — and must resolve its own
+#      PDTO topic 000B30FA through the template's leaf. 334 of the 339
+#      Skyrim.esm force-greet packs are this shape.
+#   4. The generic arm: install the topic-less ForceGreet package
 #      0x0003C1C4 — authored with only the type-1 PDTO constant — and
 #      must report the generic greeting.
-#   4. Teleport the player beside Irileth (the walk-to-player step is
+#   5. Teleport the player beside Irileth (the walk-to-player step is
 #      the shared, dt1-gated bridge; Dragonsreach's furniture stalls
 #      the KCC walk, so the gate closes the distance directly) and
 #      poll `dialogue.status` until the conversation opens on
@@ -107,6 +112,15 @@ debug_command "dialogue.forcegreet $entity 0x000BBAA4" "$LOG_DIR/author.log" \
 grep -Fq 'topic 000BBA8B' "$LOG_DIR/author.log" \
     || fail "the ForceGreet leaf's Topic input must resolve 000BBA8B: $(sed -n '1,5p' "$LOG_DIR/author.log")"
 echo "smoke[dt2-skyrim-forcegreet]: authored-topic arm PASS — PDTO topic resolved"
+
+# ── The template-instance arm (#5511) ──────────────────────────────
+# A concrete package: no tree of its own, PKCU 0x0003C1C4 carrying the
+# ForceGreet leaf, and its own PDTO topic at the leaf's input index.
+debug_command "dialogue.forcegreet $entity 0x000CD613" "$LOG_DIR/instance.log" \
+    || fail 'instance install unavailable'
+grep -Fq 'topic 000B30FA' "$LOG_DIR/instance.log" \
+    || fail "the instance's own PDTO topic must resolve through the template leaf (000B30FA): $(sed -n '1,5p' "$LOG_DIR/instance.log")"
+echo "smoke[dt2-skyrim-forcegreet]: instance arm PASS — template leaf + own PDTO resolved"
 
 # ── The generic arm + the open ─────────────────────────────────────
 # Irileth does not own the Orc-guard topic's lines (its INFO conditions

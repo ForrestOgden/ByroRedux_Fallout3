@@ -158,23 +158,36 @@ see §5 phase 5.
    one). Live gate (`dt1-dialogue-layers.sh` leg 2): PACK 0x000613BB
    (`CitGunnyGreetPlayer`) walks Doc Mitchell to the player and opens
    topic 0xC8 with no activation.
-4. **Skyrim force-greet. Landed 2026-10-08.** Skyrim authors
-   force-greet as a `ForceGreet` leaf in the `PKCU` type-19 procedure
-   tree, its topic riding the `Topic` data input's first type-0 `PDTO`
-   FormID — the same authored role `PKDD` plays on FO3/FNV.
-   `PackRecord::force_greet` resolves both dialects (the FO3/FNV
-   procedure-15 byte can't false-positive on a tree pack: those read
-   18/19 and the classic enum stops at 16), the leaf's `PKC2` input
-   indexes resolving the topic first with an any-input fallback for
-   template inheritance. Census: exactly 5 `ForceGreet` packs in
-   Skyrim.esm, 2 with an authored topic
+4. **Skyrim force-greet. Landed 2026-10-08; template instances
+   2026-10-11 (#5511).** Skyrim authors force-greet as a `ForceGreet`
+   leaf in the `PKCU` type-19 procedure tree, its topic riding the
+   `Topic` data input's first type-0 `PDTO` FormID — the same authored
+   role `PKDD` plays on FO3/FNV. A concrete package keeps its tree on
+   the `PKCU` *template* and carries only data-input values, so
+   `PackRecord::force_greet` takes the caller-resolved template (the
+   `from_package` convention): the leaf is sought on the package's own
+   tree first, then the template's, and the topic reads the instance's
+   own `PDTO` at the leaf's `PKC2` indexes first, then the template's
+   (the FO3/FNV procedure-15 byte can't false-positive on a tree pack:
+   those read 18/19 and the classic enum stops at 16). Census
+   (#5511, re-measured over Skyrim.esm's 5,961 PACKs): 339 force-greet
+   packs — 5 own-tree templates plus 334 template instances, 320 of
+   which author their own `PDTO` topic (e.g.
+   `VigilantofStendarrForcegreetDaedric` 0x000CD613 → 0x000B30FA); 2
+   templates author a topic
    (`dunWhiteRiverWatch_WatchmanForcegreetTemplate` 0x00108E85 →
    0x000812F2, `OrcGuardOutsideForcegreetPackage` 0x000BBAA4 →
-   0x000BBA8B), the other 3 generic-greeting — the same authored
-   remainder as FNV. `dialogue.forcegreet` installs either dialect;
-   `dt2-skyrim-forcegreet.sh` gates the resolution arms and the
-   activation-less open (DialogueGenericHello). The SM `ADIA` tie-in
-   remains deferred with the ADIA-family decode (#5366 §3.1).
+   0x000BBA8B); the topic-less remainder (3 templates + 14 instances)
+   generic-greets — the same authored remainder as FNV. 41 of the
+   instances sit on NPC_ `PKID` default lists (87 edges — the
+   vigilants, the cart drivers, Paarthurnax, the housecarls), but
+   ambient selection still does not install them: the instance's
+   condition lists are not modeled, the same #5376 fail-open gate the
+   FO3/FNV arm applies. `dialogue.forcegreet` installs either dialect;
+   `dt2-skyrim-forcegreet.sh` gates the resolution arms (own-tree and
+   instance) and the activation-less open (DialogueGenericHello). The
+   SM `ADIA` tie-in remains deferred with the ADIA-family decode
+   (#5366 §3.1).
 5. **V — voice. Landed 2026-10-08.** The authored FNV file-name
    convention is `sound\voice\<plugin>\<voice-type EDID>\<quest>_<topic>_<local
    id 8-hex>_<n>.ogg` — composed from the owning quest's and topic's

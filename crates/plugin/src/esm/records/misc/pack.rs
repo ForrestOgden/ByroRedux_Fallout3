@@ -421,7 +421,21 @@ impl PackRecord {
     /// `procedure_type == 15` byte test can't false-positive on a
     /// Skyrim tree pack: those read 18/19, and the FO3/FNV enum stops
     /// at 16.
-    pub fn force_greet(&self) -> ForceGreetLine {
+    ///
+    /// `template` is the `package_template_form_id` chase the caller
+    /// already resolves for `AmbientBehavior::from_package` — the
+    /// package's `PKCU` template from the loaded index, or the package
+    /// itself when it references none. A Skyrim concrete package names
+    /// its behaviour only through the template and carries data-input
+    /// *values*; the tree lives on the template (#5511 census: 334 of
+    /// the 339 Skyrim.esm force-greet packs are template instances —
+    /// only the 5 templates author a tree of their own). The leaf is
+    /// therefore sought on the package's own tree first, then the
+    /// template's; the topic is read from the instance's own data
+    /// inputs at the leaf's indexes first, then the template's — the
+    /// instance's `PDTO` is the authored override, the template's the
+    /// default.
+    pub fn force_greet(&self, template: &PackRecord) -> ForceGreetLine {
         const PROCEDURE_DIALOGUE: u32 = 15;
         if self.procedure_type == PROCEDURE_DIALOGUE {
             return match self.dialogue_topic {
@@ -432,6 +446,7 @@ impl PackRecord {
         let Some(leaf) = self
             .procedures
             .iter()
+            .chain(template.procedures.iter())
             .find(|procedure| procedure.procedure_type == "ForceGreet")
         else {
             return ForceGreetLine::NotAForceGreet;
@@ -453,13 +468,24 @@ impl PackRecord {
                     .iter()
                     .find(|input| input.index == *index)
                     .and_then(topic_from)
+                    .or_else(|| {
+                        template
+                            .data_inputs
+                            .iter()
+                            .find(|input| input.index == *index)
+                            .and_then(topic_from)
+                    })
             })
             .or_else(|| {
                 // No indexed input carried a topic — the leaf inherits
                 // its template's inputs (concrete packs reference the
                 // template's slots only through `PKCU`). Any authored
-                // `Topic` input on the pack is the same authored line.
-                self.data_inputs.iter().find_map(topic_from)
+                // `Topic` input on the pack or its template is the same
+                // authored line.
+                self.data_inputs
+                    .iter()
+                    .chain(template.data_inputs.iter())
+                    .find_map(topic_from)
             });
         match topic {
             Some(topic) => ForceGreetLine::Topic(topic),
@@ -1033,14 +1059,20 @@ mod tests {
             &None,
             GameKind::default(),
         );
-        assert_eq!(with_topic.force_greet(), ForceGreetLine::Topic(0xC8E));
+        assert_eq!(
+            with_topic.force_greet(&with_topic),
+            ForceGreetLine::Topic(0xC8E)
+        );
         let no_topic = parse_pack(
             0x2,
             &[sub(b"PKDT", pkdt.clone())],
             &None,
             GameKind::default(),
         );
-        assert_eq!(no_topic.force_greet(), ForceGreetLine::GenericGreeting);
+        assert_eq!(
+            no_topic.force_greet(&no_topic),
+            ForceGreetLine::GenericGreeting
+        );
         let mut travel = Vec::new();
         travel.extend_from_slice(&0u32.to_le_bytes());
         travel.extend_from_slice(&6u32.to_le_bytes());
@@ -1050,9 +1082,13 @@ mod tests {
             &None,
             GameKind::default(),
         );
-        assert_eq!(travel_pack.force_greet(), ForceGreetLine::NotAForceGreet);
+        assert_eq!(
+            travel_pack.force_greet(&travel_pack),
+            ForceGreetLine::NotAForceGreet
+        );
 
         // Skyrim: a ForceGreet leaf whose PKC2 indexes the Topic input.
+        // An own-tree pack (the 5 templates) is its own template.
         let mut skyrim = PackRecord {
             form_id: 0x4,
             ..Default::default()
@@ -1078,17 +1114,26 @@ mod tests {
                 },
             ]),
         });
-        assert_eq!(skyrim.force_greet(), ForceGreetLine::Topic(0xBBA8B));
+        assert_eq!(
+            skyrim.force_greet(&skyrim),
+            ForceGreetLine::Topic(0xBBA8B)
+        );
 
         // Template inheritance: the leaf authors no PKC2 indexes, the
         // Topic input still rides the pack — resolved by fallback.
         skyrim.procedures[0].data_input_indexes.clear();
-        assert_eq!(skyrim.force_greet(), ForceGreetLine::Topic(0xBBA8B));
+        assert_eq!(
+            skyrim.force_greet(&skyrim),
+            ForceGreetLine::Topic(0xBBA8B)
+        );
 
         // A ForceGreet leaf with no topic anywhere greets generically —
         // the authored shape of 3 of the corpus's 5 packs.
         skyrim.data_inputs.clear();
-        assert_eq!(skyrim.force_greet(), ForceGreetLine::GenericGreeting);
+        assert_eq!(
+            skyrim.force_greet(&skyrim),
+            ForceGreetLine::GenericGreeting
+        );
 
         // A tree without a ForceGreet leaf is not a force-greet pack,
         // even when it carries a Topic input (the Say procedure's shape).
@@ -1101,7 +1146,61 @@ mod tests {
                 value: 0x000B_BA8B,
             }]),
         });
-        assert_eq!(skyrim.force_greet(), ForceGreetLine::NotAForceGreet);
+        assert_eq!(
+            skyrim.force_greet(&skyrim),
+            ForceGreetLine::NotAForceGreet
+        );
+
+        // The #5511 dialect — a concrete template instance. The tree
+        // (and the leaf's PKC2 indexes) live on the template; the
+        // instance carries only its own data-input values. This is the
+        // authored shape of 334 of Skyrim.esm's 339 force-greet packs
+        // (e.g. VigilantofStendarrForcegreetDaedric 0x000CD613, whose
+        // template is the 0x0003C1C4 ForceGreet pack).
+        skyrim.procedures[0].procedure_type = "ForceGreet".to_string();
+        let template = skyrim.clone();
+        let mut instance = PackRecord {
+            form_id: 0x5,
+            package_template_form_id: Some(0x4),
+            ..Default::default()
+        };
+        instance.data_inputs.push(PackDataInput {
+            index: 7,
+            value_type: "Topic".to_string(),
+            value: PackDataValue::Topics(vec![PackTopicData {
+                topic_type: 0,
+                value: 0x000B_30FA,
+            }]),
+        });
+        assert_eq!(
+            instance.force_greet(&template),
+            ForceGreetLine::Topic(0xB30FA),
+            "the instance's own PDTO topic must win at the template \
+             leaf's indexes"
+        );
+        // Without its own topic the instance inherits the template's —
+        // the default-value semantic of the leaf's input slot.
+        instance.data_inputs.clear();
+        assert_eq!(
+            instance.force_greet(&template),
+            ForceGreetLine::Topic(0xBBA8B)
+        );
+        // No topic anywhere on the pair: generic greeting (14 of the
+        // 334 corpus instances, whose templates author none either).
+        let mut bare_template = template.clone();
+        bare_template.data_inputs.clear();
+        assert_eq!(
+            instance.force_greet(&bare_template),
+            ForceGreetLine::GenericGreeting
+        );
+        // An instance whose template has no ForceGreet tree at all
+        // classifies NotAForceGreet, not generic — it isn't one.
+        let mut wander_template = bare_template.clone();
+        wander_template.procedures[0].procedure_type = "Wander".to_string();
+        assert_eq!(
+            instance.force_greet(&wander_template),
+            ForceGreetLine::NotAForceGreet
+        );
     }
 
     /// The procedure type is a single BYTE at PKDT offset 4. Real FNV

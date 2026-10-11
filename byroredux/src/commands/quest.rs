@@ -892,9 +892,16 @@ impl ConsoleCommand for DialogueForceGreetCommand {
         };
         // Both authored dialects install the same bridge: FO3/FNV's
         // `PKDT` procedure 15 (`PKDD` topic) and Skyrim+'s `ForceGreet`
-        // procedure-tree leaf (its `Topic` data input).
+        // procedure-tree leaf (its `Topic` data input). #5511: a Skyrim
+        // concrete package keeps its tree on the `PKCU` template, so the
+        // template is resolved through the loaded index — the same
+        // `from_package` convention — before classifying.
         use byroredux_plugin::esm::records::misc::ForceGreetLine;
-        let line = pack.force_greet();
+        let template = pack
+            .package_template_form_id
+            .and_then(|form_id| index.0.packages.get(&form_id))
+            .unwrap_or(pack);
+        let line = pack.force_greet(template);
         if matches!(line, ForceGreetLine::NotAForceGreet) {
             return CommandOutput::error(format!(
                 "PACK {pack_id:08X} ('{}') carries no force-greet \
