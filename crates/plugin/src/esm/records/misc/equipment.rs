@@ -575,10 +575,7 @@ mod remap_tests {
     }
 
     fn mk(typ: &[u8; 4], v: u32) -> SubRecord {
-        SubRecord {
-            sub_type: *typ,
-            data: v.to_le_bytes().to_vec(),
-        }
+        crate::esm::records::test_support::sub(typ, v.to_le_bytes())
     }
 
     /// #3714 — walk the whole FO4 armor-equip chain under a non-identity

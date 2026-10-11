@@ -37,8 +37,9 @@ pub(crate) fn modl(path: &str) -> SubRecord {
 }
 
 /// A null-terminated string payload — the shape every `edid` / `modl` copy
-/// open-coded.
-fn zstring(typ: &[u8; 4], value: &str) -> SubRecord {
+/// open-coded. `pub(crate)` so a test needing another 4-CC (`FNAM`, a
+/// `MODT` path, …) reaches for this instead of re-wrapping [`sub`] (#5454).
+pub(crate) fn zstring(typ: &[u8; 4], value: &str) -> SubRecord {
     let mut z = value.as_bytes().to_vec();
     z.push(0);
     sub(typ, z)
@@ -71,10 +72,18 @@ mod tests {
         assert_eq!(modl("a\\b.nif").sub_type, *b"MODL");
     }
 
-    /// #3865 — the consolidation only holds if a new record parser's test
-    /// module reaches for this file instead of opening with its own copy.
-    /// 33 copies across 30 files is what "everyone writes their own" looks
-    /// like after enough parsers, and each one was individually reasonable.
+    /// #3865 / #5454 — the consolidation only holds if a new record parser's
+    /// test module reaches for this file instead of opening with its own
+    /// copy. 33 copies across 30 files is what "everyone writes their own"
+    /// looks like after enough parsers, and each one was individually
+    /// reasonable.
+    ///
+    /// Two checks, because a name allowlist alone is what let `sub_of`
+    /// through (#5454): a builder is flagged when it is *called* one of the
+    /// known names, OR when its body is the generic shape — a fn returning
+    /// `SubRecord` that builds the struct from a **parameter** 4-CC
+    /// (`sub_type: *code`). Literal-4-CC builders (`sub_type: *b"CTDA"`) are
+    /// fixtures for one record kind, not copies of [`sub`], and are fine.
     ///
     /// Scans the crate source at test time rather than by `include_str!` —
     /// 30 files cannot be enumerated by hand without reintroducing exactly
@@ -87,6 +96,7 @@ mod tests {
             .iter()
             .map(|n| format!("{} {n}(", "fn"))
             .collect();
+        let generic_body = format!("{}: *", "sub_type");
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
@@ -107,11 +117,20 @@ mod tests {
                 }
                 scanned += 1;
                 let src = std::fs::read_to_string(&path).expect("readable source");
-                for (i, line) in src.lines().enumerate() {
+                let lines: Vec<&str> = src.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
                     if !line.contains("-> SubRecord") {
                         continue;
                     }
-                    if needles.iter().any(|n| line.contains(n.as_str())) {
+                    let by_name = needles.iter().any(|n| line.contains(n.as_str()));
+                    // The struct literal sits within the first few lines
+                    // of a builder body; a lowercase `*b"…"` literal never
+                    // matches because the needle ends at `*` + non-`b`.
+                    let by_body = lines[i + 1..lines.len().min(i + 6)].iter().any(|body| {
+                        body.contains(generic_body.as_str())
+                            && !body.contains(&format!("{}b\"", generic_body))
+                    });
+                    if by_name || by_body {
                         offenders.push(format!("{}:{}", path.display(), i + 1));
                     }
                 }
@@ -125,7 +144,7 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "these modules declare their own `SubRecord` fixture builder instead of \
-             using `esm::records::test_support` (#3865): {offenders:#?}",
+             using `esm::records::test_support` (#3865, #5454): {offenders:#?}",
         );
     }
 }

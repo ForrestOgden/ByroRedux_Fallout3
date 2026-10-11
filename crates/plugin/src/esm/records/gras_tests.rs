@@ -5,14 +5,8 @@
 //! than surviving to the real-data gate.
 
 use super::*;
-use crate::esm::records::test_support::sub;
+use crate::esm::records::test_support::{sub, zstring};
 use crate::esm::records::tree::ObjectBounds;
-
-fn zstring(code: &[u8; 4], s: &str) -> SubRecord {
-    let mut z = s.as_bytes().to_vec();
-    z.push(0);
-    sub(code, z)
-}
 
 fn obnd(min: [i16; 3], max: [i16; 3]) -> SubRecord {
     let mut d = Vec::with_capacity(ObjectBounds::WIRE_SIZE);

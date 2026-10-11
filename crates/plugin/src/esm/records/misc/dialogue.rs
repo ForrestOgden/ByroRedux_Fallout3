@@ -1744,6 +1744,7 @@ mod tests {
 mod oblivion_generation_tests {
     use super::*;
     use crate::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+    use crate::esm::records::test_support::sub;
 
     fn get_is_id(form_id: u32, positive: bool) -> Condition {
         Condition {
@@ -1778,7 +1779,7 @@ mod oblivion_generation_tests {
     #[test]
     fn a_single_positive_get_is_id_is_the_speaker() {
         let subs = vec![
-            sub_of(b"NAM1", b"Greetings.\0"),
+            sub(b"NAM1", b"Greetings.\0"),
             ctda_of(&get_is_id(0x0002_1234, true)),
         ];
         let parsed = parse_info(0xAAAA, &subs, &None);
@@ -1816,7 +1817,7 @@ mod oblivion_generation_tests {
     fn an_authored_anam_is_never_overridden_by_conditions() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();
         let subs = vec![
-            sub_of(b"ANAM", &anam),
+            sub(b"ANAM", &anam),
             ctda_of(&get_is_id(0x0002_1234, true)),
         ];
         assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0xDEAD_BEEF);
@@ -1864,13 +1865,6 @@ mod oblivion_generation_tests {
         assert!(tree.chains.is_empty());
     }
 
-    fn sub_of(code: &[u8; 4], data: &[u8]) -> SubRecord {
-        SubRecord {
-            sub_type: *code,
-            data: data.to_vec(),
-        }
-    }
-
     /// A 24-byte Oblivion CTDA payload for `condition`.
     fn ctda_of(condition: &Condition) -> SubRecord {
         let mut data = Vec::with_capacity(24);
@@ -1885,6 +1879,6 @@ mod oblivion_generation_tests {
         data.extend_from_slice(&condition.param_1.to_le_bytes());
         data.extend_from_slice(&condition.param_2.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes()); // run-on absent pre-FO3
-        sub_of(b"CTDA", &data)
+        sub(b"CTDA", &data)
     }
 }

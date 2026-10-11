@@ -121,19 +121,13 @@ pub fn parse_soun(form_id: u32, subs: &[SubRecord]) -> SounRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::esm::records::test_support::{edid, sub};
-
-    fn zstring_sub(code: &[u8; 4], s: &str) -> SubRecord {
-        let mut z = s.as_bytes().to_vec();
-        z.push(0);
-        sub(code, z)
-    }
+    use crate::esm::records::test_support::{edid, sub, zstring};
 
     #[test]
     fn parse_soun_picks_edid_and_fnam_path() {
         let subs = vec![
             edid("FXExplosion01"),
-            zstring_sub(b"FNAM", "fx\\explosion01.wav"),
+            zstring(b"FNAM", "fx\\explosion01.wav"),
         ];
         let s = parse_soun(0x0001_2345, &subs);
         assert_eq!(s.form_id, 0x0001_2345);
@@ -159,7 +153,7 @@ mod tests {
     fn parse_soun_folder_form_fnam_is_flagged_as_folder() {
         let subs = vec![
             edid("EMTCeilingCrumble"),
-            zstring_sub(b"FNAM", "fx\\amb\\ceilingcrumble\\"),
+            zstring(b"FNAM", "fx\\amb\\ceilingcrumble\\"),
         ];
         let s = parse_soun(0x000A_0000, &subs);
         assert_eq!(s.sound_path, "fx\\amb\\ceilingcrumble\\");
@@ -171,7 +165,7 @@ mod tests {
     /// too, consistent with the `/`→`\` normalisation consumers apply.
     #[test]
     fn parse_soun_forward_slash_folder_form_is_flagged_as_folder() {
-        let subs = vec![zstring_sub(b"FNAM", "fx/amb/ceilingcrumble/")];
+        let subs = vec![zstring(b"FNAM", "fx/amb/ceilingcrumble/")];
         assert!(parse_soun(0x000A_0001, &subs).is_folder());
     }
 
@@ -180,7 +174,7 @@ mod tests {
     /// reference in folder form.
     #[test]
     fn parse_soun_file_form_fnam_is_not_a_folder() {
-        let subs = vec![zstring_sub(b"FNAM", "fx\\amb\\ceilingcrumble\\amb_ceilingcrumble_01.wav")];
+        let subs = vec![zstring(b"FNAM", "fx\\amb\\ceilingcrumble\\amb_ceilingcrumble_01.wav")];
         assert!(!parse_soun(0x000A_0002, &subs).is_folder());
     }
 
@@ -192,7 +186,7 @@ mod tests {
         // The all-zero SNDX here has the Loop bit unset.
         let subs = vec![
             edid("AMBWind"),
-            zstring_sub(b"FNAM", "amb\\wind_loop.wav"),
+            zstring(b"FNAM", "amb\\wind_loop.wav"),
             sub(b"SNDX", vec![0u8; 16]),
             sub(b"CNAM", 0x0001_0000u32.to_le_bytes()),
         ];
@@ -210,7 +204,7 @@ mod tests {
         sndd[4] = 0x10; // Flags low byte: Loop bit set
         let subs = vec![
             edid("AMBWindLoop"),
-            zstring_sub(b"FNAM", "amb\\wind_loop.wav"),
+            zstring(b"FNAM", "amb\\wind_loop.wav"),
             sub(b"SNDD", sndd),
         ];
         let s = parse_soun(0x0006_0000, &subs);
