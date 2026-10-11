@@ -1100,6 +1100,15 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         }
         let body = body_builder.build();
         let body_handle = pw.bodies.insert(body);
+        // #5544 — rapier 0.36's begin-touch strong-wake wakes this body on
+        // the first stepping frame's narrow phase; `step` re-sleeps it (and
+        // drops its settle crossings) once that frame has run, restoring
+        // the contract the comment above describes.
+        if matches!(body_type, RigidBodyType::Dynamic) {
+            let t = n.global.translation;
+            pw.spawn_sleep_pending
+                .push((body_handle, rapier3d::prelude::Vector::new(t.x, t.y, t.z)));
+        }
         // #4682 — index dynamics for the per-substep recovery snapshot.
         if matches!(body_type, RigidBodyType::Dynamic) {
             pw.dynamic_bodies.push(body_handle);
@@ -1581,7 +1590,79 @@ mod phase_sync_tests {
         );
     }
 
-    fn unit_box() -> CollisionShape {
+
+    /// #5544 — rapier 0.36's begin-touch strong-wake wakes every
+    /// authored-resting dynamic newcomer on its first stepping frame (0.22
+    /// left a brand-new collider asleep: no collision-graph index for the
+    /// user-change wake). The audit's probe measured 50 resting boxes all
+    /// awake for rapier's ~1 s sleep timer after one unrelated wake, each
+    /// emitting a high-force `started` crossing. The explicit re-sleep
+    /// restores the spawn-asleep contract: after the first stepping frame,
+    /// a newcomer still at its spawn pose is asleep again and its settle
+    /// crossings are dropped.
+    #[test]
+    fn spawned_asleep_clutter_resleeps_after_its_first_stepping_frame() {
+        let mut world = physics_world();
+        // A fixed floor and a dynamic box resting on it, streamed in
+        // through the production registration path.
+        let floor = world.spawn();
+        world.insert(
+            floor,
+            GlobalTransform::new(Vec3::new(0.0, -1.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(
+            floor,
+            CollisionShape::Cuboid {
+                half_extents: Vec3::new(50.0, 1.0, 50.0),
+            },
+        );
+        world.insert(floor, RigidBodyData::static_body());
+        let clutter = world.spawn();
+        world.insert(
+            clutter,
+            GlobalTransform::new(Vec3::new(0.0, 1.5, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(clutter, unit_box());
+        world.insert(
+            clutter,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 10.0,
+                ..RigidBodyData::static_body()
+            },
+        );
+
+        // A fresh world arms one step on its first frame, so this call is
+        // both the streaming frame and the first stepping frame: the
+        // begin-touch strong-wake fires here, and the post-loop re-sleep
+        // answers it in the same step. The island set catches up over at
+        // most a couple more frames.
+        physics_sync_system(&world, crate::world::PHYSICS_DT);
+        let mut settled = false;
+        for _ in 0..4 {
+            let (awake_dyn, _) = world.resource::<PhysicsWorld>().active_island_counts();
+            if awake_dyn == 0 {
+                settled = true;
+                break;
+            }
+            physics_sync_system(&world, crate::world::PHYSICS_DT);
+        }
+        assert!(
+            settled,
+            "the newcomer must re-sleep after its first stepping frame, not ride the \
+             strong-wake for rapier's sleep timer (pre-fix it stays awake ~1 s)"
+        );
+        // And its settle crossings never reached the impact consumer.
+        assert!(
+            world
+                .resource_mut::<PhysicsWorld>()
+                .take_contact_force_events()
+                .is_empty(),
+            "an authored-resting item's first-step contact is not an impact"
+        );
+    }
+
+        fn unit_box() -> CollisionShape {
         CollisionShape::Cuboid {
             half_extents: Vec3::splat(1.0),
         }

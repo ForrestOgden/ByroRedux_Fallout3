@@ -85,6 +85,12 @@ force the whole island awake. Regression test
 `atw_scheduler` dropped from **3005 ms → 1 ms** across the full flight. (The proper
 *complement* — a terrain/water-plane collider so genuinely-woken bodies rest on the
 ground instead of falling — is WATAL §7 Phase 2 + a PHYSAL item, not done yet.)
+**#5544 caveat:** since rapier 0.36, "asleep" is asleep-until-processed, not
+asleep-until-touched — the begin-touch strong-wake wakes every brand-new collider
+on its first stepping frame's narrow phase, so `PhysicsWorld::step` re-sleeps each
+`spawn_sleep_pending` newcomer still at its spawn pose after that frame (and drops
+its settle force-crossings from the impact batch). The cost contract above holds
+through that explicit re-sleep.
 
 ### 0.2 Bug B — stale RT-geometry descriptor (bindings 8/9 use-after-free)
 

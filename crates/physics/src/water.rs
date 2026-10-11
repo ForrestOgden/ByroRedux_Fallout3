@@ -954,9 +954,11 @@ fn apply_buoyancy_with_scratch(
                     // hold authored + ragdoll lever, which were equally
                     // inert on links).
                     let is_link = pw.is_multibody_link(t.handles.body);
-                    if is_link {
-                        pw.note_water_force_target(t.handles.body);
-                    }
+                    // #5540/#5544 — this pass owns the body's user force
+                    // while wet: the dry-link damping pass must not reset
+                    // it, and the spawn re-sleep must not undo a
+                    // legitimate dry→wet entry wake before it integrates.
+                    pw.note_water_force_target(t.handles.body);
                     // Carries the derived force out of the `bodies.get_mut`
                     // borrow so it can be applied through `PhysicsWorld`'s
                     // own API rather than the raw Rapier body (#2889).
@@ -1110,6 +1112,10 @@ fn apply_buoyancy_with_scratch(
                         if b.is_sleeping() {
                             b.wake_up(true);
                             woke_any = true;
+                            // #5544 — a deliberate current wake is not the
+                            // begin-touch strong-wake; keep the re-sleep
+                            // off it.
+                            pw.note_water_force_target(t.handles.body);
                         }
                     }
                 }
