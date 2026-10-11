@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use sysinfo::Disks;
+use sysinfo::{DiskRefreshKind, Disks};
 
 const MIN_HEADROOM_BYTES: u64 = 1024 * 1024;
 
@@ -8,6 +8,7 @@ const MIN_HEADROOM_BYTES: u64 = 1024 * 1024;
 struct VolumeSpace {
     mount_point: PathBuf,
     available_bytes: u64,
+    read_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +41,18 @@ pub(crate) fn ensure_output_and_scratch_space(
 ) -> Result<SpacePreflight> {
     let output = volume_for(output_path)?;
     let scratch = volume_for(scratch_path)?;
+    // A read-only OUTPUT or scratch volume would fail later, after the
+    // (potentially hours-long) upscale pass — refuse up front. The input
+    // volume is deliberately not checked: reading it read-only is fine.
+    for (role, volume) in [("output", &output), ("scratch", &scratch)] {
+        if volume.read_only {
+            bail!(
+                "{} disk {} is read-only",
+                role,
+                volume.mount_point.display()
+            );
+        }
+    }
     let shared_volume = output.mount_point == scratch.mount_point;
 
     if shared_volume {
@@ -86,7 +99,11 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 
 fn volume_for(path: &Path) -> Result<VolumeSpace> {
     let ancestor = existing_ancestor(path)?;
-    let disks = Disks::new_with_refreshed_list();
+    // Only the storage counters feed the preflight; `new_with_refreshed_
+    // list` refreshes every disk counter for every disk.
+    let disks = Disks::new_with_refreshed_list_specifics(
+        DiskRefreshKind::nothing().with_storage(),
+    );
     let disk = disks
         .list()
         .iter()
@@ -96,6 +113,7 @@ fn volume_for(path: &Path) -> Result<VolumeSpace> {
     Ok(VolumeSpace {
         mount_point: disk.mount_point().to_path_buf(),
         available_bytes: disk.available_space(),
+        read_only: disk.is_read_only(),
     })
 }
 
