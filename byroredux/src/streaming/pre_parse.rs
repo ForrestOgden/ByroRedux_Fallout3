@@ -137,7 +137,12 @@ pub(super) fn cell_pre_parse_worker(
     // backlog remains non-empty; once recv_next_batch_request observes an
     // empty queue it clears the keys before blocking for the next dispatch.
     // This bounds the set by one dispatch and prevents a later, independent
-    // crossing from losing a needed payload to an old memo entry.
+    // crossing from losing a needed payload to an old memo entry. The
+    // premise — a memoed key is resident when a later apply needs it —
+    // holds because the main thread salvages a stale payload's imports
+    // into the registry instead of dropping them (#5512); before that,
+    // a key emitted only in a dropped payload never landed and the later
+    // apply fell back to a main-thread parse inside the frame budget.
     let mut batch_keys = HashSet::new();
     // `Geometry.csg` handles for precombine decode, opened once per plugin
     // for the thread's life (M49).

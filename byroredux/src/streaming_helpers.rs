@@ -629,8 +629,11 @@ pub fn drain_streaming_state(
 /// Result of applying one worker payload through the canonical exterior
 /// main-thread boundary.
 pub enum StreamingPayloadOutcome {
-    /// The payload no longer matches an in-flight request and was discarded
-    /// before any cache, ECS, or GPU mutation.
+    /// The payload no longer matches an in-flight request: its cell spawn
+    /// was discarded before any ECS or GPU mutation. Its parsed NIF
+    /// entries are still salvaged into the import cache (#5512) — the
+    /// worker's skip filters assume they landed — so a later request for
+    /// a shared model applies without a main-thread parse fallback.
     DroppedStale,
     /// The request was current and its main-thread apply path ran. `center`
     /// is present when the coordinate resolved to a real exterior cell; it is
@@ -643,7 +646,8 @@ pub enum StreamingPayloadOutcome {
 
 fn finish_streaming_import(
     world: &mut byroredux_core::ecs::World,
-    state: &mut streaming::WorldStreamingState,
+    mat_provider: &mut crate::asset_provider::MaterialProvider,
+    has_texture: &dyn Fn(&str) -> bool,
     model_path: String,
     partial_opt: Option<streaming::PartialNifImport>,
 ) {
@@ -651,13 +655,13 @@ fn finish_streaming_import(
         Some(partial) => {
             cell_loader::finish_partial_import(
                 world,
-                Some(&mut state.mat_provider),
+                Some(mat_provider),
                 &model_path,
                 partial,
                 // #4636 — the streaming state carries the texture
                 // provider alongside the material one; route the merge's
                 // dead-path probe through it.
-                &|p| state.tex_provider.has_texture(p),
+                has_texture,
             );
         }
         None => {
@@ -680,13 +684,67 @@ fn finish_streaming_import(
     }
 }
 
+/// #5512 — finish a stale payload's parsed entries into the NIF import
+/// cache instead of discarding them with the payload.
+///
+/// Both of the worker's skip filters — the request's frozen
+/// `cached_keys` snapshot and the #3670 dispatch-batch memo — assume a
+/// key the worker skipped is resident in `NifImportRegistry` when a
+/// later apply needs it. Before this salvage a key emitted only in a
+/// stale-dropped payload never landed (the drop preceded any cache
+/// mutation), so the next request sharing the model — another cell, or
+/// the same coordinate re-requested at a newer generation — skipped it
+/// as a duplicate and its apply hit a main-thread parse fallback inside
+/// the frame budget. The imports themselves are valid regardless of the
+/// cell spawn's staleness; only the spawn was dead. Salvaging them also
+/// repairs the memo's stated premise (see `pre_parse.rs`: the memo is
+/// cleared when the queue empties, which under a sustained backlog it
+/// never does).
+fn salvage_stale_imports<I>(
+    world: &mut byroredux_core::ecs::World,
+    mat_provider: &mut crate::asset_provider::MaterialProvider,
+    has_texture: &dyn Fn(&str) -> bool,
+    telemetry: &mut streaming::StreamingTelemetry,
+    entries: I,
+) -> usize
+where
+    I: IntoIterator<Item = (String, Option<streaming::PartialNifImport>)>,
+{
+    let mut salvaged = 0usize;
+    for (model_path, partial) in entries {
+        finish_streaming_import(world, mat_provider, has_texture, model_path, partial);
+        salvaged += 1;
+    }
+    telemetry.worker_stale_salvaged_imports = telemetry
+        .worker_stale_salvaged_imports
+        .saturating_add(salvaged as u64);
+    salvaged
+}
+
 fn cancel_streaming_apply_job(
     world: &mut byroredux_core::ecs::World,
     ctx: &mut byroredux_renderer::VulkanContext,
+    state: &mut streaming::WorldStreamingState,
     job: streaming::StreamingCellApplyJob,
 ) {
-    if let streaming::StreamingCellApplyPhase::Spawn(cell_job) = job.phase {
-        cell_job.cancel(world, ctx);
+    // #5512 — a cancel mid-FinishImports still owes the registry the
+    // payload's remaining imports (the skip-filter residency premise);
+    // only the cell spawn is cancelled. A mid-Spawn cancel cannot lose
+    // imports — they all finished before BeginExterior ran.
+    match job.phase {
+        streaming::StreamingCellApplyPhase::FinishImports(imports) => {
+            salvage_stale_imports(
+                world,
+                &mut state.mat_provider,
+                &|p| state.tex_provider.has_texture(p),
+                &mut state.telemetry,
+                imports,
+            );
+        }
+        streaming::StreamingCellApplyPhase::Spawn(cell_job) => {
+            cell_job.cancel(world, ctx);
+        }
+        _ => {}
     }
 }
 
@@ -702,7 +760,7 @@ pub(crate) fn cancel_active_streaming_apply(
 ) {
     if let Some(job) = state.active_apply.take() {
         state.pending.remove(&job.coord);
-        cancel_streaming_apply_job(world, ctx, job);
+        cancel_streaming_apply_job(world, ctx, state, job);
         end_apply_texture_prefetch(state);
     }
 }
@@ -802,6 +860,21 @@ pub(crate) fn advance_streaming_apply(
                             payload.gy,
                             payload.generation
                         );
+                        // #5512 — the payload's imports are valid work even
+                        // though its cell spawn is dead; finish them so the
+                        // worker's skip filters keep their residency
+                        // premise. Charged to the frame budget like any
+                        // other import finish.
+                        let salvaged = salvage_stale_imports(
+                            world,
+                            &mut state.mat_provider,
+                            &|p| state.tex_provider.has_texture(p),
+                            &mut state.telemetry,
+                            payload.parsed,
+                        );
+                        for _ in 0..salvaged {
+                            budget.complete_unit();
+                        }
                     }
                 }
             };
@@ -822,7 +895,7 @@ pub(crate) fn advance_streaming_apply(
                 job.coord.1,
                 job.generation,
             );
-            cancel_streaming_apply_job(world, ctx, job);
+            cancel_streaming_apply_job(world, ctx, state, job);
             end_apply_texture_prefetch(state);
             continue;
         }
@@ -831,7 +904,13 @@ pub(crate) fn advance_streaming_apply(
             streaming::StreamingCellApplyPhase::FinishImports(mut imports) => {
                 if let Some((model_path, partial)) = imports.next() {
                     let cache_key = canonical_model_path_key(&model_path);
-                    finish_streaming_import(world, state, model_path, partial);
+                    finish_streaming_import(
+                        world,
+                        &mut state.mat_provider,
+                        &|p| state.tex_provider.has_texture(p),
+                        model_path,
+                        partial,
+                    );
                     prefetch_import_textures(world, ctx, state, &cache_key);
                     budget.complete_unit();
                     job.phase = streaming::StreamingCellApplyPhase::FinishImports(imports);
@@ -948,6 +1027,16 @@ pub fn consume_streaming_payload(
                 payload.gx,
                 payload.gy,
                 payload.generation
+            );
+            // #5512 — the imports are valid work; salvage them into the
+            // registry so the worker's skip filters keep their residency
+            // premise (see `salvage_stale_imports`).
+            salvage_stale_imports(
+                world,
+                &mut state.mat_provider,
+                &|p| state.tex_provider.has_texture(p),
+                &mut state.telemetry,
+                payload.parsed,
             );
             return StreamingPayloadOutcome::DroppedStale;
         }

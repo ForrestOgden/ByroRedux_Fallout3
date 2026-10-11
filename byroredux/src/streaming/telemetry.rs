@@ -141,6 +141,14 @@ pub struct StreamingTelemetry {
     /// batch memo closes the gap left by the frozen per-request cache snapshot
     /// (#3670).
     pub worker_batch_duplicate_skips: u64,
+    /// #5512 — parsed NIF entries salvaged out of stale-dropped payloads
+    /// (and cancelled mid-FinishImports applies) into the import cache.
+    /// The skip filters assume every skipped key is resident when a later
+    /// apply needs it; a sustained nonzero rate here means payloads are
+    /// going stale faster than they apply (cold fill + fast travel), which
+    /// is also the condition under which the registry's LRU can evict a
+    /// snapshot key between dispatch and apply.
+    pub worker_stale_salvaged_imports: u64,
     pub apply_slices: StreamingLatencySummary,
     /// Per apply slice: main-thread texture archive extraction (read +
     /// inflate on the resolve miss path) inside that slice. Same samples as
@@ -325,7 +333,7 @@ impl StreamingTelemetry {
              unload_despawn_max_ms={:.2} unload_finalize_max_ms={:.2} \
              worker_queue_avg_ms={:.2} worker_queue_max_ms={:.2} \
              worker_avg_ms={:.2} worker_max_ms={:.2} \
-             worker_batch_duplicate_skips={} \
+             worker_batch_duplicate_skips={} worker_stale_salvaged={} \
              apply_samples={} apply_avg_ms={:.2} apply_max_ms={:.2} apply_total_ms={:.2} \
              apply_tex_extracts={} apply_tex_extract_total_ms={:.2} \
              apply_tex_extract_max_ms={:.2} apply_tex_prefetched={} \
@@ -360,6 +368,7 @@ impl StreamingTelemetry {
             self.worker_parse.average_ms(),
             self.worker_parse.max_ms(),
             self.worker_batch_duplicate_skips,
+            self.worker_stale_salvaged_imports,
             self.apply_slices.samples,
             self.apply_slices.average_ms(),
             self.apply_slices.max_ms(),
