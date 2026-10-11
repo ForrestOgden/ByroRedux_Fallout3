@@ -53,7 +53,7 @@ fail() {
     exit 1
 }
 
-# Binary-crate toolchain (#4466): the bin crate needs rustc >= 1.94 and the
+# Binary-crate toolchain (#4466): the bin crate needs rustc >= 1.96 and the
 # distro cargo (1.93.1) cannot resolve cranelift's MSRV — use the installed
 # 1.96.0 toolchain's cargo directly, same invocation as CLAUDE.md.
 TC="$(rustup which --toolchain 1.96.0 cargo)"

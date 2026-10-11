@@ -119,18 +119,19 @@ BYRO_LOCK_ORDER_CHECK=1 cargo test --workspace
 No Vulkan device or game files required. `cargo test` is the daily
 development loop.
 
-### Toolchain note — the `byroredux` binary crate needs rustc ≥ 1.94 (#4466)
+### Toolchain note — the `byroredux` binary crate needs rustc ≥ 1.96 (#4466)
 
-The engine binary depends on `cranelift` 0.134 (via wasmtime / `mod-runtime`),
-whose MSRV is 1.94. If the default `cargo`/`rustc` on PATH is older (e.g. a
+The engine binary depends on wasmtime 49 and cranelift 0.136 (via
+`mod-runtime`), whose MSRV is 1.96 (1.94 before the 2026-10 wasmtime 47 → 49
+bump). If the default `cargo`/`rustc` on PATH is older (e.g. a
 distro 1.93.1), every `cargo` invocation that resolves the full workspace —
 including `cargo check` and `cargo test -p byroredux-core`'s workspace
 walk — fails at dependency resolution with a wall of
-`cranelift-* requires rustc 1.94.0` errors, and the binary crate silently
+`requires rustc 1.96.0` errors, and the binary crate silently
 gets **no compile or test feedback at all** (this is how a broken
 `byroredux/src` shipped to `main` unnoticed on 2026-09-19; #4466).
 
-If a rustup toolchain ≥ 1.94 is installed, invoke its cargo directly —
+If a rustup toolchain ≥ 1.96 is installed, invoke its cargo directly —
 `cargo +<toolchain>` does **not** work when a distro `cargo` shadows the
 rustup shims (the `+toolchain` directive is rejected and the distro binary
 runs anyway):

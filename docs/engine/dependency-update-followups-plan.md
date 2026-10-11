@@ -87,7 +87,7 @@ Havok. The same goes for friction-0 surfaces.
 - Define the rule once (a `ContactConfig` field or a crate constant) and use it at
   both sites, so they can't drift apart.
 - `GeometricMean` has the highest rule priority
-  (`rapier3d-0.36.1/src/dynamics/coefficient_combine_rule.rs:62-66`). So any pair
+  (*rapier3d-0.36.1/src/dynamics/coefficient_combine_rule.rs:62-66*). So any pair
   with one Havok-derived collider uses it, whatever the other collider asks for.
 
 **Done when**:
@@ -131,7 +131,7 @@ Comments that already describe rapier 0.22 in the past tense (e.g.
   `free_textures` / `set_textures`. The calls are now `free_texture` /
   `set_texture`. The ordering argument itself is unchanged.
 - `crates/ui/src/prepare.rs:44-58`: cites the old Ruffle rev `0dde9813` and hopes a
-  re-pin will fix it. At `2edfd97d`, `swf/src/read.rs:1929-1939` still rejects
+  re-pin will fix it. At `2edfd97d`, Ruffle's *swf/src/read.rs:1929-1939* still rejects
   PlaceObject3 records with neither MOVE nor HAS_CHARACTER, so the shim is still
   needed. Update the citation and say so.
 - `crates/mod-runtime/src/limits.rs:25`, `:68`: cite wasmtime 47.0.3. Both claims
@@ -191,7 +191,7 @@ format we never touch.
 
 - **wasmtime 48 (#13931)**: variable-length operations are now charged by size. By
   default `memory.fill`, `memory.copy` and `memory.init` cost one fuel unit per byte
-  (`wasmtime-environ-49.0.2/src/tunables.rs:520-560`). On 47, a 64 MiB fill cost
+  (*wasmtime-environ-49.0.2/src/tunables.rs:520-560*). On 47, a 64 MiB fill cost
   one unit. That closes a CPU-exhaustion hole for free. But it also means
   `fuel_per_entry` (10M by default, `crates/mod-runtime/src/limits.rs:104`) now
   limits bytes moved too, including passive data-segment init during instantiation
@@ -222,7 +222,7 @@ our own downward probe into the KCC's `grounded` flag. It does that because rapi
 precisely the input for which Rapier's KCC cannot observe contact". rapier 0.36
 changed exactly this case:
 
-- `control/character_controller.rs:429-440` now calls the grounded check explicitly
+- *rapier3d-0.36.1/src/control/character_controller.rs:429-440* now calls the grounded check explicitly
   when the move is below 1e-5 ("When not moving … we call it explicitly here"). 0.22
   had no such branch.
 - Since 0.35, snap-to-ground fires on any movement that isn't upward.
@@ -327,7 +327,7 @@ the project memory note on archive-I/O parallelism either way.
 **Why**: traced in code, not yet seen live.
 
 - egui-winit always reports Tab as consumed: "When pressing the Tab key, egui focuses
-  the first focusable element, hence Tab always consumes" (`egui-winit-0.36.2/src/lib.rs:416-419`).
+  the first focusable element, hence Tab always consumes" (*egui-winit-0.36.2/src/lib.rs:416-419*).
   0.33 did the same.
 - `DebugUiState` exists for the whole session, so with no menu open,
   `byroredux/src/app_events.rs:457` returns on `egui_consumed`. That happens before
@@ -505,11 +505,11 @@ These are larger. Each needs its own plan and has a prerequisite on our side.
 - **Ragdoll `additional_solver_iterations(12)`** (`crates/physics/src/ragdoll.rs:393`):
   it looked as if its meaning changed in 0.35. It didn't: rapier 0.22 already
   divided `dt` by `num_solver_iterations + additional`
-  (`rapier3d-0.22.0/src/dynamics/solver/island_solver.rs:45-49`). Ragdolls ran 16
+  (*rapier3d-0.22.0/src/dynamics/solver/island_solver.rs:45-49*). Ragdolls ran 16
   substeps before and still do.
 - **Ragdoll DOF clamp**: still needed. rapier's per-substep speed cap skips
   multibodies, which are integrated separately
-  (`staged_island_solver/worker.rs:640-700`).
+  (*rapier3d-0.36.1/src/dynamics/solver/staged_island_solver/worker.rs:640-700*).
 - **Ragdoll cone limits**: rapier 0.36 still has no cone or swing joint limit, so the
   per-axis approximation stays.
 - **egui-ash-renderer #4986 workaround**: 0.13 still starts partial updates from
@@ -526,7 +526,7 @@ These are larger. Each needs its own plan and has a prerequisite on our side.
 - **Sleep workarounds**: none exist to remove. rapier 0.35 honours `sleep()` right
   after a reposition, and we never worked around the old behaviour.
 - **Kinematic label in `phys.stats`**: still correct. Kinematic bodies never sleep in
-  rapier 0.36 (`island_manager/sleep.rs:30`).
+  rapier 0.36 (*rapier3d-0.36.1/src/dynamics/island_manager/sleep.rs:30*).
 - **logos 0.16, lz4_flex 0.14, string-interner 0.20, nvml-wrapper 0.13,
   tracing-tracy 0.12**: nothing to adopt.
   - Keep `fixed_string_serde`: string-interner's own symbol serde writes a usize

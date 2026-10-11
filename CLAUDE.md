@@ -26,9 +26,9 @@ with `inspect` on exactly once. The gap was only ever in the *documented develop
 command*: a contributor iterating on `AnimationPlayer`/`AnimationStack` locally got
 a green run that omitted precisely the tests covering the field they were editing.
 
-### Binary-crate toolchain (rustc ≥ 1.94 required, #4466)
+### Binary-crate toolchain (rustc ≥ 1.96 required, #4466)
 
-`cranelift` 0.134 (wasmtime, via `mod-runtime`) sets an MSRV of 1.94; the
+wasmtime 49 / cranelift 0.136 (via `mod-runtime`) set an MSRV of 1.96; the
 default distro rustc here is 1.93.1, so the `byroredux` bin crate — and any
 workspace-wide cargo call — fails resolution on the default toolchain and
 gets **no compile/test feedback**. `cargo +1.96.0` does NOT work (distro

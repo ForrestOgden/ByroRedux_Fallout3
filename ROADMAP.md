@@ -20,16 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 96, 2026-10-09, HEAD `5b455ce18`. Workspace
+**Last session close:** Session 97, 2026-10-10, HEAD `455b473a1`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
-**Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), and on it
-`cargo clippy --workspace --all-targets` is clean. Five lints this session's
-code added were fixed at the Session 95 close, and hosted CI is green at
-`14b0d33f2` (2026-10-09). CI gates only the non-`--all-targets` form. The
-bench-of-record below was taken at
-`a37fcba3c`, 481 commits before this close (R6a-stale-26). Its one open
+**Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
+bin crate's MSRV since wasmtime 49. On it, `cargo clippy --workspace
+--all-targets` is clean (re-run at this close); CI gates only the
+non-`--all-targets` form. Hosted CI is **red at HEAD on the ABBA lock-order
+lane alone** (see Known Issues); the main test job is green again since
+`a123b173a` (#5477). The bench-of-record below was taken at
+`a37fcba3c`, 616 commits before this close (R6a-stale-27). Its one open
 regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open — the
@@ -96,11 +97,9 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   compressed `NVNM` body is still undecoded.
 - FO4/FO76/Starfield actors have no walk-clip source; their ragdolls wait on
   the `BhkSystemBinary` blob decoder.
-- Dialogue: the greeting layer, Random/SayOnce/Goodbye line lifetime,
-  force-greet on both dialects (FO3/FNV `PKDD`, Skyrim `ForceGreet`
-  tree leaf) and per-line voice playback are live and smoke-gated
-  (#5367, [`dialogue-trees.md`](docs/engine/dialogue-trees.md));
-  Skyrim+ `.fuz` voice remains. Perk entry-point
+- Dialogue: Skyrim+ `.fuz` voice. The greeting, line-lifetime, force-greet
+  and FO3/FNV voice layers are live (#5367,
+  [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Perk entry-point
   composition (M43, M47.2) and Story Manager producer breadth (#5366 —
   `SCPT` awaits the `SendStoryEvent` Papyrus native, `LEVL`/`SKIL` a
   leveling transition) are open.
@@ -117,23 +116,12 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- Story Manager (#5366): **Phases 0–4 shipped** — the full Skyrim-dialect
-  runtime plus the FO4/SF decode ([`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh):
-  authored boot set + shares-consume negative + event-data selectivity
-  legs; R1/R2/L1/L2 event slots drive `RunOn::EventData` conditions and
-  `FromEvent` fills; `KILL`/`CLOC`/`AHEL` producers; decoded `DNAM`
-  policies with `RNAM` reset windows over save-persistent node state
-  (F5/F9 leg in `p5-quest-persistence.sh`); FO4/SF share the `DNAM`
-  vocabulary with pools at scale and a typed-raw `HNAM`/`MNAM` tail,
-  floored by `story_manager_fo4_dialect_floor` and gated by the
-  `fo4_radiant_pool_cycles_on_real_content` e2e). Remaining under the
-  umbrella: producer breadth as subsystems land and the open
-  `DNAM`/`HNAM`/`MNAM` semantics
-  ([`story-manager.md`](docs/engine/story-manager.md)).
-- Dialogue trees (#5367): Phases G/L/F/V plus the Skyrim force-greet
-  dialect landed and live-gated ([`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh) +
-  [`dt2-skyrim-forcegreet.sh`](docs/smoke-tests/dt2-skyrim-forcegreet.sh));
-  remaining is Skyrim+ `.fuz` voice ([`dialogue-trees.md`](docs/engine/dialogue-trees.md)).
+- Story Manager (#5366): **Phases 0–4 shipped**, the Skyrim-dialect runtime
+  plus the FO4/SF decode (detail in the M43 row under Tier 7). Remaining:
+  producer breadth as subsystems land and the open `DNAM`/`HNAM`/`MNAM`
+  semantics ([`story-manager.md`](docs/engine/story-manager.md)).
+- Dialogue trees (#5367): all layers landed and live-gated (`dt1`/`dt2`
+  smokes); remaining is Skyrim+ `.fuz` voice.
 - RT lighting and material recovery: R0–R3 are complete. The rest is tracked
   in [`rt-lighting-material-recovery.md`](docs/engine/rt-lighting-material-recovery.md).
 - WATAL: W0 and W1 are closed. W2's first defect is fixed: distant water is
@@ -197,33 +185,13 @@ reaches +37% to +62%, and `native-aa` still loses 2% to 8%. MedTek
 stall outside the GPU in one run.
 
 **Against the previous record (`4c9a5b36`) this is a large regression on FO4
-content**: Dugout TAA 11.12 → 24.29 ms (FPS −54%), MedTek TAA 37.64 → 50.50 ms
-(−26%), Cornell TAA 9.20 → 10.72 ms (−14%). Prospector TAA is 5% faster and
-Whiterun Quality 24% faster. **Content was NOT unchanged**, despite what this
-paragraph originally claimed (FNV-2026-09-29-D6-01): Prospector lost 35
-entities and 35 TLAS instances (3149 → 3114, 928 → 893) in this refresh's
-window — attributed by the 2026-10-04 same-machine probe pair
-(renderer-stepped, orbit): `5570c221c^` reproduces 3149/928 and `5570c221c`
-reproduces 3114/904/893 bit-for-bit, so the dismemberment-cap
-reclassification (`is_dismemberment_cap` from body-part data; the same commit
-the 2026-09-29 runtime audit measured at −92 on AtomicWrangler) withheld ~35
-Prospector instances. The Prospector TAA "5% faster" is therefore measured
-on −35-instance content, not like-for-like. Whiterun (+12) and MedTek (+23)
-entity bumps landed between `4c9a5b36` and the *uncontrolled* middle record
-`cb44d99f6`, not in this window; Dugout's −11 entities/TLAS instances in the
-window remain unattributed (small; same probe procedure applies). Since this
-record Prospector moved again, attributed 2026-10-04 with two further probe
-pairs: +195 entities with draws/TLAS/lights stable (non-rendering accounting;
-the `a070baaad` player-body window — the same commit the #5125 fo4 regen
-measured at +187 — unprobed on FNV), then `f87490826` (Initially Disabled /
-Starts Dead withholding, #4813/#4814/#4820) took it to today's 2359
-entities / 814 draws / 803 TLAS, matching HEAD bit-for-bit
-(`f87490826^` reads 3309/904/893). Compare wall and fence only:
-`gpu_main` changed meaning in this range (#4808 starts it at COMPUTE, see
-R6a-stale-22). The fence wait carries the regression (Dugout TAA 4.13 →
-18.95 ms, MedTek TAA 16.12 → 35.48 ms), and draw batching roughly halved its
-merge rate at flat draw counts (Dugout `1935/326b/12c` → `2367/659b/43c`,
-Prospector `928/54b/6c` → `904/257b/68c`, MedTek 29 → 82 GPU calls).
+content** (Dugout TAA 11.12 → 24.29 ms, MedTek TAA 37.64 → 50.50 ms), carried
+by the fence wait; R6a-regress-22 later traced most of it to the bench
+camera's spawn move. Content was not unchanged either: Prospector lost ~35
+instances in the window to the dismemberment-cap reclassification and has
+moved twice since. Compare wall and fence only. The full attribution
+narrative, with every probe pair, is in
+[`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records).
 
 The 90-run same-session control behind this record (`4c9a5b36` vs
 `99933f87b` vs `a37fcba3c`), superseded by R6a-regress-22's pinned-pose
@@ -276,8 +244,9 @@ Open follow-ons, none of them a slice blocker:
 - #5155: the soak intermittently restores `grounded=false` after its 10th
   F5 → door → F9 cycle.
 - Skyrim `p2-melee-core.sh` passes end to end since #5161 (`5ae7f8ad4`) and
-  #5246 contained the ragdoll solver explosion before the broad phase;
-  #5352 (HIGH) is a recovery-substep gap left in that clamp.
+  #5246 contained the ragdoll solver explosion. #5352 closed the
+  recovery-substep gap in that clamp (`1efdfda4a`), and rapier 0.36's BVH
+  broad phase removed the multi-SAP panic class outright (#5488).
 - P1: Skyrim's W1 water leg is skipped (land-side KCC wedge). P4's
   greeting / line-lifetime / force-greet layers landed with #5367
   (Skyrim force-greet and voice remain). Gamepad sources and a second
@@ -317,7 +286,7 @@ design doc.
 
 | #   | Milestone | State | Depends on |
 |-----|-----------|-------|------------|
-| M42 | AI packages | **Shipped:** PACK decode (PKDT/PSDT/PLDT/PTDT, #446). CTDA-gated package selection through the M47.1 evaluator, failing open on out-of-catalog functions (M42.2). Re-evaluation at game-minute boundaries and on Papyrus `EvaluatePackageRequest` (M42.9, #2652). Seven procedures — Sandbox seat with per-marker reservations, Wander, Travel, Follow, Escort, Guard, Patrol — run by default behind a `BYRO_NO_AI_LOCOMOTION=1` kill-switch, with authored per-game walk clips at stride-matched speed and KCC-backed steps (M42.10/M42.11, 2026-09-18). Plus ambient hostility (#4414), disengagement (#4816) and re-seating after a save load (#4815). Eat/Sleep (`00f580e09`, walk through `Transform` #5373) and Dialogue (force-greet, #5367 Phase F, modeled player-targeted Conversations only #5376) run too. **Open:** the 7 other non-locomotion procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon), each blocked on a missing subsystem; FO3/FNV sleepers cannot reach sleep markers yet (#5390). Also: `PTD2`, calendar-aware scheduling, sit-enter beyond FNV/FO3, legacy sleep/lean marker disambiguation, and FO4+ walk sources. NearReference target resolution was deprioritized (~12% of targets resolve). Trace: [`npc-spawn-ai-packages.md`](docs/engine/npc-spawn-ai-packages.md). | M28.5, M41 |
+| M42 | AI packages | **Shipped:** PACK decode (PKDT/PSDT/PLDT/PTDT, #446). CTDA-gated package selection through the M47.1 evaluator, failing open on out-of-catalog functions (M42.2). Re-evaluation at game-minute boundaries and on Papyrus `EvaluatePackageRequest` (M42.9, #2652). Seven procedures — Sandbox seat with per-marker reservations, Wander, Travel, Follow, Escort, Guard, Patrol — run by default behind a `BYRO_NO_AI_LOCOMOTION=1` kill-switch, with authored per-game walk clips at stride-matched speed and KCC-backed steps (M42.10/M42.11, 2026-09-18). Plus ambient hostility (#4414), disengagement (#4816) and re-seating after a save load (#4815). Eat/Sleep (`00f580e09`, walk through `Transform` #5373) and Dialogue (force-greet, #5367 Phase F, modeled player-targeted Conversations only #5376) run too. **Open:** the 7 other non-locomotion procedures (Find/Accompany/UseItemAt/Ambush/FleeNotCombat/CastMagic/UseWeapon), each blocked on a missing subsystem. On FO3/FNV the sit fallback is the legacy sleep path (#5390), and creatures never take furniture (#5495). Also: `PTD2`, calendar-aware scheduling, sit-enter beyond FNV/FO3, legacy sleep/lean marker disambiguation, and FO4+ walk sources. NearReference target resolution was deprioritized (~12% of targets resolve). Trace: [`npc-spawn-ai-packages.md`](docs/engine/npc-spawn-ai-packages.md). | M28.5, M41 |
 | M43 | Quests & dialogue | **Shipped:** the quest core — version-aware stages, logs, objectives and targets; full lifecycle transitions; Papyrus quest effects; save-persistent progress; loaded-reference alias fill with conditions and reservations; faction/inventory injections. `quest.*` observability commands, with [`m43-quest-runtime.sh`](docs/smoke-tests/m43-quest-runtime.sh) driving the production path. **Shipped (2026-10-07):** the Story Manager slice (#5366 Phases 0–1) — `SMBN`/`SMEN`/`SMQN` decode into `EsmIndex.story_manager_nodes` (census floors pinned: 571 nodes / 24 events / 1191 of 1811 Skyrim quests SM-referenced), a dispatcher walking each event's node chain through the M47.1 evaluator into the canonical lifecycle, `KILL`/`CLOC` producers, live-gated by [`sm1-story-manager.sh`](docs/smoke-tests/sm1-story-manager.sh) (six quests on the boot-time CLOC — the pre-decode continue-always placeholder, superseded at Phase 3 by the authored two-start set). **Shipped (2026-10-07):** SM Phase 2 (#5366) — the event payload is the wire format's R1/R2/L1/L2 positional slots (corpus-decoded: `DA08KillFriendNode`'s tutorial killer conditions run on R2, `WIKill06`'s `Victim` alias fills from R1, floors in `parse_real_esm.rs`); `RunOn::EventData` node conditions resolve them, `FromEvent` (`ALFE`/`ALFD`) alias fills bind from the raising event through the P4 refresh, the CLOC producer keys on the cell's `XLCN` LCTN carrying old/new as L1/L2, `GetInFaction` (Skyrim fn 71) joined the M47.1 catalog, and the new `sm.event` console command raises the real marker for live gating (MGSuspension selectivity legs). **Shipped (2026-10-08):** SM Phase 3 (#5366) — the `DNAM` policy bits decoded (0x1 random / 0x10000 do-all-before-repeating / 0x20000 shares-event, anchored on the `*SHARES*`-named nodes and the radiant-cycle cluster) and `RNAM` per-quest reset windows; the walk honors them (random shuffled chains stopping at the first fire, round-robin pools, consume-on-processed for non-sharing nodes — the live boot set is now the authored two-start set with `CRHoldExpansion` as the pinned consume-negative), and node state (fired marks + reset timestamps over `StoryClock`) is save-persistent so a quickload cannot resurrect a fired radiant (round-trip test + the F5/F9 leg of `p5-quest-persistence.sh` extended to the SM-fired `WIGreeting`). **Shipped (2026-10-08):** SM Phase 4 (#5366) — the FO4/SF dialect census: same `DNAM` vocabulary (SF's 0x50001/0x70001 are combinations of the same bits), pools at scale (`RETravelQuests` 44; Minutemen measured 14 links with `HNAM` 72.0h and one 4320.0h `RNAM`), `RNAM` pairing identical to Skyrim, typed-raw `HNAM` (hours-shaped float, node-reset candidate — the runtime does not gate on it) + `MNAM` tail; the `AHEL` producer landed at the conversation-open surfaces (activation greeting + force-greet, `OnStoryHello`'s L1/R1/R2); every large FO4 pool is fn-576-gated (corpus-checked full-path reachability), so the pool-cycling gate runs on the fully-reachable `SuperMutantConversationQuests` — faction-crafted R1/R2 through the Phase-2 run-on, faction-negative refused, seeded cycling across the pool (`fo4_radiant_pool_cycles_on_real_content`), with the `story_manager_fo4_dialect_floor` census floor. Design: [`story-manager.md`](docs/engine/story-manager.md). **Shipped (2026-10-07):** the dialogue greeting / Random-SayOnce-Goodbye / force-greet layers (#5367 — generic-greeting fallback opens quest-less conversations, the line-lifetime flags select/persist/close on, `PKDD` force-greet walks and opens without activation; live-gated by [`dt1-dialogue-layers.sh`](docs/smoke-tests/dt1-dialogue-layers.sh); design: [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). **Shipped (2026-10-08):** dialogue voice, #5367 Phase V — per-line voice playback on the FO3/FNV path: `sound\voice\<plugin>\<voice-type>\<quest>_<topic>_<formid>_<n>.ogg` resolved through the NPC's VTCK + the owning quest/topic EDIDs (INFO records carry none of their own), `Fallout - Voices1.bsa` opened through the FNV sounds profile (its first consumer), segments scheduled sequentially through kira with the voice duration driving the Phase-L Goodbye close; dt1's voice leg gates it (fresh-boot greeting = 1 segment / 5.0 s in `maleuniquedocmitchell`). Skyrim+ `.fuz` (FUZE + RIFF lip + XMA2) stays V2 scope. **Shipped (2026-10-08):** the Skyrim force-greet dialect — `PackRecord::force_greet` resolves both authored shapes (FO3/FNV procedure-15 `PKDD`; Skyrim's `ForceGreet` tree leaf with its `Topic` data input, census 5 packs / 2 authored topics / 3 generic), `dialogue.forcegreet` installs either, and `dt2-skyrim-forcegreet.sh` gates the topic resolution arms and the activation-less DialogueGenericHello open. **Open:** SM producer breadth (#5366 — `SCPT` awaits the `SendStoryEvent` Papyrus native, `LEVL`/`SKIL` a leveling transition; open `DNAM` bits 0x2/0x40000 and `HNAM`/`MNAM`/`XNAM`/`QNAM` semantics), Skyrim+ `.fuz` voice (#5367), reference collections, location-run-on conditions (L-tagged CTDAs need a location runtime), created-object spawning, and the dialogue UI polish beyond the native page. These are subsystem boundaries, not missing QUST bytes. | M24.2, M41, M47.1 |
 | M46 | Full plugin loading | Discover, sort, merge, and resolve conflicts across the full load order. Builds on M46.0 (CLI wiring), the `plugin/resolver.rs` DAG, and the parallel per-plugin walk (#3813). | M24.2, M46.0 |
 | M48 | UI integration | **Shipped:** the Scaleform host bridge — Skyrim/SkyUI 142-method catalog, the FO4 `BGSCodeObj` 269-method catalog with a generated AVM2 adapter, and an archive-backed navigator (`--menu … --menu-archive …`). The MenuXml crate (FOLD evaluator, layout, CPU raster) drives the Oblivion HUD (M48.4) and FO3/FNV through a game-agnostic profile (M48.5). `--hud` runs the vanilla Skyrim (M48.6) and FO4 (M48.7) `hudmenu.swf` transparently over the world, with a smoke per route. Starfield's `hudmenu.swf` now parses through a PlaceObject3 dialect shim (#4470); its profile and catalog are not built. **Open:** method behaviour and `_global.gfx` stubs, font fidelity, menu-stack policy, and Papyrus/ECS ↔ UI callbacks. Vanilla Skyrim/FO4 HUD meters stay empty: the game feeds them by GFx object-path invocation, which Ruffle cannot reach, so they need AVM1 injection or SkyUI-class menus. Design: [`ui.md`](docs/engine/ui.md). | R4, M48.4, M48.6 |
@@ -475,13 +444,14 @@ single file crosses 3 500 lines, a struct crosses 50 fields, or a context
 struct crosses 60 fields, treat it as a signal to investigate before adding,
 not a stat to report.
 
-**Tripwire today** (measured 2026-09-29; the counts include inline test
-modules). Over the line: `byroredux/src/env_translate.rs` 4 594,
-`crates/renderer/src/vulkan/volumetrics.rs` 4 396,
-`byroredux/src/material_translate.rs` 4 141,
-`crates/renderer/src/vulkan/context/draw.rs` 4 107,
-`crates/scripting/src/translate/effects.rs` 3 899,
-`byroredux/src/inventory.rs` 3 786 and `crates/physics/src/world.rs` 3 785.
+**Tripwire today** (measured 2026-10-10; the counts include inline test
+modules, but not dedicated test files). Over the line:
+`byroredux/src/env_translate.rs` 5 826,
+`byroredux/src/material_translate.rs` 4 422,
+`crates/renderer/src/vulkan/volumetrics.rs` 4 168,
+`crates/physics/src/world/mod.rs` 4 149 (its #5311 split left `mod.rs`
+larger than the old `world.rs`), `byroredux/src/inventory.rs` 4 075 and
+`crates/scripting/src/translate/effects.rs` 4 022.
 Before splitting one, grep for `include_str!` source-shape tests that read
 it.
 
@@ -615,12 +585,13 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-25 — bench-of-record `a37fcba3c` is 390 commits stale**
-  (2026-10-06 close). Frame-path changes since: #5154, #5018/#5191, #5062,
-  #5064, #4902/#4909/#4915, #5055/#4784, #5158's exposure retune
-  (`7d99ba7f0`), #5243, and this session's #5192 transmission-lobe split,
-  #5204 light-identity sort, #5245 current-driven water transport and the
-  sun-disc / sunset-palette changes (`c60405083`, `56786698b`). Re-run
+- [ ] **R6a-stale-27 — bench-of-record `a37fcba3c` is 616 commits stale**
+  (2026-10-10 close). Frame-path changes since include #5154, #5018/#5191,
+  #5062, #5064, #4902/#4909/#4915, #5055/#4784, #5158's exposure retune
+  (`7d99ba7f0`), #5243, #5192, #5204, #5245, the sun-disc / sunset-palette
+  changes (`c60405083`, `56786698b`), and in Session 97 #5482's shadow-toe
+  contrast grade (`3bcf6c8e8`), the #5369/#5507 light-rig EMA key, #5211,
+  and the 2026-10 dependency refresh (wgpu 30, egui 0.36, image 0.25). Re-run
   `scripts/fsr-bench-matrix.sh 3 300` with a
   same-machine control; no HEAD frame-time claim is current until then.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
@@ -718,10 +689,18 @@ performance finding. The measured knob table is in
   `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
   flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
   per-slot replacements, scalars and flags translate honestly (#5190, #5196,
-  #5197). Owed before closing: the issue's definition of done and a live Cydonia render.
+  #5197), and authored blend state and emissive settings are captured (#5277,
+  #5283). Owed before closing: the issue's definition of done and a live Cydonia render.
 
 ### Infrastructure and tooling
 
+- [ ] **ABBA lock-order lane red since the `7ef007898` push** (2026-10-10,
+  #5535). `BYRO_LOCK_ORDER_CHECK=1` fails 15 `-p byroredux` tests on four
+  cycles: `Furniture`↔`GlobalTransform` (eat_sleep / sandbox, 6),
+  `AnimationPlayer`↔`Transform` (walk_anim, 5), `Children`↔`MeshHandle`
+  (hair head-mount, 3) and `Transform`↔`ActorCinematicState` (cinematic, 1).
+  Not yet triaged: production acquisition order vs test-body guard overlap
+  (the #5032 shape).
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -732,17 +711,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-09 (session close, HEAD `5b455ce18`). Every
+Ground-truth as of 2026-10-10 (session close, HEAD `455b473a1`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~704 113                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~755 049                 |
-| Source files (`.rs`, excl. `target/`)   | 1235 total · 1144 outside `tests/` dirs (+9 / +9 since the 2026-10-06 close) |
+| Rust source lines (`src/` dirs)         | ~714 182                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~765 573                 |
+| Source files (`.rs`, excl. `target/`)   | 1237 total · 1146 outside `tests/` dirs (+2 / +2 since the 2026-10-09 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
-| Tests                                   | **9395 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-09; 282 ignored). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 5419 (`.claude/issues/`)     |
+| Tests                                   | **9522 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-10; 289 ignored; the lock-order detector is off in this count — see the ABBA Known Issue). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 5487 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 057** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-09-29 re-measure swept 102 968 over 4 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 968 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
