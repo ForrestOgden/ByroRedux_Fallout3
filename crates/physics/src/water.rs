@@ -191,15 +191,44 @@ pub(crate) struct WaterLift {
 /// `height` (#5547). Zero for bodies tall enough that the submerged damping
 /// alone (`base`) already dissipates the hold's energy gain.
 ///
-/// The hold adds a factor ≈ `ω²·h_s²·K(K−1)/2` per tick with `ω² = ρ·|g|/h`
-/// (here ≈ 1146/h) — it scales as `1/h`, hence `HEAVE_HOLD_COEFFICIENT / h`.
-pub(crate) fn heave_hold_damping(height: f32, base: f32) -> f32 {
-    (HEAVE_HOLD_COEFFICIENT / height.max(1.0e-3) - base).max(0.0)
+/// The hold adds a factor ≈ `ω²·h_s²·K(K−1)/2` per tick with
+/// `ω² = ρ·|g|/h` — it scales as the spring stiffness `ρ·|g|` and as `1/h`.
+/// [`HEAVE_HOLD_COEFFICIENT`] was measured at the default stiffness
+/// ([`HEAVE_HOLD_REFERENCE_STIFFNESS`], ≈ 1147/h), so it is rescaled by
+/// `density_ratio·|gravity_y|` over that reference (#5618): at the defaults
+/// the result is unchanged, away from them the damping follows the spring.
+///
+/// The damping is applied as an explicit force refreshed once per
+/// [`crate::world::PHYSICS_DT`] tick, which is stable only while `c·dt < 2`; the result is
+/// capped at [`HEAVE_STABLE_FRACTION`]`/dt` so a very thin AABB (or a very
+/// dense fluid) gets a bounded, stable damping instead of one that
+/// multiplies the heave velocity by `|1 − c·dt|` ≫ 1 every tick. (The lift
+/// spring itself loses stability below `h ≈ 1147/(2/dt)² ≈ 0.08` BU, which
+/// no damping can fix.)
+pub(crate) fn heave_hold_damping(
+    height: f32,
+    base: f32,
+    density_ratio: f32,
+    gravity_y: f32,
+) -> f32 {
+    let stiffness_scale = density_ratio * gravity_y.abs() / HEAVE_HOLD_REFERENCE_STIFFNESS;
+    let wanted = HEAVE_HOLD_COEFFICIENT * stiffness_scale / height.max(1.0e-3) - base;
+    wanted.clamp(0.0, HEAVE_STABLE_FRACTION / crate::world::PHYSICS_DT)
 }
 
-/// 1/s·BU: see [`heave_hold_damping`]. Measured, not derived — the
-/// `thin_floats_settle_at_any_frame_rate` matrix pins it.
+/// 1/s·BU at [`HEAVE_HOLD_REFERENCE_STIFFNESS`]: see [`heave_hold_damping`].
+/// Measured, not derived — the `thin_floats_settle_and_sleep_at_any_frame_rate`
+/// matrix pins it.
 const HEAVE_HOLD_COEFFICIENT: f32 = 11.0;
+
+/// ρ·|g| the coefficient was measured at: the default
+/// [`PhysicsWaterConstants::buoyancy_density_ratio`] (1.67) times the default
+/// world gravity (686.7 BU/s², 9.81 m/s² × 70 BU/m).
+const HEAVE_HOLD_REFERENCE_STIFFNESS: f32 = 1.67 * 686.7;
+
+/// Largest `c·dt` the explicit heave damping may reach: below the `c·dt = 1`
+/// dead-beat point, well inside the `c·dt < 2` stability edge.
+const HEAVE_STABLE_FRACTION: f32 = 0.9;
 
 impl PhysicsWorld {
     /// Re-derive every registered lift from the body's CURRENT pose and
@@ -1123,6 +1152,8 @@ fn apply_buoyancy_with_scratch(
                                 let heave_damping = heave_hold_damping(
                                     max_y - min_y,
                                     consts.linear_damping_in,
+                                    consts.buoyancy_density_ratio,
+                                    gravity_y,
                                 );
                                 f.y -= heave_damping * mass * b.linvel().y;
                                 pending_lift = Some(WaterLift {
@@ -2557,6 +2588,13 @@ mod tests {
     /// Settle a thin float released slightly below equilibrium; returns
     /// (peak-to-peak y over the last 3 s, asleep at the end).
     fn thin_float_settle(height: f32, fps: f32) -> (f32, bool) {
+        thin_float_settle_with(PhysicsWaterConstants::default(), height, fps)
+    }
+
+    /// [`thin_float_settle`] with explicit water tunables (#5618): the heave
+    /// damping depends on the density ratio, so the matrix must be runnable
+    /// away from the default.
+    fn thin_float_settle_with(consts: PhysicsWaterConstants, height: f32, fps: f32) -> (f32, bool) {
         use crate::{physics_sync_system, RapierHandles};
         use byroredux_core::ecs::components::collision::{
             CollisionShape, MotionType, RigidBodyData,
@@ -2570,7 +2608,7 @@ mod tests {
 
         let mut world = World::new();
         world.insert_resource(PhysicsWorld::new());
-        world.insert_resource(PhysicsWaterConstants::default());
+        world.insert_resource(consts);
         world.insert_resource(WaterContactScratch::default());
         world.insert_resource(TotalTime(0.0));
         world.register::<RapierHandles>();
@@ -2657,17 +2695,63 @@ mod tests {
         }
     }
 
+    /// #5618 — the coefficient was measured at the default density ratio and
+    /// gravity; away from them the lift spring's stiffness (ρ·|g|/h) moves,
+    /// and so must the damping that stabilises its hold.
+    #[test]
+    fn thin_floats_settle_at_a_denser_fluid_ratio() {
+        let consts = PhysicsWaterConstants {
+            buoyancy_density_ratio: 2.5,
+            ..PhysicsWaterConstants::default()
+        };
+        for height in [2.0_f32, 4.0, 10.0] {
+            let (p2p, asleep) = thin_float_settle_with(consts, height, 60.0);
+            assert!(
+                asleep && p2p < 0.05,
+                "h={height} BU at density ratio 2.5: peak-to-peak {p2p} BU, asleep={asleep}"
+            );
+        }
+    }
+
     /// #5547 — the heave damping is only what the hold needs: nothing for
     /// bodies the submerged damping already covers, growing as 1/h below.
     #[test]
     fn heave_hold_damping_is_zero_for_tall_bodies_and_grows_as_one_over_h() {
-        assert_eq!(heave_hold_damping(20.0, 1.5), 0.0);
-        assert_eq!(heave_hold_damping(HEAVE_HOLD_COEFFICIENT / 1.5, 1.5), 0.0);
-        let thin = heave_hold_damping(2.0, 1.5);
-        let thinner = heave_hold_damping(1.0, 1.5);
-        assert!((thin - (HEAVE_HOLD_COEFFICIENT / 2.0 - 1.5)).abs() < 1e-5);
+        const RATIO: f32 = 1.67; // PhysicsWaterConstants default
+        assert_eq!(heave_hold_damping(20.0, 1.5, RATIO, G_Y), 0.0);
+        assert!(heave_hold_damping(HEAVE_HOLD_COEFFICIENT / 1.5, 1.5, RATIO, G_Y).abs() < 1e-3);
+        let thin = heave_hold_damping(2.0, 1.5, RATIO, G_Y);
+        let thinner = heave_hold_damping(1.0, 1.5, RATIO, G_Y);
+        assert!(
+            (thin - (HEAVE_HOLD_COEFFICIENT / 2.0 - 1.5)).abs() < 1e-3,
+            "at the measured stiffness the damping is the original 11/h - base"
+        );
         assert!(thinner > thin);
-        assert!(heave_hold_damping(0.0, 1.5).is_finite(), "degenerate AABB is finite");
+        assert!(heave_hold_damping(0.0, 1.5, RATIO, G_Y).is_finite(), "degenerate AABB is finite");
+    }
+
+    /// #5618 — the damping follows the spring stiffness ρ·|g|, and never
+    /// leaves the explicit-force stability region however thin the AABB.
+    #[test]
+    fn heave_hold_damping_scales_with_stiffness_and_stays_stable() {
+        let base = 1.5;
+        let at_default = heave_hold_damping(2.0, base, 1.67, G_Y);
+        let denser = heave_hold_damping(2.0, base, 2.5, G_Y);
+        // (11·ρ/1.67/h − base): linear in ρ before the base is subtracted.
+        let want = HEAVE_HOLD_COEFFICIENT * (2.5 / 1.67) / 2.0 - base;
+        assert!(denser > at_default && (denser - want).abs() < 1e-3, "{denser} vs {want}");
+        let half_gravity = heave_hold_damping(2.0, base, 1.67, G_Y * 0.5);
+        assert!(half_gravity < at_default, "weaker gravity, softer spring");
+        for ratio in [1.02_f32, 1.67, 2.5, 8.0] {
+            for height in [1.0e-3_f32, 0.01, 0.05, 0.1, 0.2, 1.0, 2.0, 50.0] {
+                let c = heave_hold_damping(height, base, ratio, G_Y);
+                assert!(
+                    c * crate::world::PHYSICS_DT <= HEAVE_STABLE_FRACTION + 1e-6,
+                    "h={height} ρ={ratio}: c·dt = {} is outside the stable region",
+                    c * crate::world::PHYSICS_DT
+                );
+            }
+        }
     }
 
     /// #3268 — sibling of the wind-up test below, with its manual
