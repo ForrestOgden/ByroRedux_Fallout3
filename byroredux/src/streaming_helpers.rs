@@ -1235,6 +1235,7 @@ mod tests {
             noise_map_handles: [22, 23, 24],
             default_height: -2300.0,
             center_grid: (0, 0),
+            projection: Vec::new().into(),
         });
 
         let (terrain_out, object_out, placement_out, water_out) =

@@ -35,7 +35,7 @@ use byroredux_core::ecs::{Children, EntityId, GlobalTransform, MeshHandle, Trans
 use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm;
 use byroredux_renderer::vulkan::GpuUploadCtx;
-use byroredux_renderer::{Vertex, VulkanContext};
+use byroredux_renderer::{SceneMeshUpload, Vertex, VulkanContext};
 use std::collections::HashMap;
 
 use crate::asset_provider::{resolve_linear_texture, TextureProvider};
@@ -869,7 +869,7 @@ fn distant_water_hole_radius(radius_unload: i32) -> i32 {
 /// plus the cell's LAND minimum, so the builder is unit-testable without
 /// constructing a full `CellData`.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct DistantWaterCell {
+pub(crate) struct DistantWaterCell {
     pub grid: (i32, i32),
     pub water_height: Option<f32>,
     pub explicit: bool,
@@ -1064,7 +1064,9 @@ pub(crate) fn spawn_lod_water_plane(
     if hole_radius >= reach {
         return None;
     }
-    let projection = distant_water_cells(cells);
+    // #5289 — projected once here and kept on the plane; every later
+    // crossing re-selects the ring from it.
+    let projection: std::sync::Arc<[DistantWaterCell]> = distant_water_cells(cells).into();
     let geometry =
         build_distant_water_mesh(&projection, Some(lod_height), player_grid, hole_radius, reach);
     if geometry.indices.is_empty() {
@@ -1187,6 +1189,7 @@ pub(crate) fn spawn_lod_water_plane(
         noise_map_handles: resolved_noise,
         default_height: lod_height,
         center_grid: player_grid,
+        projection,
     })
 }
 
@@ -1195,7 +1198,9 @@ pub(crate) fn spawn_lod_water_plane(
 /// across a grid boundary means rebuilding — the translated-hole trick the
 /// old single-sheet annulus used would drag every distant quad's world
 /// position with it. The entity, material, and texture handles are reused;
-/// only the mesh swaps. Returns `false` when the new mesh is empty (nothing
+/// only the mesh swaps. The per-cell projection (including each cell's LAND
+/// minimum) is the plane's, computed once at spawn (#5289) — a crossing only
+/// re-selects the ring. Returns `false` when the new mesh is empty (nothing
 /// wet in the ring): the old mesh is then released and the entity keeps
 /// living mesh-less until a later crossing finds water again.
 #[allow(clippy::too_many_arguments)]
@@ -1203,7 +1208,6 @@ pub(crate) fn rebuild_lod_water_mesh(
     world: &mut World,
     ctx: &mut VulkanContext,
     plane: &mut LodWaterPlane,
-    cells: &HashMap<(i32, i32), esm::cell::CellData>,
     default_height: f32,
     game: esm::reader::GameKind,
     player_grid: (i32, i32),
@@ -1211,9 +1215,13 @@ pub(crate) fn rebuild_lod_water_mesh(
 ) -> bool {
     let reach = super::terrain_lod::lod_ring_reach_cells(game);
     let hole_radius = distant_water_hole_radius(radius_unload);
-    let projection = distant_water_cells(cells);
-    let geometry =
-        build_distant_water_mesh(&projection, Some(default_height), player_grid, hole_radius, reach);
+    let geometry = build_distant_water_mesh(
+        &plane.projection,
+        Some(default_height),
+        player_grid,
+        hole_radius,
+        reach,
+    );
     let DistantWaterGeometry {
         vertices,
         indices,
@@ -1237,17 +1245,29 @@ pub(crate) fn rebuild_lod_water_mesh(
         Some(a) => a,
         None => return false,
     };
+    // #5289 — the batched path: identical mesh representation (per-mesh
+    // buffers + global-pool offsets) as `upload_scene_mesh`, but the vertex
+    // and index copies share ONE submit + fence wait through the registry's
+    // staging pool instead of one blocking round-trip each, on the
+    // boundary-cross frame.
     let upload_ctx = GpuUploadCtx {
         device: &ctx.device,
         allocator,
         queue: &ctx.graphics_queue,
         command_pool: ctx.transfer_pool,
     };
-    let new_handle = match ctx
-        .mesh_registry
-        .upload_scene_mesh(upload_ctx, &vertices, &indices, false, None)
-    {
-        Ok(h) => h,
+    let transfer_fence = std::sync::Arc::clone(&ctx.transfer_fence);
+    let new_handle = match ctx.mesh_registry.upload_scene_meshes_batched(
+        upload_ctx,
+        &[SceneMeshUpload {
+            vertices: &vertices,
+            indices: &indices,
+            rt_enabled: false,
+            cache_key: None,
+        }],
+        transfer_fence.as_ref(),
+    ) {
+        Ok(handles) => handles[0],
         Err(e) => {
             log::warn!("LOD water mesh rebuild upload failed: {e}");
             return false;
@@ -1697,6 +1717,44 @@ mod tests {
             "distant LOD water has no shoreline geometry and must not drive \
              physics/submersion — a WaterVolume/WaterCurrentVolume appeared in \
              spawn_lod_water_plane's code"
+        );
+    }
+
+    /// #5289 — a grid crossing re-selects the ring from the projection the
+    /// plane carries; it must not re-fold every worldspace cell's 33×33
+    /// heightmap (`distant_water_cells`) or upload through the two-fence
+    /// scalar path. Source-shape pin on the rebuild body (comments and
+    /// strings stripped), with the spawn body as the positive control that
+    /// the projection really is computed once there.
+    #[test]
+    fn lod_water_rebuild_reuses_the_spawn_time_projection() {
+        let src = include_str!("water.rs");
+        let spawn_start = src
+            .find("pub(crate) fn spawn_lod_water_plane")
+            .expect("LOD-water spawn function");
+        let rebuild_start = src
+            .find("pub(crate) fn rebuild_lod_water_mesh")
+            .expect("LOD-water rebuild function");
+        let rebuild_end = src
+            .find("pub(crate) fn unload_lod_water_plane")
+            .expect("LOD-water unload function");
+        let spawn = strip_comments_and_strings(&src[spawn_start..rebuild_start]);
+        let rebuild = strip_comments_and_strings(&src[rebuild_start..rebuild_end]);
+        assert!(
+            spawn.contains("distant_water_cells("),
+            "positive control: the spawn path computes the projection"
+        );
+        assert!(
+            !rebuild.contains("distant_water_cells("),
+            "rebuild_lod_water_mesh re-projects every worldspace cell per crossing"
+        );
+        assert!(
+            rebuild.contains("plane.projection") && rebuild.contains("upload_scene_meshes_batched("),
+            "rebuild must read the plane's projection and upload through the one-fence batched path"
+        );
+        assert!(
+            !rebuild.contains(".upload_scene_mesh("),
+            "rebuild regressed to the scalar two-fence upload"
         );
     }
 

@@ -98,7 +98,7 @@ pub struct LodBlock {
 /// crossing finds water again. Like full-detail water, this render-only
 /// entity uses the safe per-mesh-buffer upload path (`rt_enabled: false`)
 /// and never enters the TLAS.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LodWaterPlane {
     pub entity: EntityId,
     /// Live mesh handle; `None` while the ring is dry (the entity persists,
@@ -118,6 +118,14 @@ pub struct LodWaterPlane {
     /// Player grid the mesh was built around; the next grid crossing
     /// triggers the rebuild that re-centers the hole.
     pub center_grid: (i32, i32),
+    /// The worldspace's exterior cells projected to what the distant builder
+    /// reads (grid, water tri-state, LAND minimum), computed ONCE at spawn
+    /// (#5289). It is a pure function of record data that never changes
+    /// within a `WorldStreamingState`'s lifetime, so a grid crossing only
+    /// re-selects the ring from it — it used to re-fold every cell's 33×33
+    /// heightmap (O(worldspace cells × 1089)) and re-allocate the list on
+    /// the main thread at every crossing.
+    pub(crate) projection: std::sync::Arc<[crate::cell_loader::DistantWaterCell]>,
 }
 
 /// Worker request — main thread asks the worker to pre-parse a cell.
@@ -604,19 +612,10 @@ impl WorldStreamingState {
             return;
         }
         let default_height = plane.default_height;
-        let empty = HashMap::new();
-        let cells = self
-            .wctx
-            .record_index
-            .cells
-            .exterior_cells
-            .get(&self.wctx.worldspace_key)
-            .unwrap_or(&empty);
         crate::cell_loader::rebuild_lod_water_mesh(
             world,
             ctx,
             plane,
-            cells,
             default_height,
             self.wctx.record_index.game,
             player_grid,
