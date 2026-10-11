@@ -1443,7 +1443,7 @@ impl VulkanContext {
     /// reach the GPU) while keeping only the newest `shapes`/
     /// `pixels_per_point` — the same semantics egui's own multi-frame
     /// integrations use.
-    pub fn submit_egui_frame(&mut self, ctx: egui::Context, mut output: egui::FullOutput) {
+    pub fn submit_egui_frame(&mut self, ctx: egui::Context, output: egui::FullOutput) {
         if self.overlay.egui_pass.is_some() {
             self.overlay.egui_pending_output = Some(merge_egui_pending_output(
                 self.overlay.egui_pending_output.take(),
