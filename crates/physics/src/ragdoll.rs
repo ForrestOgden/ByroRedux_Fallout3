@@ -386,13 +386,12 @@ pub fn build_ragdoll(
             b.angular_damping.max(0.0) + cfg.ragdoll_extra_angular_damping.max(0.0);
         let body = RigidBodyBuilder::dynamic()
             .pose(pose_from_trs(b.translation, b.rotation))
-            // Authored humanoid mass ratios, joint limits, and simultaneous
-            // floor contacts need more than the default four iterations:
-            // the FNV restore fixture diverged on a single flat floor at
-            // tick 75. Sixteen iterations kept the unchanged articulation
-            // bounded. Scope the extra work to ragdoll contact/joint islands
-            // rather than increasing the budget for the whole world.
-            .additional_solver_iterations(12)
+            // #5546 — NOT raised above the world default: with a multibody
+            // present, rapier 0.36 runs one solve group at the *maximum*
+            // extra of any awake body across the whole awake island, so
+            // extra iterations here are paid by every awake dynamic body in
+            // the world. See `RAGDOLL_EXTRA_SOLVER_ITERATIONS`.
+            .additional_solver_iterations(RAGDOLL_EXTRA_SOLVER_ITERATIONS)
             .linear_damping(effective_linear_damping)
             // "less floppy than Havok" lever — extra angular damping on top
             // of the authored value (inert at the 0.0 default). See
@@ -579,6 +578,29 @@ pub fn build_ragdoll(
         buoyancy,
     })
 }
+
+/// Extra solver substeps requested per ragdoll body, on top of the world's
+/// `num_solver_iterations` (#5546).
+///
+/// This was 12 under rapier 0.22, where islands were per connected component
+/// and the +12 stayed on the ragdoll. In 0.36 every awake body shares one
+/// island, and the staged solver only splits it into per-body-budget groups
+/// while **no multibody exists** (`staged_island_solver/init.rs`,
+/// `multi_group`); every ragdoll is a multibody, so a nonzero value here made
+/// every awake dynamic body in the world solve 16 substeps instead of 4 for
+/// as long as any ragdoll bone was awake (measured ~2× step cost with 500
+/// unrelated awake boxes, and unrelated bodies' trajectories changed).
+///
+/// It was added to stop a rig diverging on a flat floor under rapier's stiff
+/// default joint limits (the cause fixed by #5538's soft limits). Re-measured
+/// with soft limits on the FO3 skeleton through the real-data gate
+/// (`ragdoll_installed_tests`: free fall, flat floor, saloon geometry,
+/// followers, geometry-first reload, world reuse, at two yaws): +0, +4 and
+/// +12 all stay bounded (max bone drift 112–130 BU, zero recoveries) with no
+/// systematic settle-time difference — so the world default is enough. A
+/// nonzero value is a whole-world cost; pinned by
+/// `a_ragdoll_does_not_change_an_unrelated_bodys_solve`.
+pub const RAGDOLL_EXTRA_SOLVER_ITERATIONS: usize = 0;
 
 /// A tree edge after orientation: `flip` is true when the constraint's
 /// `body_a` is the *child* (so frame A/B and pivots must swap).
@@ -1134,7 +1156,7 @@ mod tests {
     }
 
     #[test]
-    fn ragdoll_solver_budget_is_local_and_preserves_authored_mass_and_limits() {
+    fn ragdoll_solver_budget_preserves_the_world_default_mass_and_limits() {
         let mut pw = PhysicsWorld::new();
         let global_iterations = pw.integration_parameters.num_solver_iterations;
         let unrelated = pw.bodies.insert(RigidBodyBuilder::dynamic().build());
@@ -1152,7 +1174,10 @@ mod tests {
         assert_eq!(pw.bodies[unrelated].additional_solver_iterations(), 0);
         for (i, (_, handle, _)) in rag.bodies.iter().enumerate() {
             let body = &pw.bodies[*handle];
-            assert_eq!(body.additional_solver_iterations(), 12);
+            assert_eq!(
+                body.additional_solver_iterations(),
+                RAGDOLL_EXTRA_SOLVER_ITERATIONS
+            );
             let mass: f32 = body
                 .colliders()
                 .iter()
@@ -1169,6 +1194,64 @@ mod tests {
             let expected = expected.limits(axis).unwrap();
             assert_eq!([actual.min, actual.max], [expected.min, expected.max]);
         }
+    }
+
+    /// Drop one restitutive ball onto a fixed floor and record its height
+    /// every tick, optionally with a two-link ragdoll falling far away (no
+    /// contact, no joint to the ball).
+    fn ball_drop_trajectory(with_distant_ragdoll: bool) -> Vec<u32> {
+        let mut pw = PhysicsWorld::new();
+        let floor = pw.bodies.insert(RigidBodyBuilder::fixed().build());
+        pw.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(500.0, 1.0, 500.0).build(),
+            floor,
+            &mut pw.bodies,
+        );
+        let ball = pw.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(0.0, 60.0, 0.0))
+                .build(),
+        );
+        pw.colliders.insert_with_parent(
+            ColliderBuilder::ball(5.0).restitution(0.6).build(),
+            ball,
+            &mut pw.bodies,
+        );
+        pw.dynamic_bodies.push(ball);
+        if with_distant_ragdoll {
+            let spec = RagdollSpec {
+                bodies: vec![ball_body(1, 2000.0, 400.0), ball_body(2, 2050.0, 400.0)],
+                constraints: vec![loose_ragdoll(0, 1)],
+            };
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane ragdoll seed");
+        }
+        pw.wake();
+        (0..90)
+            .map(|_| {
+                pw.step(PHYSICS_DT);
+                pw.bodies[ball].translation().y.to_bits()
+            })
+            .collect()
+    }
+
+    /// #5546 — a ragdoll must not change how an unrelated body solves. Under
+    /// rapier 0.36 a nonzero `additional_solver_iterations` on a multibody
+    /// link applies to the whole awake island, so the ball's bounce differed
+    /// (16 substeps instead of 4) whenever a ragdoll was awake anywhere.
+    /// This compares trajectories rather than reading the per-body field —
+    /// the field is exactly what stayed correct while the behaviour leaked.
+    #[test]
+    fn a_ragdoll_does_not_change_an_unrelated_bodys_solve() {
+        let alone = ball_drop_trajectory(false);
+        let beside_ragdoll = ball_drop_trajectory(true);
+        assert!(
+            alone.windows(2).any(|w| w[0] != w[1]),
+            "fixture: the ball must actually move"
+        );
+        assert_eq!(
+            alone, beside_ragdoll,
+            "an awake ragdoll 2000 BU away changed the ball's trajectory"
+        );
     }
 
     /// #3968 — a ragdoll built on a >60 fps frame (`step` runs zero

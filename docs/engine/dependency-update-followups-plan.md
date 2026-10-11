@@ -502,11 +502,18 @@ These are larger. Each needs its own plan and has a prerequisite on our side.
 
 ## Checked and ruled out — don't redo
 
-- **Ragdoll `additional_solver_iterations(12)`** (`crates/physics/src/ragdoll.rs:393`):
-  it looked as if its meaning changed in 0.35. It didn't: rapier 0.22 already
-  divided `dt` by `num_solver_iterations + additional`
-  (*rapier3d-0.22.0/src/dynamics/solver/island_solver.rs:45-49*). Ragdolls ran 16
-  substeps before and still do.
+- **Ragdoll `additional_solver_iterations`** (`RAGDOLL_EXTRA_SOLVER_ITERATIONS`,
+  `crates/physics/src/ragdoll.rs`): this entry used to say "ruled out — ragdolls ran
+  16 substeps before and still do". That checked only the ragdoll's own substep count
+  and missed the scope. rapier 0.22 kept islands per connected component, so the +12
+  stayed on the ragdoll; in 0.36 every awake body shares one island, and the staged
+  solver only splits it into per-body-budget groups while no multibody exists
+  (*rapier3d-0.36.1/src/dynamics/solver/staged_island_solver/init.rs:57-67*). Every
+  ragdoll is a multibody, so +12 made **every awake dynamic body in the world** solve
+  16 substeps (measured ~2× step cost, and unrelated bodies' trajectories changed)
+  while any ragdoll bone was awake (#5546). Re-measured once the soft limits landed
+  (#5538): +0 / +4 / +12 are all stable on the FO3 skeleton real-data gate, so it is
+  now 0, pinned by `a_ragdoll_does_not_change_an_unrelated_bodys_solve`.
 - **Ragdoll DOF clamp**: still needed. rapier's per-substep speed cap skips
   multibodies, which are integrated separately
   (*rapier3d-0.36.1/src/dynamics/solver/staged_island_solver/worker.rs:640-700*).
