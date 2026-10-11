@@ -3580,14 +3580,66 @@ mod tests {
         w.update_query_pipeline();
 
         assert_eq!(
-            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 64.0),
+            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 64.0, None),
             Some(7),
             "the ray reads the hit collider's material"
         );
         assert_eq!(
-            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 5.0),
+            w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 5.0, None),
             None,
             "nothing solid within range reads as None"
+        );
+    }
+
+    /// #5545 — a footstep's origin is the walker's capsule CENTRE. The
+    /// player capsule is `KinematicPositionBased` (material 0), which the
+    /// probe filter does not exclude, so a solid ray starting inside it hit
+    /// the capsule itself at `toi = 0` and every player footstep read
+    /// STONE. Excluding the walker's own body reads the floor beneath it.
+    #[test]
+    fn surface_material_under_skips_the_walkers_own_capsule() {
+        let mut w = PhysicsWorld::new();
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .user_data(7u128)
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        // The player rig: half-height 46 + radius 18, centre 64 above the
+        // floor, `surface_material: 0`, a kinematic position-based body.
+        let player = w.bodies.insert(
+            RigidBodyBuilder::kinematic_position_based()
+                .translation(Vector::new(0.0, 64.0, 0.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::capsule_y(46.0, 18.0).user_data(0u128).build(),
+            player,
+            &mut w.bodies,
+        );
+        w.update_query_pipeline();
+
+        let centre = Vec3::new(0.0, 64.0, 0.0);
+        assert_eq!(
+            w.surface_material_under(centre, 128.0, None),
+            Some(0),
+            "without the exclusion the probe reads the capsule's own material \
+             (the bug: this is what every player footstep saw)"
+        );
+        assert_eq!(
+            w.surface_material_under(centre, 128.0, Some(player)),
+            Some(7),
+            "excluding the walker's body reads the floor under it"
+        );
+        // Control: the same height one body-width aside is open air over the
+        // floor and always read the floor, which is why the open-air test
+        // above could not see the bug.
+        assert_eq!(
+            w.surface_material_under(Vec3::new(100.0, 64.0, 0.0), 128.0, None),
+            Some(7)
         );
     }
 

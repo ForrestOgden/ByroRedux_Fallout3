@@ -217,15 +217,29 @@ impl PhysicsWorld {
     /// the consumer falls back to its default sound. The Wave-4
     /// surface-aware footstep consumer calls this at footstep cadence
     /// (~2–4 Hz per walker), never per frame.
+    ///
+    /// `excluded_body` carries the same mandatory-decision contract as
+    /// [`Self::cast_ray_down`]'s (#2859): a footstep's origin is the
+    /// walker's `GlobalTransform`, i.e. the CENTRE of its own
+    /// `KinematicPositionBased` capsule, and a solid ray starting inside a
+    /// shape reports an impact at `toi = 0` on it. `solid_probe_filter`
+    /// excludes dynamics, sensors and actor bones but not that capsule, so
+    /// without the exclusion every player footstep read the capsule's own
+    /// material (0 = STONE) instead of the floor's (#5545).
     pub fn surface_material_under(
         &self,
         origin: byroredux_core::math::Vec3,
         max_distance: f32,
+        excluded_body: Option<rapier3d::prelude::RigidBodyHandle>,
     ) -> Option<u32> {
         use rapier3d::prelude::*;
         let ray = Ray::new(origin, Vector::NEG_Y);
+        let mut filter = solid_probe_filter();
+        if let Some(body) = excluded_body {
+            filter = filter.exclude_rigid_body(body);
+        }
         let (collider, _toi) = self
-            .queries(solid_probe_filter())
+            .queries(filter)
             .cast_ray(&ray, max_distance, /* solid = */ true)?;
         Some(self.colliders.get(collider)?.user_data as u32)
     }

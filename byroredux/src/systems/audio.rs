@@ -181,7 +181,13 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
                 }
                 _ => false,
             };
-            (body, !grounded || swimming)
+            // #5545 — the body's rapier handle rides the same pre-resolved
+            // tuple: the surface probe below starts at the capsule centre
+            // and must exclude the walker's own body.
+            let rapier_body = world
+                .get::<byroredux_physics::RapierHandles>(body)
+                .map(|handles| handles.body);
+            (body, !grounded || swimming, rapier_body)
         });
 
     // Phase 1: walk every emitter, accumulate stride, collect the
@@ -224,7 +230,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
             // boom arc as one stride burst; the body emitter re-seeds
             // while airborne or swimming so the landing / water-exit
             // distance never replays as a burst of steps.
-            if let Some((body, gated)) = body_gate {
+            if let Some((body, gated, _)) = body_gate {
                 if entity != body || gated {
                     fs.last_position = pos;
                     fs.accumulated_stride = 0.0;
@@ -261,11 +267,15 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     // above). A trigger with no solid ground in range (airborne edge,
     // streaming gap) reads `None` and takes the default sound. At
     // footstep cadence this is a handful of ray casts per tick.
+    // #5545 — the trigger position is the walker's capsule centre; the
+    // probe excludes the player's own body so it reads the floor, not the
+    // capsule (the emitter only fires for the player body, #5348).
+    let own_body = body_gate.and_then(|(_, _, rapier_body)| rapier_body);
     let surface_materials: Vec<Option<u32>> =
         if let Some(pw) = world.try_resource::<byroredux_physics::PhysicsWorld>() {
             triggers
                 .iter()
-                .map(|pos| pw.surface_material_under(*pos, 128.0))
+                .map(|pos| pw.surface_material_under(*pos, 128.0, own_body))
                 .collect()
         } else {
             Vec::new()
