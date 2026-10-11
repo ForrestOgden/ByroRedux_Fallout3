@@ -355,6 +355,16 @@ impl PhysicsWorld {
                 let Some(body) = self.bodies.get(handle) else {
                     continue;
                 };
+                // #5555 — the dynamic index is stale-tolerant (a body
+                // flipped away by `set_motion_type` stays in it), so every
+                // consumer re-checks the type, as the snapshot and
+                // `recover_pre_broken_bodies` do. A scripted keyframed
+                // teleport is a kinematic velocity, not a solver explosion:
+                // `set_linvel` is a no-op on it, and the clamp would only
+                // fabricate evidence and park it.
+                if body.body_type() != RigidBodyType::Dynamic {
+                    continue;
+                }
                 (body.linvel(), body.angvel())
             };
             // #5246 — a NaN velocity must never be *passed through*: one

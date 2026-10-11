@@ -1994,6 +1994,45 @@ mod tests {
         assert_eq!(w.bodies[handle].linvel().length(), 0.0);
     }
 
+    /// #5555 — the dynamic index is stale-tolerant by contract ("a miss,
+    /// never a wrong answer": consumers re-check the body type), and
+    /// `set_motion_type` keeps flipped-away handles in it. The clamp is the
+    /// second consumer and did not re-check, so a scripted
+    /// `SetMotionType(Keyframed)` reference that then teleports more than
+    /// ~333 BU in a tick was counted, warned about, and on the second
+    /// offence "parked" (slept) as an exploding dynamic — false evidence in
+    /// `phys.stats` and the log, plus a permanent offence entry.
+    #[test]
+    fn a_keyframed_body_left_in_the_dynamic_index_is_not_an_exploder() {
+        let mut w = PhysicsWorld::new();
+        let handle = w.bodies.insert(RigidBodyBuilder::dynamic().build());
+        w.dynamic_bodies.push(handle);
+        assert!(w.set_motion_type(handle, MotionType::Keyframed, true));
+        assert!(
+            w.dynamic_bodies.contains(&handle),
+            "the fixture needs the stale index entry the issue describes"
+        );
+        for hop in 1..=3 {
+            w.bodies[handle]
+                .set_next_kinematic_translation(Vector::new(1_000.0 * hop as f32, 0.0, 0.0));
+            w.wake();
+            w.step(PHYSICS_DT);
+            assert_eq!(
+                w.velocity_clamps_total(),
+                0,
+                "teleport {hop}: a kinematic body's scripted move is not a solver explosion"
+            );
+            assert!(
+                !w.bodies[handle].is_sleeping(),
+                "teleport {hop}: a keyframed body must not be parked"
+            );
+            assert!(
+                !w.explosion_offences.contains_key(&handle),
+                "teleport {hop}: no offence may accrue to a kinematic body"
+            );
+        }
+    }
+
     /// #5246 — the offence count is LIFETIME, not cleared by clean substeps:
     /// the FNV SLscorpionBurrowINT log showed the same body parked four
     /// times because every wake-and-re-explosion cycle looked like a fresh
