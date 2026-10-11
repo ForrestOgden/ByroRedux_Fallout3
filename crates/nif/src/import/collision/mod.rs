@@ -819,9 +819,27 @@ mod dispatch_coverage_tests {
     /// #4411 — production prefix only, same rule as the dispatch scan:
     /// `shape.rs`'s test module names `Bhk…Shape` types in comments and
     /// fixtures and must not satisfy this scan.
+    ///
+    /// #5573 — and only the `resolve_shape_inner` body: `shape.rs` also
+    /// holds the surface-material walker (`shape_leaf_materials_inner`),
+    /// a second `downcast_ref` chain over the same shapes, which would
+    /// otherwise mark a shape resolved after its real resolve arm is
+    /// deleted. An absent `resolve_shape_inner` yields an empty set so the
+    /// guard fails loudly instead of passing vacuously.
     fn resolved_shape_structs_in(src: &str) -> HashSet<String> {
         let src = src.split_once("#[cfg(test)]").map(|(prod, _)| prod).unwrap_or(src);
-        src.split("downcast_ref::<")
+        let Some((start, _)) = src
+            .match_indices("fn resolve_shape_inner(")
+            .find(|&(i, _)| i == 0 || src.as_bytes()[i - 1] == b'\n')
+        else {
+            return HashSet::new();
+        };
+        let body = &src[start..];
+        // The body ends at the next column-0 `fn` (nested fns are indented).
+        let body = body
+            .find("\nfn ")
+            .map_or(body, |end| &body[..end]);
+        body.split("downcast_ref::<")
             .skip(1)
             .filter_map(|part| {
                 let ident: String = part
@@ -868,7 +886,7 @@ mod dispatch_coverage_tests {
     /// production-prefix split it could.
     #[test]
     fn resolve_scan_ignores_test_module_mentions() {
-        let src = "pub fn f() {\n    x.downcast_ref::<BhkBoxShape>();\n}\n\
+        let src = "fn resolve_shape_inner() {\n    x.downcast_ref::<BhkBoxShape>();\n}\n\
                    #[cfg(test)]\nmod t {\n    fn g(b: &dyn std::any::Any) {\n\
                    b.downcast_ref::<BhkFakeTestShape>();\n    }\n}\n";
         let resolved = resolved_shape_structs_in(src);
@@ -876,6 +894,23 @@ mod dispatch_coverage_tests {
         assert!(
             !resolved.contains("BhkFakeTestShape"),
             "a #[cfg(test)] mention must not count as a resolve arm: {resolved:?}"
+        );
+    }
+
+    /// #5573 — a `downcast_ref::<BhkFooShape>` in another production fn
+    /// (the surface-material walker) must not mark the shape resolved, and
+    /// a missing `resolve_shape_inner` must not pass vacuously.
+    #[test]
+    fn resolve_scan_reads_only_the_resolve_shape_inner_body() {
+        let src = "fn shape_leaf_materials_inner() {\n    x.downcast_ref::<BhkListShape>();\n}\n\
+                   fn resolve_shape_inner() {\n    x.downcast_ref::<BhkBoxShape>();\n}\n\
+                   fn other() {\n    x.downcast_ref::<BhkMoppBvTreeShape>();\n}\n";
+        let resolved = resolved_shape_structs_in(src);
+        assert_eq!(resolved, HashSet::from(["BhkBoxShape".to_string()]), "{resolved:?}");
+        assert!(
+            resolved_shape_structs_in("fn only_a_walker() { x.downcast_ref::<BhkBoxShape>(); }")
+                .is_empty(),
+            "no resolve_shape_inner → empty set, so the coverage guard fails loudly"
         );
     }
 }
