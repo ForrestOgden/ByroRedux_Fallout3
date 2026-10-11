@@ -413,38 +413,51 @@ Batch these as convenient. Each is S effort with low risk.
 
 These are larger. Each needs its own plan and has a prerequisite on our side.
 
-**Status (2026-10-10) — every track resolved to its gated state:**
+**Status (2026-10-10, final) — every track complete at its gated state:**
 
-- **Surface-aware footsteps: implemented through the footstep half**
-  (`886edcded`). `RigidBodyData::surface_material` (the body-level
-  reduction of the shape tree's first authored HavokMaterial —
-  `first_shape_material` walks the same container dispatch
-  `resolve_shape` does) reaches the footstep decision: sync packs it
-  into every part collider's user-data, `PhysicsWorld::surface_material_
-  under` reads it back with the ground-probe filter, and
-  `select_footstep_sound` prefers the authored per-material entry over
-  the default sound. The save-shape change took the FORMAT_MAJOR bump
-  the blanket rule demands (v35 → v36). **Scoped remainders:** the
-  per-triangle split (a trimesh's per-subshape materials through
-  `collision_shape_to_parts`), and the clutter-impact half —
-  `ContactForceEvent::started` needs an `EventQueue` first, which the
-  `PhysicsWorld` has never run (no contact events are drained today);
-  that drain plus an impact-sound bridge is its own increment. The
-  content mapping stays empty until IPDS/IPCT decode lands — the
-  mechanism is content-agnostic and pinned by tests.
+- **Surface-aware footsteps and impacts: implemented in full.**
+  `886edcded` carried the material through import and wired the
+  footstep half; the same-day follow-throughs landed the two named
+  remainders. **Per-part materials** (`441d90c2f`): `shape_leaf_
+  materials` walks the bhk tree in `resolve_shape`'s exact depth-first
+  order (a leaf pushes its own authored `HavokMaterial` or inherits the
+  nearest container's), the leaf sequence is 1:1 with
+  `collision_shape_to_parts`' part order, `RigidBodyData::part_surface_
+  materials` stores it (`serde(skip)` — re-derived from the re-parsed
+  NIF on load, the #3470 class; the save fingerprint refreshed without
+  a bump), and registration packs each part its OWN material — a
+  compound body whose bhk children carry different materials now reads
+  back per-part through `surface_material_under`. **Clutter impacts**
+  (`1291f370a`): the `PhysicsWorld` wired a `ChannelEventCollector`
+  (the step had always taken the no-op `()` handler — no contact event
+  had ever existed), dynamic bodies' colliders subscribe with
+  `ActiveEvents::CONTACT_FORCE_EVENTS`, the drain keeps only
+  `started` force-threshold crossings, and `impact_audio_system` plays
+  one one-shot at the pair midpoint reading either collider's authored
+  material — `ImpactConfig` ships empty + defaultless, so production
+  is a no-op until IPDS/IPCT decode lands. The end-to-end pin drops a
+  ball onto a floor and asserts the crossing names both colliders'
+  materials.
 - **Cloth: unchanged — blocked upstream of the update.** rapier 0.36's
   soft bodies are ready, but `BSClothExtraData` is still an opaque Havok
   blob (`crates/nif/src/blocks/extra_data.rs`); decoding that packed
   format is its own research milestone (the PHYSAL FO4+ blob problem),
   not a design pass away.
-- **Collider debug view: scoped, not started.** There is no line-drawing
-  path anywhere in the renderer — no debug lines, no wireframe pass —
-  so the overlay's real prerequisite is a line-list pipeline (vertex
-  stream, draw pass, budget), after which rapier's `DebugRenderPipeline`
-  (or a hand-rolled extraction over `PhysicsWorld`'s colliders, which
-  the query layer can already enumerate) becomes a consumer. That
-  pipeline is the design's first milestone; the overlay alone was never
-  the cost.
+- **Collider debug view: assessed — needs its own milestone.** The
+  renderer has no line-drawing path anywhere (no debug lines, no
+  wireframe pass), and that is the real prerequisite: a line-list
+  pipeline (vertex stream + a `LINE_LIST`-topology sub-pass + a
+  per-frame dynamic vertex buffer) before any overlay consumer exists.
+  The extraction half is cheap by comparison — `PhysicsWorld` already
+  enumerates colliders for `phys.census`, the radius-filter pattern
+  exists there, and each collider's user-data now carries its authored
+  Havok material, so a color-by-material overlay falls out of the data
+  this Wave just put in place. Toggle surface (`phys.debug on/off`,
+  radius) is a resource + console command. Estimate M for the
+  pipeline + extraction + toggle, with the pipeline verifiable on the
+  lavapipe lane; the only structural risk is `draw_frame`'s per-pass
+  budget discipline. Schedule when a live physics-debugging need
+  arrives — the design above is the whole plan.
 - **Zero-copy Scaleform frames: stood down — the gate resolves no.**
   #4717's pacing landed (fixed in `e405774ef`): a static 30 Hz movie
   went from 150 to 26 passes per 150 ticks, and live Skyrim
