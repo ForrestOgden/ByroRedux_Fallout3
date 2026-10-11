@@ -672,7 +672,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorColliderOwner", "derived skeleton-bone to placement-root link rebuilt by keyframe_live_ragdoll_bones on every NPC spawn"),
         ("ContactConfig", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
         ("PhysicsWaterConstants", "boot-time tunable resource, no runtime mutator (no resource_mut call exists outside tests)"),
-        ("WaterContactScratch", "transient per-tick buoyancy staging buffers whose capacities are reused; surfaces, currents, targets, and writes are derived from live ECS/physics state, and the #3268 in-current latch is re-derived by the first scan after a load (worst case one redundant wake)"),
+        ("WaterContactScratch", "transient per-tick buoyancy staging buffers whose capacities are reused; surfaces, currents, targets, and writes are derived from live ECS/physics state, and the #3268 in-current latch and the #5561 rest-depth latch are re-derived by the first scan after a load (worst case one redundant wake, or a float settling at its current depth)"),
         ("PhysicsWorld", "owns live Rapier handle sets, architecturally rebuilt from cell data (CollisionShape/RigidBodyData/Transform) every load, not snapshot-restored"),
         ("Ragdoll", "handle bookkeeping only, no live inserter exists yet (debug console command only) — same posture as Dead (#2293)"),
         ("RapierHandles", "self-healing generational index; its own doc states absence is the signal to re-derive it, and physics_sync_system does so automatically"),

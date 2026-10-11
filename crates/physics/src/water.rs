@@ -35,6 +35,7 @@
 //! (WATAL §7 Phase 2).
 
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
+use std::collections::HashMap;
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
@@ -103,7 +104,6 @@ struct BuoyancyTarget {
     authored_lin: f32,
     authored_ang: f32,
     prior_wet: bool,
-    prior_depth: f32,
 }
 
 /// Reusable staging storage for the complete per-tick buoyancy scan.
@@ -139,7 +139,20 @@ pub struct WaterContactScratch {
     /// Scratch half of the double buffer above — filled during the scan and
     /// swapped into `in_current_prev` at the end of it.
     in_current_now: Vec<EntityId>,
+    /// The depth (`surface_y - center_y`) at which each currently-sleeping wet
+    /// body settled, latched the first scan that sees it asleep (#5561). The
+    /// wave re-wake compares against THIS, not against last scan's
+    /// `WaterContact::depth`. Like `in_current_prev` it is a latch, not
+    /// staging: it survives scans, is dropped when the body wakes or leaves
+    /// the water, and is swept of despawned bodies after each full scan. A
+    /// load simply re-derives it on the first asleep scan (worst case: the
+    /// body settles at its current depth).
+    rest_depth: HashMap<EntityId, f32>,
 }
+
+/// How far a sleeping float's depth may drift from its settled depth before
+/// the waves wake it (#5561). BU.
+const WAVE_WAKE_DEPTH_DELTA: f32 = 0.1;
 
 impl Resource for WaterContactScratch {}
 
@@ -628,6 +641,7 @@ fn apply_buoyancy_with_scratch(
         writes,
         in_current_prev,
         in_current_now,
+        rest_depth,
     } = scratch;
     surfaces.clear();
     current_volumes.clear();
@@ -736,7 +750,6 @@ fn apply_buoyancy_with_scratch(
             prior_wet: prior_contact
                 .map(|contact| contact.submerged_fraction > 0.0)
                 .unwrap_or(false),
-            prior_depth: prior_contact.map(|contact| contact.depth).unwrap_or(0.0),
         });
     }
     // #3492 — second source: ragdoll bodies. They are structurally invisible
@@ -768,8 +781,7 @@ fn apply_buoyancy_with_scratch(
                     prior_wet: prior_contact
                         .map(|contact| contact.submerged_fraction > 0.0)
                         .unwrap_or(false),
-                    prior_depth: prior_contact.map(|contact| contact.depth).unwrap_or(0.0),
-                });
+                        });
             }
         }
     }
@@ -986,10 +998,29 @@ fn apply_buoyancy_with_scratch(
                             }
                             // Wake ONCE on entry so a body that streamed in
                             // already submerged (spawned asleep) floats up.
-                            if !t.prior_wet
-                                || (b.is_sleeping()
-                                    && (surface_y - center_y - t.prior_depth).abs() > 0.1)
-                            {
+                            // #5561 — a SLEEPING float re-wakes for waves when
+                            // its depth drifts from the depth it settled at,
+                            // not from last scan's depth: `WaterContact::depth`
+                            // is rewritten every scan, so a per-scan delta is
+                            // (wave rate × scan dt) and falls under the
+                            // threshold at high frame rates — the float then
+                            // sat rigid while the rendered surface moved.
+                            let depth_now = surface_y - center_y;
+                            let wake = if !t.prior_wet {
+                                rest_depth.remove(&t.entity);
+                                true
+                            } else if b.is_sleeping() {
+                                let rest = *rest_depth.entry(t.entity).or_insert(depth_now);
+                                let drifted = (depth_now - rest).abs() > WAVE_WAKE_DEPTH_DELTA;
+                                if drifted {
+                                    rest_depth.remove(&t.entity);
+                                }
+                                drifted
+                            } else {
+                                rest_depth.remove(&t.entity);
+                                false
+                            };
+                            if wake {
                                 b.wake_up(true);
                                 woke_any = true;
                             }
@@ -1082,6 +1113,7 @@ fn apply_buoyancy_with_scratch(
                             b.set_linear_damping(t.authored_lin);
                             b.set_angular_damping(t.authored_ang);
                         }
+                        rest_depth.remove(&t.entity);
                         writes.push((t.entity, WaterContact::default()));
                     }
                 }
@@ -1095,6 +1127,7 @@ fn apply_buoyancy_with_scratch(
                             b.set_linear_damping(t.authored_lin);
                             b.set_angular_damping(t.authored_ang);
                         }
+                        rest_depth.remove(&t.entity);
                         writes.push((t.entity, WaterContact::default()));
                     }
                 }
@@ -1165,6 +1198,10 @@ fn apply_buoyancy_with_scratch(
         // halves keep their allocations across the swap.
         in_current_now.sort_unstable();
         std::mem::swap(in_current_prev, in_current_now);
+        if !rest_depth.is_empty() {
+            // Despawned bodies leave no dry branch to clear them.
+            rest_depth.retain(|entity, _| targets.iter().any(|t| t.entity == *entity));
+        }
     }
 
     if !writes.is_empty() {
@@ -2312,6 +2349,108 @@ mod tests {
         assert_eq!(
             steps, 0,
             "static-scene fast path must skip stepping once the float sleeps"
+        );
+    }
+
+    /// #5561 — a slept float must follow the waves at high frame rates too.
+    /// The wake test compared against last scan's depth, which is rewritten
+    /// every scan, so at 144 fps the per-frame change (wave rate × 1/144 s)
+    /// stayed under 0.1 BU and the float sat rigid for good. Settle a float
+    /// in calm time, then advance the clock at 144 fps: the accumulated drift
+    /// from its settled depth must wake it.
+    #[test]
+    fn a_slept_float_wakes_for_waves_at_high_frame_rate() {
+        use crate::{physics_sync_system, RapierHandles};
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+        use byroredux_core::ecs::resources::TotalTime;
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants {
+            buoyancy_density_ratio: 1.02,
+            ..PhysicsWaterConstants::default()
+        });
+        world.insert_resource(WaterContactScratch::default());
+        world.insert_resource(TotalTime(0.0));
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+
+        let mut material = WaterMaterial::default();
+        material.wave_amplitude = 2.0;
+        material.wave_frequency = 1.0;
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material,
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, 0.0, 500.0],
+            },
+        );
+        let body = world.spawn();
+        world.insert(body, CollisionShape::Ball { radius: 15.0 });
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+                surface_material: 0,
+                part_surface_materials: Box::new([]),
+            },
+        );
+        world.insert(
+            body,
+            GlobalTransform::new(Vec3::new(0.0, -5.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        world.insert(body, Transform::from_translation(Vec3::new(0.0, -5.0, 0.0)));
+
+        // Settle with the clock stopped, until the island sleeps.
+        for _ in 0..4000 {
+            physics_sync_system(&world, PHYSICS_DT);
+            if world.resource::<PhysicsWorld>().active_island_counts().0 == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            world.resource::<PhysicsWorld>().active_island_counts().0,
+            0,
+            "fixture: the float must sleep before the waves start"
+        );
+
+        // 144 fps, clock advancing: per-frame crest change is far below 0.1.
+        let frame_dt = 1.0 / 144.0;
+        let mut woke = false;
+        for frame in 1..=(144 * 4) {
+            world.resource_mut::<TotalTime>().0 = frame as f32 * frame_dt;
+            physics_sync_system(&world, frame_dt);
+            if world.resource::<PhysicsWorld>().active_island_counts().0 > 0 {
+                woke = true;
+                break;
+            }
+        }
+        assert!(
+            woke,
+            "a float that slept in calm water must wake once the waves have moved it \
+             0.1 BU from its settled depth, at 144 fps as at 30"
         );
     }
 
