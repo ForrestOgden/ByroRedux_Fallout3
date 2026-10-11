@@ -10,7 +10,6 @@
 //! the MOD2 camera-path NIFs remain TODO.
 
 use crate::cell_loader::{LoadedCellIndex, PendingCellTransition};
-use byroredux_core::ecs::components::Children;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{MeshHandle, Transform, World};
 use byroredux_core::math::camera::rh::view::look_at_mat4;
@@ -567,44 +566,23 @@ fn pose_root(world: &mut World, root: EntityId, pose: &StagePose) {
     transform.scale = scale;
 }
 
-/// Every mesh handle in the stage subtree, via the same Children walk the
-/// cell teardown uses.
+/// Every mesh handle in the stage subtree, via the shared guarded
+/// Children walk.
 fn collect_stage_mesh_handles(world: &World, root: EntityId) -> std::collections::HashSet<u32> {
-    let children = world.query::<Children>();
     let meshes = world.query::<MeshHandle>();
-    let mut handles = std::collections::HashSet::new();
-    let mut stack = vec![root];
-    while let Some(entity) = stack.pop() {
-        if let Some(meshes) = &meshes {
-            if let Some(handle) = meshes.get(entity) {
-                handles.insert(handle.0);
-            }
-        }
-        if let Some(children) = &children {
-            if let Some(row) = children.get(entity) {
-                stack.extend(row.0.iter().copied());
-            }
-        }
-    }
-    handles
+    byroredux_core::ecs::collect_subtree(world, root)
+        .into_iter()
+        .filter_map(|entity| meshes.as_ref().and_then(|m| m.get(entity)).map(|h| h.0))
+        .collect()
 }
 
-/// Entity list of a whole subtree, root included. Does not despawn — the
+/// Entity list of a whole subtree, root included — the shared guarded
+/// collector (#5513: visited set + budget, so a cyclic `Children` graph
+/// cannot hang stage setup or retirement). Does not despawn — the
 /// retirement path must read component state (GPU handles) before the
 /// entities go away.
 fn collect_subtree(world: &World, root: EntityId) -> Vec<EntityId> {
-    let children = world.query::<Children>();
-    let mut stack = vec![root];
-    let mut victims = Vec::new();
-    while let Some(entity) = stack.pop() {
-        victims.push(entity);
-        if let Some(children) = &children {
-            if let Some(row) = children.get(entity) {
-                stack.extend(row.0.iter().copied());
-            }
-        }
-    }
-    victims
+    byroredux_core::ecs::collect_subtree(world, root)
 }
 
 /// Despawn a whole subtree without GPU-release bookkeeping — the spawn

@@ -39,7 +39,7 @@ pub use components::{
 };
 pub use debug_load::{PendingDebugLoad, PendingDebugLoadSlot, PendingUpscalerSwitch};
 pub use game_profiles::{GameProfileEntry, GameProfileRegistry, GameRelease};
-pub use hierarchy::HierarchyTraversalGuard;
+pub use hierarchy::{collect_subtree, HierarchyTraversalGuard};
 pub use metrics::MetricsSnapshot;
 pub use packed::PackedStorage;
 pub use query::{ComponentRef, QueryRead, QueryWrite};

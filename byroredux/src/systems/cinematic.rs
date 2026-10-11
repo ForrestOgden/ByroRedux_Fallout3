@@ -1,7 +1,7 @@
 //! App-side sinks for scripted cinematic requests.
 
 use crate::components::{AnimationTarget, CinematicReAdoption, CellRootIndex, IdleClipCatalog};
-use byroredux_core::ecs::components::{CellRoot, Children, Parent};
+use byroredux_core::ecs::components::{CellRoot, Parent};
 use byroredux_core::animation::{AnimationPlayer, RootMotionDelta};
 use byroredux_core::ecs::components::RigidBodyData;
 use byroredux_core::ecs::Transform;
@@ -508,16 +508,12 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
         finished.iter().copied().flat_map(|(cart, horse)| [cart, horse]).collect();
     seeds.extend(riders.iter().map(|(actor, _)| *actor));
     let (release_set, player_subtree) = {
-        let children = world.query::<Children>();
-        let mut set = std::collections::HashSet::new();
-        let mut stack = seeds;
-        while let Some(entity) = stack.pop() {
-            if set.insert(entity) {
-                if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
-                    stack.extend(row.0.iter().copied());
-                }
-            }
-        }
+        // #5513 — the shared guarded collector (visited set + budget),
+        // one call per seed instead of a hand-rolled stack walk.
+        let set: std::collections::HashSet<EntityId> = seeds
+            .iter()
+            .flat_map(|seed| byroredux_core::ecs::collect_subtree(world, *seed))
+            .collect();
         // #5379 — the process-lifetime player is never cell-owned
         // (`player_body.rs`: the body root survives live cell reloads by
         // design). A player rider reaches this walk through its Children,
@@ -530,18 +526,9 @@ fn release_finished_tethers(world: &World, finished: &[(EntityId, EntityId)]) {
             .try_resource::<crate::systems::character::PlayerEntity>()
             .and_then(|player| player.0);
         let player_subtree = match player {
-            Some(player) => {
-                let mut subtree = std::collections::HashSet::new();
-                let mut stack = vec![player];
-                while let Some(entity) = stack.pop() {
-                    if subtree.insert(entity) {
-                        if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
-                            stack.extend(row.0.iter().copied());
-                        }
-                    }
-                }
-                subtree
-            }
+            Some(player) => byroredux_core::ecs::collect_subtree(world, player)
+                .into_iter()
+                .collect::<std::collections::HashSet<EntityId>>(),
             None => std::collections::HashSet::new(),
         };
         (set, player_subtree)
@@ -641,7 +628,6 @@ pub(crate) fn retry_cinematic_readoption(
         let transforms = world.query::<Transform>();
         let roots = world.query::<CellRoot>();
         let parents = world.query::<Parent>();
-        let children = world.query::<Children>();
         // #5379 — the process-lifetime player is never cell-owned, no
         // matter who queued it: a `CellRoot` stamp here would make the
         // next streaming unload / save-load teardown despawn the player.
@@ -651,18 +637,9 @@ pub(crate) fn retry_cinematic_readoption(
             .try_resource::<crate::systems::character::PlayerEntity>()
             .and_then(|player| player.0);
         let player_subtree = match player {
-            Some(player) => {
-                let mut subtree = std::collections::HashSet::new();
-                let mut stack = vec![player];
-                while let Some(entity) = stack.pop() {
-                    if subtree.insert(entity) {
-                        if let Some(row) = children.as_ref().and_then(|c| c.get(entity)) {
-                            stack.extend(row.0.iter().copied());
-                        }
-                    }
-                }
-                subtree
-            }
+            Some(player) => byroredux_core::ecs::collect_subtree(world, player)
+                .into_iter()
+                .collect::<std::collections::HashSet<EntityId>>(),
             None => std::collections::HashSet::new(),
         };
         for &entity in &pending.pending {
@@ -692,18 +669,16 @@ pub(crate) fn retry_cinematic_readoption(
             match loaded.get(&(gx, gy)) {
                 Some(cell) => {
                     // The root's whole Children subtree lands with it.
-                    let mut subtree = vec![entity];
-                    let mut stack = vec![entity];
-                    while let Some(node) = stack.pop() {
-                        if let Some(row) = children.as_ref().and_then(|c| c.get(node)) {
-                            for &child in row.0.iter() {
-                                if !player_subtree.contains(&child) {
-                                    subtree.push(child);
-                                    stack.push(child);
-                                }
-                            }
-                        }
-                    }
+                    // #5513 — the shared guarded collector (visited set +
+                    // budget). The player-subtree filter is equivalent to
+                    // the old stop-descent check: every descendant of a
+                    // player-subtree node is itself a player-subtree
+                    // member, so excluding members excludes their
+                    // subtrees too.
+                    let subtree = byroredux_core::ecs::collect_subtree(world, entity)
+                        .into_iter()
+                        .filter(|member| !player_subtree.contains(member))
+                        .collect::<Vec<EntityId>>();
                     adoptions.push((entity, cell.cell_root, subtree));
                 }
                 None => still_pending.push(entity),
@@ -1231,7 +1206,7 @@ pub(crate) fn vehicle_attachment_system(world: &World, _dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_core::ecs::components::MotionType;
+    use byroredux_core::ecs::components::{Children, MotionType};
     use byroredux_scripting::AnimationTextKeyEvent;
 
     #[test]

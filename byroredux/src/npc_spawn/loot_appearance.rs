@@ -6,8 +6,8 @@
 use super::*;
 use byroredux_core::ecs::components::collision::CollisionShape;
 use byroredux_core::ecs::components::Dead;
-use byroredux_core::ecs::{CellRoot, Children, Component, MeshHandle, SparseSetStorage};
-use std::collections::{HashMap, HashSet};
+use byroredux_core::ecs::{CellRoot, Component, MeshHandle, SparseSetStorage};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -102,21 +102,10 @@ pub(crate) fn status(world: &World, actor: EntityId) -> String {
 
 /// Every entity at or under `root`, cycle-safe, `root` itself included.
 /// The full-subtree shape #5028 needs: releasing an imported gear root must
-/// despawn its nodes as well as its mesh entities.
+/// despawn its nodes as well as its mesh entities. #5513 — delegates to the
+/// shared guarded collector (visited set + traversal budget).
 pub(crate) fn subtree_entities_under(world: &World, root: EntityId) -> Vec<EntityId> {
-    let mut pending = vec![root];
-    let mut seen = HashSet::new();
-    let mut entities = Vec::new();
-    while let Some(entity) = pending.pop() {
-        if !seen.insert(entity) {
-            continue;
-        }
-        if let Some(children) = world.get::<Children>(entity) {
-            pending.extend(children.0.iter().copied());
-        }
-        entities.push(entity);
-    }
-    entities
+    byroredux_core::ecs::collect_subtree(world, root)
 }
 
 /// Mesh entities at or under `root`, cycle-safe. `NpcAppearanceHidden` is

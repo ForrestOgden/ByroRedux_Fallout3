@@ -16,37 +16,28 @@ use crate::components::{
 /// Active native vehicle chains have crossed their source cell boundary by
 /// design. Promote their roots and complete render hierarchies out of cell
 /// ownership so exterior streaming cannot despawn a moving cinematic.
+/// #5513 — the subtree closure goes through the shared guarded collector
+/// (visited set + traversal budget), one call per seed.
 fn cinematic_retained_entities(world: &World) -> HashSet<EntityId> {
-    let mut retained = HashSet::new();
+    let mut seeds = HashSet::new();
     if let Some(tethers) = world.query::<byroredux_scripting::HorseTetherState>() {
         for (cart, tether) in tethers.iter() {
-            retained.insert(cart);
-            retained.insert(tether.horse);
+            seeds.insert(cart);
+            seeds.insert(tether.horse);
         }
     }
     if let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() {
         for (actor, state) in states.iter() {
             if let Some(vehicle) = state.vehicle {
-                retained.insert(actor);
-                retained.insert(vehicle);
+                seeds.insert(actor);
+                seeds.insert(vehicle);
             }
         }
     }
-    let Some(children) = world.query::<Children>() else {
-        return retained;
-    };
-    let mut stack: Vec<_> = retained.iter().copied().collect();
-    while let Some(parent) = stack.pop() {
-        let Some(row) = children.get(parent) else {
-            continue;
-        };
-        for &child in &row.0 {
-            if retained.insert(child) {
-                stack.push(child);
-            }
-        }
-    }
-    retained
+    seeds
+        .iter()
+        .flat_map(|seed| byroredux_core::ecs::collect_subtree(world, *seed))
+        .collect()
 }
 
 /// #5483 defence in depth — the player rig must never be a cell-teardown
