@@ -43,6 +43,22 @@ const IMPACT_SOUND_PATH: &str =
     r"sound\fx\wpn\impact\blade\2hand\fleshdraugr\wpn_impact_blade2hand_fleshdraugr_01.wav";
 const DEATH_VOICE_PATH: &str = r"sound\fx\npc\draugr\death\npc_draugr_death_02.wav";
 
+/// #5148 — per-kind count of the combat feedback one-shots that were
+/// actually REQUESTED from the audio world (sound found, `play_oneshot`
+/// called). `AudioWorld::oneshots_requested` is one total across every
+/// producer — footsteps, splashes, dialogue and combat — so a smoke gate on
+/// it passes on the footstep `combat.approach` provokes even when the
+/// combat sound path is silent. Diagnostic only (`combat.status`);
+/// `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CombatSoundRequests {
+    pub(crate) swing: u32,
+    pub(crate) impact: u32,
+    pub(crate) death_voice: u32,
+}
+
+impl byroredux_core::ecs::Resource for CombatSoundRequests {}
+
 /// What the write pass does for one actor.
 enum TakeAction {
     /// Install a take: swap (or insert) the actor's `AnimationPlayer` to
@@ -353,7 +369,16 @@ fn combat_feedback_system_inner(world: &World, dt: f32, scratch: &mut FeedbackSc
             FeedbackSound::Impact => IMPACT_SOUND_PATH,
             FeedbackSound::DeathVoice => DEATH_VOICE_PATH,
         };
-        play_oneshot_cached(world, path, position);
+        if play_oneshot_cached(world, path, position) {
+            if let Some(mut counts) = world.try_resource_mut::<CombatSoundRequests>() {
+                let slot = match sound {
+                    FeedbackSound::Swing => &mut counts.swing,
+                    FeedbackSound::Impact => &mut counts.impact,
+                    FeedbackSound::DeathVoice => &mut counts.death_voice,
+                };
+                *slot = slot.saturating_add(1);
+            }
+        }
     }
     scratch.sound_events = sound_events;
 }
@@ -379,7 +404,9 @@ fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
 /// Lazily decode (or reuse) a one-shot and enqueue it. Headless (no
 /// `AudioWorld`) and archive-less (no provider / decode failure) paths
 /// both collapse to a silent skip — sound is never a hard dependency.
-pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) {
+/// Returns whether a one-shot was actually requested from the audio world
+/// (#5148), so callers can count real requests.
+pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) -> bool {
     let data = world
         .try_resource_mut::<byroredux_audio::SoundCache>()
         .and_then(|mut cache| {
@@ -396,7 +423,7 @@ pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: V
             })
         });
     let Some(data) = data else {
-        return;
+        return false;
     };
     if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
         audio.play_oneshot(
@@ -411,7 +438,9 @@ pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: V
             },
             1.0,
         );
+        return true;
     }
+    false
 }
 
 /// System factory — returns a closure with persistent scratch, mirroring
@@ -885,5 +914,60 @@ mod tests {
             byroredux_audio::load_sound_from_bytes(bytes)
                 .unwrap_or_else(|error| panic!("{path} failed to decode: {error}"));
         }
+    }
+
+    /// #5148 — the per-kind counters count REAL requests: a swing event
+    /// with the sound cached bumps `swing` (and `oneshots_requested`),
+    /// while the same event with no sound available (archive-less run)
+    /// bumps neither — which is exactly the silent combat path the P2
+    /// smoke gate could not see through the shared total.
+    #[test]
+    fn combat_sound_requests_count_only_real_one_shot_requests() {
+        // One swing event in a fresh world; `cached` decides whether the
+        // swing sound is available to the cache.
+        let run = |cached: bool| {
+            let Fixture { world, actor, .. } = spawn_actor(false);
+            let mut world = world;
+            install_clips(&mut world);
+            let human = world.spawn();
+            world.insert(human, GlobalTransform::default());
+            world.insert_resource(byroredux_audio::SoundCache::default());
+            world.insert_resource(byroredux_audio::AudioWorld::headless());
+            world.insert_resource(CombatSoundRequests::default());
+            if cached {
+                world
+                    .try_resource_mut::<byroredux_audio::SoundCache>()
+                    .unwrap()
+                    .insert(
+                        SWING_SOUND_PATH,
+                        byroredux_audio::Sound {
+                            sample_rate: 22_050,
+                            frames: std::sync::Arc::new([byroredux_audio::Frame::ZERO; 8]),
+                            settings: byroredux_audio::SoundSettings::default(),
+                            slice: None,
+                        },
+                    );
+            }
+            hit_event(&mut world, human, actor);
+            let mut scratch = FeedbackScratch::default();
+            combat_feedback_system_inner(&world, 1.0 / 60.0, &mut scratch);
+            let counts = *world.try_resource::<CombatSoundRequests>().unwrap();
+            let total = world
+                .try_resource::<byroredux_audio::AudioWorld>()
+                .unwrap()
+                .oneshots_requested();
+            (counts, total)
+        };
+
+        // No sound available: the swing event is dispatched but nothing is
+        // requested, so nothing is counted — the silent combat path.
+        let (counts, total) = run(false);
+        assert_eq!(counts, CombatSoundRequests::default());
+        assert_eq!(total, 0);
+        // Sound cached: the same event is a counted request, and only the
+        // swing kind moves.
+        let (counts, total) = run(true);
+        assert_eq!((counts.swing, counts.impact, counts.death_voice), (1, 0, 0));
+        assert_eq!(total, 1);
     }
 }

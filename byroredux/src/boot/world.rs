@@ -201,6 +201,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // never fails on a missing audio device.
     world.insert_resource(byroredux_audio::AudioWorld::new());
     world.insert_resource(byroredux_audio::SoundCache::new());
+    // #5148 — per-kind combat one-shot request counts, surfaced by
+    // `combat.status` so the P2 smoke gate can tell a combat sound from the
+    // footstep `combat.approach` provokes.
+    world.insert_resource(crate::systems::CombatSoundRequests::default());
     // #5382 — dialogue voice decodes ride the byte-budgeted LRU, not
     // the process-lifetime `SoundCache`: the voices archive is an
     // open-ended keyspace (105k FNV candidates, ~0.19 MB PCM per voiced

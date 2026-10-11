@@ -467,6 +467,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FactionReputation", "forward-latent: no production insertion or mutation site exists yet"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
         ("PoolRegenConfig", "immutable game-profile regeneration tuning; forward-latent — inserted only inside unit tests today, no production site installs it (see feature-matrix.md's regen-unwired note)"),
+        ("CombatSoundRequests", "diagnostic per-kind count of combat feedback one-shots requested this session (#5148), surfaced by combat.status for the P2 smoke gate; meaningless across a load"),
         ("MetricsSnapshot", "diagnostic telemetry sampled from current storages each frame"),
         ("GameProfileRegistry", "static per-game profile table installed at boot"),
         ("SystemList", "scheduler introspection snapshot rebuilt from the installed scheduler at boot"),

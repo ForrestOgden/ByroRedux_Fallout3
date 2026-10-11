@@ -197,14 +197,21 @@ impl ConsoleCommand for CombatStatusCommand {
             .try_resource::<byroredux_audio::AudioWorld>()
             .map(|audio| audio.oneshots_requested())
             .unwrap_or(0);
+        let sounds = world
+            .try_resource::<crate::systems::CombatSoundRequests>()
+            .map(|counts| *counts)
+            .unwrap_or_default();
         let mut lines = vec!["Combat status:".to_string()];
         lines.push(format!(
-            "  cooldown={:.3} blocking={} attacks={} hits={} kills={} cooldown_ready={cooldown_ready} oneshots_requested={oneshots_requested}",
+            "  cooldown={:.3} blocking={} attacks={} hits={} kills={} cooldown_ready={cooldown_ready} oneshots_requested={oneshots_requested} combat_sound_swing={} combat_sound_impact={} combat_sound_death_voice={}",
             melee.cooldown_remaining,
             melee.blocking,
             state.attacks_started,
             state.hits_landed,
             state.kills,
+            sounds.swing,
+            sounds.impact,
+            sounds.death_voice,
         ));
         if let Some(last) = state.last {
             lines.push(format!(

@@ -320,7 +320,24 @@ if [[ "$SMOKE_GAME" == "skyrim_se" ]]; then
         || fail "combat.status did not expose oneshots_requested"
     (( oneshots_requested > 0 )) \
         || fail "Skyrim combat completed without requesting any audio one-shots"
-    echo "smoke[p2-melee-core]: PASS -- audio dispatch requested $oneshots_requested one-shots (headless-safe)"
+    # #5148 — the total above counts every producer (footsteps included:
+    # `combat.approach` repositions the capsule far past one stride before
+    # each swing), so it passes with a silent combat-sound path. The
+    # per-kind counters count only combat feedback one-shots that were
+    # actually requested: the killing run must have produced the Draugr
+    # impact and the death voice (the kill).
+    combat_sound() {
+        sed -nE "s/.*combat_sound_$1=([0-9]+).*/\1/p" "$status_log" | tail -1
+    }
+    impact_sounds="$(combat_sound impact)"
+    death_voice_sounds="$(combat_sound death_voice)"
+    [[ "$impact_sounds" =~ ^[0-9]+$ && "$death_voice_sounds" =~ ^[0-9]+$ ]] \
+        || fail "combat.status did not expose the per-kind combat_sound_* counters"
+    (( impact_sounds >= 1 )) \
+        || fail "$total_hits landed hits requested no impact one-shot"
+    (( death_voice_sounds >= 1 )) \
+        || fail "the kill requested no death-voice one-shot"
+    echo "smoke[p2-melee-core]: PASS -- audio dispatch requested $oneshots_requested one-shots in total, $impact_sounds combat impact + $death_voice_sounds death-voice (headless-safe)"
 fi
 if [[ -n "${P2_RAGDOLL_BODIES:-}" ]]; then
     grep -Fq "ragdoll activated ($P2_RAGDOLL_BODIES bodies)" "$status_log" \
