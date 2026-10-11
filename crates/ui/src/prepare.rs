@@ -85,7 +85,8 @@ pub(crate) fn normalize_scaleform_dialect(swf_data: &[u8]) -> Option<Vec<u8>> {
         _ => return None,
     };
     let tags_start = tag_stream_start(&file)?;
-    let patched = patch_place_object3_stream(&mut file[tags_start..], DEFINE_SPRITE, PLACE_OBJECT_3);
+    let patched =
+        patch_place_object3_stream(&mut file[tags_start..], DEFINE_SPRITE, PLACE_OBJECT_3, 0);
     if patched > 0 {
         log::info!(
             "Scaleform dialect: set MOVE on {patched} PlaceObject3 record(s) with neither MOVE \
@@ -106,12 +107,24 @@ pub(crate) fn normalize_scaleform_dialect(swf_data: &[u8]) -> Option<Vec<u8>> {
     Some(file)
 }
 
+/// Inflate a CWS body, bounded by the header's declared uncompressed length
+/// (`u32` at `[4..8]`, counting the 8-byte header) so a hostile stream
+/// cannot balloon past what it claims (#5456). A body that overruns its
+/// own header is malformed: `None` hands the movie to the stock loader,
+/// exactly what happened before the shim owned the decode.
 fn decompress_zlib_after_header(swf_data: &[u8]) -> Option<Vec<u8>> {
     use std::io::Read;
+    let declared_body =
+        u64::from(u32::from_le_bytes(swf_data[4..8].try_into().ok()?).saturating_sub(8));
     let mut out = swf_data[0..8].to_vec();
-    let mut decoder = flate2::read::ZlibDecoder::new(&swf_data[8..]);
+    // One byte past the declared length is enough to detect an overrun
+    // without ever materializing the rest.
+    let decoder = flate2::read::ZlibDecoder::new(&swf_data[8..]).take(declared_body + 1);
     let mut body = Vec::new();
-    decoder.read_to_end(&mut body).ok()?;
+    { decoder }.read_to_end(&mut body).ok()?;
+    if body.len() as u64 > declared_body {
+        return None;
+    }
     out.extend_from_slice(&body);
     Some(out)
 }
@@ -129,10 +142,24 @@ fn tag_stream_start(file: &[u8]) -> Option<usize> {
     (rect_end < file.len()).then_some(rect_end)
 }
 
-/// Walk a tag stream (and DefineSprite bodies within it), setting MOVE on
-/// every PlaceObject3 whose action bits are both clear. Length-preserving;
-/// returns the patch count.
-fn patch_place_object3_stream(stream: &mut [u8], define_sprite: u16, place_object_3: u16) -> usize {
+/// Deepest tag-stream nesting the walker descends to: the movie's root
+/// stream is depth 0 and a `DefineSprite` body is depth 1. The SWF spec
+/// does not allow a `DefineSprite` inside a `DefineSprite`, so a sprite
+/// found at depth 1 is not walked — an unbounded descent was a stack
+/// overflow (process abort) on a crafted movie at ~10 bytes per level
+/// (#5456). Retail content never nests sprites, so nothing it carries is
+/// skipped.
+const MAX_SPRITE_DEPTH: usize = 1;
+
+/// Walk a tag stream (and DefineSprite bodies within it, up to
+/// [`MAX_SPRITE_DEPTH`]), setting MOVE on every PlaceObject3 whose action
+/// bits are both clear. Length-preserving; returns the patch count.
+fn patch_place_object3_stream(
+    stream: &mut [u8],
+    define_sprite: u16,
+    place_object_3: u16,
+    depth: usize,
+) -> usize {
     let mut patched = 0;
     let mut p = 0usize;
     while p + 2 <= stream.len() {
@@ -164,13 +191,14 @@ fn patch_place_object3_stream(stream: &mut [u8], define_sprite: u16, place_objec
                 stream[body_start..body_start + 2].copy_from_slice(&fixed.to_le_bytes());
                 patched += 1;
             }
-        } else if code == define_sprite && len >= 4 {
+        } else if code == define_sprite && len >= 4 && depth < MAX_SPRITE_DEPTH {
             // DefineSprite body: character id u16 + frame count u16, then a
             // nested (END-terminated) tag stream.
             patched += patch_place_object3_stream(
                 &mut stream[body_start + 4..body_end],
                 define_sprite,
                 place_object_3,
+                depth + 1,
             );
         }
         p = body_end;
@@ -544,6 +572,75 @@ mod dialect_tests {
         let decompressed = swf::decompress_swf(normalized.as_slice()).expect("copy-path decode");
         let movie = swf::parse_swf(&decompressed).expect("parse");
         assert_eq!(movie.tags.len(), 1, "ShowFrame (parse_swf consumes End)");
+    }
+
+    /// #5456 — the walker recursed once per nested `DefineSprite` with no
+    /// cap, ~10 bytes of input per stack frame: a crafted movie aborted the
+    /// process with a stack overflow before Ruffle ever saw the bytes. Nested
+    /// sprites are illegal SWF, so the walk stops descending at depth 1.
+    #[test]
+    fn deeply_nested_sprites_do_not_overflow_the_stack() {
+        // Built without per-level copies, with LONG-form headers (a short
+        // header's 6-bit length cannot describe these bodies — the walker
+        // would stop at the first level and the test would prove nothing).
+        const LEVELS: usize = 100_000;
+        let innermost = tag(70, &starfield_place3());
+        // Total size (header included) of the sprite at each level,
+        // innermost-out; the outermost is last.
+        let mut total = innermost.len();
+        let mut totals = Vec::with_capacity(LEVELS);
+        for _ in 0..LEVELS {
+            let body_len = 4 + total + 2; // id + frames, inner, sprite END
+            total = 6 + body_len;
+            totals.push(total);
+        }
+        let mut inner = Vec::with_capacity(total);
+        for level_total in totals.iter().rev() {
+            let body_len = (level_total - 6) as u32;
+            inner.extend_from_slice(&((39u16 << 6) | 0x3F).to_le_bytes());
+            inner.extend_from_slice(&body_len.to_le_bytes());
+            inner.extend_from_slice(&7u16.to_le_bytes()); // character id
+            inner.extend_from_slice(&1u16.to_le_bytes()); // frame count
+        }
+        inner.extend_from_slice(&innermost);
+        for _ in 0..LEVELS {
+            inner.extend_from_slice(&[0x00, 0x00]); // sprite END
+        }
+        assert_eq!(inner.len(), total);
+        let file = swf_with_tags(&inner);
+        // Must return (not abort). The record is buried far below the cap,
+        // so nothing is patched and the movie is handed back untouched.
+        assert!(normalize_scaleform_dialect(&file).is_none());
+    }
+
+    /// #5456 — the cap leaves exactly the legal shape alone: a PlaceObject3
+    /// directly in a top-level sprite (depth 1) is still patched, as in
+    /// the retail Starfield hudmenu.
+    #[test]
+    fn one_level_of_sprite_nesting_is_still_patched() {
+        let file = swf_with_tags(&sprite(&tag(70, &starfield_place3())));
+        assert!(normalize_scaleform_dialect(&file).is_some());
+        // A sprite inside that sprite (illegal SWF) is not walked.
+        let illegal = swf_with_tags(&sprite(&sprite(&tag(70, &starfield_place3()))));
+        assert!(normalize_scaleform_dialect(&illegal).is_none());
+    }
+
+    /// #5456 — the inflate is bounded by the header's declared length: a
+    /// body that overruns its own header is declined (stock loader's
+    /// problem, as before the shim), not read to the end.
+    #[test]
+    fn cws_body_longer_than_its_declared_length_is_declined() {
+        use std::io::Write;
+        let file = swf_with_tags(&sprite(&tag(70, &starfield_place3())));
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&file[8..]).unwrap();
+        encoder.write_all(&[0u8; 4096]).unwrap(); // trailing bytes past the claim
+        let body = encoder.finish().unwrap();
+        let mut cws = file[0..8].to_vec(); // header still declares file.len()
+        cws[0..3].copy_from_slice(b"CWS");
+        cws.extend_from_slice(&body);
+        assert!(normalize_scaleform_dialect(&cws).is_none());
     }
 
     #[test]
