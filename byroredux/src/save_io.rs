@@ -1715,6 +1715,25 @@ fn reset_story_location_cursor(world: &World) {
     }
 }
 
+/// #5435 — discard Story Manager markers still pending from the outgoing
+/// session. `StoryEvent` is a Pattern-B marker drained by the Update-stage
+/// dispatcher, but Late-stage producers (`AHEL` from the dialogue selection,
+/// drowning `KILL` from `water_damage_system`) stamp it after that drain, so
+/// one can straddle the frame boundary this drain runs on. It carries
+/// session-local `EntityId`s that the reload has just invalidated (and may
+/// have reused for unrelated entities); dispatching it would fire a story
+/// event about the previous session's actors in the loaded one.
+fn discard_pending_story_events(world: &World) {
+    let Some(mut events) = world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
+    else {
+        return;
+    };
+    let stale: Vec<_> = events.iter().map(|(entity, _)| entity).collect();
+    for entity in stale {
+        events.remove(entity);
+    }
+}
+
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
 /// via the existing loaders (full GPU/physics/camera setup), restore saved
 /// resources, then overlay the form-id-keyed mutable component deltas.
@@ -1854,6 +1873,7 @@ pub fn execute_pending_save_loads(
     // #5435 — the session was replaced; the CLOC cursor still describes the
     // outgoing one.
     reset_story_location_cursor(world);
+    discard_pending_story_events(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

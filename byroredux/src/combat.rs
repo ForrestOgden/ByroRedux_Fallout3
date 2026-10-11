@@ -575,6 +575,10 @@ fn disable_actor_ai(world: &World, actor: EntityId) {
 /// format. Both the combat transition and save-load drain call this one
 /// reconciler, keeping those derived removals consistent (#3022).
 pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
+    // #5432 — a corpse stops talking: cut any dialogue voice line (and other
+    // entity-anchored sound) the actor was speaking. Death sounds are
+    // detached one-shots, so they are not affected.
+    crate::systems::dialogue_voice::stop_line_voice(world, actor);
     // A freshly respawned corpse can regain its authored weapon before the
     // save's empty inventory is overlaid. Absence of EquippedWeapon is not a
     // saved tombstone, so reconstruct the take-all result from saved inventory.
@@ -692,6 +696,26 @@ fn record_miss(world: &World, outcome: &str) {
             killed: false,
             outcome: outcome.to_owned(),
         });
+    }
+}
+
+/// #5432 — death teardown cuts the corpse's voice. A headless world has no
+/// audio manager to observe, so the shared reconciler's call is pinned by
+/// source (every live and restored death funnels through it).
+#[cfg(test)]
+mod death_voice_source_tests {
+    #[test]
+    fn dead_actor_reconciler_stops_the_actors_voice_line() {
+        let src = include_str!("combat.rs");
+        let start = src
+            .find("pub(crate) fn reconcile_dead_actor(")
+            .expect("the shared death reconciler must exist");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("function closes at column 0")];
+        assert!(
+            body.contains("dialogue_voice::stop_line_voice(world, actor)"),
+            "reconcile_dead_actor must cut the dead actor's voice line (#5432)"
+        );
     }
 }
 

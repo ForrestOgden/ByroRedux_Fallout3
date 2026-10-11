@@ -611,4 +611,35 @@ fn live_load_drain_resets_the_story_location_cursor() {
         .find("reset_story_location_cursor(world)")
         .expect("the drain must reset the CLOC cursor on load (#5435)");
     assert!(reset > reload, "the reset follows the session replacement");
+    let discard = body
+        .find("discard_pending_story_events(world)")
+        .expect("the drain must drop pending StoryEvent markers on load (#5435)");
+    assert!(discard > reload, "the discard follows the session replacement");
+}
+
+/// #5435 — a Late-stage `StoryEvent` marker (AHEL / drowning KILL) can be
+/// pending on the frame boundary a load drains on; it names the outgoing
+/// session's entities, so the load must drop it rather than let the next
+/// dispatch fire it in the loaded game.
+#[test]
+fn load_discards_story_event_markers_pending_from_the_outgoing_session() {
+    use byroredux_scripting::story_manager::StoryEvent;
+    let mut world = World::new();
+    world.register::<StoryEvent>();
+    let (a, b) = (world.spawn(), world.spawn());
+    for entity in [a, b] {
+        world.insert(
+            entity,
+            StoryEvent {
+                mnemonic: *b"AHEL",
+                reference_1: entity,
+                reference_2: None,
+                location_1: None,
+                location_2: None,
+            },
+        );
+    }
+    discard_pending_story_events(&world);
+    let events = world.query::<StoryEvent>().expect("storage");
+    assert_eq!(events.iter().count(), 0);
 }
