@@ -566,9 +566,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // longer allowlisted here.
         ("SandboxBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; only read by sandbox_seat_system"),
         ("CreatureActor", "spawn-derived actor-kind marker stamped from the CREA record in prepare_creature_state (#5495); re-stamped on every spawn and only read by the M42 seat gates"),
-        ("EatBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in carries via the registered Seated restore"),
-        ("SleepBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in carries via the registered Seated restore"),
-        ("EatSleepState", "one-shot walk destination re-resolved on the next tick after any load from the same PLDT anchor (#5391: a reference or the EditorPlacement resolve to the same point; near-current-location is where the restored actor stands); the arrival it guards is Seated, which is registered"),
+        ("EatBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in is NOT carried by a live load (Seated is registered for restore_world only, not the live overlay): the actor respawns standing and re-derives it by re-walking and re-seating through eat_sleep_system"),
+        ("SleepBehavior", "active-package-derived config rebuilt at spawn and replaced by ambient_ai_package_system; the seated pose it ends in is NOT carried by a live load (Seated is registered for restore_world only, not the live overlay): the actor respawns standing and re-derives it by re-walking and re-seating through eat_sleep_system"),
+        ("EatSleepState", "one-shot walk destination re-resolved on the next tick after any load from the same PLDT anchor (#5391: a reference or the EditorPlacement resolve to the same point; near-current-location is where the restored actor stands); the arrival it guards is Seated, which is registered for restore_world only (not the live-load overlay), so after a live load the actor re-walks from this destination and re-seats"),
         ("EditorPlacement", "the actor's authored ACHR/ACRE position (#5391), re-stamped from the ESM at every NPC spawn and never moved"),
         ("SceneFlags", "write-once at NIF import/cell spawn; its one mutator method (set_culled) is unused in production"),
         ("SkinnedMesh", "GPU skeleton-binding handle, same exclusion class as MeshHandle, rebuilt from skeleton resolution every import"),
@@ -938,5 +938,30 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
          discovered production impl (renamed, deleted, moved out of the \
          scanned roots, or now test-gated): {stale_rows:#?} — update or drop \
          the rows",
+    );
+
+    // #5458 — `Seated` is deliberately absent from `MUTABLE_DELTA_COLUMNS`
+    // (it carries an `EntityId` and a clip-registry handle), so the only
+    // production load path, the live overlay, never replays it; it is
+    // registered for the full `restore_world` round trip alone. A reason
+    // that leans on "the registered Seated restore" as the live-load
+    // mechanism is therefore false, and the existence-only check above
+    // kept it green. A row that leans on `Seated`'s registration has to say
+    // which load path that registration serves (a row merely reading
+    // `Seated` state, like `SeatReservations`' prune, is not such a claim).
+    let seated_without_path: Vec<&str> = NOT_SAVED_BY_DESIGN
+        .iter()
+        .filter(|(_, reason)| {
+            reason.contains("registered Seated")
+                || (reason.contains("Seated, which is registered")
+                    && !reason.contains("restore_world"))
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        seated_without_path.is_empty(),
+        "SAVE-D1-2026-10-08-01 (#5458): NOT_SAVED_BY_DESIGN rows citing `Seated` \
+         must state that its registration is restore_world-only (not the live \
+         load path): {seated_without_path:#?}",
     );
 }
