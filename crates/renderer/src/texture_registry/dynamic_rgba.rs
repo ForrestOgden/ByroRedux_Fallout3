@@ -23,6 +23,54 @@ pub(super) struct DynamicRgbaUploads {
     /// mapped-write/flush error) degrades to a skipped overlay frame, not a
     /// dead session; this flag keeps the warn to once per failure episode.
     staging_skip_logged: bool,
+    /// #5528 — retry pacing for arena growth during a failure episode.
+    growth_backoff: GrowthBackoff,
+}
+
+/// #5528 — #5275 re-armed the once-per-episode WARN but the growth attempt
+/// itself still ran every frame: a persistent BAR / host-visible shortage
+/// meant one failing driver-side `vkAllocateMemory` of ~8.3 MB (1080p) to
+/// 33 MB (4K) per frame, exactly when memory headroom matters most. After a
+/// failed growth the next attempt waits for either
+///   * [`Self::RETRY_INTERVAL_FRAMES`] frames, or
+///   * a smaller request than the one that failed (a request that is
+///     smaller may fit where the larger one did not).
+/// Any success clears the backoff. Frames are counted only on frames that
+/// would have attempted growth, so an idle overlay does not burn the window.
+#[derive(Default)]
+struct GrowthBackoff {
+    failed_bytes: Option<usize>,
+    frames_left: u32,
+}
+
+impl GrowthBackoff {
+    /// About one to two seconds at typical frame rates: long enough to stop
+    /// hammering the allocator, short enough to recover soon after a free.
+    const RETRY_INTERVAL_FRAMES: u32 = 120;
+
+    /// Whether to attempt growing the arena to `bytes` this frame.
+    fn should_attempt(&mut self, bytes: usize) -> bool {
+        let Some(failed) = self.failed_bytes else {
+            return true;
+        };
+        if bytes < failed {
+            return true;
+        }
+        if self.frames_left == 0 {
+            return true;
+        }
+        self.frames_left -= 1;
+        false
+    }
+
+    fn record_failure(&mut self, bytes: usize) {
+        self.failed_bytes = Some(bytes);
+        self.frames_left = Self::RETRY_INTERVAL_FRAMES;
+    }
+
+    fn record_success(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl DynamicRgbaUploads {
@@ -155,6 +203,12 @@ impl TextureRegistry {
             // over a cosmetic overlay. Degrade to the old contract: skip
             // this frame's upload (everything stays dirty and retries),
             // keep the existing arena, and keep recording the frame.
+            // #5528 — during a failure episode, retry the growth on the
+            // backoff schedule, not every frame; the dirty updates stay
+            // queued either way.
+            if !self.dynamic_rgba.growth_backoff.should_attempt(bytes) {
+                return Ok(());
+            }
             let replacement = match GpuBuffer::create_host_visible(
                 device,
                 allocator,
@@ -163,6 +217,7 @@ impl TextureRegistry {
             ) {
                 Ok(replacement) => replacement,
                 Err(e) => {
+                    self.dynamic_rgba.growth_backoff.record_failure(bytes);
                     note_staging_skip(
                         &mut self.dynamic_rgba.staging_skip_logged,
                         "staging arena growth",
@@ -171,6 +226,7 @@ impl TextureRegistry {
                     return Ok(());
                 }
             };
+            self.dynamic_rgba.growth_backoff.record_success();
             // The fence for THIS arena was waited on before recording. No
             // pending transfer can still read the buffer being replaced.
             if let Some(mut old) = slot.replace(replacement) {
@@ -307,6 +363,53 @@ impl TextureRegistry {
 mod tests {
     use super::*;
 
+    /// #5528 — under a persistent failure the growth attempt runs once per
+    /// backoff window, not once per frame; a smaller request or the window
+    /// elapsing re-arms it, and a success clears the state.
+    #[test]
+    fn growth_retries_back_off_during_a_failure_episode() {
+        let mut backoff = GrowthBackoff::default();
+        let request = 8_294_400; // 1080p RGBA
+        // First sight: attempt (and, per the failing driver, fail).
+        assert!(backoff.should_attempt(request));
+        backoff.record_failure(request);
+        // The rest of the window skips without touching the allocator.
+        let mut attempts = 0;
+        for _ in 0..GrowthBackoff::RETRY_INTERVAL_FRAMES {
+            if backoff.should_attempt(request) {
+                attempts += 1;
+            }
+        }
+        assert_eq!(attempts, 0, "no allocator call inside the backoff window");
+        // The window has elapsed: exactly one retry, then back to skipping.
+        assert!(backoff.should_attempt(request));
+        backoff.record_failure(request);
+        assert!(!backoff.should_attempt(request));
+        // A larger request than the failed one does not bypass the wait...
+        assert!(!backoff.should_attempt(request + 4));
+        // ...but a smaller one, which may fit, retries immediately.
+        assert!(backoff.should_attempt(request / 2));
+        // A success clears the episode: the next growth is unconditional.
+        backoff.record_success();
+        assert!(backoff.should_attempt(request * 4));
+    }
+
+    /// #5528 — the growth failure arm records the backoff and the success
+    /// path clears it; the gate sits before the allocation.
+    #[test]
+    fn growth_gate_sits_before_the_allocation() {
+        let production = crate::source_scan::production_text(include_str!("dynamic_rgba.rs"));
+        let gate = production
+            .find("growth_backoff.should_attempt(bytes)")
+            .expect("the backoff gate");
+        let alloc = production
+            .find("GpuBuffer::create_host_visible(")
+            .expect("the growth allocation");
+        assert!(gate < alloc, "the backoff must be consulted before allocating");
+        assert!(production.contains("growth_backoff.record_failure(bytes)"));
+        assert!(production.contains("growth_backoff.record_success()"));
+    }
+
     #[test]
     fn rgba_updates_use_the_frame_command_buffer_and_keep_descriptors() {
         let production = crate::source_scan::production_text(include_str!("dynamic_rgba.rs"));
@@ -367,8 +470,8 @@ mod tests {
         assert!(record.contains("\"staging mapped write\""));
         assert_eq!(
             record.matches("return Ok(());").count(),
-            3,
-            "bytes == 0 plus the two degraded arms — each returns Ok"
+            4,
+            "bytes == 0, the #5528 growth-backoff skip, plus the two degraded arms — each returns Ok"
         );
         // The only propagating errors left in the recording are the
         // fence-idle sequencing ensure (fatal by design) and the
