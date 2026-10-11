@@ -1,13 +1,14 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "include/shader_constants.glsl"
 #include "include/sky_cube_direction.glsl"
 #include "include/sky_sh.glsl"
-layout(local_size_x = 64) in;
+layout(local_size_x = SKY_IRRADIANCE_WORKGROUP) in;
 layout(set = 0, binding = 0) uniform samplerCube sourceSky;
 layout(std430, set = 0, binding = 1) writeonly buffer SkyIrradiance {
-    vec4 coefficients[9];
+    vec4 coefficients[SKY_SH_COEFFICIENTS];
 };
-shared vec3 partialSum[64];
+shared vec3 partialSum[SKY_IRRADIANCE_WORKGROUP];
 
 float areaIntegral(vec2 p) {
     return atan(p.x * p.y, sqrt(1.0 + dot(p, p)));
@@ -20,7 +21,7 @@ void main() {
     // weights this does not over-represent cube corners (Jacobian r^-3).
     const uint edge = 32u;
     vec3 sum = vec3(0.0);
-    for (uint sampleIndex = lane; sampleIndex < 6u * edge * edge; sampleIndex += 64u) {
+    for (uint sampleIndex = lane; sampleIndex < 6u * edge * edge; sampleIndex += uint(SKY_IRRADIANCE_WORKGROUP)) {
         uint face = sampleIndex / (edge * edge);
         uvec2 pixel = uvec2(sampleIndex % edge, (sampleIndex / edge) % edge);
         vec2 lo = vec2(pixel) * (2.0 / float(edge)) - 1.0;
@@ -33,7 +34,7 @@ void main() {
     }
     partialSum[lane] = sum;
     barrier();
-    for (uint stride = 32u; stride > 0u; stride >>= 1u) {
+    for (uint stride = uint(SKY_IRRADIANCE_WORKGROUP) / 2u; stride > 0u; stride >>= 1u) {
         if (lane < stride) partialSum[lane] += partialSum[lane + stride];
         barrier();
     }

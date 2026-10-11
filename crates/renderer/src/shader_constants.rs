@@ -1094,6 +1094,11 @@ mod tests {
             ("caustic.rs", include_str!("vulkan/caustic.rs")),
             ("bloom.rs", include_str!("vulkan/bloom.rs")),
             ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
+            // #5620 — the ground-cover bench bake took its tile from the
+            // header in GLSL but kept an 8 here. (`sky_cube/filter.rs` opens
+            // with a `#[cfg(test)] mod tests;` declaration, which would cut
+            // its production text to nothing — it is checked below.)
+            ("groundcover_bench.rs", include_str!("vulkan/groundcover_bench.rs")),
         ] {
             // Code lines only, same reason as the sibling test below.
             let production: String = crate::source_scan::production_text_or_whole(src)
@@ -1113,6 +1118,66 @@ mod tests {
                  workgroup constants (#2768)"
             );
         }
+    }
+
+    /// #5620 — the two single-workgroup tree reductions and the SH SSBO take
+    /// their widths and counts from the generated header, and the host
+    /// dispatch / byte size derive from the same Rust constants.
+    #[test]
+    fn single_workgroup_reductions_derive_from_the_generated_constants() {
+        let irradiance = include_str!("../shaders/sky_irradiance.comp");
+        for pinned in [
+            "layout(local_size_x = SKY_IRRADIANCE_WORKGROUP) in;",
+            "vec4 coefficients[SKY_SH_COEFFICIENTS];",
+            "shared vec3 partialSum[SKY_IRRADIANCE_WORKGROUP];",
+            "sampleIndex += uint(SKY_IRRADIANCE_WORKGROUP)",
+            "stride = uint(SKY_IRRADIANCE_WORKGROUP) / 2u",
+        ] {
+            assert!(irradiance.contains(pinned), "sky_irradiance.comp: {pinned:?}");
+        }
+        assert!(!irradiance.contains("local_size_x = 64") && !irradiance.contains("coefficients[9]"));
+        for (file, src) in [
+            ("sky_prefilter.comp", include_str!("../shaders/sky_prefilter.comp")),
+            ("groundcover_bench_bake.comp", include_str!("../shaders/groundcover_bench_bake.comp")),
+        ] {
+            assert!(
+                src.contains("layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y"),
+                "{file} must take its tile from the generated header (#5620)"
+            );
+        }
+        // Code lines only: these two files are siblings of tests that live in
+        // separate files, and `filter.rs` opens with `#[cfg(test)] mod tests;`.
+        let code = |src: &str| {
+            src.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let host = code(include_str!("vulkan/sky_cube/irradiance.rs"));
+        assert!(
+            host.contains("cmd_dispatch(cmd, SKY_SH_COEFFICIENTS, 1, 1)")
+                && host.contains("SKY_SH_COEFFICIENTS as u64 * 16"),
+            "irradiance.rs must size its dispatch and SSBO from SKY_SH_COEFFICIENTS"
+        );
+        let filter = code(include_str!("vulkan/sky_cube/filter.rs"));
+        assert!(
+            filter.contains("edge.div_ceil(WORKGROUP_X)")
+                && filter.contains("edge.div_ceil(WORKGROUP_Y)")
+                && !filter.contains("div_ceil(8)"),
+            "sky_cube/filter.rs must derive its dispatch grid from the generated tile (#2768)"
+        );
+        // The shader's basis switch must cover exactly that many coefficients:
+        // explicit `case 0u..=(N-2)u`, then `default:` for the last one.
+        let sh = include_str!("../shaders/include/sky_sh.glsl");
+        let last_explicit = format!("case {}u:", SKY_SH_COEFFICIENTS - 2);
+        assert!(
+            sh.contains(&last_explicit) && sh.contains("default:"),
+            "sky_sh.glsl must define {SKY_SH_COEFFICIENTS} basis functions (`{last_explicit}` + default)"
+        );
+        assert!(
+            !sh.contains(&format!("case {}u:", SKY_SH_COEFFICIENTS - 1)),
+            "the last coefficient is the `default:` arm"
+        );
     }
 
     /// #2771 — every temporal pass that reads "last frame's slot" must use

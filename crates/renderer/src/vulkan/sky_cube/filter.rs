@@ -205,7 +205,12 @@ impl SkyFilter {
                 &roughness.to_ne_bytes(),
             );
             let edge = SKY_CUBE_FACE_SIZE >> mip;
-            device.cmd_dispatch(cmd, edge.div_ceil(8), edge.div_ceil(8), CUBE_FACES);
+            device.cmd_dispatch(
+                cmd,
+                edge.div_ceil(WORKGROUP_X),
+                edge.div_ceil(WORKGROUP_Y),
+                CUBE_FACES,
+            );
         }
         let end = vk::ImageMemoryBarrier::default()
             .image(image)

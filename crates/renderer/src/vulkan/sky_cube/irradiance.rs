@@ -1,9 +1,11 @@
 //! Diffuse sky convolution into nine RGB spherical-harmonic coefficients.
 use super::*;
+use crate::shader_constants::SKY_SH_COEFFICIENTS;
 use crate::vulkan::descriptors::write_storage_buffer;
 
 const SPV: &[u8] = include_bytes!("../../../shaders/sky_irradiance.comp.spv");
-pub const SH_BYTES: u64 = 9 * 16;
+/// `SKY_SH_COEFFICIENTS` RGB `vec4` coefficients.
+pub const SH_BYTES: u64 = SKY_SH_COEFFICIENTS as u64 * 16;
 
 #[derive(Default)]
 pub(super) struct SkyIrradiance {
@@ -150,7 +152,7 @@ impl SkyIrradiance {
             &[self.sets[frame]],
             &[],
         );
-        device.cmd_dispatch(cmd, 9, 1, 1);
+        device.cmd_dispatch(cmd, SKY_SH_COEFFICIENTS, 1, 1);
         let ready = vk::BufferMemoryBarrier::default()
             .buffer(self.buffers[frame].buffer)
             .size(SH_BYTES)

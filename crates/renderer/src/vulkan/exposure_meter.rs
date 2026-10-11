@@ -346,14 +346,34 @@ mod tests {
 
     /// The reduction fits one workgroup by construction — a larger thread
     /// count would need a second reduction stage that does not exist. The
-    /// shader pins the same number in its `layout(local_size_x = 64)`.
+    /// shader takes its width from the generated `EXPOSURE_METER_WORKGROUP`
+    /// (#5620) and sizes its shared arrays, sample stride and first
+    /// reduction step from the same name, so a retune cannot leave the tree
+    /// reading past a `shared[]` array; the host still dispatches (1,1,1).
     #[test]
     fn meter_fits_one_workgroup() {
         let shader = include_str!("../../shaders/exposure_meter.comp");
+        for pinned in [
+            "layout(local_size_x = EXPOSURE_METER_WORKGROUP) in;",
+            "shared float shared_log_sum[EXPOSURE_METER_WORKGROUP];",
+            "shared int shared_count[EXPOSURE_METER_WORKGROUP];",
+            "idx += int(EXPOSURE_METER_WORKGROUP)",
+            "uint s = uint(EXPOSURE_METER_WORKGROUP) / 2u",
+            "int side = int(EXPOSURE_METER_SAMPLE_GRID);",
+        ] {
+            assert!(
+                shader.contains(pinned),
+                "exposure_meter.comp must derive from the generated constants: {pinned:?}"
+            );
+        }
         assert!(
-            shader.contains("layout(local_size_x = 64)"),
-            "exposure_meter.comp changed its workgroup size — the Rust side \
-             dispatches (1,1,1) and has no cross-workgroup reduction stage"
+            !shader.contains("local_size_x = 64") && !shader.contains("shared_count[64]"),
+            "a retyped workgroup literal is back in exposure_meter.comp"
+        );
+        let host = crate::source_scan::production_text(include_str!("exposure_meter.rs"));
+        assert!(
+            host.contains("cmd_dispatch(cmd, 1, 1, 1)"),
+            "the Rust side has no cross-workgroup reduction stage; it must dispatch one group"
         );
     }
 

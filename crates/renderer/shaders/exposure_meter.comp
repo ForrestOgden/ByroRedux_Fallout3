@@ -39,7 +39,7 @@
 // Resolution independence: the extent comes from textureSize(sceneTex, 0),
 // so a swapchain resize does not rebuild this pipeline.
 
-layout(local_size_x = 64) in;
+layout(local_size_x = EXPOSURE_METER_WORKGROUP) in;
 
 layout(set = 0, binding = 0) uniform sampler2D sceneTex;
 layout(set = 0, binding = 1, r32f) uniform image2D dstExposure;
@@ -52,8 +52,8 @@ layout(set = 0, binding = 2) uniform Params {
     vec4 limits;
 } params;
 
-shared float shared_log_sum[64];
-shared int shared_count[64];
+shared float shared_log_sum[EXPOSURE_METER_WORKGROUP];
+shared int shared_count[EXPOSURE_METER_WORKGROUP];
 
 // Log-average (geometric mean) luminance: robust against a few extreme
 // emissive texels dragging the arithmetic mean, standard for metering.
@@ -66,12 +66,14 @@ void main() {
     }
 
     ivec2 extent = textureSize(sceneTex, 0);
-    // 64x64 samples cover the full image, including the right/bottom edges.
-    int side = 64;
+    // SAMPLE_GRID x SAMPLE_GRID samples cover the full image, including the
+    // right/bottom edges.
+    int side = int(EXPOSURE_METER_SAMPLE_GRID);
 
     float log_sum = 0.0;
     int count = 0;
-    for (int idx = int(gl_LocalInvocationID.x); idx < side * side; idx += 64) {
+    for (int idx = int(gl_LocalInvocationID.x); idx < side * side;
+         idx += int(EXPOSURE_METER_WORKGROUP)) {
         ivec2 grid = ivec2(idx % side, idx / side);
         ivec2 texel = min(((grid * 2 + 1) * extent) / (side * 2), extent - 1);
         vec3 rgb = texelFetch(sceneTex, texel, 0).rgb;
@@ -92,7 +94,7 @@ void main() {
     // clamp limits for nearly every scene.
     shared_count[gl_LocalInvocationID.x] = count;
     barrier();
-    for (uint s = 32; s > 0; s >>= 1) {
+    for (uint s = uint(EXPOSURE_METER_WORKGROUP) / 2u; s > 0; s >>= 1) {
         if (gl_LocalInvocationID.x < s) {
             shared_log_sum[gl_LocalInvocationID.x] += shared_log_sum[gl_LocalInvocationID.x + s];
             shared_count[gl_LocalInvocationID.x] += shared_count[gl_LocalInvocationID.x + s];

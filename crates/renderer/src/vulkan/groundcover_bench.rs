@@ -79,7 +79,7 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::shader_constants::{
     GROUNDCOVER_BENCH_BLADE_VERTS, GROUNDCOVER_BENCH_WORKGROUP, GROUNDCOVER_CHUNKS_PER_CELL_SIDE,
-    GROUNDCOVER_CHUNK_UNITS, LAND_GRID_VERTS,
+    GROUNDCOVER_CHUNK_UNITS, LAND_GRID_VERTS, WORKGROUP_X, WORKGROUP_Y,
 };
 
 const BENCH_COMP_SPV: &[u8] = include_bytes!("../../shaders/groundcover_bench.comp.spv");
@@ -1352,12 +1352,13 @@ impl GroundcoverBench {
                 0,
                 &push.cell_count.to_ne_bytes(),
             );
-            // 8×8 local size over the LAND_GRID_VERTS² texel grid, one array
-            // layer per resident cell.
+            // WORKGROUP_X×WORKGROUP_Y local size (the bake shader takes it from
+            // the generated header) over the LAND_GRID_VERTS² texel grid, one
+            // array layer per resident cell.
             device.cmd_dispatch(
                 cmd,
-                LAND_GRID_VERTS.div_ceil(8),
-                LAND_GRID_VERTS.div_ceil(8),
+                LAND_GRID_VERTS.div_ceil(WORKGROUP_X),
+                LAND_GRID_VERTS.div_ceil(WORKGROUP_Y),
                 self.cells.len() as u32,
             );
         }

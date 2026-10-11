@@ -62,6 +62,26 @@ pub const LIGHT_METER_CALIBRATION_K: f32 = 12.5;
 pub const SENSOR_SENSITIVITY_S: f32 = 100.0;
 pub const EXPOSURE_METER_S_OVER_K: f32 = SENSOR_SENSITIVITY_S / LIGHT_METER_CALIBRATION_K;
 
+// Single-workgroup reductions (#5620). `exposure_meter.comp` and
+// `sky_irradiance.comp` each reduce inside ONE workgroup with a shared-memory
+// tree, so the workgroup width is coupled to the `shared[]` array sizes, the
+// per-invocation sample stride and the first reduction step (width / 2) —
+// all derived from these constants, never retyped. The host dispatches
+// exactly one group (meter) / `SKY_SH_COEFFICIENTS` groups (irradiance).
+pub const EXPOSURE_METER_WORKGROUP: u32 = 64;
+/// The meter samples a `EXPOSURE_METER_SAMPLE_GRID`² grid across the image.
+pub const EXPOSURE_METER_SAMPLE_GRID: u32 = 64;
+pub const SKY_IRRADIANCE_WORKGROUP: u32 = 64;
+/// L2 spherical harmonics: 9 RGB coefficients, one workgroup each; the
+/// `SkyIrradiance` SSBO is `SKY_SH_COEFFICIENTS` `vec4`s.
+pub const SKY_SH_COEFFICIENTS: u32 = 9;
+
+const _: () = {
+    // A halving tree reduction needs a power-of-two width.
+    assert!(EXPOSURE_METER_WORKGROUP.is_power_of_two());
+    assert!(SKY_IRRADIANCE_WORKGROUP.is_power_of_two());
+};
+
 // Cluster grid
 pub const CLUSTER_TILES_X: u32 = 16;
 pub const CLUSTER_TILES_Y: u32 = 9;
@@ -2416,6 +2436,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("LIGHT_METER_CALIBRATION_K", ShaderValue::Float(LIGHT_METER_CALIBRATION_K)),
     HeaderLine::Define("SENSOR_SENSITIVITY_S", ShaderValue::Float(SENSOR_SENSITIVITY_S)),
     HeaderLine::Define("EXPOSURE_METER_S_OVER_K", ShaderValue::Float(EXPOSURE_METER_S_OVER_K)),
+    HeaderLine::Comment("Single-workgroup tree reductions + SH coefficient count (#5620)"),
+    HeaderLine::Define("EXPOSURE_METER_WORKGROUP", ShaderValue::UintPlain(EXPOSURE_METER_WORKGROUP)),
+    HeaderLine::Define("EXPOSURE_METER_SAMPLE_GRID", ShaderValue::UintPlain(EXPOSURE_METER_SAMPLE_GRID)),
+    HeaderLine::Define("SKY_IRRADIANCE_WORKGROUP", ShaderValue::UintPlain(SKY_IRRADIANCE_WORKGROUP)),
+    HeaderLine::Define("SKY_SH_COEFFICIENTS", ShaderValue::UintPlain(SKY_SH_COEFFICIENTS)),
     HeaderLine::Define("ADAPTATION_SAT_FALLOFF", ShaderValue::Float(ADAPTATION_SAT_FALLOFF)),
     HeaderLine::Define("GRADE_CONTRAST_PIVOT", ShaderValue::Float(GRADE_CONTRAST_PIVOT)),
     HeaderLine::Define("GRADE_CONTRAST_TOE", ShaderValue::Float(GRADE_CONTRAST_TOE)),

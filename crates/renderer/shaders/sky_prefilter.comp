@@ -3,8 +3,9 @@
 // Each mip reads ONLY the unfiltered base level; no recursive blur or races.
 #version 450
 #extension GL_GOOGLE_include_directive : require
+#include "include/shader_constants.glsl"
 #include "include/sky_cube_direction.glsl"
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y, local_size_z = 1) in;
 layout(set = 0, binding = 0) uniform samplerCube sourceSky;
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray filteredSky;
 layout(push_constant) uniform FilterParams { float roughness; } params;
