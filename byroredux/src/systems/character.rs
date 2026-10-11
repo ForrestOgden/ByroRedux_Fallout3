@@ -619,12 +619,13 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     if drowning_damage.whole > 0.0 {
         apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
     }
-    if let Some(state) = swim {
-        let damage = water_damage_for_contact(state.damage_per_second, state.fraction, dt);
-        if damage > 0.0 {
-            apply_player_drowning_damage(world, player_entity, damage);
-        }
-    }
+    // #5548 — authored harmful-water damage is NOT applied here. The player
+    // publishes its column as a `WaterContact` just above and carries
+    // `ActorVitals`, so `water_damage_system` (Late) is the single owner of
+    // hazard damage for every wet actor, wading or swimming. A second arm
+    // here charged a swimming player 2× the authored rate. Breath-driven
+    // drowning damage (`drowning_damage` above) is a different mechanism and
+    // stays with the controller.
     // Push the new pose into Rapier so other bodies' queries see the
     // player at the right spot. KinematicPositionBased bodies apply
     // this on their next step. Best-effort — failures are physics-
@@ -1568,11 +1569,6 @@ fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
         // #5434 — drowning is a live death; no killer.
         crate::systems::story_events::raise_kill_story_event(world, player, None);
     }
-}
-
-#[inline]
-fn water_damage_for_contact(damage_per_second: f32, submerged_fraction: f32, dt: f32) -> f32 {
-    damage_per_second.max(0.0) * submerged_fraction.clamp(0.0, 1.0) * dt.max(0.0)
 }
 
 /// Compute the next-frame vertical velocity given current state, the
@@ -2615,12 +2611,23 @@ mod tests {
         );
     }
 
+    /// #5548 — the controller must not apply authored harmful-water damage:
+    /// the player's published `WaterContact` + `ActorVitals` make
+    /// `water_damage_system` its single owner. Source-shape pin on the
+    /// production text (everything before the first test module).
     #[test]
-    fn authored_water_damage_scales_with_contact_fraction_and_dt() {
-        assert_eq!(water_damage_for_contact(20.0, 0.5, 0.25), 2.5);
-        assert_eq!(water_damage_for_contact(20.0, 2.0, 0.25), 5.0);
-        assert_eq!(water_damage_for_contact(-1.0, 0.5, 1.0), 0.0);
-        assert_eq!(water_damage_for_contact(20.0, 0.5, -1.0), 0.0);
+    fn the_controller_leaves_authored_water_damage_to_water_damage_system() {
+        let src = include_str!("character.rs");
+        let production = &src[..src.find("#[cfg(test)]").expect("test module")];
+        assert!(
+            !production.contains("water_damage_for_contact"),
+            "authored water damage must be applied only by water_damage_system"
+        );
+        assert!(
+            production.contains("fn sync_player_water_contact")
+                && production.contains("damage_per_second: state.damage_per_second"),
+            "the player must keep publishing the damage on its WaterContact"
+        );
     }
 
     #[test]

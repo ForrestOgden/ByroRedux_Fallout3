@@ -14,10 +14,27 @@ use rustc_hash::{FxHashMap, FxHashSet};
 const DISTURBANCE_BAND: f32 = 24.0;
 const DISTURBANCE_RADIUS: f32 = 18.0;
 
-/// Apply authored FO3/FNV harmful-water damage to actor bodies after the
-/// physics phase has refreshed their [`WaterContact`]. The kinematic player
-/// has its own controller path; this covers dynamic NPC/creature bodies
-/// without coupling the physics crate to actor gameplay components.
+/// Authored harmful-water damage for one frame: `dps × fraction × dt`, each
+/// clamped to its sane range.
+#[inline]
+pub(crate) fn water_damage_for_contact(
+    damage_per_second: f32,
+    submerged_fraction: f32,
+    dt: f32,
+) -> f32 {
+    damage_per_second.max(0.0) * submerged_fraction.clamp(0.0, 1.0) * dt.max(0.0)
+}
+
+/// Apply authored FO3/FNV harmful-water damage to every actor carrying a
+/// [`WaterContact`] and [`ActorVitals`], after the physics phase (and the
+/// player controller, which publishes the kinematic player's column as a
+/// contact) has refreshed it. This is the SINGLE owner of hazard damage
+/// (#5548): the player is a target like any other wet actor — wading or
+/// swimming — and the controller applies none of its own. Dynamic
+/// NPC/creature bodies would be targets too, but NPCs are
+/// `CharacterKinematic` (skipped by the buoyancy scan) and ragdoll bones carry
+/// no vitals, so today the player is the only live one. Does not couple the
+/// physics crate to actor gameplay components.
 pub(crate) fn water_damage_system(world: &World, dt: f32) {
     if dt <= 0.0 {
         return;
@@ -32,9 +49,8 @@ pub(crate) fn water_damage_system(world: &World, dt: f32) {
     let targets: Vec<(EntityId, u32, f32)> = contact_q
         .iter()
         .filter_map(|(entity, contact)| {
-            let damage = contact.damage_per_second.max(0.0)
-                * contact.submerged_fraction.clamp(0.0, 1.0)
-                * dt;
+            let damage =
+                water_damage_for_contact(contact.damage_per_second, contact.submerged_fraction, dt);
             if damage <= 0.0 || dead_q.as_ref().is_some_and(|q| q.get(entity).is_some()) {
                 return None;
             }
@@ -631,7 +647,7 @@ fn underwater_extinction(depth: f32, fog_near: f32, fog_far: f32) -> f32 {
 mod tests {
     use super::{
         disturbance_rate, make_water_interaction_system, resolve_head_submerged, submersion_system,
-        underwater_color_at_depth, underwater_extinction, water_damage_system, DISTURBANCE_BAND,
+        underwater_color_at_depth, underwater_extinction, water_damage_for_contact, water_damage_system, DISTURBANCE_BAND,
         DISTURBANCE_RADIUS, WATERLINE_HYSTERESIS,
     };
     use byroredux_core::ecs::components::water::{
@@ -1006,6 +1022,46 @@ mod tests {
                 .is_none(),
             "fully submerged bodies must not emit surface ripples"
         );
+    }
+
+    #[test]
+    fn authored_water_damage_scales_with_contact_fraction_and_dt() {
+        assert_eq!(water_damage_for_contact(20.0, 0.5, 0.25), 2.5);
+        assert_eq!(water_damage_for_contact(20.0, 2.0, 0.25), 5.0);
+        assert_eq!(water_damage_for_contact(-1.0, 0.5, 1.0), 0.0);
+        assert_eq!(water_damage_for_contact(20.0, 0.5, -1.0), 0.0);
+    }
+
+    /// #5548 — the player, as a wet actor with vitals, loses exactly
+    /// `dps·frac·dt` per frame from this system (and, with the controller arm
+    /// gone, only from it).
+    #[test]
+    fn a_wet_player_loses_exactly_dps_times_fraction_times_dt_per_frame() {
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        world.register::<WaterContact>();
+        let player = world.spawn();
+        world.insert(player, ActorVitals { health: 7 });
+        world.insert(player, ActorValues::from_pairs([(7, 100.0)]));
+        world.insert(
+            player,
+            WaterContact {
+                submerged_fraction: 0.5,
+                damage_per_second: 8.0,
+                ..WaterContact::default()
+            },
+        );
+        for frame in 1..=3 {
+            water_damage_system(&world, 0.25);
+            let expected = 100.0 - 8.0 * 0.5 * 0.25 * frame as f32;
+            let health = world.get::<ActorValues>(player).unwrap().current(7);
+            assert!(
+                (health - expected).abs() < 1.0e-4,
+                "frame {frame}: health {health}, expected {expected}"
+            );
+        }
     }
 
     #[test]
