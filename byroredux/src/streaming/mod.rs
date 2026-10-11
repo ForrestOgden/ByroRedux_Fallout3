@@ -379,6 +379,13 @@ pub struct WorldStreamingState {
     /// against to know whether re-applying is needed. See
     /// `scene::apply_cell_climate_override` (#2451 / EXAL-03).
     pub applied_climate_form: Option<u32>,
+    /// Grid cell `apply_cell_climate_override` last evaluated (#5529).
+    /// The override is a pure function of the grid cell over `wctx` data
+    /// that never changes within this state's lifetime, so a cell is
+    /// resolved once — a failed resolve (bad `XCCM`, climate with no
+    /// default weather) is not retried, and does not re-warn, every frame
+    /// the player stands in it.
+    pub(crate) climate_override_grid: Option<(i32, i32)>,
     /// `(player_grid, resolved RegionAmbientRes)` the region ambient
     /// directive was last resolved for (#3679). `wctx` — and therefore the
     /// REGN/XCLR data `RegionAmbientRes::resolve` reads — never changes
@@ -503,6 +510,7 @@ impl WorldStreamingState {
             radius_unload: radius_load + 1,
             last_player_grid: None,
             applied_climate_form: wctx_climate_form,
+            climate_override_grid: None,
             applied_region_ambient: None,
             lod_reconcile_pending: false,
             loaded_residency_changed: false,

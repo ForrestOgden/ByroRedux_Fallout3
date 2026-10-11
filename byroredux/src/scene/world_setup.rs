@@ -455,12 +455,15 @@ fn apply_environment(
 /// `applied_climate` is the CLMT FormID currently driving the installed
 /// resources (`None` = climateless / procedural fallback); the caller owns
 /// it across boundary crossings (`WorldStreamingState::applied_climate_form`,
-/// seeded from the worldspace climate at bootstrap). Returns `true` when
-/// the environment was re-applied.
+/// seeded from the worldspace climate at bootstrap). `evaluated_grid`
+/// (`WorldStreamingState::climate_override_grid`) is the grid cell last
+/// evaluated: each cell is resolved once, success or failure (#5529).
+/// Returns `true` when the environment was re-applied.
 ///
 /// Runs only on a real climate change, which on vanilla content means
 /// entering or leaving one of the handful of cells that author `XCCM` — so
-/// the common crossing costs one map lookup and a comparison. The re-apply
+/// the common crossing costs one map lookup and a comparison, and a frame
+/// inside an already-evaluated cell costs one `Option` compare. The re-apply
 /// itself goes through [`apply_environment`], so an override transition
 /// gets the same 8-second `WeatherTransitionRes` crossfade and the same
 /// acquire-new-then-release-old sky-texture handling as a worldspace
@@ -476,7 +479,11 @@ pub(crate) fn apply_cell_climate_override(
     wctx: &cell_loader::ExteriorWorldContext,
     player_grid: (i32, i32),
     applied_climate: &mut Option<u32>,
+    evaluated_grid: &mut Option<(i32, i32)>,
 ) -> bool {
+    if !claim_climate_evaluation(evaluated_grid, player_grid) {
+        return false;
+    }
     let cell = wctx
         .record_index
         .cells
@@ -501,8 +508,8 @@ pub(crate) fn apply_cell_climate_override(
         // points at WTHR records this load order never supplied. Applying
         // it would drop the sky into the procedural fallback — further
         // from the author's intent than the sky already showing. Leave
-        // `applied_climate` untouched so a later fix (or a different cell)
-        // is still re-evaluated.
+        // `applied_climate` untouched so a different cell is still
+        // re-evaluated; this cell is not retried (`evaluated_grid`, #5529).
         log::warn!(
             "Cell ({},{}) climate override {:08X?} resolves no default weather — keeping the \
              current sky",
@@ -524,6 +531,25 @@ pub(crate) fn apply_cell_climate_override(
     );
     apply_environment(world, ctx, tex_provider, wctx, climate, weather);
     *applied_climate = effective;
+    true
+}
+
+/// #5529 — whether [`apply_cell_climate_override`] should evaluate
+/// `player_grid`, recording it as evaluated when it should.
+///
+/// The override is a pure function of the grid cell: `wctx`'s CELL / CLMT /
+/// WTHR data never changes within a `WorldStreamingState`'s lifetime. So one
+/// evaluation per grid cell is the whole answer, and a *failed* evaluation
+/// (an `XCCM` that is no parsed CLMT, or a CLMT with no resolvable default
+/// weather) must not be retried until the player leaves the cell — retrying
+/// it re-ran the resolve, the stand-in weather EDID scan and a `warn!`
+/// on every frame the player stood there. `evaluated_grid` is the same
+/// grid-keyed cache shape `applied_region_ambient` uses (#3679).
+fn claim_climate_evaluation(evaluated_grid: &mut Option<(i32, i32)>, player_grid: (i32, i32)) -> bool {
+    if *evaluated_grid == Some(player_grid) {
+        return false;
+    }
+    *evaluated_grid = Some(player_grid);
     true
 }
 
@@ -1207,6 +1233,26 @@ pub(crate) fn begin_exterior_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5529 — a grid cell is evaluated once: the repeat frames of a failed
+    /// override (no `applied_climate` change to short-circuit on) are
+    /// refused, and a different cell is evaluated afresh.
+    #[test]
+    fn a_climate_override_is_evaluated_once_per_grid_cell() {
+        let mut evaluated = None;
+        assert!(claim_climate_evaluation(&mut evaluated, (3, -2)), "first frame in a cell");
+        for _ in 0..3 {
+            assert!(
+                !claim_climate_evaluation(&mut evaluated, (3, -2)),
+                "later frames in the same cell must not re-resolve or re-warn"
+            );
+        }
+        assert!(claim_climate_evaluation(&mut evaluated, (4, -2)), "next cell");
+        assert!(
+            claim_climate_evaluation(&mut evaluated, (3, -2)),
+            "returning to an earlier cell evaluates it again"
+        );
+    }
 
     /// #4902 — a direct interior boot installs the canonical outdoor
     /// environment once (sky, weather table, provisional marker) and leaves

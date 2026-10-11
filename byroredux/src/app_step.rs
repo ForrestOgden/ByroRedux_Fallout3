@@ -94,8 +94,9 @@ impl App {
         // Deliberately OUTSIDE the `grid_changed` guard below: bootstrap
         // seeds `last_player_grid` before the first step, so a session
         // starting *inside* an override cell would otherwise never apply
-        // it until the player left and came back. Costs one map lookup
-        // and an `Option<u32>` compare on every other frame.
+        // it until the player left and came back. Each grid cell is
+        // resolved once (`climate_override_grid`, #5529) — success or
+        // failure — so every other frame costs one `Option` compare.
         crate::scene::apply_cell_climate_override(
             &mut self.world,
             ctx,
@@ -103,6 +104,7 @@ impl App {
             &state.wctx,
             player_grid,
             &mut state.applied_climate_form,
+            &mut state.climate_override_grid,
         );
         // EX-16 item 1 (#2372) — same "outside the grid_changed guard"
         // placement as the climate override immediately above, and for
