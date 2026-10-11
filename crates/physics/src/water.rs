@@ -784,6 +784,9 @@ fn apply_buoyancy_with_scratch(
     // writes to apply after the lock drops.
     {
         let mut pw = world.resource_mut::<PhysicsWorld>();
+        // #5540 — the per-step dry-link damping pass skips whatever this
+        // run targets; last run's set is stale by definition.
+        pw.water_force_targets.clear();
         let gravity_y = pw.gravity.y;
         // Set once if any body is woken on a dry→wet transition this frame
         // (see the `pw.wake()` after the loop).
@@ -939,17 +942,36 @@ fn apply_buoyancy_with_scratch(
                 Some((s, min_y, max_y, surface_y)) => {
                     // Same AABB centre the surface search sorted by (#2887).
                     let center_y = 0.5 * (min_y + max_y);
+                    // #5540 — multibody links (every jointed ragdoll bone)
+                    // never receive `RigidBody` damping: rapier's writeback
+                    // path skips them, so `set_*_damping` there was stored
+                    // and never applied, and a floating corpse's heave ran
+                    // undamped until it left the volume (measured y range
+                    // -1438..+136 over 40 s). For links the drag rides this
+                    // pass's user FORCE instead — `-c·m·v` alongside the
+                    // buoyancy force, plus `-c·(I·ω)` as a torque — with the
+                    // authored coefficients folded in (the stored fields
+                    // hold authored + ragdoll lever, which were equally
+                    // inert on links).
+                    let is_link = pw.is_multibody_link(t.handles.body);
+                    if is_link {
+                        pw.note_water_force_target(t.handles.body);
+                    }
                     // Carries the derived force out of the `bodies.get_mut`
                     // borrow so it can be applied through `PhysicsWorld`'s
                     // own API rather than the raw Rapier body (#2889).
                     let mut pending_force: Option<Vec3> = None;
+                    let mut pending_torque: Option<Vec3> = None;
                     let frac = submerged_fraction(min_y, max_y, surface_y);
                     if frac > 0.0 {
                         if let Some(b) = pw.bodies.get_mut(t.handles.body) {
                             // Submerged viscous damping so the float settles
-                            // (and can then sleep) rather than bobbing forever.
-                            b.set_linear_damping(consts.linear_damping_in);
-                            b.set_angular_damping(consts.angular_damping_in);
+                            // (and can then sleep) rather than bobbing
+                            // forever. Inert on multibody links — see above.
+                            if !is_link {
+                                b.set_linear_damping(consts.linear_damping_in);
+                                b.set_angular_damping(consts.angular_damping_in);
+                            }
                             // Wake ONCE on entry so a body that streamed in
                             // already submerged (spawned asleep) floats up.
                             if !t.prior_wet
@@ -973,6 +995,27 @@ fn apply_buoyancy_with_scratch(
                                     gravity_y,
                                     consts.buoyancy_density_ratio,
                                 );
+                                if is_link {
+                                    // Drag as a force: water coefficient +
+                                    // the (stored-but-inert) authored one.
+                                    let c =
+                                        consts.linear_damping_in + b.linear_damping().max(0.0);
+                                    let v = b.linvel();
+                                    f.x -= c * mass * v.x;
+                                    f.y -= c * mass * v.y;
+                                    f.z -= c * mass * v.z;
+                                    let c_ang = consts.angular_damping_in
+                                        + b.angular_damping().max(0.0);
+                                    // Mass-scaled 1 BU lever — rapier exposes
+                                    // no world angular inertia on the body
+                                    // (see apply_multibody_link_damping).
+                                    let w = b.angvel();
+                                    pending_torque = Some(Vec3::new(
+                                        -c_ang * mass * w.x,
+                                        -c_ang * mass * w.y,
+                                        -c_ang * mass * w.z,
+                                    ));
+                                }
                                 if let Some(flow) = s.flow {
                                     let velocity = b.linvel();
                                     f += current_force(
@@ -1002,6 +1045,9 @@ fn apply_buoyancy_with_scratch(
                         }
                         if let Some(f) = pending_force.take() {
                             pw.add_force(t.handles.body, f, false);
+                        }
+                        if let Some(torque) = pending_torque.take() {
+                            pw.add_torque(t.handles.body, torque, false);
                         }
                         writes.push((
                             t.entity,
@@ -2683,6 +2729,250 @@ mod ragdoll_stale_contact_tests {
              contact cleared and its authored damping restored — the \
              cleanup pass keys off RapierHandles/RigidBodyData, which a \
              ragdoll bone does not have (#3492)",
+        );
+    }
+
+    /// #5540 — the jointed-ragdoll half of the buoyancy settle contract.
+    /// Rapier applies `RigidBody` damping only on the rigid-body writeback
+    /// path, which skips multibody links — so the submerged damping this
+    /// pass sets was stored and never applied on every jointed rig, and a
+    /// floating corpse's heave grew without bound (the audit's probe: two
+    /// jointed balls reached y ∈ [-1438, +136] over 40 s while their
+    /// `linear_damping` field read 1.5; the unjointed pair settled in 2.5 s
+    /// and slept). Links now get their drag as a force alongside buoyancy.
+    /// This fixture is the minimal jointed rig crossing the surface: the
+    /// pre-fix divergence blows the ±80 BU bound within the run window.
+    #[test]
+    fn jointed_ragdoll_in_water_settles_instead_of_diverging() {
+        use crate::ragdoll::{
+            build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
+        };
+        use crate::world::PHYSICS_DT;
+        use crate::{physics_sync_system, ContactConfig};
+        use byroredux_core::ecs::components::collision::CollisionShape;
+        use byroredux_core::ecs::components::water::{
+            WaterContact, WaterKind, WaterMaterial, WaterPlane, WaterVolume,
+        };
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        // Ratio 2.0 puts the pair's equilibrium AT the surface (the lower
+        // ball fully submerged, the upper dry — combined displacement 1.0),
+        // so "settled" is visible as straddling the waterline rather than
+        // hanging at depth like the 1.02 near-neutral default dictates.
+        world.insert_resource(PhysicsWaterConstants {
+            buoyancy_density_ratio: 2.0,
+            ..PhysicsWaterConstants::default()
+        });
+        world.register::<WaterContact>();
+        world.register::<crate::Ragdoll>();
+        // The pass early-returns when either dynamic-body storage is
+        // absent, before its Ragdoll arm runs — register both even though
+        // this fixture has no standalone dynamic bodies.
+        world.register::<crate::RapierHandles>();
+        world.register::<byroredux_core::ecs::components::collision::RigidBodyData>();
+
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-500.0, -200.0, -500.0],
+                max: [500.0, 0.0, 500.0],
+            },
+        );
+
+        // Two radius-15 balls joined across the waterline: the lower is
+        // submerged at seed, the upper rides it. The size is chosen above
+        // the ZOH limit-cycle threshold for a jointed rig (the audit's
+        // matrix: ragdolls hold the force over 16 internal small steps, so
+        // the settle threshold is ~4x the single-body figure — an h=16 rig
+        // limit-cycles at ±80-165 BU even with working drag, which is
+        // PHYS-D5-2026-10-11-02's energy source, not this fix's).
+        let bone_a = world.spawn();
+        let bone_b = world.spawn();
+        let spec = RagdollSpec {
+            bodies: vec![
+                RagdollBodySpec {
+                    entity: bone_a,
+                    translation: Vec3::new(0.0, -20.0, 0.0),
+                    rotation: byroredux_core::math::Quat::IDENTITY,
+                    scale: 1.0,
+                    shape: CollisionShape::Ball { radius: 15.0 },
+                    mass: 20.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                },
+                RagdollBodySpec {
+                    entity: bone_b,
+                    translation: Vec3::new(0.0, 10.0, 0.0),
+                    rotation: byroredux_core::math::Quat::IDENTITY,
+                    scale: 1.0,
+                    shape: CollisionShape::Ball { radius: 15.0 },
+                    mass: 20.0,
+                    linear_damping: 0.05,
+                    angular_damping: 0.05,
+                    friction: 0.5,
+                    restitution: 0.0,
+                },
+            ],
+            constraints: vec![RagdollConstraintSpec {
+                body_a: 0,
+                body_b: 1,
+                joint: RagdollJointSpec::Ragdoll {
+                    twist_a: Vec3::X,
+                    plane_a: Vec3::Y,
+                    pivot_a: Vec3::new(0.0, 15.0, 0.0),
+                    twist_b: Vec3::X,
+                    plane_b: Vec3::Y,
+                    pivot_b: Vec3::new(0.0, -15.0, 0.0),
+                    cone_max: std::f32::consts::PI,
+                    twist_min: -std::f32::consts::PI,
+                    twist_max: std::f32::consts::PI,
+                },
+            }],
+        };
+        // In production `activate_ragdoll` inserts the component; here the
+        // test owns that step (build_ragdoll is physics-side only).
+        let rag = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane seed")
+        };
+        assert!(
+            world
+                .resource::<PhysicsWorld>()
+                .is_multibody_link(rag.bodies[0].1),
+            "the fixture must be a jointed articulation for #5540"
+        );
+        let handles: Vec<_> = rag.bodies.iter().map(|(_, h, _)| *h).collect();
+        world.insert(bone_a, rag);
+
+        // The contract has two halves: the transient stays an order of
+        // magnitude below the pre-fix divergence (which reached y ∈
+        // [-1438, +136] inside this window), and the rig SETTLES — its
+        // last-100-ticks excursion is small, where the pre-fix limit
+        // cycle kept growing to the end.
+        let mut worst = 0.0_f32;
+        let mut settled_worst = 0.0_f32;
+        for tick in 0..3600 {
+            physics_sync_system(&world, PHYSICS_DT);
+            let pw = world.resource::<PhysicsWorld>();
+            let mut frame_worst = 0.0_f32;
+            for handle in &handles {
+                if let Some(b) = pw.bodies.get(*handle) {
+                    frame_worst = frame_worst.max(b.translation().y.abs());
+                }
+            }
+            worst = worst.max(frame_worst);
+            if tick >= 3500 {
+                settled_worst = settled_worst.max(frame_worst);
+            }
+            if worst > 160.0 {
+                break;
+            }
+        }
+        assert!(
+            worst < 160.0,
+            "the transient must stay an order of magnitude below the pre-fix divergence \
+             (worst |y| {worst:.1})"
+        );
+        assert!(
+            settled_worst < 60.0,
+            "the jointed rig must settle near the surface (last-100-ticks worst |y| \
+             {settled_worst:.1}); a growing limit cycle is the #5540 divergence"
+        );
+    }
+
+    /// #5540, dry half — the authored damping on a multibody link must
+    /// actually damp. Rapier never applies `RigidBody` damping to links, so
+    /// pre-fix a jointed pair's drift velocity (built up under gravity, then
+    /// released into zero gravity) stayed constant forever. The per-step
+    /// link-damping pass must decay it.
+    #[test]
+    fn dry_multibody_link_damping_decays_drift_velocity() {
+        use crate::ragdoll::{
+            build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
+        };
+        use crate::world::PHYSICS_DT;
+        use crate::ContactConfig;
+        use byroredux_core::ecs::World;
+        use byroredux_core::ecs::components::collision::CollisionShape;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.register::<crate::Ragdoll>();
+
+        let bone_a = world.spawn();
+        let bone_b = world.spawn();
+        let bone = |entity| RagdollBodySpec {
+            entity,
+            translation: Vec3::new(0.0, 1000.0, 0.0),
+            rotation: byroredux_core::math::Quat::IDENTITY,
+            scale: 1.0,
+            shape: CollisionShape::Ball { radius: 8.0 },
+            mass: 10.0,
+            linear_damping: 1.0,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.0,
+        };
+        let spec = RagdollSpec {
+            bodies: vec![bone(bone_a), RagdollBodySpec {
+                translation: Vec3::new(0.0, 1016.0, 0.0),
+                ..bone(bone_b)
+            }],
+            constraints: vec![RagdollConstraintSpec {
+                body_a: 0,
+                body_b: 1,
+                joint: RagdollJointSpec::Ragdoll {
+                    twist_a: Vec3::X,
+                    plane_a: Vec3::Y,
+                    pivot_a: Vec3::new(0.0, 15.0, 0.0),
+                    twist_b: Vec3::X,
+                    plane_b: Vec3::Y,
+                    pivot_b: Vec3::new(0.0, -15.0, 0.0),
+                    cone_max: std::f32::consts::PI,
+                    twist_min: -std::f32::consts::PI,
+                    twist_max: std::f32::consts::PI,
+                },
+            }],
+        };
+        let rag = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane seed")
+        };
+        let handle = rag.bodies[0].1;
+        world.insert(bone_a, rag);
+
+        // Build up drift under gravity, then release into zero gravity:
+        // with the damping pass the drift decays; pre-fix it is constant.
+        for _ in 0..30 {
+            world.resource_mut::<PhysicsWorld>().step(PHYSICS_DT);
+        }
+        let drift_v0 = world.resource::<PhysicsWorld>().bodies[handle].linvel().y;
+        assert!(drift_v0 < -50.0, "gravity must have built drift (got {drift_v0})");
+        {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            pw.gravity.y = 0.0;
+            pw.reset_forces(handle, true);
+        }
+        for _ in 0..180 {
+            world.resource_mut::<PhysicsWorld>().step(PHYSICS_DT);
+        }
+        let drift_v1 = world.resource::<PhysicsWorld>().bodies[handle].linvel().y;
+        assert!(
+            drift_v1.abs() < 0.45 * drift_v0.abs(),
+            "the authored link damping must decay the drift: {drift_v0:.1} -> {drift_v1:.1}"
         );
     }
 }
