@@ -655,6 +655,8 @@ impl VulkanContext {
                                 self.scene_buffers.light_buffer_size(),
                                 cc.scene_cluster_grid_buffers[frame],
                                 cc.scene_light_index_buffers[frame],
+                                cc.grid_buffer_size(),
+                                cc.index_buffer_size(),
                             )
                         });
                         let vol_geometry = match (
@@ -673,7 +675,14 @@ impl VulkanContext {
                         };
                         if let (
                             Some(tlas),
-                            Some((light_buf, light_buf_size, grid_buf, index_buf)),
+                            Some((
+                                light_buf,
+                                light_buf_size,
+                                grid_buf,
+                                index_buf,
+                                grid_size,
+                                index_size,
+                            )),
                             Some((
                                 instance_buf,
                                 instance_buf_size,
@@ -695,17 +704,6 @@ impl VulkanContext {
                                 geometry_index_buf,
                                 geometry_index_buf_size,
                             );
-                            // Cluster grid / light-index buffer sizes mirror the
-                            // formulas in `ClusterCullPipeline::new`
-                            // (`compute.rs`): grid entries are `{offset:u32,
-                            // count:u32}` = 8 B each; the index list is one u32
-                            // per (cluster, light-slot) pair.
-                            const CLUSTER_ENTRY_SIZE: vk::DeviceSize = 8;
-                            let grid_size = CLUSTER_ENTRY_SIZE
-                                * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize;
-                            let index_size = std::mem::size_of::<u32>() as vk::DeviceSize
-                                * crate::shader_constants::TOTAL_CLUSTERS as vk::DeviceSize
-                                * crate::shader_constants::MAX_LIGHTS_PER_CLUSTER as vk::DeviceSize;
                             // Compute→compute visibility: cluster_cull's own
                             // trailing barrier in `draw_frame` only
                             // targets FRAGMENT_SHADER (the rasterizer's read).
