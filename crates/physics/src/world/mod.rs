@@ -245,6 +245,13 @@ pub struct PhysicsWorld {
     pub colliders: ColliderSet,
     pub impulse_joints: ImpulseJointSet,
     pub multibody_joints: MultibodyJointSet,
+    /// #5540 — bodies the water pass applied its buoyancy/drag user force
+    /// to this frame. The per-tick multibody-link damping
+    /// ([`Self::apply_multibody_link_damping`]) must skip them: rapier's
+    /// user-force accumulation is reset-then-add per owner, and a second
+    /// reset would discard the water forces. Cleared at the top of every
+    /// `apply_buoyancy` run.
+    pub(crate) water_force_targets: std::collections::HashSet<RigidBodyHandle>,
     /// Rapier 0.36's soft bodies (ropes, cloth). The engine authors none;
     /// the set exists because `PhysicsPipeline::step` and
     /// `RigidBodySet::remove` take it.
@@ -441,6 +448,7 @@ impl PhysicsWorld {
             colliders: ColliderSet::new(),
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
+            water_force_targets: std::collections::HashSet::new(),
             soft_bodies: SoftBodySet::new(),
             islands: IslandManager::new(),
             broad_phase: BroadPhaseBvh::new(),
@@ -478,6 +486,31 @@ impl PhysicsWorld {
     /// Number of live bodies in the simulation.
     pub fn body_count(&self) -> usize {
         self.bodies.len()
+    }
+
+    /// Fixture helper: insert a fixed cuboid collider (a convex slab) with
+    /// half-extents `half`, centred at `translation`, and refresh the
+    /// query pipeline. The bin crate cannot name rapier's builders (it
+    /// has no direct `rapier3d` dependency), and every convex-floor
+    /// character-controller gate needs one of these — #2857's player
+    /// probe and #5539's NPC walk both sweep `BhkBoxShape`-shaped floors.
+    /// Returns the body handle (ignorable).
+    pub fn spawn_fixed_cuboid(
+        &mut self,
+        half: byroredux_core::math::Vec3,
+        translation: byroredux_core::math::Vec3,
+    ) -> RigidBodyHandle {
+        use rapier3d::prelude::*;
+        let body = self.bodies.insert(RigidBodyBuilder::fixed().build());
+        self.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(half.x, half.y, half.z)
+                .translation(Vector::new(translation.x, translation.y, translation.z))
+                .build(),
+            body,
+            &mut self.bodies,
+        );
+        self.update_query_pipeline();
+        body
     }
 
     /// Remove a rigid body and its attached colliders from the simulation.
@@ -600,8 +633,8 @@ impl PhysicsWorld {
     pub fn collider_surface_material(
         &self,
         handle: rapier3d::prelude::ColliderHandle,
-    ) -> Option<u8> {
-        Some(self.colliders.get(handle)?.user_data as u8)
+    ) -> Option<u32> {
+        Some(self.colliders.get(handle)?.user_data as u32)
     }
 
     /// World-space midpoint of a contact pair's two colliders' parent
@@ -727,6 +760,97 @@ impl PhysicsWorld {
             }
         }
         false
+    }
+
+    /// #5540 — apply a persistent user torque (engine world-space, Y-up),
+    /// the angular sibling of [`Self::add_force`]: accumulates across
+    /// frames until `reset_forces`, exists because multibody links ignore
+    /// `RigidBody` damping and their angular drag must ride the same
+    /// force/torque channel as the buoyancy force.
+    pub fn add_torque(
+        &mut self,
+        handle: RigidBodyHandle,
+        torque: byroredux_core::math::Vec3,
+        wake_up: bool,
+    ) -> bool {
+        if let Some(b) = self.bodies.get_mut(handle) {
+            if b.body_type() == RigidBodyType::Dynamic {
+                b.add_torque(torque, wake_up);
+                if wake_up {
+                    self.wake();
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// #5540 — true when `body` is a link of a multibody articulation
+    /// (every ragdoll bone, root included). Rapier applies `RigidBody`
+    /// damping only on the rigid-body writeback path, which `continue`s
+    /// for multibody links — the stored value is never applied, so both
+    /// the water pass's submerged damping and `build_ragdoll`'s authored
+    /// damping + `ragdoll_extra_angular_damping` lever were inert on
+    /// every jointed rig.
+    pub fn is_multibody_link(&self, body: RigidBodyHandle) -> bool {
+        self.multibody_joints.rigid_body_link(body).is_some()
+    }
+
+    /// #5540 — record that the water pass owns `body`'s user force this
+    /// frame (buoyancy + drag), so the dry-link damping pass below leaves
+    /// it alone.
+    pub(crate) fn note_water_force_target(&mut self, body: RigidBodyHandle) {
+        self.water_force_targets.insert(body);
+    }
+
+    /// #5540 — apply the stored damping (authored + ragdoll lever) of
+    /// every awake multibody link as an explicit force and torque,
+    /// `-c·m·v` and a mass-scaled angular torque — the only channel that reaches
+    /// articulation links, whose velocities live in the multibody's
+    /// generalized solve, not the rigid-body writeback. Bodies the water
+    /// pass targeted this frame are skipped: wet links carry their drag
+    /// (water + authored coefficients) inside the buoyancy force, and a
+    /// second reset would discard it. Called once per stepping frame
+    /// from [`Self::step`]; like the buoyancy force, the drag persists
+    /// across the frame's substeps and is re-derived next frame.
+    pub(crate) fn apply_multibody_link_damping(&mut self) {
+        // Collect the plan first: applying needs `&mut self` per body.
+        let mut plan: Vec<(RigidBodyHandle, Vector, AngVector, f32, f32, f32)> =
+            Vec::new();
+        for (handle, body) in self.bodies.iter() {
+            if !body.is_dynamic()
+                || body.is_sleeping()
+                || self.water_force_targets.contains(&handle)
+                || self.multibody_joints.rigid_body_link(handle).is_none()
+            {
+                continue;
+            }
+            let lin = body.linear_damping();
+            let ang = body.angular_damping();
+            if lin <= 0.0 && ang <= 0.0 {
+                continue;
+            }
+            plan.push((handle, body.linvel(), body.angvel(), lin, ang, body.mass()));
+        }
+        for (handle, v, w, lin, ang, mass) in plan {
+            self.reset_forces(handle, false);
+            if lin > 0.0 {
+                let f = -lin * mass * v;
+                self.add_force(handle, f, false);
+            }
+            if ang > 0.0 {
+                // Rapier 0.36 exposes no world angular inertia on a
+                // RigidBody (mprops is crate-private), so the angular
+                // drag uses a mass-scaled torque with a 1 BU lever —
+                // exponential angular damping at rate c·m/I_eff, an
+                // under-damped but nonzero stand-in where the pre-fix
+                // value was exactly zero on every link.
+                let torque = -ang * mass * w;
+                self.bodies
+                    .get_mut(handle)
+                    .map(|b| b.add_torque(torque, false));
+            }
+        }
     }
 
     /// Apply an instantaneous impulse (engine world-space, Y-up) to a
@@ -963,6 +1087,12 @@ impl PhysicsWorld {
             self.accumulator = 0.0;
             return 0;
         }
+
+        // #5540 — dry multibody links carry their stored (inert-on-links)
+        // damping as an explicit force/torque this stepping frame. Wet links
+        // are excluded through `water_force_targets`: the water pass owns
+        // their user force and folds the same coefficients into it.
+        self.apply_multibody_link_damping();
 
         // Anti-spiral wall-clock budget (#1698). Time the catch-up loop so a
         // settle storm can't pin the frame at the full 5-substep cost; once

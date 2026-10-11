@@ -69,11 +69,20 @@ pub(crate) const LOCOMOTION_NPC_STEP_HEIGHT: f32 =
 /// player's `CharacterController::step_min_width`, shared by derivation).
 pub(crate) const LOCOMOTION_NPC_STEP_MIN_WIDTH: f32 =
     byroredux_physics::CharacterController::HUMAN.step_min_width;
-/// M42.10 — ground-snap distance (BU) the KCC may pull the capsule down
-/// after a horizontal step, holding actors onto terrain rolls without
-/// bouncing. Must stay well under [`LOCOMOTION_MAX_DROP`]: snap is for
-/// staying grounded on gentle downslopes, not for ledges.
-pub(crate) const LOCOMOTION_NPC_SNAP_TO_GROUND: f32 = 64.0;
+/// M42.10 / #5539 — ground-snap distance (BU) for the NPC KCC. **0**:
+/// disabled. Rapier 0.36 fires snap on every horizontal move from inside
+/// the contact-offset band, and its snap cast — applied unchecked, past
+/// the collision clamp — misreads CONVEX floors there; against the
+/// probe-bounded vertical request that produced a runaway (probe reads a
+/// phantom-deep surface → requests descent → snap pushes below the band
+/// → deeper phantom; measured sinking 1.3+ BU in 100 frames on a cuboid
+/// slab). The stay-attached-to-downslopes job snap used to do now belongs
+/// to the pre-move support probe (`step_toward_detailed`): it requests
+/// exactly the descent to resting contact each frame, bounded by the
+/// step height, and the collision clamp bounds it — no unchecked
+/// application. TriMesh terrain was never affected either way. Ledges
+/// are the [`LOCOMOTION_MAX_DROP`] fallback ray's job, unchanged.
+pub(crate) const LOCOMOTION_NPC_SNAP_TO_GROUND: f32 = 0.0;
 /// M42.10 — max climbable slope (degrees). KCC default 50°, shared with
 /// the player controller by derivation (#4689).
 pub(crate) const LOCOMOTION_NPC_MAX_SLOPE_DEG: f32 =
@@ -176,6 +185,32 @@ pub(crate) fn step_toward_detailed(
         // query and the resulting translation delta applied back to the
         // feet directly (a delta is reference-point independent).
         let lift = LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT + LOCOMOTION_NPC_CAPSULE_RADIUS;
+        // #5539 — rapier 0.36's snap-to-ground now fires on every
+        // horizontal move (the `<= 0.0` vertical trigger, 0.36
+        // `character_controller.rs:466`), and from a configuration already
+        // inside the 4 BU contact-offset band the downward shape cast
+        // against a CONVEX floor misreads its time of impact — snap then
+        // applied the misread unchecked, sinking NPCs knee- to waist-deep
+        // into box / convex-hull floors and through thin ones, while the
+        // KCC still reported `grounded`, so the clamped fallback ray below
+        // never corrected it. The NPC step now owns its vertical exactly,
+        // in the spirit of the player's #2857 treatment but with a RAY
+        // for the gap measurement: the capsule shape-cast misreads
+        // against convex slabs from inside the band by a little every
+        // time, and feeding that phantom into an "exact" request ran away
+        // (measured: a steady ~0.4 BU/frame descent that neither the
+        // probe nor the collision clamp caught, because the capsule never
+        // leaves the band the clamp lives in). A straight-down ray hits
+        // the floor's top face exactly on every geometry kind, so the
+        // requested descent is exact and snap (now 0,
+        // [`LOCOMOTION_NPC_SNAP_TO_GROUND`]) has nothing to amplify.
+        let kcc_offset = LOCOMOTION_NPC_KCC_OFFSET_BU.max(0.0);
+        let probe = pw.cast_ray_down(
+            Vec3::new(current.x, current.y + lift, current.z),
+            lift + LOCOMOTION_NPC_STEP_HEIGHT + kcc_offset,
+            None,
+        )
+;
         // Clamped to the remaining distance (`move_towards` semantics) so
         // the final step of a leg lands on the target instead of
         // overshooting past it. `speed` is the actor's authored stride
@@ -185,6 +220,22 @@ pub(crate) fn step_toward_detailed(
             desired_xz * (step / desired_length)
         } else {
             Vec3::ZERO
+        };
+        // Exactly to resting contact — `offset` above the support — and no
+        // further. Signed on purpose: a capsule that crept slightly BELOW
+        // the band is lifted back (the player controller's anti-drift
+        // property, `character.rs` #2857). Bounded below by the step height
+        // (a legitimate step-down still resolves in one frame) and above by
+        // the offset (the correction can never launch the capsule). No
+        // support within a step of the feet = walked off a ledge or a
+        // hole: request the horizontal move alone and let the clamped
+        // fallback ray below decide.
+        let desired = match probe {
+            Some(surface_y) => {
+                let correction = -(current.y - surface_y - kcc_offset);
+                desired + Vec3::Y * correction.clamp(-LOCOMOTION_NPC_STEP_HEIGHT, kcc_offset)
+            }
+            None => desired,
         };
         let result = pw.move_character(byroredux_physics::CharacterMoveParams {
             capsule_half_height: LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT,
@@ -396,5 +447,72 @@ mod stuck_tests {
             LOCOMOTION_NPC_KCC_OFFSET_BU > 2.0 * ContactConfig::DEFAULT.default_contact_skin_bu,
             "KCC offset must clear the combined contact skin (#2885)"
         );
+    }
+
+    /// #5539 — the NPC analogue of the player's #2857 convex-floor sink
+    /// gate, driving the REAL `step_toward_detailed` parameters. Under
+    /// rapier 0.36 the snap-to-ground cast fires on every horizontal move
+    /// from inside the 4 BU offset band, and against a CONVEX floor it
+    /// intermittently returns a large bogus time of impact which snap
+    /// applies — the audit's probe measured NPCs sinking > 1 BU on 82/336
+    /// height × thickness × heading configurations and below the slab's
+    /// bottom face on 63/336. The pre-fix step (a purely horizontal
+    /// request) reproduced that here; the probe-bounded vertical request
+    /// must hold the capsule within 1 BU of the floor on every
+    /// configuration and never through a thin slab.
+    #[test]
+    fn grounded_npc_does_not_sink_through_convex_floors_across_absolute_y() {
+        use super::step_toward_detailed;
+        use byroredux_core::math::Vec3;
+        use byroredux_physics::world::PHYSICS_DT;
+
+        let speed = 100.0_f32;
+        // #2857's floor-height set is absolute-Y sensitive (float precision
+        // of the resting gap selects the failure); walk a representative
+        // slice of it × 4 headings × a thick and a thin convex slab.
+        let heights = [0.0_f32, 137.0, -60.0 + 7.3 * 5.0];
+        let headings = [0.0_f32, std::f32::consts::FRAC_PI_2, -0.75, 2.4];
+        let thicknesses = [20.0_f32, 4.0];
+        for &top in &heights {
+            for &half in &thicknesses {
+                let mut pw = byroredux_physics::PhysicsWorld::new();
+                // `spawn_fixed_cuboid` refreshes the query pipeline; the
+                // zero gravity keeps the gate about the KCC snap alone.
+                let _floor =
+                    pw.spawn_fixed_cuboid(Vec3::new(500.0, half, 500.0), Vec3::new(0.0, top - half, 0.0));
+                for &yaw in &headings {
+                    // Start grounded: feet `offset` above the top face.
+                    let start = Vec3::new(-400.0, top + super::LOCOMOTION_NPC_KCC_OFFSET_BU, 0.0);
+                    let dir = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+                    let mut pos = start;
+                    for frame in 0..240 {
+                        let target = pos + dir * (speed * PHYSICS_DT * 2.0);
+                        let (next, _, _) = step_toward_detailed(
+                            pos,
+                            byroredux_core::math::Quat::IDENTITY,
+                            Vec3::new(target.x, pos.y, target.z),
+                            PHYSICS_DT,
+                            speed,
+                            Some(&pw),
+                        );
+                        pos = next;
+                        if pos.y < top - 1.0 {
+                            panic!(
+                                "NPC sank to y={} on a convex floor topped at {top} \
+                                 (half {half}, yaw {yaw}, frame {frame})",
+                                pos.y
+                            );
+                        }
+                        if pos.y < top - 2.0 * half {
+                            panic!(
+                                "NPC dropped THROUGH the slab to y={} (top {top}, \
+                                 half {half}, yaw {yaw}, frame {frame})",
+                                pos.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
