@@ -534,16 +534,18 @@ fn cornell_l2_visibility_is_repeatable_and_large_coordinate_stable() {
 /// debug view, so GI/SVGF noise cannot mask or fake the signal.
 ///
 /// Measured on the dev 4070 Ti (RMSE over the region, 8-bit luma):
-/// the pre-#5369-tail build (cap 256 / floor 0.008) sat at ~8.1 and never
-/// improved past frame 400 (a standing grain); the deep parked tail (cap
-/// 1024 / floor 0.002) reaches ~4.4 at 1500 frames and keeps improving. The
-/// limit sits between them so a regression to the shallow tail (or a broken
-/// history path) fails while hardware/driver spread passes.
+/// the pre-#5369-tail build (cap 256 / floor 0.008, white-hash samples) sat
+/// at ~8.1-8.9 and never improved past frame 400 (a standing grain); the
+/// deep parked tail (cap 1024 / floor 0.002) reaches ~4.4 at 1500 frames and
+/// the dithered R2 sampler ~3.4. The limit sits between the old build and
+/// the new ones so a regression to the shallow tail (or a broken history
+/// path) fails while hardware/driver spread passes; the sampler itself is
+/// pinned by `shadow_ray_disk_samples_are_dithered_low_discrepancy`.
 #[test]
 #[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
 fn cornell_parked_penumbra_converges_at_one_shadow_ray() {
     const PENUMBRA_REGION: [f32; 4] = [0.3008, 0.4306, 0.3555, 0.6528];
-    const RMSE_LIMIT: f64 = 6.0;
+    const RMSE_LIMIT: f64 = 5.0;
     let workdir = OracleArtifacts::new("parked-penumbra-convergence");
     let reference = capture_cornell_box(workdir.path(), "reference", "3000", "3");
     let candidate = capture_cornell_box(workdir.path(), "candidate", "1500", "0");
@@ -586,6 +588,7 @@ fn cornell_parked_penumbra_converges_at_one_shadow_ray() {
         .sum::<f64>()
         / n)
         .sqrt();
+    eprintln!("parked penumbra RMSE vs the 8-ray reference: {rmse:.2} (limit {RMSE_LIMIT})");
     assert!(
         rmse <= RMSE_LIMIT,
         "parked penumbra at one shadow ray/pixel did not converge: RMSE {rmse:.2} vs the \

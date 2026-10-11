@@ -125,6 +125,36 @@ fn transmission_skip_walk_hands_the_full_mask_to_the_foreign_leg() {
     );
 }
 
+/// #5369 — shadow-ray disk samples are dithered, not white. The ReSTIR
+/// finalize rays draw from `ditheredSequence2` (R2 low-discrepancy in time,
+/// IGN-rotated per pixel) rather than a per-(pixel, frame) PCG hash, whose
+/// 1/sqrt(N) white error left the standing salt-and-pepper penumbra grain.
+/// The helper's integer R2 recurrence must keep its exact 2^32 constants
+/// (1/phi2 and 1/phi2^2), or the sequence silently degrades to a lattice.
+#[test]
+fn shadow_ray_disk_samples_are_dithered_low_discrepancy() {
+    let math = include_str!("../../../shaders/include/math_common.glsl");
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    assert!(math.contains("vec2 ditheredSequence2(uvec2 pixel, uint n, uint salt)"));
+    // round(2^32 / phi2) and round(2^32 / phi2^2).
+    let a1 = ((1.0f64 / 1.324_717_957_244_746) * 4_294_967_296.0).round() as u64;
+    let a2 = ((1.0f64 / (1.324_717_957_244_746 * 1.324_717_957_244_746)) * 4_294_967_296.0).round() as u64;
+    assert!(
+        math.contains(&format!("n * {a1}u")) && math.contains(&format!("n * {a2}u")),
+        "ditheredSequence2 must use the R2 constants {a1} / {a2}"
+    );
+    let finalize = triangle
+        .split_once("int shadowRayCount = int(clamp(rayBudget.directShadowSamples")
+        .expect("the ReSTIR finalize shadow-ray loop")
+        .1;
+    let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission;").expect("loop tail")];
+    assert!(
+        finalize.contains("ditheredSequence2(")
+            && !finalize.contains("hash2_pixel_frame("),
+        "the finalize shadow rays must draw dithered samples, not the white hash"
+    );
+}
+
 /// The categorical selected-light oracle distinguishes a legitimate absence
 /// (black) from a corrupt non-sentinel index (magenta).
 #[test]

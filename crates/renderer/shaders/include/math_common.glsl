@@ -85,6 +85,39 @@ vec2 hash2_pixel_frame(uvec2 pixel, uint frame) {
     return vec2(h) * (1.0 / 4294967296.0);
 }
 
+// Interleaved gradient noise WITHOUT the frame term: a fixed per-pixel
+// scalar whose spatial spectrum is blue (Jimenez 2014) — neighbouring
+// pixels are anti-correlated, so an error field keyed on it is dither, not
+// grain. The frame-dependent `interleavedGradientNoise` above crawls; this
+// one is a static mask.
+float ignMask(vec2 pixel) {
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// #5369 — n-th 2D sample of a per-pixel DITHERED low-discrepancy sequence.
+//
+// The shadow-ray disk samples used one white-noise hash per (pixel, frame):
+// per-pixel temporal error ~1/sqrt(N) AND spatially white, so the standing
+// EMA grain read as salt-and-pepper. This is the standard
+// "blue-noise-dithered QMC" construction (Roberts 2018 R2 sequence in time,
+// Cranley-Patterson rotated per pixel by a spatially blue mask):
+//   * TEMPORAL — the R2 additive recurrence (alpha = 1/phi2, 1/phi2^2) is a
+//     2D low-discrepancy sequence, so a pixel's running average converges
+//     faster than random sampling (~N^-0.75 vs N^-0.5 on a penumbra step);
+//   * SPATIAL — the per-pixel rotation offset comes from IGN (blue), so what
+//     error remains is anti-correlated between neighbours and averages out
+//     under TAA/upscale/the eye instead of reading as grain.
+// The recurrence is evaluated in 32-bit integers: n * round(alpha * 2^32)
+// wraps modulo 2^32, i.e. an EXACT fract(n * alpha) for any frame count (a
+// float multiply loses the fraction past ~1e5 frames). `salt` decorrelates
+// independent consumers (lights, rays) so they do not share a rotation.
+vec2 ditheredSequence2(uvec2 pixel, uint n, uint salt) {
+    vec2 seq = vec2(uvec2(n * 3242174889u, n * 2447445414u)) * (1.0 / 4294967296.0);
+    vec2 p = vec2(pixel) + float(salt) * vec2(37.0, 17.0);
+    vec2 rotation = vec2(ignMask(p), ignMask(p.yx + vec2(113.5, 247.3)));
+    return fract(seq + rotation);
+}
+
 // Generate a 2D sample on a unit disk using concentric mapping.
 // t1, t2 in [0,1] → (x,y) uniformly distributed on unit disk.
 vec2 concentricDiskSample(float t1, float t2) {

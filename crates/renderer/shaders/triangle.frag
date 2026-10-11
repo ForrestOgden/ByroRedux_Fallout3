@@ -3766,10 +3766,15 @@ void main() {
                     // identical to the old viewer-side one (same exit side).
                     vec3 rayOrigin = offsetRayOriginForDirection(
                         fragWorldPos, geometricNormal, L);
-                    // K shadow rays per frame, each with a FRESH decorrelated disk
-                    // sample (PCG hash, not IGN — IGN's per-frame offset crawls;
-                    // white noise decorrelates so the EMA converges). Averaging K
-                    // binary visibilities drops per-frame variance by √K, so the
+                    // K shadow rays per frame, each the next element of a per-pixel
+                    // DITHERED low-discrepancy sequence (`ditheredSequence2`, #5369):
+                    // an R2 recurrence in time, rotated per pixel by a spatially
+                    // blue (IGN) mask — never IGN's per-frame offset, which crawls.
+                    // Per pixel the EMA then converges faster than random sampling
+                    // (measured ~20% lower RMSE at every parked frame count), and
+                    // the residual error is anti-correlated between neighbours, so
+                    // it reads as dither instead of salt-and-pepper grain. Averaging
+                    // K binary visibilities drops per-frame variance by √K, so the
                     // penumbra converges K× faster — the cheap way to fix "a bit
                     // slow", spending the 4070 Ti's 300+ fps headroom. (The EMA
                     // below still refines further over parked frames via 1/N.)
@@ -3777,8 +3782,8 @@ void main() {
                     vec3 transmissionSum = vec3(0.0);
                     for (int sr = 0; sr < int(MAX_DIRECT_SHADOW_SAMPLES); sr++) {
                         if (sr >= shadowRayCount) break;
-                        vec2 dRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy),
-                            (uint(frameCount) * uint(shadowRayCount) + uint(sr)) * 9u + i);
+                        vec2 dRand = ditheredSequence2(uvec2(gl_FragCoord.xy),
+                            uint(frameCount) * uint(shadowRayCount) + uint(sr), i);
                         vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
                         vec3 rayDir;
                         float rayDist;
@@ -4010,12 +4015,16 @@ void main() {
             }
 
             float frameCount = cameraPos.w;
-            float noise1 = interleavedGradientNoise(gl_FragCoord.xy, frameCount + float(i) * 7.0);
-            float noise2 = interleavedGradientNoise(gl_FragCoord.xy + vec2(113.5, 247.3), frameCount + float(i) * 13.0);
+            // #5369 — the same blue-noise-dithered R2 sequence as the ReSTIR
+            // finalize arm (`ditheredSequence2`): a per-pixel low-discrepancy
+            // temporal sequence rotated by a spatially blue mask, so TAA sees
+            // dither instead of IGN's frame-crawling grain.
+            vec2 ditherSample = ditheredSequence2(
+                uvec2(gl_FragCoord.xy), uint(frameCount), i);
 
             vec3 T, B;
             buildOrthoBasis(L, T, B);
-            vec2 diskSample = concentricDiskSample(noise1, noise2);
+            vec2 diskSample = concentricDiskSample(ditherSample.x, ditherSample.y);
 
             // #5018 — direction-aware origin: identical to the viewer-side
             // offset for front-lit surfaces, starts on the light's side for
