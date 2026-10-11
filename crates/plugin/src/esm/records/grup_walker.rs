@@ -224,7 +224,7 @@ fn extract_dial_with_info_inner(
                         last_dial_form_id,
                     );
                 }
-                walk_info_records(reader, sub_end, target, dialogues, &remap)?;
+                walk_info_records(reader, sub_end, target, dialogues, &remap, game)?;
                 continue;
             }
 
@@ -260,6 +260,7 @@ fn walk_info_records(
     parent_dial_form_id: u32,
     dialogues: &mut HashMap<u32, DialRecord>,
     remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: GameKind,
 ) -> Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
@@ -279,7 +280,7 @@ fn walk_info_records(
         let header = reader.read_record_header()?;
         if &header.record_type == b"INFO" {
             let subs = reader.read_sub_records(&header)?;
-            let info = parse_info(header.form_id, &subs, remap);
+            let info = parse_info(header.form_id, &subs, remap, game);
             if let Some(dial) = dialogues.get_mut(&parent_dial_form_id) {
                 dial.infos.push(info);
             }
@@ -398,7 +399,7 @@ fn extract_quest_dialogue_scene_tree_inner(
             }
             b"INFO" => {
                 let subs = reader.read_sub_records(&header)?;
-                let info = parse_info(header.form_id, &subs, remap);
+                let info = parse_info(header.form_id, &subs, remap, game);
                 if let Some(parent) = last_dial_form_id.and_then(|fid| dialogues.get_mut(&fid)) {
                     parent.infos.push(info);
                 }

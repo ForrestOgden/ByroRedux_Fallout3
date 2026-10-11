@@ -40,13 +40,18 @@ pub struct DialogueQuestPriorities {
 
 impl Resource for DialogueQuestPriorities {}
 
-/// INFO FormIDs spoken at least once this save (#5367 Phase L). Keyed by
-/// the INFO's own FormID; consulted by [`select_info`] so a said
-/// Say-Once line stops qualifying until the save is reverted. This set
-/// IS save-facing state — the bin crate registers it in the save schema.
+/// `(speaker, INFO)` pairs spoken at least once this save (#5367 Phase L,
+/// per-actor since #5300). The speaker half is the NPC's placed-reference
+/// FormID (`SceneAliasCandidate::reference_form_id`, `0` for an actor with
+/// no placed identity); the INFO half is the INFO's own FormID. Consulted
+/// by [`select_info`] so a said Say-Once line stops qualifying for THAT
+/// actor until the save is reverted — the CK's Topic Info rule: "can only
+/// be said once by any given Actor … a different actor that qualifies may
+/// say it". This set IS save-facing state — the bin crate registers it in
+/// the save schema.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct DialogueSpokenInfoForms(pub std::collections::HashSet<u32>);
+pub struct DialogueSpokenInfoForms(pub std::collections::HashSet<(u32, u32)>);
 
 impl Resource for DialogueSpokenInfoForms {}
 
@@ -75,13 +80,23 @@ impl Default for DialogueRandomState {
 
 impl Resource for DialogueRandomState {}
 
-/// Record that `info_form_id` has been spoken (#5367 Phase L). Called
-/// by the activation surface when a line is applied. A no-op when the
-/// resource is absent — [`crate::register`] installs it, so that is
-/// only a pre-registration test world.
-pub fn note_info_spoken(world: &World, info_form_id: u32) {
+/// The portable identity of a speaking actor for the spoken-set (#5300):
+/// its placed-reference FormID, or `0` when it carries none (or no actor
+/// is given). Entity ids are session-local; this survives a save.
+fn speaker_form_id(world: &World, actor: Option<EntityId>) -> u32 {
+    actor
+        .and_then(|actor| world.get::<crate::scene::SceneAliasCandidate>(actor))
+        .map_or(0, |candidate| candidate.reference_form_id)
+}
+
+/// Record that `speaker` has said `info_form_id` (#5367 Phase L, per actor
+/// since #5300). Called by the activation surface when a line is applied.
+/// A no-op when the resource is absent — [`crate::register`] installs it,
+/// so that is only a pre-registration test world.
+pub fn note_info_spoken(world: &World, speaker: EntityId, info_form_id: u32) {
+    let speaker = speaker_form_id(world, Some(speaker));
     if let Some(mut spoken) = world.try_resource_mut::<DialogueSpokenInfoForms>() {
-        spoken.0.insert(info_form_id);
+        spoken.0.insert((speaker, info_form_id));
     }
 }
 
@@ -318,13 +333,18 @@ fn select_info<'a>(
         if !info_quest_is_running(info) {
             return None;
         }
-        // #5367 Phase L — a spoken Say-Once line stops qualifying for
-        // the rest of the save (a missing spoken-set resource treats
-        // nothing as said: tests and pre-install worlds).
+        // #5367 Phase L / #5300 — a Say-Once line this actor has spoken
+        // stops qualifying for it for the rest of the save; another actor
+        // that qualifies may still say it (a missing spoken-set resource
+        // treats nothing as said: tests and pre-install worlds).
         if info.say_once()
             && world
                 .try_resource::<DialogueSpokenInfoForms>()
-                .is_some_and(|spoken| spoken.0.contains(&info.form_id))
+                .is_some_and(|spoken| {
+                    spoken
+                        .0
+                        .contains(&(speaker_form_id(world, actor), info.form_id))
+                })
         {
             return None;
         }
@@ -750,33 +770,47 @@ mod tests {
         );
     }
 
-    /// A spoken Say-Once line stops qualifying; without the spoken-set
-    /// resource nothing is disqualified.
+    /// A Say-Once line stops qualifying for the actor that SPOKE it — and
+    /// only that actor (#5300: the CK's "a different actor that qualifies
+    /// may say it"); without the spoken-set resource nothing is
+    /// disqualified.
     #[test]
-    fn say_once_line_disqualifies_after_being_spoken() {
+    fn say_once_line_disqualifies_after_being_spoken_by_that_actor_only() {
         let mut world = World::new();
         super::register(&mut world);
-        let actor = world.spawn();
+        world.register::<crate::scene::SceneAliasCandidate>();
+        let candidate = |world: &mut World, reference_form_id: u32| {
+            let actor = world.spawn();
+            world.insert(
+                actor,
+                crate::scene::SceneAliasCandidate {
+                    reference_form_id,
+                    base_form_id: 0x77,
+                    linked_refs: Vec::new(),
+                    location_ref_types: Vec::new(),
+                },
+            );
+            actor
+        };
+        let speaker = candidate(&mut world, 0xAA_0001);
+        let bystander = candidate(&mut world, 0xAA_0002);
         let record = topic(vec![
             flagged_info(0x401, "said it once", 0x04), // Say Once
             flagged_info(0x402, "the follow-up", 0),
         ]);
+        let pick = |world: &World, actor| {
+            select_first_info(&record, world, Some(actor), None)
+                .expect("selects")
+                .form_id
+        };
 
         // Before: the Say-Once line is the first passing candidate.
-        assert_eq!(
-            select_first_info(&record, &world, Some(actor), None)
-                .expect("selects")
-                .form_id,
-            0x401
-        );
-        // Spoken: disqualified, the follow-up takes over.
-        world.insert_resource(DialogueSpokenInfoForms([0x401].into_iter().collect()));
-        assert_eq!(
-            select_first_info(&record, &world, Some(actor), None)
-                .expect("selects")
-                .form_id,
-            0x402
-        );
+        assert_eq!(pick(&world, speaker), 0x401);
+        // Spoken by `speaker`: disqualified for it, the follow-up takes over.
+        note_info_spoken(&world, speaker, 0x401);
+        assert_eq!(pick(&world, speaker), 0x402);
+        // …but another actor that qualifies still says it.
+        assert_eq!(pick(&world, bystander), 0x401);
     }
 
     fn info(form_id: u32, actor_form_id: u32, text: &str) -> InfoRecord {

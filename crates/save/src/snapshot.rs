@@ -285,7 +285,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// MATT records. The serialized representation changes shape (a u32 where
 /// a u8 was), so a v36 save cannot be re-read as v37 and is rejected,
 /// same rule as any column-shape change.
-pub const FORMAT_MAJOR: u16 = 37;
+///
+/// v37 -> v38 (#5300): `DialogueSpokenInfoForms` — the spoken Say-Once
+/// ledger — changed its element from a bare INFO FormID (`u32`) to a
+/// `(speaker reference FormID, INFO FormID)` pair, because Say Once is
+/// per actor (CK Topic Info: "can only be said once by any given Actor …
+/// a different actor that qualifies may say it"). The set's element shape
+/// changed, so a v37 save cannot be re-read and is rejected.
+pub const FORMAT_MAJOR: u16 = 38;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

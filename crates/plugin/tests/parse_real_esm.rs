@@ -5808,3 +5808,27 @@ fn parse_rate_fo3_fnv_pkdd_say_to_floor() {
         assert_eq!(found, say_to, "{master}: Say-To dialogue packages");
     }
 }
+
+/// #5300 — Skyrim `INFO` `ENAM` response flags decode on the real master.
+/// 30,541 of 31,465 vanilla INFOs author an `ENAM` (the rest the legacy
+/// 8-byte `DATA`); before the decode every Skyrim INFO read as "no flags",
+/// so no Say-Once / Goodbye / Random behaviour could apply.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn parse_rate_skyrim_info_response_flags() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim] skipping: BYROREDUX_SKYRIM_SE_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    let infos: Vec<_> = index.dialogues.values().flat_map(|d| d.infos.iter()).collect();
+    let with_flags = infos.iter().filter(|i| i.skyrim_response_flags.is_some()).count();
+    let say_once = infos.iter().filter(|i| i.say_once()).count();
+    let goodbye = infos.iter().filter(|i| i.goodbye()).count();
+    eprintln!("Skyrim INFOs: {} total, {with_flags} with flags, {say_once} say-once, {goodbye} goodbye", infos.len());
+    assert!(infos.len() > 30_000, "INFO floor");
+    // ENAM + legacy DATA together cover essentially every INFO.
+    assert!(with_flags * 100 >= infos.len() * 98, "flags on {with_flags}/{}", infos.len());
+    assert!(say_once > 1_000, "Skyrim authors thousands of Say-Once lines, got {say_once}");
+}

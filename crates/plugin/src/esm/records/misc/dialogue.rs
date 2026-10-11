@@ -266,6 +266,19 @@ pub struct InfoRecord {
     /// fed bytes it does not describe: its byte 0 is the tab's low byte,
     /// not a dialogue `Type`. No consumer yet.
     pub skyrim_data: Option<[u8; 8]>,
+    /// Skyrim's `Response flags` word (#5300): the u16 from `ENAM` (record
+    /// version >= 31, 30 541 of 31 465 vanilla INFOs) or from bytes 2..4 of
+    /// the legacy 8-byte `DATA` (924 INFOs; `DATA` and `ENAM` are exclusive,
+    /// UESP `Skyrim Mod/Mod File Format/INFO`). Bit 0 Goodbye, 1 Random,
+    /// 2 Say Once, 5 Random End — the same low bits the TES4/FO3/FNV
+    /// [`InfoDataHeader::flags1`] byte documents, so [`Self::goodbye`] and
+    /// friends read them through one path. `None` off Skyrim (FO4's `ENAM`
+    /// layout is not sourced locally) and when neither sub-record exists.
+    pub skyrim_response_flags: Option<u16>,
+    /// Skyrim `ENAM` reset time, raw u16 (scaled 0 = 0 h .. 0xFFFF = 24 h,
+    /// UESP). Carried for the Say-Once-resets-in-hours semantics; no
+    /// runtime consumer yet. `None` unless an `ENAM` was authored.
+    pub skyrim_reset_hours_raw: Option<u16>,
     /// Response text shown / spoken to the player: every authored
     /// [`Self::responses`] segment's `text`, joined in order with `"\n"`.
     /// #3616 — pre-fix this was `NAM1`'s bare assignment, so a
@@ -418,22 +431,36 @@ impl InfoDataHeader {
 }
 
 impl InfoRecord {
-    /// [`InfoDataHeader::goodbye`] on this record's typed `DATA`;
-    /// `false` when it authored none.
+    /// The behaviour-flag byte, whichever game authored it: the typed
+    /// `DATA`'s `Flags 1` (TES4 / FO3 / FNV), else the low byte of
+    /// Skyrim's `ENAM` / legacy-`DATA` response flags (#5300 — the bits the
+    /// runtime reads sit in the same positions: 0 Goodbye, 1 Random,
+    /// 2 Say Once, 5 Random End). `None` when the record authored neither.
+    fn behaviour_flags(&self) -> Option<u8> {
+        self.data
+            .as_ref()
+            .map(|header| header.flags1)
+            .or(self.skyrim_response_flags.map(|flags| (flags & 0xFF) as u8))
+    }
+    /// The conversation ends when this line's presentation finishes;
+    /// `false` when the record authored no flags.
     pub fn goodbye(&self) -> bool {
-        self.data.as_ref().is_some_and(InfoDataHeader::goodbye)
+        self.behaviour_flags().is_some_and(|flags| flags & 0x01 != 0)
     }
-    /// [`InfoDataHeader::random`]; `false` when it authored no `DATA`.
+    /// [`InfoDataHeader::random`]; `false` when the record authored no flags.
     pub fn random(&self) -> bool {
-        self.data.as_ref().is_some_and(InfoDataHeader::random)
+        self.behaviour_flags().is_some_and(|flags| flags & 0x02 != 0)
     }
-    /// [`InfoDataHeader::say_once`]; `false` when it authored no `DATA`.
+    /// [`InfoDataHeader::say_once`]; `false` when the record authored no
+    /// flags. Skyrim's `Say once` (CK Topic Info: "can only be said once by
+    /// any given Actor") arrives via `ENAM` since record version 31.
     pub fn say_once(&self) -> bool {
-        self.data.as_ref().is_some_and(InfoDataHeader::say_once)
+        self.behaviour_flags().is_some_and(|flags| flags & 0x04 != 0)
     }
-    /// [`InfoDataHeader::random_end`]; `false` when it authored no `DATA`.
+    /// [`InfoDataHeader::random_end`]; `false` when the record authored no
+    /// flags.
     pub fn random_end(&self) -> bool {
-        self.data.as_ref().is_some_and(InfoDataHeader::random_end)
+        self.behaviour_flags().is_some_and(|flags| flags & 0x20 != 0)
     }
 }
 
@@ -530,6 +557,7 @@ pub fn parse_info(
     form_id: u32,
     subs: &[SubRecord],
     remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: GameKind,
 ) -> InfoRecord {
     let mut out = InfoRecord {
         form_id,
@@ -676,6 +704,12 @@ pub fn parse_info(
             b"DATA" if !sub.data.is_empty() => {
                 if sub.data.len() == 8 {
                     out.skyrim_data = Some(sub.data[..8].try_into().unwrap());
+                    // `Quest Dialogue Tab u16, Response Flags u16, Reset
+                    // Days f32` — the flags sit at bytes 2..4 (#5300).
+                    if game == GameKind::Skyrim {
+                        out.skyrim_response_flags =
+                            Some(u16::from_le_bytes([sub.data[2], sub.data[3]]));
+                    }
                 } else {
                     let mut header = InfoDataHeader {
                         info_type: sub.data[0],
@@ -692,6 +726,14 @@ pub fn parse_info(
                     }
                     out.data = Some(header);
                 }
+            }
+            // #5300 — Skyrim `ENAM` (record version >= 31): `Flags u16,
+            // Reset Hours u16` (UESP INFO table). Sourced for Skyrim only;
+            // FO4 also authors an ENAM whose layout this tree has no local
+            // source for, so it stays undecoded rather than guessed.
+            b"ENAM" if game == GameKind::Skyrim && sub.data.len() >= 4 => {
+                out.skyrim_response_flags = Some(u16::from_le_bytes([sub.data[0], sub.data[1]]));
+                out.skyrim_reset_hours_raw = Some(u16::from_le_bytes([sub.data[2], sub.data[3]]));
             }
             // #3614 — `CTDT` is the legacy fixed-layout encoding of the
             // same condition; see `push_ctda`'s doc.
@@ -1171,7 +1213,7 @@ mod tests {
     fn parse_info_picks_anam_actor() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();
         let subs = vec![sub(b"NAM1", b"hello\0"), sub(b"ANAM", anam)];
-        let info = parse_info(0x1234, &subs, &None);
+        let info = parse_info(0x1234, &subs, &None, GameKind::default());
         assert_eq!(info.actor_form_id, 0xDEAD_BEEF);
     }
 
@@ -1188,7 +1230,7 @@ mod tests {
         ctda.extend_from_slice(&0u32.to_le_bytes()); // ref_fid (offsets 24-27, u32)
 
         let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDA", &ctda)];
-        let info = parse_info(0x5678, &subs, &None);
+        let info = parse_info(0x5678, &subs, &None, GameKind::default());
         assert_eq!(info.conditions.len(), 1);
         assert_eq!(info.conditions[0].function_index, 36);
     }
@@ -1221,7 +1263,7 @@ mod tests {
         vmad.extend(0x0au16.to_le_bytes());
         vmad.extend(b"Fragment_1");
 
-        let info = parse_info(0x0D66E5, &[sub(b"VMAD", &vmad)], &None);
+        let info = parse_info(0x0D66E5, &[sub(b"VMAD", &vmad)], &None, GameKind::default());
         let script = info.script_instance.expect("scripts section decodes");
         assert_eq!(script.scripts.len(), 1);
         assert_eq!(script.scripts[0].name, "TIF__000D66E5");
@@ -1247,7 +1289,7 @@ mod tests {
         on_end.extend(b"TIF__000D66E5"); // ScriptName
         on_end.extend(0x0au16.to_le_bytes());
         on_end.extend(b"Fragment_0"); // FragmentName
-        let info = parse_info(0x1, &[sub(b"VMAD", &on_end)], &None);
+        let info = parse_info(0x1, &[sub(b"VMAD", &on_end)], &None, GameKind::default());
         assert_eq!(info.script_fragments.len(), 1);
         assert!(!info.script_fragments[0].on_begin, "flags 0x02 is OnEnd");
 
@@ -1264,7 +1306,7 @@ mod tests {
             both.extend((name.len() as u16).to_le_bytes());
             both.extend(name.as_bytes());
         }
-        let info = parse_info(0x2, &[sub(b"VMAD", &both)], &None);
+        let info = parse_info(0x2, &[sub(b"VMAD", &both)], &None, GameKind::default());
         assert_eq!(info.script_fragments.len(), 2, "both flags = two entries");
         assert!(info.script_fragments[0].on_begin, "OnBegin first");
         assert!(!info.script_fragments[1].on_begin, "OnEnd second");
@@ -1273,10 +1315,10 @@ mod tests {
 
         // A pre-Papyrus game ships no VMAD at all; an empty one decodes to
         // nothing rather than panicking.
-        let info = parse_info(0x3, &[], &None);
+        let info = parse_info(0x3, &[], &None, GameKind::default());
         assert!(info.script_instance.is_none());
         assert!(info.script_fragments.is_empty());
-        let info = parse_info(0x4, &[sub(b"VMAD", [])], &None);
+        let info = parse_info(0x4, &[sub(b"VMAD", [])], &None, GameKind::default());
         assert!(info.script_fragments.is_empty());
     }
 
@@ -1294,7 +1336,7 @@ mod tests {
             0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         let subs = vec![sub(b"NAM1", b"hi\0"), sub(b"CTDT", ctdt)];
-        let info = parse_info(0x5678, &subs, &None);
+        let info = parse_info(0x5678, &subs, &None, GameKind::default());
         assert_eq!(
             info.conditions.len(),
             1,
@@ -1318,7 +1360,7 @@ mod tests {
             sub(b"TCLF", 0x0001_2222u32.to_le_bytes()),
             sub(b"NAME", 0x0001_3333u32.to_le_bytes()),
         ];
-        let info = parse_info(0x9999, &subs, &None);
+        let info = parse_info(0x9999, &subs, &None, GameKind::default());
         assert_eq!(info.linked_from_topics, vec![0x0001_1111, 0x0001_2222]);
         assert_eq!(info.added_topics, vec![0x0001_3333]);
     }
@@ -1336,7 +1378,7 @@ mod tests {
         // FO3/FNV shape: Type u8 + Next Speaker u8 + Flags 1 u8 [+ Flags 2].
         // A goodbye line: Flags 1 bit 0.
         let subs = vec![sub(b"DATA", [0u8, 0x00, 0x01, 0x00])];
-        let info = parse_info(0x5678, &subs, &None);
+        let info = parse_info(0x5678, &subs, &None, GameKind::default());
         let header = info.data.unwrap();
         assert_eq!(header.info_type, 0, "a plain Topic line");
         assert_eq!(header.next_speaker, 0, "Target");
@@ -1351,7 +1393,7 @@ mod tests {
         // `wbINFOAfterLoad` (`DATA\Flags 1 and $80`) reads for DNAM
         // retention, which #4469's decode mislabeled as Goodbye.
         let subs = vec![sub(b"DATA", [0u8, 0x01, 0x80, 0x00])];
-        let header = parse_info(0x5678, &subs, &None).data.unwrap();
+        let header = parse_info(0x5678, &subs, &None, GameKind::default()).data.unwrap();
         assert_eq!(header.next_speaker, 1, "Self");
         assert_eq!(header.flags1 & 0x80, 0x80, "Speech Challenge");
         assert_eq!(header.flags1 & 0x01, 0, "not Goodbye");
@@ -1359,7 +1401,7 @@ mod tests {
         // The 3-byte tail-dropped form (634 FO3 + all Oblivion INFOs):
         // `Flags 2` is absent, not zero.
         let subs = vec![sub(b"DATA", [3u8, 0x02, 0x04])];
-        let header = parse_info(0x5678, &subs, &None).data.unwrap();
+        let header = parse_info(0x5678, &subs, &None, GameKind::default()).data.unwrap();
         assert_eq!(header.info_type, 3, "Combat");
         assert_eq!(header.next_speaker, 2, "Either");
         assert_eq!(header.flags1, 0x04, "Oblivion bit 2 = Say Once");
@@ -1369,13 +1411,13 @@ mod tests {
         // into the typed header (its byte 0 is a Quest Dialogue Tab low
         // byte, not a dialogue Type).
         let subs = vec![sub(b"DATA", [9u8, 0, 1, 0, 0, 0, 0x30, 0x42])];
-        let info = parse_info(0x5678, &subs, &None);
+        let info = parse_info(0x5678, &subs, &None, GameKind::default());
         assert_eq!(info.data, None);
         assert_eq!(info.skyrim_data, Some([9, 0, 1, 0, 0, 0, 0x30, 0x42]));
 
         // No DATA at all (a typical Skyrim / all FO4 INFO) keeps both
         // fields at None.
-        let info = parse_info(0x5678, &[sub(b"NAM1", b"hi\0")], &None);
+        let info = parse_info(0x5678, &[sub(b"NAM1", b"hi\0")], &None, GameKind::default());
         assert_eq!(info.data, None);
         assert_eq!(info.skyrim_data, None);
     }
@@ -1390,7 +1432,7 @@ mod tests {
             sub(b"TCLF", 0x01_040000u32.to_le_bytes()),
             sub(b"NAME", 0x01_050000u32.to_le_bytes()),
         ];
-        let info = parse_info(0x5678, &subs, &Some(remap));
+        let info = parse_info(0x5678, &subs, &Some(remap), GameKind::default());
         assert_eq!(info.linked_from_topics, vec![0x01_040000]);
         assert_eq!(info.added_topics, vec![0x01_050000]);
     }
@@ -1421,7 +1463,7 @@ mod tests {
             sub(b"NAM1", b"Third line.\0"),
             // No NAM2 on the last segment — must not leak the prior one.
         ];
-        let info = parse_info(0x1234, &subs, &None);
+        let info = parse_info(0x1234, &subs, &None, GameKind::default());
         assert_eq!(info.responses.len(), 3, "all three segments must survive");
         assert_eq!(info.responses[0].text, "First line.");
         assert_eq!(info.responses[1].text, "Second line.");
@@ -1460,7 +1502,7 @@ mod tests {
             sub(b"TRDA", [0u8; 12]), // Starfield shape — different width
             sub(b"NAM1", b"Second line.\0"),
         ];
-        let info = parse_info(0x1234, &subs, &None);
+        let info = parse_info(0x1234, &subs, &None, GameKind::default());
         assert_eq!(
             info.responses.len(),
             2,
@@ -1506,7 +1548,7 @@ mod tests {
             // the first.
             sub(b"TRDA", [0u8; 20]),
         ];
-        let info = parse_info(0x99, &subs, &Some(remap));
+        let info = parse_info(0x99, &subs, &Some(remap), GameKind::default());
         assert_eq!(info.responses.len(), 2);
         let seg = &info.responses[0];
         assert_eq!(seg.emotion_keyword, 0x0007_1122, "master KYWD remaps through the load order");
@@ -1536,7 +1578,7 @@ mod tests {
         fo4[4] = 7; // response number
         fo4[5..9].copy_from_slice(&0x0100_3344u32.to_le_bytes()); // sound (self)
         let subs = vec![sub(b"TRDA", &fo4), sub(b"NAM1", b"Line.\0")];
-        let info = parse_info(0x99, &subs, &Some(remap));
+        let info = parse_info(0x99, &subs, &Some(remap), GameKind::default());
         let seg = &info.responses[0];
         assert_eq!(
             seg.emotion_keyword, 0xFFFF_FFFF,
@@ -1562,7 +1604,7 @@ mod tests {
         assert_eq!(sf.len(), 12);
 
         let subs = vec![sub(b"TRDA", &sf), sub(b"NAM1", b"Hello.\0")];
-        let info = parse_info(0x77, &subs, &Some(remap));
+        let info = parse_info(0x77, &subs, &Some(remap), GameKind::default());
         let seg = &info.responses[0];
         assert_eq!(seg.emotion_keyword, 0x000A_BCDE);
         assert_eq!(seg.wem_file, 0x0001_2345);
@@ -1579,7 +1621,7 @@ mod tests {
             sub(b"TRDA", [0xEEu8; 7]),
             sub(b"NAM1", b"Split me.\0"),
         ];
-        let info = parse_info(0x55, &subs, &None);
+        let info = parse_info(0x55, &subs, &None, GameKind::default());
         assert_eq!(info.responses.len(), 1);
         assert_eq!(info.responses[0].text, "Split me.");
         assert_eq!(info.responses[0].emotion_keyword, 0);
@@ -1601,13 +1643,13 @@ mod tests {
             sub(b"QSTI", 0x00_040000u32.to_le_bytes()), // plugin 0 (master), form 0x040000
         ];
         // With remap: plugin 0 stays 0 (master), plugin 1 stays 1 (this)
-        let info = parse_info(0x5678, &subs, &Some(remap));
+        let info = parse_info(0x5678, &subs, &Some(remap), GameKind::default());
         assert_eq!(info.previous_info, 0x00_050000);
         assert_eq!(info.topic_links[0], 0x01_030000);
         assert_eq!(info.actor_form_id, 0x00_020000);
         assert_eq!(info.quest, 0x00_040000, "#5271 — QSTI remaps with the rest");
         // Verify that without remap, values are identical (no remap = identity)
-        let info_no_remap = parse_info(0x5678, &subs, &None);
+        let info_no_remap = parse_info(0x5678, &subs, &None, GameKind::default());
         assert_eq!(info_no_remap.previous_info, info.previous_info);
         assert_eq!(info_no_remap.quest, info.quest);
     }
@@ -1782,7 +1824,7 @@ mod oblivion_generation_tests {
             sub(b"NAM1", b"Greetings.\0"),
             ctda_of(&get_is_id(0x0002_1234, true)),
         ];
-        let parsed = parse_info(0xAAAA, &subs, &None);
+        let parsed = parse_info(0xAAAA, &subs, &None, GameKind::default());
         assert_eq!(
             parsed.actor_form_id, 0x0002_1234,
             "an unambiguous GetIsID must supply the speaker ANAM never carried"
@@ -1795,7 +1837,7 @@ mod oblivion_generation_tests {
     #[test]
     fn a_negated_get_is_id_is_an_exclusion_not_a_speaker() {
         let subs = vec![ctda_of(&get_is_id(0x0002_1234, false))];
-        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0);
+        assert_eq!(parse_info(0xAAAA, &subs, &None, GameKind::default()).actor_form_id, 0);
     }
 
     /// Several positive `GetIsID`s are an OR list of alternate speakers
@@ -1809,7 +1851,7 @@ mod oblivion_generation_tests {
             ctda_of(&get_is_id(0x0002_1234, true)),
             ctda_of(&get_is_id(0x0002_5678, true)),
         ];
-        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0);
+        assert_eq!(parse_info(0xAAAA, &subs, &None, GameKind::default()).actor_form_id, 0);
     }
 
     /// An authored `ANAM` always wins — FO3+ must be bit-identical.
@@ -1820,7 +1862,7 @@ mod oblivion_generation_tests {
             sub(b"ANAM", &anam),
             ctda_of(&get_is_id(0x0002_1234, true)),
         ];
-        assert_eq!(parse_info(0xAAAA, &subs, &None).actor_form_id, 0xDEAD_BEEF);
+        assert_eq!(parse_info(0xAAAA, &subs, &None, GameKind::default()).actor_form_id, 0xDEAD_BEEF);
     }
 
     /// #3600 — with zero `PNAM` in the group (every vanilla Oblivion DIAL),
@@ -1880,5 +1922,42 @@ mod oblivion_generation_tests {
         data.extend_from_slice(&condition.param_2.to_le_bytes());
         data.extend_from_slice(&0u32.to_le_bytes()); // run-on absent pre-FO3
         sub(b"CTDA", &data)
+    }
+
+    /// #5300 — Skyrim's `Response flags`: `ENAM` is `Flags u16, Reset Hours
+    /// u16`, and the legacy 8-byte `DATA` carries the same flags at bytes
+    /// 2..4. The Say-Once / Goodbye / Random / Random-End accessors read
+    /// both through the one path the TES4/FO3/FNV `DATA` byte uses.
+    #[test]
+    fn skyrim_enam_and_legacy_data_flags_drive_the_behaviour_accessors() {
+        // ENAM: Goodbye | Say Once (0x05) | Random End (0x20), reset 0x8000.
+        let enam = 0x0025u16
+            .to_le_bytes()
+            .into_iter()
+            .chain(0x8000u16.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let info = parse_info(0x1, &[sub(b"ENAM", &enam)], &None, GameKind::Skyrim);
+        assert_eq!(info.skyrim_response_flags, Some(0x0025));
+        assert_eq!(info.skyrim_reset_hours_raw, Some(0x8000));
+        assert!(info.goodbye() && info.say_once() && info.random_end());
+        assert!(!info.random());
+
+        // Legacy DATA: tab u16 = 9, flags u16 = Random | Say Once, f32 days.
+        let data = [9u8, 0, 0x06, 0, 0, 0, 0x30, 0x42];
+        let info = parse_info(0x2, &[sub(b"DATA", data)], &None, GameKind::Skyrim);
+        assert_eq!(info.skyrim_response_flags, Some(0x0006));
+        assert!(info.random() && info.say_once());
+        assert!(!info.goodbye());
+        assert_eq!(info.data, None, "the typed FO3 header is never fed Skyrim bytes");
+
+        // No flags authored: every accessor reads false.
+        let bare = parse_info(0x3, &[], &None, GameKind::Skyrim);
+        assert!(!bare.say_once() && !bare.goodbye() && !bare.random() && !bare.random_end());
+
+        // Off Skyrim the ENAM layout has no local source: not decoded
+        // (FO4 authors an ENAM too).
+        let fo4 = parse_info(0x4, &[sub(b"ENAM", &enam)], &None, GameKind::Fallout4);
+        assert_eq!(fo4.skyrim_response_flags, None);
+        assert!(!fo4.say_once());
     }
 }

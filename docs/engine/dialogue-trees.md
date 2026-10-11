@@ -143,7 +143,10 @@ see §5 phase 5.
    any passing non-Random INFO outranked an earlier Random set and Random
    End was ignored);
    spoken Say-Once INFOs are disqualified through the saved
-   `DialogueSpokenInfoForms` set (save format v33); a spoken Goodbye
+   `DialogueSpokenInfoForms` set (save format v33; per speaker since
+   #5300 / v38 — `(speaker reference FormID, INFO)` pairs, because the CK's
+   rule is "once by any given Actor"; Skyrim's flag arrives via the INFO
+   `ENAM` response-flags word, decoded for Skyrim only); a spoken Goodbye
    line ends its conversation when the presentation estimate elapses
    (the Late close check + the app-layer page close). All three pinned
    by unit tests.

@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 37;
+    const BASELINE_MAJOR: u16 = 38;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -724,7 +724,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // colliding material pairs and made unjoinable to MATT records. A
     // registered column's serialized shape changed; pre-v37 saves are
     // rejected, per the blanket rule.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x82a7_2b92_1838_47ae;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xce67_b0dd_d0b0_f5b3;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -780,6 +780,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `permanent_mod` so an ability's add/remove stays lossless beside a
     // routed `setav`). No `serde(default)` (#1714); pre-v34 saves are
     // rejected.
+    //
+    // 2026-10-11 (#5300) — refreshed WITH a major bump (v37 -> v38):
+    // `DialogueSpokenInfoForms` (the Say-Once ledger) changed its element
+    // from an INFO FormID `u32` to a `(speaker reference FormID, INFO
+    // FormID)` pair — Say Once is per actor (CK Topic Info). The set's
+    // element shape changed, so a v37 save is rejected.
     //
     // v25 -> v26 (#4282/#4334) — refreshed WITH a major bump, both
     // directions at once: `Material` gained the optional capture-only

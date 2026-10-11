@@ -336,11 +336,11 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
     let (outgoing, speakers): (Vec<NpcDialogueTopic>, Vec<EntityId>) = world
         .query::<NpcDialogueTopic>()
         .map(|topics| {
-            let outgoing = topics
-                .iter()
-                .map(|(_, topic)| topic.clone())
-                .filter(|existing| existing.info_form_id != topic.info_form_id)
-                .collect();
+            // #5300 — every existing stamp ends, INCLUDING one naming the
+            // same INFO: re-selecting a line re-runs its OnBegin, so the
+            // matching OnEnd must fire first (the old `!= info_form_id`
+            // filter ran OnBegin twice with no OnEnd between).
+            let outgoing = topics.iter().map(|(_, topic)| topic.clone()).collect();
             let speakers = topics.iter().map(|(entity, _)| entity).collect();
             (outgoing, speakers)
         })
@@ -408,7 +408,7 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         });
     }
     // #5367 Phase L — the spoken set feeds Say-Once disqualification.
-    byroredux_scripting::note_info_spoken(world, topic.info_form_id);
+    byroredux_scripting::note_info_spoken(world, npc, topic.info_form_id);
     log::info!(
         "npc dialogue: selected topic {:#08X} ('{}') info {:#08X} for NPC {npc} (quest {:?})",
         topic.topic_form_id,
@@ -1127,7 +1127,7 @@ mod tests {
         // is disqualified — Say-Once it via the spoken set, which the
         // activation itself stamps.
         world.insert_resource(byroredux_scripting::DialogueSpokenInfoForms(
-            [INFO_GREETING].into_iter().collect(),
+            [(0xAB_0001, INFO_GREETING)].into_iter().collect(),
         ));
         world.insert(patron, ActivateEvent { activator: player });
         npc_dialogue_selection_system(&world);
@@ -1569,6 +1569,62 @@ mod tests {
         assert!(
             world.query::<NpcDialogueTopic>().unwrap().iter().next().is_none(),
             "the close clears the selection stamp"
+        );
+    }
+
+    /// #5300 — re-selecting the SAME INFO ends the outgoing line first:
+    /// its OnEnd runs, then OnBegin runs again. The old
+    /// `existing.info_form_id != topic.info_form_id` filter skipped the
+    /// outgoing OnEnd for an identical INFO, so a click on the topic that
+    /// was just spoken replayed OnBegin with no OnEnd between.
+    #[test]
+    fn reselecting_the_same_info_fires_its_on_end_before_the_next_on_begin() {
+        use byroredux_scripting::quest_stages::{QuestObjectiveState, QuestStageState};
+        use byroredux_scripting::translate::compose::QuestRef;
+        use byroredux_scripting::{DialogueInfoFragments, Effect};
+
+        const HELPER_QUEST: u32 = 0x30_0001;
+        let (mut world, player, npcs) = bound_world(&[(SPEAKER_REF, SPEAKER_BASE)]);
+        let eltrys = npcs[0];
+        world.register::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>();
+        world.insert_resource(QuestObjectiveState::default());
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(HELPER_QUEST), None);
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        let mut fragments = DialogueInfoFragments::default();
+        fragments.insert(
+            INFO_ELTRYS,
+            QuestFormId(HELPER_QUEST),
+            None,
+            Some(vec![Effect::SetStage { quest: QuestRef::SelfRef, stage: 13 }]),
+            Some(vec![Effect::SetStage { quest: QuestRef::SelfRef, stage: 77 }]),
+        );
+        world.insert_resource(fragments);
+
+        // Activation speaks the line: OnBegin only — nothing to end yet.
+        world.insert(eltrys, ActivateEvent { activator: player });
+        npc_dialogue_selection_system(&world);
+        let stage_reached = |world: &World, stage: u16| {
+            world
+                .query::<byroredux_scripting::quest_stages::QuestStageAdvancedBatch>()
+                .map(|query| {
+                    query
+                        .iter()
+                        .flat_map(|(_, batch)| batch.0.to_vec())
+                        .any(|advance| advance.quest.0 == HELPER_QUEST && advance.new_stage == stage)
+                })
+                .unwrap_or(false)
+        };
+        assert!(stage_reached(&world, 13), "OnBegin ran on activation");
+        assert!(!stage_reached(&world, 77), "no OnEnd before any line was replaced");
+
+        // The same topic (hence the same INFO) selected again.
+        select_topic_by_form_id(&mut world, eltrys, TOPIC)
+            .expect("the open topic re-selects");
+        assert!(
+            stage_reached(&world, 77),
+            "the outgoing line's OnEnd must run before its OnBegin replays (#5300)"
         );
     }
 
