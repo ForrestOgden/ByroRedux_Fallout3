@@ -304,6 +304,14 @@ mod ambient_locomotion_default_on_tests {
 
     /// #4709 — the kill switch is documented as the AI-motion debugging aid,
     /// so the block it gates must hold exactly the nine motion systems.
+    ///
+    /// Scope boundary (decided on #5430): the switch covers *ambient*
+    /// AI-package motion. Combat chase (`npc_combat_ai_system`) and scripted
+    /// scene/cinematic motion (`cinematic_horse_route_system`, scene
+    /// walks) also call `step_toward` but are deliberately OUTSIDE it —
+    /// combat is not ambient AI (#4709), and gating scene motion could hang
+    /// scenes waiting on actors that never arrive. The exact-list assertion
+    /// below keeps them from drifting into the block unnoticed.
     /// The pin above only checked that the env var is read, which is how
     /// combat feedback ended up inside the block unnoticed: isolating
     /// motion silently muted P2 combat takes and sounds.
