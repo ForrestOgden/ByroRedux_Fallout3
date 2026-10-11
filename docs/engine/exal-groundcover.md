@@ -1635,14 +1635,20 @@ Phases:
   the points inside its footprint (#4919): 512 is not a multiple of FO3/FNV's
   80, and a grid restarted per chunk put 7 × 7 candidates where 6.4 × 6.4
   belong, a denser band along every chunk border. Each candidate picks
-  a record from the climate-weighted selection table — which is built over
-  **placeable records only** (#4906/#5175: a record whose model produced no
-  draws this frame is out of the table, so shapes streaming in re-derive it)
-  — and is accepted with probability `density × affinity × slope × shelter ×
-  clump × distance_fade`, where the uploaded `density` is the authored rate
-  **re-normalized by the record's table share** (`density / share`, capped
-  at 1, #4906): the scatter draws one candidate per lattice point from the
-  table, so without the bake every added record would dilute all the others.
+  a record from the selection table — weighted `climate × authored density`
+  and built over **placeable records only** (#4906/#5175: a record whose model
+  produced no draws this frame is out of the table, so shapes streaming in
+  re-derive it) — and is accepted with probability `accept × affinity × slope
+  × shelter × clump × distance_fade`, where `accept` is ONE common rate for
+  every record: the independent-grids union `1 − Π(1 − d_i)` over the records
+  that hold a table share (EXT-D3-2026-10-02-01). A record's coverage is
+  `share × accept`, so the species MIX is the authored `climate × density`
+  ratio (the Strip's sparse 3–4 % grasses stay sparse next to dominant
+  wasteland grass) and the total matches what each record's own grid would
+  have produced; adding a record neither dilutes the others (the pre-#4906
+  `share × density` form) nor erases the authored density (the first
+  `density / share` bake, which saturated 22 of 24 FNV records at their
+  share).
   The
   moisture factor is replaced by the record's own water rule, which is what
   lets kelp grow below the water plane. The blade tier's cover ray keeps

@@ -964,49 +964,76 @@ pub(crate) fn collect_groundcover_model_records(
             pad2: 0,
         }
     }));
-    let weights: Vec<f32> = used
-        .iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let can_place = placeable >> index & 1 != 0;
-            // #4906 — climate weight zeroed for records that cannot place:
-            // their table share would place nothing while thinning every
-            // record that does.
-            if can_place { record.climate_weight.weight_for(cover.climate) } else { 0.0 }
-        })
-        .collect();
-    let selection = species_selection_table(&weights);
-    // #4906 — bake the selection share into the uploaded density. The
+    // #4906 / EXT-D3-2026-10-02-01 — the selection table carries each
+    // record's climate-weighted DENSITY (`weight × density`, placeable
+    // records only), and one common accept rate rides every record. The
     // scatter picks one record per lattice candidate from the table, then
-    // accepts at `density * field * fade`, so a record's effective coverage
-    // was `share * density` — every added record diluted all the others.
-    // `density / share` (capped at 1) restores each record's authored rate
-    // up to the candidate share its table presence allows.
-    let mut entries = vec![0usize; used.len()];
-    for &record in &selection {
-        entries[record as usize] += 1;
-    }
-    for (record, entries) in records.iter_mut().zip(&entries) {
-        record.density = density_normalized_by_share(record.density, *entries);
+    // accepts at `density × field × fade`: a record's coverage is
+    // `share × accept`. With `share ∝ weight × density` and a common
+    // `accept`, the species MIX is exactly the authored `weight × density`
+    // ratio (a sparse Strip grass stays sparse next to dominant wasteland
+    // grass) and the TOTAL is the independent-grids union
+    // (`1 - Π(1 - d_i)`), so adding a record neither dilutes the others nor
+    // — as the first `density / share` bake did — saturates every record at
+    // its share and erases the authored density.
+    let (weights, accept) = selection_weights_and_accept_rate(
+        used.iter().map(|record| {
+            (
+                record.climate_weight.weight_for(cover.climate),
+                record.density,
+            )
+        }),
+        |index| placeable >> index & 1 != 0,
+    );
+    let selection = species_selection_table(&weights);
+    for record in records.iter_mut() {
+        record.density = accept;
     }
     table.extend_from_slice(&selection);
     *key = Some(current);
     Some(cover.grid_spacing)
 }
 
-/// #4906 — the model scatter's accept test is `density * field * fade` AFTER
-/// a uniform pick from the selection table, so effective coverage is
-/// `share * density`. Dividing by the share (an record with `entries` of the
-/// table's slots has `share = entries / SIZE`) restores the authored rate up
-/// to the pick probability — the lattice cannot hand a record more
-/// candidates than its table entries, hence the cap at 1.
-pub(crate) fn density_normalized_by_share(density: f32, entries: usize) -> f32 {
-    const SIZE: usize =
-        byroredux_renderer::shader_constants::GROUNDCOVER_SPECIES_TABLE_SIZE as usize;
-    if entries == 0 || !density.is_finite() || density <= 0.0 {
-        return density;
-    }
-    (density / (entries as f32 / SIZE as f32)).min(1.0)
+/// EXT-D3-2026-10-02-01 (on #4906) — the selection-table weights and the
+/// common accept rate for one cover.
+///
+/// `records` yields `(climate_weight, authored_density)` per record in cover
+/// order; `can_place(index)` says whether that record's model drew this
+/// frame. The weight is `climate × density` for placeable records with both
+/// positive, else 0 — an unplaceable record must not keep a table share
+/// (#4906), and a zero-density record must not take one. The accept rate is
+/// the independent-grids union `1 - Π(1 - d_i)` over the records that hold a
+/// share, so the uploaded coverage matches what each record's own grid would
+/// have produced. When no record holds a share (a climate that says nothing,
+/// or nothing placeable yet) the weights are all zero — `species_selection_
+/// table` then falls back to a uniform table — and the union runs over every
+/// positive density, the neutral outcome the scatter had before weights were
+/// read.
+pub(crate) fn selection_weights_and_accept_rate(
+    records: impl Iterator<Item = (f32, f32)>,
+    can_place: impl Fn(usize) -> bool,
+) -> (Vec<f32>, f32) {
+    let records: Vec<(f32, f32)> = records.collect();
+    let valid = |x: f32| x.is_finite() && x > 0.0;
+    let weights: Vec<f32> = records
+        .iter()
+        .enumerate()
+        .map(|(index, &(climate, density))| {
+            if can_place(index) && valid(climate) && valid(density) {
+                climate * density
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let any_share = weights.iter().any(|&w| w > 0.0);
+    let miss: f64 = records
+        .iter()
+        .zip(&weights)
+        .filter(|&(&(_, density), &weight)| valid(density) && (weight > 0.0 || !any_share))
+        .map(|(&(_, density), _)| 1.0 - f64::from(density).min(1.0))
+        .product();
+    (weights, (1.0 - miss) as f32)
 }
 
 /// Quantise relative weights into the scatter's fixed-size selection table.
@@ -1235,27 +1262,63 @@ mod tests {
         assert!(records.is_empty() && table.is_empty() && key.is_none());
     }
 
-    /// #4906 — effective coverage under pick-then-accept is `share ×
-    /// density`; baking `density / share` (capped at 1) into the uploaded
-    /// record restores the authored rate up to the record's pick share.
+    /// EXT-D3-2026-10-02-01 — under pick-then-accept a record's coverage is
+    /// `share × accept`. The mix must stay `weight × density` and the total
+    /// the independent-grids union, for the audit's own FNV figures: arid
+    /// grass at 0.40 / 0.25 and the Strip's deliberately sparse 0.03 / 0.04
+    /// must not be flattened to a common share.
     #[test]
-    fn density_normalization_divides_by_the_selection_share() {
-        // Full table: share 1.0, density unchanged.
-        assert_eq!(density_normalized_by_share(0.3, 256), 0.3);
-        // Half the table: a 0.5-authored density saturates its share.
-        assert_eq!(density_normalized_by_share(0.5, 128), 1.0);
-        // A low density below its share survives division untouched.
-        assert!((density_normalized_by_share(0.1, 128) - 0.2).abs() < 1e-6);
-        // No entries (never picked) or degenerate density: pass through.
-        assert_eq!(density_normalized_by_share(0.3, 0), 0.3);
-        assert_eq!(density_normalized_by_share(0.0, 64), 0.0);
-        assert!(density_normalized_by_share(f32::NAN, 64).is_nan());
-        // The audit's dilution case: ten equal records at authored 0.3
-        // covered 0.01 each pre-fix (total 0.1); normalized, each saturates
-        // its 0.1 share (total 1.0) — the independent-grid expectation for
-        // ten 0.3-cover records is 1 - 0.7^10 = 0.97.
-        let per_record = density_normalized_by_share(0.3, 25);
-        assert_eq!(per_record, 1.0);
+    fn selection_keeps_the_authored_mix_and_the_union_total() {
+        // (climate, density): two dominant wasteland grasses, two sparse
+        // Strip grasses, one temperate lawn the arid climate down-weights.
+        let records = [(2.0, 0.40), (2.0, 0.25), (2.0, 0.03), (2.0, 0.04), (0.4, 0.20)];
+        let (weights, accept) =
+            selection_weights_and_accept_rate(records.iter().copied(), |_| true);
+        let total: f32 = weights.iter().sum();
+        let share = |i: usize| weights[i] / total;
+        // The authored ratio survives: 0.40 : 0.03 stays 13.3 : 1, not 1 : 1.
+        assert!((weights[0] / weights[2] - 0.40 / 0.03).abs() < 1.0e-3);
+        assert!(share(0) > share(1) && share(1) > share(3) && share(3) > share(2));
+        // Total coverage is the union 1 - Π(1 - d), not the sum and not 1.0
+        // per record.
+        let expected = 1.0 - (0.6f32 * 0.75 * 0.97 * 0.96 * 0.80);
+        assert!((accept - expected).abs() < 1.0e-6, "accept {accept}");
+        // Per-record coverage = share × accept; a sparse record covers far
+        // less than a dominant one.
+        assert!(share(2) * accept < 0.2 * share(0) * accept);
+    }
+
+    /// Ten equal 0.3-cover records (the original dilution case) cover the
+    /// independent-grids 1 - 0.7^10, split evenly, whatever the count.
+    #[test]
+    fn equal_records_split_the_union_evenly() {
+        let records = std::iter::repeat((1.0, 0.3)).take(10);
+        let (weights, accept) = selection_weights_and_accept_rate(records, |_| true);
+        assert!((accept - (1.0 - 0.7f32.powi(10))).abs() < 1.0e-6);
+        assert!(weights.iter().all(|&w| (w - weights[0]).abs() < 1.0e-9));
+    }
+
+    /// Unplaceable, zero-density and zero-climate records hold no share and
+    /// do not contribute to the union; a lone record keeps its authored
+    /// density as its accept rate; a degenerate cover (no share anywhere)
+    /// falls back to the positive densities.
+    #[test]
+    fn records_without_a_share_neither_dilute_nor_inflate() {
+        let records = [(1.0, 0.5), (1.0, 0.9), (0.0, 0.9), (1.0, 0.0), (1.0, f32::NAN)];
+        let (weights, accept) =
+            selection_weights_and_accept_rate(records.iter().copied(), |i| i != 1);
+        assert_eq!(weights, vec![0.5, 0.0, 0.0, 0.0, 0.0]);
+        assert!((accept - 0.5).abs() < 1.0e-6, "only record 0 holds a share");
+
+        // Nothing placeable: no shares (uniform-table fallback), neutral union.
+        let (weights, accept) =
+            selection_weights_and_accept_rate(records.iter().copied(), |_| false);
+        assert!(weights.iter().all(|&w| w == 0.0));
+        let expected = 1.0 - 0.5 * 0.1 * 0.1;
+        assert!((accept - expected).abs() < 1.0e-6, "accept {accept}");
+        // Out-of-range densities cap at certainty rather than going negative.
+        let (_, accept) = selection_weights_and_accept_rate([(1.0, 7.0)].into_iter(), |_| true);
+        assert_eq!(accept, 1.0);
     }
 
     /// The table is sized to the scatter's 8 hash bits; anything else leaves
