@@ -322,6 +322,27 @@ mod tests {
         }
     }
 
+    /// #5433 sibling — Oblivion needs `--sounds-bsa` for the same audio
+    /// consumers; its footstep/splash candidate keys live in
+    /// `Oblivion - Sounds.bsa`.
+    #[test]
+    fn oblivion_profile_declares_its_sounds_archive() {
+        let path = std::path::Path::new("../../assets/debug_profiles.toml");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let document: toml::Table = toml::from_str(&text).unwrap();
+        let sounds = document["profiles"]["oblivion"]["default_sounds_bsas"]
+            .as_array()
+            .map(|a| a.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            sounds.contains(&"Oblivion - Sounds.bsa"),
+            "oblivion.default_sounds_bsas {sounds:?} must list Oblivion - Sounds.bsa — \
+             without it footsteps, splash and REGN audio silently fall back",
+        );
+    }
+
     #[test]
     fn configured_roots_are_read_back_as_candidates() {
         let dir = tempfile::tempdir().unwrap();
