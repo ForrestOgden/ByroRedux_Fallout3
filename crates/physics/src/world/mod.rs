@@ -69,6 +69,12 @@ pub const BU_PER_METER: f32 = byroredux_core::lighting::BETHESDA_UNITS_PER_METER
 /// [`PhysicsWorld::step`].
 pub const KILL_PLANE_Y: f32 = -25_000.0;
 
+/// #5544 — a spawned-asleep newcomer re-sleeps after its first stepping
+/// frame only if it is still within this distance (BU) of its spawn pose.
+/// The contact skin can lift a resting item ~1 BU; 4 BU leaves headroom
+/// while still letting a genuine push or fall keep rapier's verdict.
+const SPAWN_SLEEP_DRIFT_BU: f32 = 4.0;
+
 /// #5161 — sanity cap on a dynamic body's speed, applied at the end of each
 /// of [`PhysicsWorld::step`]'s substeps by `clamp_explosive_velocities`.
 /// No engine-driven dynamic body moves legitimately at 20 000 BU/s
@@ -414,6 +420,23 @@ pub struct PhysicsWorld {
     /// (P1 smoke, 253 restores in ~10 s) and pinned by
     /// `ragdoll.rs::a_quarantined_rig_resting_on_a_floor_recovers_once`.
     quarantine_cooldown: Vec<RigidBodyHandle>,
+    /// #5543 — a wake `run_substep` itself armed (quarantine cooldown
+    /// re-enable, or fresh quarantine detection). `step`'s post-loop
+    /// `pending_wake = false` used to clear it before the next frame
+    /// could observe it, so in an otherwise-quiescent scene the
+    /// re-enabled body never re-entered collisions or queries:
+    /// `set_enabled(true)` only flags `RigidBodyChanges::all()`, and its
+    /// colliders stay `DisabledByParent` until a `pipeline.step` runs the
+    /// user-change pass. This flag survives the clear and re-arms
+    /// `pending_wake` after it.
+    substep_wake_requested: bool,
+    /// #5544 — dynamic bodies spawned asleep this session that have not
+    /// yet been through a stepping frame. Rapier 0.36's begin-touch
+    /// strong-wake wakes every authored-resting newcomer on its first
+    /// step (0.22 left a brand-new collider asleep: no graph index for
+    /// the user-change wake), so the spawn-asleep contract needs an
+    /// explicit re-sleep after that first step — see `step`.
+    pub(crate) spawn_sleep_pending: Vec<(RigidBodyHandle, Vector)>,
 }
 
 impl PhysicsWorld {
@@ -480,6 +503,8 @@ impl PhysicsWorld {
             explosive_detaches_total: 0,
             articulation_joints: Vec::new(),
             quarantine_cooldown: Vec::new(),
+            substep_wake_requested: false,
+            spawn_sleep_pending: Vec::new(),
         }
     }
 
@@ -681,6 +706,16 @@ impl PhysicsWorld {
     /// `apply_buoyancy(world, n_new > 0)` and the `had_newcomers` term in
     /// its quiesced-scene fast path, whose own comment records that it is
     /// load-bearing *because* spawn does not arm `pending_wake`.
+    ///
+    /// #5544 — the spawn state is ASLEEP-UNTIL-PROCESSED, not
+    /// asleep-until-touched: rapier 0.36's begin-touch strong-wake wakes a
+    /// brand-new collider on its first stepping frame's narrow phase
+    /// (0.22 left it asleep — no collision-graph index for the
+    /// user-change wake), so `step` re-sleeps every `spawn_sleep_pending`
+    /// newcomer still at its spawn pose after that frame and drops its
+    /// settle force-crossings. The contract this doc describes — resting
+    /// clutter costs nothing until something moves it — holds through that
+    /// explicit re-sleep, not through rapier's own sleep bookkeeping.
     ///
     /// So: do not "reconcile" this by adding a `wake()` to the spawn path.
     /// That reintroduces the measured multi-second streaming stall and
@@ -1127,6 +1162,14 @@ impl PhysicsWorld {
         // accumulate one full tick (2 frames at 120 fps, 17 at 1000 fps).
         if steps > 0 {
             self.pending_wake = false;
+            // #5543 — re-arm a wake the substep itself requested: the
+            // clear above used to eat it, leaving a re-enabled body's
+            // colliders `DisabledByParent` in a quiescent scene until
+            // unrelated motion stepped the world.
+            if self.substep_wake_requested {
+                self.substep_wake_requested = false;
+                self.pending_wake = true;
+            }
         }
         // Kill-plane. Clutter spawned without a floor beneath it (missing or
         // failed static collision under the placement) free-falls forever: it
@@ -1153,6 +1196,48 @@ impl PhysicsWorld {
                     b.set_angvel(AngVector::ZERO, false);
                     b.sleep();
                 }
+            }
+        }
+
+        // #5544 — re-sleep the spawned-asleep newcomers a stepping frame
+        // has now processed. Rapier 0.36 strong-wakes a brand-new collider
+        // on every begin-touch of its first narrow phase (contacts.rs
+        // `strong_wake_sleeping_side`), so without this the first real step
+        // after a streaming frame wakes all resting dynamic clutter of the
+        // new cells for rapier's ~1 s sleep timer — solver cost on every
+        // cell crossing, and (once impact audio has content) a burst of
+        // settle-impulse crossings per streamed item. A manual `sleep()`
+        // pins sleep eligibility, so the island settles on the next
+        // update. Bodies that drifted off their spawn pose (a genuine
+        // push, a real fall through missing collision) keep rapier's
+        // verdict. Their colliders' force-event crossings are dropped from
+        // this frame's batch: the settle impulse of an authored-resting
+        // item is not an impact.
+        if steps > 0 && !self.spawn_sleep_pending.is_empty() {
+            let pending = std::mem::take(&mut self.spawn_sleep_pending);
+            let mut settled_colliders: Vec<rapier3d::prelude::ColliderHandle> = Vec::new();
+            for (handle, spawn_pos) in pending {
+                // The water pass's deliberate dry→wet / current wakes are
+                // not the begin-touch strong-wake — those bodies must
+                // integrate their buoyancy/flow force, not re-sleep.
+                if self.water_force_targets.contains(&handle) {
+                    continue;
+                }
+                let Some(body) = self.bodies.get_mut(handle) else {
+                    continue;
+                };
+                settled_colliders.extend(body.colliders().iter().copied());
+                let drifted =
+                    (body.translation() - spawn_pos).length() > SPAWN_SLEEP_DRIFT_BU;
+                if !drifted && body.is_dynamic() && !body.is_sleeping() {
+                    body.sleep();
+                }
+            }
+            if !settled_colliders.is_empty() {
+                self.pending_force_events.retain(|event| {
+                    !settled_colliders.contains(&event.collider1)
+                        && !settled_colliders.contains(&event.collider2)
+                });
             }
         }
 
@@ -1244,7 +1329,11 @@ impl PhysicsWorld {
                     }
                 }
             }
+            // #5543 — mark the wake as substep-armed so `step`'s post-loop
+            // clear cannot eat it before the next frame steps again (the
+            // re-enable's collider half needs one more pipeline pass).
             self.wake();
+            self.substep_wake_requested = true;
         }
         // Rapier quarantines a body whose pose or velocity went non-finite
         // during the step: rolled back to its last valid pose, zeroed and
@@ -1271,8 +1360,10 @@ impl PhysicsWorld {
         if !quarantined.is_empty() {
             self.quarantine_cooldown.extend_from_slice(&quarantined);
             // The disable is processed by the next pipeline step; make sure
-            // one runs.
+            // one runs (#5543 — and the wake must survive `step`'s
+            // post-loop clear, so route it through the substep flag).
             self.wake();
+            self.substep_wake_requested = true;
         }
         if restored > 0 {
             log::error!(
@@ -2781,7 +2872,12 @@ mod tests {
             "the body sits out exactly one step so rapier processes the disable"
         );
 
-        // The cooldown armed a step even though nothing else is awake.
+        // The cooldown armed a step even though nothing else is awake —
+        // #5543 corrects the attribution: this step runs because the body
+        // is still in rapier's (stale) active set from the quarantining
+        // substep, NOT because the cooldown's wake survived; that wake was
+        // cleared by `step`'s post-loop `pending_wake = false`, and it is
+        // the re-arm below that makes the FOLLOWING step run.
         assert_eq!(w.step(PHYSICS_DT), 1);
         let body = &w.bodies[h];
         assert!(
@@ -2792,6 +2888,40 @@ mod tests {
         assert!(body_state_is_finite(body));
         assert!((body.translation() - start).length() < 1.0);
         assert_eq!(w.recovery_counts().0, 1, "and it is not quarantined again");
+
+        // #5543 — the body flag being `enabled` is only half the story:
+        // `set_enabled(true)` just flags `RigidBodyChanges::all()`, and the
+        // colliders stay `DisabledByParent` until a pipeline step runs the
+        // user-change pass. The substep-armed wake must survive `step`'s
+        // post-loop clear, arm exactly one more step in this quiescent
+        // scene, and only then does the body rejoin queries. Pre-fix the
+        // wake was eaten here and a straight-down ray missed the body
+        // forever (until unrelated motion stepped the world).
+        assert_eq!(
+            w.step(PHYSICS_DT),
+            1,
+            "the re-armed substep wake must step once more, quiescent scene or not"
+        );
+        let collider = w.bodies[h].colliders()[0];
+        assert!(
+            w.colliders[collider].is_enabled(),
+            "the collider rejoins the broad phase once the user-change pass ran"
+        );
+        let hit = w.cast_ray(
+            byroredux_core::math::Vec3::new(0.0, 30.0, 0.0),
+            byroredux_core::math::Vec3::NEG_Y,
+            40.0,
+            None,
+        );
+        assert!(hit.is_some(), "a straight-down ray must find the body again");
+        // And the re-arm is one-shot: nothing else is awake, so the scene
+        // settles back onto the static-scene fast path instead of stepping
+        // forever.
+        assert_eq!(
+            w.step(PHYSICS_DT),
+            0,
+            "the re-arm is one-shot; a quiescent scene returns to the fast path"
+        );
     }
 
     /// #4687(b) — after a restore, the query pipeline must reflect the
