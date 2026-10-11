@@ -20,6 +20,7 @@ use crate::cell_loader::{CurrentCellContext, CurrentExteriorContext, LoadedCellI
 use crate::systems::character::PlayerEntity;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
+use byroredux_scripting::SmTree;
 use std::hash::{Hash, Hasher};
 
 /// System: raise a `CLOC` story event when the session's location
@@ -28,6 +29,17 @@ use std::hash::{Hash, Hasher};
 /// No player entity (loose-NIF demo, spawn ladders): no event — a
 /// location change nobody occupies is not a story event.
 pub fn story_change_location_system(world: &World) {
+    // #5447 — a load order that authors no Story Manager nodes (FO3, FNV,
+    // Oblivion; `install_story_manager` still installs an empty tree and
+    // cursor on them) has nothing to dispatch a CLOC to, so skip the key
+    // derivation instead of paying it every frame. No tree at all is the
+    // same case: the cursor is installed alongside it.
+    if !world
+        .try_resource::<SmTree>()
+        .is_some_and(|tree| !tree.nodes.is_empty())
+    {
+        return;
+    }
     let Some(player) = world
         .try_resource::<PlayerEntity>()
         .and_then(|player| player.0)
@@ -39,24 +51,40 @@ pub fn story_change_location_system(world: &World) {
     // load path; without it (or without an `XLCN`) the location stays
     // `None` and the key falls back to the Phase-1 identity.
     let location = resolve_current_lctn(world);
-    let key = if let Some(lctn) = location {
-        let parts: [&str; 2] = ["lctn", &format!("{:08X}", lctn)];
-        Some(location_hash(&parts))
-    } else if let Some(cell) = world.try_resource::<CurrentCellContext>() {
-        let parts: [&str; 2] = [&cell.esm_path, &cell.cell_editor_id];
-        Some(location_hash(&parts))
-    } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
-        let grid = format!("grid:{:?}", exterior.grid);
-        let parts: [&str; 3] = [&exterior.esm_path, &exterior.worldspace_key, &grid];
-        Some(location_hash(&parts))
-    } else {
-        // Neither context: mid-transition window or loose-NIF mode. The
-        // cursor follows so the post-transition frame counts as a change.
-        None
-    };
+    let key = location_key(world, location);
     byroredux_scripting::story_manager::emit_change_location_on_key_change(
         world, key, player, location,
     );
+}
+
+/// The session's location identity for CLOC change detection: the LCTN
+/// when the current cell resolves one, else the interior cell / exterior
+/// worldspace+grid identity. `None` mid-transition and in loose-NIF mode
+/// (neither context installed). Hashed from the typed fields directly —
+/// no per-frame `String` building (#5447).
+fn location_key(world: &World, location: Option<u32>) -> Option<u64> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    // The leading tag keeps the three identity kinds from colliding.
+    if let Some(lctn) = location {
+        0u8.hash(&mut hasher);
+        lctn.hash(&mut hasher);
+    } else if let Some(cell) = world.try_resource::<CurrentCellContext>() {
+        1u8.hash(&mut hasher);
+        cell.esm_path.hash(&mut hasher);
+        cell.cell_editor_id.hash(&mut hasher);
+    } else if let Some(exterior) = world.try_resource::<CurrentExteriorContext>() {
+        2u8.hash(&mut hasher);
+        exterior.esm_path.hash(&mut hasher);
+        exterior.worldspace_key.hash(&mut hasher);
+        exterior.grid.hash(&mut hasher);
+    } else {
+        // Neither context: mid-transition window or loose-NIF mode. The
+        // cursor follows so the post-transition frame counts as a change.
+        return None;
+    }
+    // Process-local identity hash for change detection only — never
+    // persisted, so `DefaultHasher`'s unspecified seeding is fine.
+    Some(hasher.finish())
 }
 
 /// The current cell's `XLCN` LCTN, interior or exterior grid cell, from
@@ -80,16 +108,6 @@ pub(crate) fn resolve_current_lctn(world: &World) -> Option<u32> {
             .and_then(|data| data.location_form);
     }
     None
-}
-
-/// Process-local identity hash for change detection only — never
-/// persisted, so `DefaultHasher`'s unspecified seeding is fine.
-fn location_hash(parts: &[&str]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for part in parts {
-        part.hash(&mut hasher);
-    }
-    hasher.finish()
 }
 
 /// #5366 Phase 4 — `AHEL` (Actor Hello): raised when a conversation
@@ -221,6 +239,76 @@ mod tests {
             masters: Vec::new(),
         });
         world
+    }
+
+    /// A world in an interior cell with a player, the CLOC cursor, and a
+    /// Story Manager tree of `node_count` event roots (#5447).
+    fn world_with_sm_tree(node_count: u32) -> (World, EntityId) {
+        use byroredux_plugin::esm::records::{SmNodeKind, SmNodeRecord};
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let records = (0..node_count)
+            .map(|i| {
+                let form_id = 0x100 + i;
+                (
+                    form_id,
+                    SmNodeRecord {
+                        form_id,
+                        kind: SmNodeKind::Event,
+                        event_mnemonic: Some(*b"CLOC"),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        byroredux_scripting::story_manager::install_story_manager(&mut world, &records);
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(CurrentCellContext {
+            cell_editor_id: "WhiterunBanneredMare".to_string(),
+            esm_path: String::new(),
+            masters: Vec::new(),
+        });
+        (world, player)
+    }
+
+    /// #5447 — a load order with no Story Manager nodes (FO3 / FNV /
+    /// Oblivion) never derives the CLOC key: the cursor stays untouched
+    /// and no marker is raised, so the per-frame system is a pure early-out.
+    #[test]
+    fn change_location_system_is_inert_without_story_manager_nodes() {
+        let (world, player) = world_with_sm_tree(0);
+        story_change_location_system(&world);
+        let cursor = world
+            .try_resource::<byroredux_scripting::StoryLocationCursor>()
+            .expect("install_story_manager creates the cursor");
+        assert_eq!(cursor.key, None, "the key must not be derived");
+        drop(cursor);
+        assert!(world
+            .query::<byroredux_scripting::StoryEvent>()
+            .map_or(true, |events| events.get(player).is_none()));
+    }
+
+    /// #5447 — the same system with a populated tree still raises CLOC on
+    /// the first frame and goes quiet while the location is unchanged.
+    #[test]
+    fn change_location_system_raises_cloc_once_with_story_manager_nodes() {
+        let (mut world, player) = world_with_sm_tree(1);
+        story_change_location_system(&world);
+        let event = *world
+            .query::<byroredux_scripting::StoryEvent>()
+            .expect("StoryEvent storage")
+            .get(player)
+            .expect("the first frame raises CLOC");
+        assert_eq!(event.mnemonic, *b"CLOC");
+        world.remove::<byroredux_scripting::StoryEvent>(player);
+        story_change_location_system(&world);
+        assert!(
+            world
+                .query::<byroredux_scripting::StoryEvent>()
+                .map_or(true, |events| events.get(player).is_none()),
+            "an unchanged location raises nothing"
+        );
     }
 
     /// #5434 — KILL carries victim → R1, killer → R2 and the session LCTN
