@@ -204,6 +204,17 @@ pub(crate) fn stream_object_lod_blocks(
         // (`quad_origin`) reproduces, so every lattice probe missed and no
         // distant object drew outside `wasteland`. The ladder's bands still
         // partition distance; only the enumeration is authored.
+        // #5518 — a missing index here means the scan never ran (or found
+        // no name tables at all); without the warn the `unwrap_or_default`
+        // below selects nothing, silently — the "authored path in one
+        // ring, nothing in the other" split #5423 set out to remove.
+        if input.legacy_lod_quads.is_none() {
+            log::warn!(
+                "object LOD: the FalloutLegacyBlocks scheme has no authored-quad \
+                 index — the #5222 scan never ran for this streaming state; no \
+                 distant objects will draw"
+            );
+        }
         let authored = input
             .legacy_lod_quads
             // #5496 — a LOD-inheriting child owns no quads; the distant

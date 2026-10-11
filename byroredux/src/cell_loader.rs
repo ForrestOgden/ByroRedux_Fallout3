@@ -167,7 +167,10 @@ pub(crate) use lod_coverage::{
     find_full_detail_overlaps, find_overlaps, find_terrain_full_detail_overlaps, ChurnTracker,
 };
 pub(crate) use lod_support::{worldspace_lod_grid_origin, LodReconcileInput, LodWorkBudget};
-pub(crate) use object_lod::{stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock};
+pub(crate) use object_lod::{
+    object_lod_scheme, stream_object_lod_blocks, unload_object_lod_block, ObjectLodBlock,
+    ObjectLodScheme,
+};
 pub(crate) use partial::finish_partial_import;
 pub(crate) use placement_lod::{
     stream_placement_lod_blocks, unload_placement_lod_block, PlacementLodBlock,

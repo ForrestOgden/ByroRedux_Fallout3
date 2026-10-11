@@ -90,6 +90,27 @@ pub(crate) fn should_resample_terrain_seam(
     loaded_residency_changed || !seam_sampled
 }
 
+/// #5518 — whether the #5222 authored-LOD-quad index should be scanned
+/// for `game`. Keys on EITHER family table: the terrain layout and the
+/// object scheme are independent per-title decisions, and the object
+/// ring consumes the same index under its own table — a title (or mod
+/// profile) selecting `FalloutLegacyBlocks` objects without
+/// `FalloutLegacy` terrain must still scan, or the ring's
+/// `unwrap_or_default()` selects nothing, silently (the
+/// "authored path in one ring, nothing in the other" split #5423 set
+/// out to remove).
+pub(crate) fn should_scan_legacy_lod_quads(
+    game: byroredux_plugin::esm::reader::GameKind,
+) -> bool {
+    matches!(
+        crate::env_translate::terrain_lod_layout(game),
+        crate::env_translate::TerrainLodLayout::FalloutLegacy
+    ) || matches!(
+        cell_loader::object_lod_scheme(game),
+        Some(cell_loader::ObjectLodScheme::FalloutLegacyBlocks)
+    )
+}
+
 /// Reconcile terrain, baked-object, and placement-object LOD through one
 /// shared policy boundary. Each provider gets its own allowance so a large
 /// terrain ring cannot starve the active game-specific object scheme.
@@ -116,10 +137,7 @@ pub(crate) fn reconcile_lod_rings(
     // streaming state (the opened archive set never changes under it);
     // every other game never pays the name-table walk.
     if state.legacy_lod_quads.is_none()
-        && matches!(
-            crate::env_translate::terrain_lod_layout(wctx.record_index.game),
-            crate::env_translate::TerrainLodLayout::FalloutLegacy
-        )
+        && should_scan_legacy_lod_quads(wctx.record_index.game)
     {
         state.legacy_lod_quads = Some(cell_loader::LegacyLodQuadIndex::scan(tex_provider.as_ref()));
     }
@@ -1046,7 +1064,13 @@ pub fn consume_streaming_payload(
     // load_one_exterior_cell calls now hit cache for every NIF.
     let wctx = state.wctx.clone();
     for (model_path, partial_opt) in payload.parsed {
-        finish_streaming_import(world, state, model_path, partial_opt);
+        finish_streaming_import(
+            world,
+            &mut state.mat_provider,
+            &|p| state.tex_provider.has_texture(p),
+            model_path,
+            partial_opt,
+        );
     }
 
     // Spawn pass — every NIF lookup hits cache (slow parse path skipped).
@@ -1100,6 +1124,70 @@ pub fn consume_streaming_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #5518 — the legacy-index scan gate keys on either family table.
+    /// FO3/FNV select legacy on both; every other title selects it on
+    /// neither today. The OR is the pin: a future title adopting one
+    /// table's legacy family without the other's still scans, and the
+    /// object ring's `legacy_lod_quads == None` warn stays the
+    /// divergence tripwire.
+    #[test]
+    fn legacy_lod_scan_gate_keys_on_either_family_table() {
+        use byroredux_plugin::esm::reader::GameKind;
+        assert!(
+            should_scan_legacy_lod_quads(GameKind::Fallout3NV),
+            "FO3/FNV select the legacy family on both tables"
+        );
+        for game in [
+            GameKind::Oblivion,
+            GameKind::Skyrim,
+            GameKind::Fallout4,
+            GameKind::Fallout76,
+            GameKind::Starfield,
+        ] {
+            assert!(
+                !should_scan_legacy_lod_quads(game),
+                "{game:?} selects the legacy family on neither table"
+            );
+        }
+    }
+
+    /// #5512 — a stale-dropped payload's imports must still land in the
+    /// registry: both worker skip filters (the request's `cached_keys`
+    /// snapshot and the #3670 dispatch-batch memo) assume a key the
+    /// worker skipped is resident when a later apply needs it. Pre-fix,
+    /// a key emitted only in a dropped payload never reached the
+    /// registry and the later apply's cache miss hit the main-thread
+    /// parse fallback inside the frame budget.
+    #[test]
+    fn stale_payload_imports_are_salvaged_into_the_registry() {
+        let mut world = byroredux_core::ecs::World::new();
+        world.insert_resource(cell_loader::NifImportRegistry::new());
+        let mut mat_provider = crate::asset_provider::build_material_provider(&[]);
+        let mut telemetry = streaming::StreamingTelemetry::default();
+        let salvaged = salvage_stale_imports(
+            &mut world,
+            &mut mat_provider,
+            &|_| false,
+            &mut telemetry,
+            [
+                ("clutter\\salvaged.nif".to_string(), None),
+                ("meshes\\clutter\\rooted.nif".to_string(), None),
+            ],
+        );
+        assert_eq!(salvaged, 2, "both parsed entries finish");
+        assert_eq!(telemetry.worker_stale_salvaged_imports, 2);
+        let reg = world.resource::<cell_loader::NifImportRegistry>();
+        // Canonicalised keys — the bare name gains the `meshes\` root,
+        // the rooted one keeps it; both lowercase (negative entries are
+        // `Some(None)`, which is residency as far as the skip filters
+        // are concerned).
+        assert!(
+            reg.get("meshes\\clutter\\salvaged.nif").is_some(),
+            "a later request's BatchDuplicate skip must find the salvaged key"
+        );
+        assert!(reg.get("meshes\\clutter\\rooted.nif").is_some());
+    }
 
     fn lod(entity: u32, mesh: u32) -> LodBlock {
         LodBlock {
