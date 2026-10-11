@@ -339,13 +339,10 @@ mod ambient_locomotion_default_on_tests {
                 &name[..name.find('(').expect("a system constructor call")]
             })
             .collect();
-        // #5430 — `eat_sleep_system` is registered as a bare fn path, not a
-        // `make_*` constructor, so the scan above cannot see it: moving it
-        // out of the block used to fail nothing.
-        let bare = "crate::systems::eat_sleep::eat_sleep_system";
-        if block.contains(bare) {
-            gated.push("eat_sleep_system");
-        }
+        // #5430 — `eat_sleep_system` once registered as a bare fn path the
+        // scan above could not see, so moving it out of the block failed
+        // nothing. #5449 gave it a `make_*` constructor (persistent seat
+        // scratch), so the scan covers it like the other movers.
         gated.sort_unstable();
         assert_eq!(
             gated,
@@ -394,8 +391,8 @@ mod ambient_locomotion_default_on_tests {
             "crate::systems::make_escort_system()",
             "crate::systems::make_guard_system()",
             "crate::systems::make_patrol_system()",
-            // #5430 — the Eat/Sleep walk-then-seat mover, a bare fn path.
-            "crate::systems::eat_sleep::eat_sleep_system",
+            // #5430 — the Eat/Sleep walk-then-seat mover.
+            "crate::systems::make_eat_sleep_system()",
         ] {
             let at = setup
                 .rfind(mover)

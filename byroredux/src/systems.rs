@@ -65,6 +65,7 @@ pub(crate) use locomotion::*;
 pub(crate) use metrics::*;
 pub(crate) use particle::*;
 pub(crate) use patrol::*;
+pub(crate) use eat_sleep::make_eat_sleep_system;
 pub(crate) use sandbox::*;
 pub(crate) use travel::*;
 pub(crate) use walk_anim::*;

@@ -33,6 +33,13 @@
 //! too. Seating is one-shot: `Seated` skips the actor on later ticks,
 //! and the package handover's `clear_ambient_behavior` un-seats
 //! (restoring the pre-park animation, #3333) exactly as Sandbox does.
+//!
+//! #5449 — an arrived actor that cannot be seated (no marker in the cell,
+//! every marker reserved, none within the radius) is not one-shot: it
+//! retries, but on a coarse [`SEAT_RETRY_SECS`] cadence rather than every
+//! frame, and every attempt in a frame shares one marker gather
+//! ([`FrameSeats`]) held in the system's persistent [`EatSleepScratch`] —
+//! the same factory-captured scratch `sandbox_seat_system` uses (#2033).
 
 use byroredux_core::ecs::components::{
     EatBehavior, EatSleepLocation, EatSleepState, EditorPlacement, FurnitureMarker,
@@ -43,6 +50,7 @@ use byroredux_core::ecs::World;
 use byroredux_core::math::Vec3;
 
 use byroredux_scripting::PackageTargetRegistry;
+use std::collections::HashMap;
 
 use crate::components::{SandboxSitClip, SeatReservations};
 
@@ -51,6 +59,62 @@ use crate::components::{SandboxSitClip, SeatReservations};
 /// the seat-search radius so the seat pick, not the walk, decides the
 /// final resting furniture.
 const ARRIVE_RADIUS: f32 = 64.0;
+
+/// Real seconds between seat attempts for an arrived actor that could not
+/// be seated (#5449). One in-game minute at the default `time_scale` — the
+/// cadence `ambient_ai_package_system` re-evaluates at — so a freed marker
+/// is found promptly without a whole-world furniture gather per frame.
+const SEAT_RETRY_SECS: f32 = 2.0;
+
+/// One world-space seat: `((furniture entity, marker index), transform)`.
+type Seat = ((EntityId, u32), GlobalTransform);
+
+/// The cell's seat markers, gathered at most once per frame per kind and
+/// shared by every Eat/Sleep actor that attempts a seat that frame
+/// (#5449). Backing allocations persist across frames.
+#[derive(Default)]
+struct FrameSeats {
+    sit: Vec<Seat>,
+    sit_ready: bool,
+    sleep: Vec<Seat>,
+    sleep_ready: bool,
+}
+
+impl FrameSeats {
+    fn begin_frame(&mut self) {
+        self.sit_ready = false;
+        self.sleep_ready = false;
+    }
+
+    fn sit(&mut self, world: &World) -> &[Seat] {
+        if !self.sit_ready {
+            self.sit.clear();
+            super::sandbox::collect_marker_seats(world, &mut self.sit, super::sandbox::is_sit_marker);
+            self.sit_ready = true;
+        }
+        &self.sit
+    }
+
+    fn sleep(&mut self, world: &World) -> &[Seat] {
+        if !self.sleep_ready {
+            self.sleep.clear();
+            super::sandbox::collect_marker_seats(world, &mut self.sleep, is_sleep_marker);
+            self.sleep_ready = true;
+        }
+        &self.sleep
+    }
+}
+
+/// Persistent per-system state captured by [`make_eat_sleep_system`].
+/// `NOT_SAVED_BY_DESIGN`: pure scheduling state — a load starts every
+/// actor's retry clock at zero, so the first post-load attempt is
+/// immediate.
+#[derive(Default)]
+struct EatSleepScratch {
+    seats: FrameSeats,
+    /// Seconds until an arrived-but-unseated actor may attempt again.
+    seat_retry: HashMap<EntityId, f32>,
+}
 
 /// Which procedure an actor carries this tick — collected first so the
 /// per-actor loop below never holds two behavior storages at once.
@@ -75,7 +139,15 @@ struct EatSleepActor {
     location: EatSleepLocation,
 }
 
-pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
+/// Eat/Sleep system factory: captures the persistent [`EatSleepScratch`]
+/// (shared marker gather + per-actor seat-retry clocks, #5449).
+pub(crate) fn make_eat_sleep_system() -> impl FnMut(&World, f32) + Send + Sync {
+    let mut scratch = EatSleepScratch::default();
+    move |world: &World, dt: f32| eat_sleep_system_inner(world, dt, &mut scratch)
+}
+
+fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch) {
+    scratch.seats.begin_frame();
     let mut actors: Vec<EatSleepActor> = Vec::new();
     if let Some(query) = world.query::<EatBehavior>() {
         for (npc, behavior) in query.iter() {
@@ -112,7 +184,14 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
         });
     }
     if actors.is_empty() {
+        scratch.seat_retry.clear();
         return;
+    }
+    // Drop retry clocks of actors that seated, changed procedure or left.
+    if !scratch.seat_retry.is_empty() {
+        scratch
+            .seat_retry
+            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
     }
 
     for EatSleepActor {
@@ -201,7 +280,20 @@ pub(crate) fn eat_sleep_system(world: &World, dt: f32) {
             EatSleepLocation::InCell(_) => f32::INFINITY,
             _ => radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
         };
-        seat_at_marker(world, npc, kind, Some(search_radius));
+        // #5449 — an arrived actor that failed to seat waits out its
+        // retry clock instead of re-gathering the world's furniture
+        // every frame.
+        if let Some(wait) = scratch.seat_retry.get_mut(&npc) {
+            *wait -= dt;
+            if *wait > 0.0 {
+                continue;
+            }
+        }
+        if seat_at_marker(world, npc, kind, Some(search_radius), &mut scratch.seats) {
+            scratch.seat_retry.remove(&npc);
+        } else {
+            scratch.seat_retry.insert(npc, SEAT_RETRY_SECS);
+        }
     }
 }
 
@@ -279,8 +371,15 @@ fn cell_is_resident(world: &World, cell_form_id: u32) -> bool {
 }
 
 /// Seat one arrived actor at its procedure's marker kind, reusing the
-/// sandbox seating path (reservation, root snap, sit-enter park).
-fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option<f32>) {
+/// sandbox seating path (reservation, root snap, sit-enter park). Returns
+/// whether the actor was seated; `false` means "try again later".
+fn seat_at_marker(
+    world: &World,
+    npc: EntityId,
+    kind: EatOrSleep,
+    radius: Option<f32>,
+    frame_seats: &mut FrameSeats,
+) -> bool {
     // #5495 — creatures never take furniture: the per-cell sit clip's
     // channels are human-rig bones, so seating a creature freezes it in
     // a human pose at the marker for the life of the cell. The actor has
@@ -289,7 +388,7 @@ fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option
         .get::<byroredux_core::ecs::components::CreatureActor>(npc)
         .is_some()
     {
-        return;
+        return false;
     }
     // No sit-enter clip → no seating path (Skyrim+/Havok games, or the
     // clip wasn't archived) — the actor has already walked to the
@@ -297,33 +396,32 @@ fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option
     // sandbox actor in a clip-less cell.
     let Some((sit_handle, hold_time)) = world.try_resource::<SandboxSitClip>().and_then(|r| r.0)
     else {
-        return;
+        return false;
     };
     let is_sleep = matches!(kind, EatOrSleep::Sleep);
-    let mut collected: Vec<((EntityId, u32), GlobalTransform)> = Vec::new();
-    if is_sleep {
-        super::sandbox::collect_marker_seats(world, &mut collected, is_sleep_marker);
-    }
-    if collected.is_empty() {
+    let use_sleep_markers = is_sleep && !frame_seats.sleep(world).is_empty();
+    if is_sleep && !use_sleep_markers {
         // #5390 — on FO3/FNV this is not "no bed found" but "no bed can
         // EVER resolve": legacy markers author animation_type 0 and the
         // translate boundary reads them all as Sit (see the module doc).
         // The fallback is the legacy sleep path by design until Phase C
         // decodes furnituremarkerNN.
-        if is_sleep {
-            log::debug!(
-                "[m42] sleep npc={npc}: no decodable Sleep marker in range — \
-                 legacy cells author none (animation_type 0 over-match, #5390); \
-                 seating at the nearest sit marker"
-            );
-        }
-        super::sandbox::collect_marker_seats(world, &mut collected, super::sandbox::is_sit_marker);
+        log::debug!(
+            "[m42] sleep npc={npc}: no decodable Sleep marker in range — \
+             legacy cells author none (animation_type 0 over-match, #5390); \
+             seating at the nearest sit marker"
+        );
     }
+    let collected: &[Seat] = if use_sleep_markers {
+        &frame_seats.sleep
+    } else {
+        frame_seats.sit(world)
+    };
     if collected.is_empty() {
-        return;
+        return false;
     }
     let Some(current) = world.get::<GlobalTransform>(npc).map(|t| t.translation) else {
-        return;
+        return false;
     };
     let seat = {
         let empty = std::collections::HashMap::new();
@@ -337,13 +435,13 @@ fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option
             .unwrap_or(&empty);
         super::sandbox::pick_nearest_seat(
             current,
-            &collected,
+            collected,
             reservations,
             radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
         )
     };
     let Some(((furn_e, marker_idx), seat)) = seat else {
-        return;
+        return false;
     };
     // Reserve through the shared resource so a sandboxing actor (or a
     // second diner) cannot take the same marker.
@@ -361,6 +459,7 @@ fn seat_at_marker(world: &World, npc: EntityId, kind: EatOrSleep, radius: Option
         seat.translation.y,
         seat.translation.z,
     );
+    true
 }
 
 fn is_sleep_marker(marker: &FurnitureMarker) -> bool {
@@ -372,6 +471,13 @@ mod tests {
     use super::*;
     use byroredux_core::ecs::components::Furniture;
     use byroredux_core::ecs::components::GlobalTransform;
+
+    /// One tick with a fresh scratch — no retry clock carries over, so a
+    /// call behaves like the system's first tick. The retry cadence is
+    /// exercised through [`make_eat_sleep_system`] directly.
+    fn eat_sleep_system(world: &World, dt: f32) {
+        eat_sleep_system_inner(world, dt, &mut EatSleepScratch::default());
+    }
 
     fn setup() -> (World, EntityId) {
         let mut world = World::new();
@@ -907,5 +1013,53 @@ mod tests {
         eat_sleep_system(&world, 1.0);
         assert!(world.get::<EatSleepState>(actor).is_none());
         assert_eq!(world.get::<Transform>(actor).expect("transform").translation, Vec3::ZERO);
+    }
+
+    /// #5449 — an arrived actor with nowhere to sit used to re-gather every
+    /// `Furniture` entity in the world each frame, forever. It now waits
+    /// out [`SEAT_RETRY_SECS`] between attempts: a marker that appears
+    /// mid-wait is not found until the clock expires, then is found, and
+    /// the retry clock is dropped once the actor is seated.
+    #[test]
+    fn unseatable_arrived_actor_retries_on_a_coarse_cadence() {
+        let (mut world, actor) = setup();
+        world.insert_resource(SandboxSitClip(Some((7, 0.5))));
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearCurrentLocation,
+                form_id: 0xAA,
+            },
+        );
+        let mut scratch = EatSleepScratch::default();
+
+        // No furniture in the cell: the first attempt fails and arms the clock.
+        eat_sleep_system_inner(&world, 0.1, &mut scratch);
+        assert!(world.get::<Seated>(actor).is_none());
+        assert_eq!(scratch.seat_retry.get(&actor), Some(&SEAT_RETRY_SECS));
+
+        // A chair appears, but the clock has not expired: no new gather.
+        let chair = world.spawn();
+        world.insert(
+            chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [0.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 1,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
+        world.insert(chair, GlobalTransform::default());
+        eat_sleep_system_inner(&world, 0.5, &mut scratch);
+        assert!(world.get::<Seated>(actor).is_none(), "still inside the retry wait");
+        assert!(!scratch.seats.sit_ready, "the wait must skip the furniture gather");
+
+        // The clock expires: the retry finds the chair and clears the clock.
+        eat_sleep_system_inner(&world, SEAT_RETRY_SECS, &mut scratch);
+        assert!(world.get::<Seated>(actor).is_some(), "the retry seats the actor");
+        assert!(scratch.seat_retry.is_empty(), "a seated actor keeps no retry clock");
     }
 }
