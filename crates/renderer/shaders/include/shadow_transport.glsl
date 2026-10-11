@@ -188,13 +188,18 @@ vec3 traceShadowTransmittance(
 // alpha/glass-aware trace for the remaining leg, so translucent blockers
 // keep their tint semantics. Exhausting MAX_TRANSMISSION_SELF_SKIPS
 // reports lit — the #5192 conservative default — rather than zeroing the
-// lobe on an unbounded self-overlap. Opaque layers only: the glass walk
-// is about what the ray passes THROUGH, which the own body is not.
+// lobe on an unbounded self-overlap. The self-skip WALK is opaque layers
+// only (the glass walk is about what the ray passes THROUGH, which the
+// own body is not), but the foreign-hit handoff gets the FULL light mask
+// (#5455): `traceShadowTransmittanceDetailed` runs its glass loop only
+// when the mask carries VISIBILITY_LAYER_GLASS, so handing it the
+// opaque-only mask made a window pane between a back-lit surface and its
+// light silently pass the transmission lobe untinted.
 vec3 traceShadowTransmittanceSkippingInstance(
     vec3 origin, vec3 direction, float maxDist,
     float emitterRadius, uint visibilityMask, int skipInstance
 ) {
-    uint mask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE;
+    uint mask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE; // skip walk only
     vec3 at = origin;
     float remaining = maxDist;
     for (int hop = 0; hop < int(MAX_TRANSMISSION_SELF_SKIPS); ++hop) {
@@ -214,7 +219,7 @@ vec3 traceShadowTransmittanceSkippingInstance(
             // transport so alpha-aware and glass blockers keep their
             // visibility semantics along this ray too.
             return traceShadowTransmittance(
-                at, direction, remaining, emitterRadius, mask);
+                at, direction, remaining, emitterRadius, visibilityMask);
         }
         float hitT = rayQueryGetIntersectionTEXT(skipRQ, true);
         if (!advanceShadowRayPastHit(at, remaining, direction, hitT)) {

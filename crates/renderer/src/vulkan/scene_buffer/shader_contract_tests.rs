@@ -96,6 +96,35 @@ fn alpha_skip_layer_budget_is_a_single_shared_constant() {
     }
 }
 
+/// #5455 — the transmission lobes' self-skip walk is opaque-only, but its
+/// foreign-hit handoff must carry the light's FULL visibility mask:
+/// `traceShadowTransmittanceDetailed` runs its glass loop only when the
+/// mask has `VISIBILITY_LAYER_GLASS`, so the opaque-only mask the walk
+/// derives made glass panes invisible to the transmission half while its
+/// reflection half was attenuated by the same pane.
+#[test]
+fn transmission_skip_walk_hands_the_full_mask_to_the_foreign_leg() {
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+    let body = shadow
+        .split_once("vec3 traceShadowTransmittanceSkippingInstance(")
+        .expect("the self-skip trace must exist")
+        .1;
+    let body = &body[..body.find("\n}\n").expect("function closes at column 0")];
+    assert!(
+        body.contains("uint mask = visibilityMask & VISIBILITY_MASK_ALL_OPAQUE;"),
+        "the self-skip walk stays opaque-only"
+    );
+    let handoff = body
+        .split_once("return traceShadowTransmittance(")
+        .expect("the foreign-hit handoff")
+        .1;
+    let handoff = &handoff[..handoff.find(");").expect("handoff call closes")];
+    assert!(
+        handoff.trim_end().ends_with("visibilityMask"),
+        "the foreign leg must receive the full visibilityMask, not the opaque-only walk mask: {handoff}"
+    );
+}
+
 /// The categorical selected-light oracle distinguishes a legitimate absence
 /// (black) from a corrupt non-sentinel index (magenta).
 #[test]
