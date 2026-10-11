@@ -349,41 +349,31 @@ fn apply_cdb_material(
         material.has_alpha = true;
         *touched = true;
     }
-    // #5283 — `EmissiveSettingsComponent` is the authored emissive for
-    // the CDB era; without it the SLOT_EMISSIVE texture filled above
-    // binds to a zero-weight role (the stub's 0/0 emissive defaults) and
-    // no Starfield surface glows from its map. Forwarded like the BGSM
-    // arm's `emit_enabled` pair — raw authored values, gated on the
-    // component's own Enabled flag — and tagged `Lighting` (a genuine
-    // emissive scalar, the Starfield-era shader-property slot per
-    // `EmissiveSource`'s contract) through the same
-    // `emissive_contribution_is_authored` predicate the other four
-    // set-sites gate on. `LuminousEmittance` is a physical luminance;
-    // the EV100-metered HDR pipeline consumes linear luminance natively.
-    if cdb_mat.emissive_enabled == Some(true) {
-        let mut changed = false;
-        if let Some(tint) = cdb_mat.emissive_tint {
-            material.emissive_color = tint;
-            changed = true;
-        }
-        if let Some(emittance) = cdb_mat.luminous_emittance {
-            material.emissive_mult = emittance;
-            changed = true;
-        }
-        if changed {
-            // Same predicate shape as the BGEM arm: the values land
-            // unconditionally, the source tag only for a genuine
-            // non-zero contribution.
-            if byroredux_core::ecs::components::material::emissive_contribution_is_authored(
-                material.emissive_color,
-                material.emissive_mult,
-            ) {
-                material.emissive_source =
-                    byroredux_core::ecs::components::material::EmissiveSource::Lighting;
-            }
-            *touched = true;
-        }
-    }
+    // #5283 / #5503 — `EmissiveSettingsComponent` is PARKED: the capture
+    // stays in `byroredux_sfmaterial` (Enabled / EmissiveTint /
+    // LuminousEmittance), but nothing is forwarded onto the canonical
+    // `Material`. #5283 forwarded `LuminousEmittance` raw into
+    // `emissive_mult` under the `Lighting` tag; that value is a PHYSICAL
+    // luminance (authored 50-5,199 where enabled, 100-500 on the 215
+    // `ColorEmissive`-inheriting referenced roots) against the 0.05-10
+    // modes the other games' emissive scales census to (nifal.md §4), so
+    // 100x-10,000x the rest of the pipeline, every bright texel saturating
+    // the shader's 64 ceiling — and the same `Lighting` tag would have mixed
+    // Skyrim/FO4 multipliers with Starfield nits under any per-source
+    // policy. The earlier comment that the HDR pipeline "consumes linear
+    // luminance natively" was unsourced (the rest of the scene is
+    // monitor-space radiance) and is withdrawn. Un-parking needs a measured
+    // physical-luminance -> canonical mapping (or a Starfield-specific
+    // `EmissiveSource`) per nifal.md §4's Starfield row, plus the dropped
+    // `AdaptiveEmittance` / `ExposureOffset` and the dominant
+    // `BSMaterial::LayeredEmissivityComponent` capture. Until then a
+    // Starfield emissive map renders zero-weighted — which is also today's
+    // live behaviour, since the arm fires on 0 referenced materials.
+    let _ = (
+        cdb_mat.emissive_enabled,
+        cdb_mat.emissive_tint,
+        cdb_mat.luminous_emittance,
+    );
     // #5196 — `UseSSS` stays untranslated until a subsurface-colour source
     // exists. `translucency_subsurface_color` defaults to [0,0,0]; the
     // lighting lobe multiplies by it and evaluates to exactly 0, while the
@@ -2073,58 +2063,44 @@ mod cdb_flat_color_tests {
         assert!(!opaque.has_alpha, "no authored blend, no coverage forward");
     }
 
-    /// #5283 — the emissive capture weights the SLOT_EMISSIVE texture:
-    /// Enabled + tint + luminous emittance land on the emissive fields,
-    /// tagged `Lighting` through the shared authored-contribution
-    /// predicate. Pre-#5283 the stub's 0/0 defaults multiplied every
-    /// bound emissive map by zero.
+    /// #5503 — the `EmissiveSettingsComponent` arm is parked: Starfield's
+    /// `LuminousEmittance` is a physical luminance (100-5,199 where
+    /// enabled), 100x-10,000x the 0.05-10 emissive scales of the other
+    /// games, and no mapping has been measured, so NOTHING is forwarded —
+    /// not the raw nits into `emissive_mult`, not the tag. The emissive map
+    /// stays bound (zero-weighted) and the material is not marked touched
+    /// by this arm.
     #[test]
-    fn cdb_emissive_settings_weight_the_emissive_role() {
-        let mut material = bare_material();
-        let mut pool = byroredux_core::string::StringPool::new();
-        let mut touched = false;
-        apply_cdb_material(
-            &mut material,
-            &CdbMaterial {
-                textures: vec![(
-                    byroredux_sfmaterial::SLOT_EMISSIVE,
-                    "Data\\Textures\\widget_glow.DDS".to_string(),
-                )],
-                emissive_enabled: Some(true),
-                emissive_tint: Some([1.0, 0.8, 0.6]),
-                luminous_emittance: Some(432.0),
-                ..Default::default()
-            },
-            &mut pool,
-            &mut touched,
-            &|_| true,
-        );
-        assert!(material.textures.emissive.is_some(), "the map stays bound");
-        assert_eq!(material.emissive_color, [1.0, 0.8, 0.6]);
-        assert_eq!(material.emissive_mult, 432.0);
-        assert_eq!(
-            material.emissive_source,
-            byroredux_core::ecs::components::material::EmissiveSource::Lighting
-        );
-
-        // Enabled == false is authored-off: nothing lands, and the map
-        // (if any) stays zero-weighted rather than glowing unauthored.
-        let mut off = bare_material();
-        let mut touched = false;
-        apply_cdb_material(
-            &mut off,
-            &CdbMaterial {
-                emissive_enabled: Some(false),
-                emissive_tint: Some([1.0, 0.8, 0.6]),
-                luminous_emittance: Some(432.0),
-                ..Default::default()
-            },
-            &mut pool,
-            &mut touched,
-            &|_| true,
-        );
-        assert_eq!(off.emissive_color, [0.0; 3], "authored-off stays off");
-        assert_eq!(off.emissive_mult, 0.0);
+    fn cdb_emissive_settings_are_parked_not_forwarded_raw() {
+        for enabled in [Some(true), Some(false), None] {
+            let mut material = bare_material();
+            let mut pool = byroredux_core::string::StringPool::new();
+            let mut touched = false;
+            apply_cdb_material(
+                &mut material,
+                &CdbMaterial {
+                    textures: vec![(
+                        byroredux_sfmaterial::SLOT_EMISSIVE,
+                        "Data\\Textures\\widget_glow.DDS".to_string(),
+                    )],
+                    emissive_enabled: enabled,
+                    emissive_tint: Some([1.0, 0.8, 0.6]),
+                    luminous_emittance: Some(432.0),
+                    ..Default::default()
+                },
+                &mut pool,
+                &mut touched,
+                &|_| true,
+            );
+            assert!(material.textures.emissive.is_some(), "the map stays bound");
+            assert_eq!(material.emissive_color, [0.0; 3], "enabled={enabled:?}");
+            assert_eq!(material.emissive_mult, 0.0, "enabled={enabled:?}");
+            assert_eq!(
+                material.emissive_source,
+                bare_material().emissive_source,
+                "no Lighting tag from a parked arm"
+            );
+        }
     }
 
     /// #5196 — `UseSSS` stays parked until a subsurface-colour source is

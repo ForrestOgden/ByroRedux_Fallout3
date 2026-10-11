@@ -714,9 +714,11 @@ consulted and authored glass rendered opaque; the Alpha-side
 `Blender`→`AlphaBlenderSettings` edge has zero top-level instances in the
 base CDB, schema probe 2026-10-09), and the
 `EmissiveSettingsComponent` capture — Enabled + the nested
-`EmittanceSettings` tint / luminous emittance → `emissive_color` /
-`emissive_mult`, tagged `Lighting` (#5283 — the SLOT_EMISSIVE texture was
-bound to a zero-weight role before it); `UseSSS` stays parked until a
+`EmittanceSettings` tint / luminous emittance is captured by
+`byroredux_sfmaterial` but **parked** at the canonical boundary (#5283
+first forwarded it raw into `emissive_mult`; #5503 parked it — Starfield's
+physical luminance has no measured mapping, see §4's Starfield note, so a
+Starfield emissive map stays bound to a zero-weight role); `UseSSS` stays parked until a
 subsurface-colour source exists — the gate alone bought visibility rays
 for a zero term (#5196). The contract for the
 parked kinds: each lands as a **named** `MaterialTextureSet`
@@ -1004,6 +1006,28 @@ Two live consequences are recorded rather than fixed here:
   authored 20× dimmer than the Skyrim equivalent. Whether that is compensated
   elsewhere in FO4's pipeline (light-template scaling, exposure) is unmeasured
   and must be censused on that side before anyone rescales it.
+
+### Starfield (`EmissiveSettingsComponent`) — parked, not measured here (#5503)
+
+Starfield's emissive is a **physical luminance**, not a Gamebryo multiplier, so
+it does not belong in the table above and has no row in it. Figures from
+`AUDIT_NIFAL_2026-10-09` (not re-run here): `LuminousEmittance` on enabled
+`EmissiveSettingsComponent` instances runs 50 to 5,199.2 (mode 50, p90
+1,362.9; all instances p50 200, max 30,000), and the 215 `ColorEmissive`-
+inheriting referenced roots author 100–500 — i.e. 100× to 10,000× the 0.05–10
+modes above, against the shader's 64 ceiling. `EmittanceSettings` also
+carries `AdaptiveEmittance` (true on 811 `LayeredEmissivityComponent`
+instances) and `ExposureOffset` (present on 1,820), and the dominant emissive
+carrier is `BSMaterial::LayeredEmissivityComponent` (32,817 instances vs
+1,058 for `EmissiveSettingsComponent`), which has no capture at all.
+
+Decision (#5503, no-guessing): the arm is **parked** — nothing is forwarded
+onto the canonical `Material` — until a physical-luminance → canonical mapping
+is *measured* (a Starfield row here, with the §4 tooling) or Starfield gets
+its own `EmissiveSource`. The earlier claim that the EV100-metered HDR pipeline
+"consumes linear luminance natively" was unsourced and is withdrawn: the rest
+of the scene is monitor-space radiance. The capture should target
+`LayeredEmissivityComponent` first, ahead of `EmissiveSettingsComponent`.
 
 ---
 
