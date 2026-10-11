@@ -37,7 +37,7 @@
 use byroredux_core::ecs::components::collision::{MotionType, RigidBodyData};
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
-    WaterContact, WaterCurrentVolume, WaterFlow, WaterMaterial, WaterPlane, WaterSurfaceMesh,
+    WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
     WaterVolume, WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::resource::Resource;
@@ -287,6 +287,9 @@ pub fn submerged_fraction(aabb_min_y: f32, aabb_max_y: f32, surface_y: f32) -> f
 /// snapshotted for the per-body buoyancy scan.
 struct WaterSurface {
     entity: EntityId,
+    /// The plane's kind — the weather transport the CPU crest sees depends on
+    /// it (`WaterKind::weather_scroll_for`, #5354).
+    kind: WaterKind,
     volume: WaterVolume,
     /// Non-planar mesh-water surface; `None` means the planar `volume.max.y`.
     surface: Option<WaterSurfaceMesh>,
@@ -437,6 +440,7 @@ fn collect_water_surfaces(world: &World, out: &mut Vec<WaterSurface>) {
         let flow = flow_q.as_ref().and_then(|fq| fq.get(entity).copied());
         out.push(WaterSurface {
             entity,
+            kind: plane.kind,
             volume: *volume,
             surface: surface_q.as_ref().and_then(|q| q.get(entity).cloned()),
             material: plane.material,
@@ -890,11 +894,17 @@ fn apply_buoyancy_with_scratch(
                             )?;
                             let surface_y = time_secs
                                 .map(|time| {
+                                    // #5354 — the same per-kind weather the
+                                    // renderer and camera sample; and the
+                                    // horizontal sample point is the one
+                                    // `surface_y_at` / containment use
+                                    // (the collider AABB centre), not the
+                                    // body origin.
                                     authored_wave_height_with_weather(
                                         &s.material,
-                                        Vec3::new(pos.x, pos.y, pos.z),
+                                        Vec3::new(reference_point.x, pos.y, reference_point.z),
                                         time,
-                                        weather_scroll,
+                                        s.kind.weather_scroll_for(weather_scroll),
                                         wind_wave_scale,
                                     )
                                 })
@@ -1240,6 +1250,7 @@ mod tests {
         let surface_entity = world.spawn();
         let surfaces = [WaterSurface {
             entity: surface_entity,
+            kind: WaterKind::Calm,
             volume: WaterVolume {
                 min: [-10.0, -10.0, -10.0],
                 max: [10.0, 0.0, 10.0],
@@ -2052,6 +2063,76 @@ mod tests {
             "a body that streams in submerged must float up at above-60 fps \
              frame rates too — it hung at its release depth (y={y}, released \
              at {start_y}), which is the #2871 wake/quiesce latch"
+        );
+    }
+
+    /// #5354 — buoyancy must sample the crest the renderer and the camera
+    /// do. `FLOWING_WATER_WEATHER_TRANSPORT` damps the weather scroll on
+    /// flowing kinds, and `authored_wave_height_with_weather` derives crest
+    /// direction and speed from the post-weather scroll, so a sampler that
+    /// skipped the damping tracked a different crest. Drives the real
+    /// `physics_sync_system` over a River plane with wind and compares the
+    /// recorded contact depth with the kind-aware surface; the fixture's
+    /// undamped surface is asserted to differ so the test cannot pass
+    /// vacuously.
+    #[test]
+    fn buoyancy_samples_the_kind_damped_weather_crest_on_a_river() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::groundcover::WindField;
+        use byroredux_core::ecs::components::water::{WaterContact, WaterKind, WaterPlane};
+        use byroredux_core::ecs::resources::TotalTime;
+
+        let start_y = -6.0_f32;
+        let (mut world, water, body) = submerged_ball_world(start_y);
+        let material = {
+            let mut m = byroredux_core::ecs::components::water::WaterMaterial::default();
+            m.wave_amplitude = 6.0;
+            m.wave_frequency = 1.0;
+            m.scroll_a = [0.012, 0.004];
+            m.scroll_b = [-0.006, 0.01];
+            m
+        };
+        world.insert(
+            water,
+            WaterPlane {
+                kind: WaterKind::River,
+                material,
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 60.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+        let t = 3.7_f32;
+        world.insert_resource(TotalTime(t));
+
+        physics_sync_system(&world, PHYSICS_DT);
+        let contact = world.get::<WaterContact>(body).expect("body is wet");
+
+        let (scroll, scale) = weather_wave_adjustment(&world, t);
+        let at = Vec3::new(0.0, start_y, 0.0);
+        let damped = authored_wave_height_with_weather(
+            &material,
+            at,
+            t,
+            WaterKind::River.weather_scroll_for(scroll),
+            scale,
+        );
+        let undamped = authored_wave_height_with_weather(&material, at, t, scroll, scale);
+        assert!(
+            (damped - undamped).abs() > 0.25,
+            "fixture: damped ({damped}) and raw ({undamped}) crests must differ"
+        );
+        let expected_depth = damped - start_y;
+        assert!(
+            (contact.depth - expected_depth).abs() < 1.0e-3,
+            "buoyancy depth {} must follow the damped crest {} (raw crest would give {})",
+            contact.depth,
+            expected_depth,
+            undamped - start_y,
         );
     }
 

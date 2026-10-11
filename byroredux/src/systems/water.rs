@@ -2,7 +2,7 @@
 
 use crate::components::WaterDisturbanceScratch;
 use byroredux_core::ecs::components::water::{
-    SubmersionState, WaterContact, WaterKind, WaterPlane, WaterSurfaceMesh, WaterVolume,
+    SubmersionState, WaterContact, WaterPlane, WaterSurfaceMesh, WaterVolume,
     WATERLINE_HYSTERESIS,
 };
 use byroredux_core::ecs::components::{ActorValues, ActorVitals, Dead, ParticleEmitter};
@@ -215,14 +215,7 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
                     // Mirror the renderer's flowing-kind weather damping so
                     // the CPU crest tracks the visible surface (#3207
                     // coherence; see FLOWING_WATER_WEATHER_TRANSPORT's doc).
-                    let weather_scroll = if plane.kind.is_flowing() {
-                        [
-                            weather_scroll[0] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
-                            weather_scroll[1] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
-                        ]
-                    } else {
-                        weather_scroll
-                    };
+                    let weather_scroll = plane.kind.weather_scroll_for(weather_scroll);
                     byroredux_physics::authored_wave_height_with_weather(
                         &plane.material,
                         cam_pos,

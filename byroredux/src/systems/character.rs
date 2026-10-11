@@ -1242,7 +1242,9 @@ fn player_water_state(
                     &plane.material,
                     pos,
                     time,
-                    weather_scroll,
+                    // #5354 — the kind's view of the weather, as the
+                    // renderer and camera submersion sample it.
+                    plane.kind.weather_scroll_for(weather_scroll),
                     wind_wave_scale,
                 )
             })
@@ -1838,6 +1840,74 @@ mod tests {
     /// The controller's sampling sequence: marker first, then the columns.
     fn sample_player_water(world: &World, pos: Vec3, half_span: f32) -> Option<PlayerWaterState> {
         player_water_state(world, pos, half_span)
+    }
+
+    /// #5354 — the player's swim state must be tested against the crest the
+    /// camera's `SubmersionState` and the renderer see: on a flowing kind the
+    /// weather scroll is damped (`WaterKind::weather_scroll_for`). Pre-fix the
+    /// player sampled the raw scroll, so near the waterline the swim state and
+    /// the underwater tint/audio could disagree by up to one wave amplitude.
+    /// The raw-scroll surface is asserted to differ so the test is not vacuous.
+    #[test]
+    fn player_water_state_samples_the_kind_damped_weather_crest_on_a_river() {
+        use byroredux_core::ecs::components::groundcover::WindField;
+        use byroredux_core::ecs::resources::TotalTime;
+
+        let mut material = WaterMaterial::default();
+        material.wave_amplitude = 6.0;
+        material.wave_frequency = 1.0;
+        material.scroll_a = [0.012, 0.004];
+        material.scroll_b = [-0.006, 0.01];
+
+        let mut world = World::new();
+        world.register::<WaterPlane>();
+        world.register::<WaterVolume>();
+        let river = world.spawn();
+        world.insert(
+            river,
+            WaterPlane {
+                kind: WaterKind::River,
+                material,
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            river,
+            WaterVolume {
+                min: [-100.0, -100.0, -100.0],
+                max: [100.0, 0.0, 100.0],
+            },
+        );
+        world.insert_resource(WindField {
+            direction: [1.0, 0.0],
+            speed: 60.0,
+            gust_amplitude: 0.0,
+            gust_frequency: 0.0,
+        });
+        let t = 3.7_f32;
+        world.insert_resource(TotalTime(t));
+
+        let pos = Vec3::new(0.0, -5.0, 0.0);
+        let state = sample_player_water(&world, pos, 32.0).expect("player is in the column");
+
+        let (scroll, scale) = byroredux_physics::weather_wave_adjustment(&world, t);
+        let damped = byroredux_physics::authored_wave_height_with_weather(
+            &material,
+            pos,
+            t,
+            WaterKind::River.weather_scroll_for(scroll),
+            scale,
+        );
+        let raw =
+            byroredux_physics::authored_wave_height_with_weather(&material, pos, t, scroll, scale);
+        assert!((damped - raw).abs() > 0.25, "fixture: crests must differ");
+        assert!(
+            (state.surface_y - damped).abs() < 1.0e-3,
+            "player surface {} must follow the damped crest {} (raw would be {})",
+            state.surface_y,
+            damped,
+            raw
+        );
     }
 
     /// #5129 — a placed current box that extends past its plane's XZ

@@ -158,9 +158,30 @@ impl WaterKind {
     /// the wind direction against a ~0.13 UV/s downstream flow term, i.e.
     /// the surface visibly moved sideways several times faster than it
     /// flowed (the live report behind this constant). Applied identically
-    /// by the renderer upload and the CPU crest sampler so the #3207
-    /// phase-coherence contract holds.
+    /// by the renderer upload and every CPU crest sampler — through
+    /// [`Self::weather_scroll_for`] — so the #3207 phase-coherence contract
+    /// holds.
     pub const FLOWING_WATER_WEATHER_TRANSPORT: f32 = 0.35;
+
+    /// The atmospheric weather scroll as THIS kind's surface sees it:
+    /// scaled by [`Self::FLOWING_WATER_WEATHER_TRANSPORT`] for flowing kinds,
+    /// untouched for calm ones. The single definition of that policy —
+    /// the renderer upload, camera submersion, dynamic-body buoyancy and the
+    /// player's water state all call it, because `authored_wave_height_with_weather`
+    /// derives crest direction and speed from the post-weather scroll, so a
+    /// sampler that skips it tracks a different crest, not merely a different
+    /// phase (#5354, the #3207 phase-coherence contract).
+    #[inline]
+    pub fn weather_scroll_for(self, weather_scroll: [f32; 2]) -> [f32; 2] {
+        if self.is_flowing() {
+            [
+                weather_scroll[0] * Self::FLOWING_WATER_WEATHER_TRANSPORT,
+                weather_scroll[1] * Self::FLOWING_WATER_WEATHER_TRANSPORT,
+            ]
+        } else {
+            weather_scroll
+        }
+    }
 
     /// Whether this semantic kind implies a directed current.
     pub const fn has_directional_flow(self) -> bool {
@@ -953,5 +974,34 @@ mod surface_mesh_tests {
         assert_eq!(mesh.surface_y_at(f32::NAN, 3.0, 2.0), None);
         let invalid = WaterSurfaceMesh::new(vec![[[f32::NAN; 3]; 3]; 20]);
         assert_eq!(invalid.surface_y_at(0.0, 0.0, 0.0), None);
+    }
+}
+
+#[cfg(test)]
+mod weather_transport_tests {
+    use super::WaterKind;
+
+    /// #5354 — one definition of the per-kind weather policy: flowing kinds
+    /// see 0.35 of the scroll (direction preserved), calm kinds see all of it.
+    #[test]
+    fn weather_scroll_for_damps_exactly_the_flowing_kinds() {
+        let scroll = [0.3, -0.2];
+        for kind in [WaterKind::River, WaterKind::Rapids, WaterKind::Waterfall] {
+            let seen = kind.weather_scroll_for(scroll);
+            assert_eq!(
+                seen,
+                [
+                    scroll[0] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
+                    scroll[1] * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT,
+                ],
+                "{kind:?} is flowing"
+            );
+        }
+        for kind in [WaterKind::Calm, WaterKind::Lava] {
+            if kind.is_flowing() {
+                continue;
+            }
+            assert_eq!(kind.weather_scroll_for(scroll), scroll, "{kind:?} keeps the full scroll");
+        }
     }
 }
