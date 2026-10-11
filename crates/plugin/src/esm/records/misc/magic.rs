@@ -778,6 +778,84 @@ impl Default for MgefRecord {
     }
 }
 
+/// Byte offsets, flag bits and ids of the MGEF `DATA` fields the archetype
+/// and restoration decoders read (#5614). Offsets and the Skyrim flag/enum
+/// names come from the UESP `Mod File Format/MGEF` table; FO3/FNV share the
+/// first 72 bytes' offsets with TES5. Bits whose label could not be grounded
+/// in the local reference set are named by role and say so.
+mod mgef_data {
+    // ---- offsets (u32 unless noted) ----
+    pub const FLAGS: usize = 0;
+    /// FO3/FNV `counter_effect_count` u16 (+ pad); on TES5 the low word is
+    /// always 0 (UESP "Unknown1", mask `0xffff0000`).
+    pub const COUNTER_EFFECT_COUNT: usize = 20;
+    /// TES5 taper duration (f32).
+    pub const TAPER_DURATION: usize = 56;
+    /// Skyrim/FO4 second-AV weight (f32).
+    pub const SECOND_AV_WEIGHT: usize = 60;
+    pub const ARCHETYPE: usize = 64;
+    pub const PRIMARY_AV: usize = 68;
+    /// TES5 cast type: 0 Constant Effect, 1 Fire and Forget, 2 Concentration.
+    pub const CAST_TYPE: usize = 80;
+    /// TES5 delivery type: 0 Self, 1 Touch, 2 Aimed, 3 Target Actor, 4 Target
+    /// Location.
+    pub const DELIVERY_TYPE: usize = 84;
+    pub const SECOND_AV: usize = 88;
+    /// TES5 linked-ability (`EquipAbility`), image-space modifier and perk
+    /// formids. The restoration classifier requires all three to be null —
+    /// each needs a runtime consumer that does not exist yet.
+    pub const EQUIP_ABILITY: usize = 128;
+    pub const IMAGE_SPACE_MOD: usize = 132;
+    pub const PERK: usize = 136;
+
+    // ---- payload lengths ----
+    /// FO3/FNV `DATA`.
+    pub const FO3NV_LEN: usize = 72;
+    /// Skyrim/FO4/FO76 `DATA`.
+    pub const TES5_LEN: usize = 152;
+
+    // ---- archetype ids ----
+    pub const ARCHETYPE_VALUE_MODIFIER: u32 = 0;
+    pub const ARCHETYPE_ABSORB: u32 = 4;
+    pub const ARCHETYPE_DUAL_VALUE_MODIFIER: u32 = 5;
+    /// Skyrim+ "Peak Value Modifier"; the same id is FO3/FNV's "Value and
+    /// Parts" (modifies the actor value *and* every body part's condition —
+    /// stimpacks; GECK "Base Effect" archetype list).
+    pub const ARCHETYPE_PEAK_VALUE_MODIFIER: u32 = 34;
+    pub const FO3NV_ARCHETYPE_VALUE_AND_PARTS: u32 = ARCHETYPE_PEAK_VALUE_MODIFIER;
+
+    // ---- actor value indices ----
+    pub const FO3NV_AV_ACTION_POINTS: u32 = 12;
+    pub const FO3NV_AV_HEALTH: u32 = 16;
+    pub const TES5_AV_HEALTH: u32 = 24;
+    pub const TES5_AV_STAMINA: u32 = 26;
+
+    // ---- flag bits (offset FLAGS) ----
+    pub const FLAG_HOSTILE: u32 = 0x1;
+    pub const FLAG_RECOVER: u32 = 0x2;
+    pub const FLAG_DETRIMENTAL: u32 = 0x4;
+    /// TES5 "Dispel with Keywords".
+    pub const TES5_FLAG_DISPEL_WITH_KEYWORDS: u32 = 0x100;
+    pub const TES5_FLAG_NO_DURATION: u32 = 0x200;
+    pub const TES5_FLAG_NO_MAGNITUDE: u32 = 0x400;
+    pub const TES5_FLAG_NO_RECAST: u32 = 0x20000;
+    pub const NO_DEATH_DISPEL: u32 = 0x1000_0000;
+    /// FO3/FNV No Duration is bit 7 (TES5 uses bit 9).
+    pub const FO3NV_FLAG_NO_DURATION: u32 = 0x80;
+    /// FO3/FNV bit 4: set on every restoration effect the decoder accepts.
+    /// The xEdit label is not in the local reference set.
+    pub const FO3NV_FLAG_REQUIRED_BIT: u32 = 0x10;
+    /// FO3/FNV bits 8, 19 and 20, which the decoder has always treated as
+    /// disqualifying (labels not in the local reference set).
+    pub const FO3NV_FLAGS_DISQUALIFYING: u32 = 0x100 | 0x8_0000 | 0x10_0000;
+}
+
+/// Little-endian `u32` at `offset`; callers have already length-gated the
+/// payload against [`mgef_data::FO3NV_LEN`] / [`mgef_data::TES5_LEN`].
+fn mgef_u32(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+}
+
 /// #4415 — decode the archetype and actor value(s) from `DATA` (xEdit
 /// MGEF DATA; our offsets for FO3/FNV and TES5 were confirmed against it):
 /// FO3/FNV 72 bytes, archetype u32 @64, actor value index s32 @68;
@@ -791,23 +869,26 @@ fn decode_mgef_archetype(
     remap: &Option<FormIdRemap>,
 ) {
     use crate::esm::reader::GameKind;
-    let read = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+    use mgef_data as d;
+    let read = |offset: usize| mgef_u32(data, offset);
     let index_ref = |raw: u32| (raw as i32 >= 0).then_some(ActorValueRef::Index(raw));
     let form_ref = |raw: u32| (raw != 0).then(|| ActorValueRef::Form(remap_fid(raw, remap)));
     match game {
-        GameKind::Fallout3NV if data.len() >= 72 => {
-            out.archetype = Some(match read(64) {
-                0 => MagicArchetype::ValueModifier,
+        GameKind::Fallout3NV if data.len() >= d::FO3NV_LEN => {
+            out.archetype = Some(match read(d::ARCHETYPE) {
+                d::ARCHETYPE_VALUE_MODIFIER => MagicArchetype::ValueModifier,
                 other => MagicArchetype::Other(other),
             });
-            out.primary_actor_value = index_ref(read(68));
+            out.primary_actor_value = index_ref(read(d::PRIMARY_AV));
         }
-        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 if data.len() >= 152 => {
-            out.archetype = Some(match read(64) {
-                0 => MagicArchetype::ValueModifier,
-                4 => MagicArchetype::Absorb,
-                5 => MagicArchetype::DualValueModifier,
-                34 => MagicArchetype::PeakValueModifier,
+        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76
+            if data.len() >= d::TES5_LEN =>
+        {
+            out.archetype = Some(match read(d::ARCHETYPE) {
+                d::ARCHETYPE_VALUE_MODIFIER => MagicArchetype::ValueModifier,
+                d::ARCHETYPE_ABSORB => MagicArchetype::Absorb,
+                d::ARCHETYPE_DUAL_VALUE_MODIFIER => MagicArchetype::DualValueModifier,
+                d::ARCHETYPE_PEAK_VALUE_MODIFIER => MagicArchetype::PeakValueModifier,
                 other => MagicArchetype::Other(other),
             });
             let skyrim = game == GameKind::Skyrim;
@@ -818,9 +899,9 @@ fn decode_mgef_archetype(
                     form_ref(raw)
                 }
             };
-            out.primary_actor_value = reference(read(68));
-            out.secondary_actor_value = reference(read(88));
-            out.second_actor_value_weight = f32::from_bits(read(60));
+            out.primary_actor_value = reference(read(d::PRIMARY_AV));
+            out.secondary_actor_value = reference(read(d::SECOND_AV));
+            out.second_actor_value_weight = f32::from_bits(read(d::SECOND_AV_WEIGHT));
         }
         _ => {}
     }
@@ -850,25 +931,33 @@ pub fn parse_mgef_for_game(
         .find(|s| &s.sub_type == b"DATA")
         .map(|s| &s.data)
     {
+        use mgef_data as d;
         // FO3/FNV share archetype/AV offsets with TES5 but have a 72-byte
         // DATA payload and different flags. Skill/attribute-scaled effects
         // require runtime magnitude evaluation, not a constant restoration.
         if game == GameKind::Fallout3NV {
-            if data.len() == 72 {
-                let read =
-                    |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-                let av = read(68);
-                if read(0) & (1 | 2 | 4 | 0x100 | 0x80000 | 0x100000) == 0
-                    && read(0) & 0x10 != 0
-                    && (read(64) == 0 || (read(64) == 34 && av == 16))
-                    && read(20) & 0xffff == 0
-                    && matches!(av, 12 | 16)
+            if data.len() == d::FO3NV_LEN {
+                let read = |offset| mgef_u32(data, offset);
+                let av = read(d::PRIMARY_AV);
+                let archetype = read(d::ARCHETYPE);
+                let flags = read(d::FLAGS);
+                if flags
+                    & (d::FLAG_HOSTILE
+                        | d::FLAG_RECOVER
+                        | d::FLAG_DETRIMENTAL
+                        | d::FO3NV_FLAGS_DISQUALIFYING)
+                    == 0
+                    && flags & d::FO3NV_FLAG_REQUIRED_BIT != 0
+                    && (archetype == d::ARCHETYPE_VALUE_MODIFIER
+                        || (archetype == d::FO3NV_ARCHETYPE_VALUE_AND_PARTS
+                            && av == d::FO3NV_AV_HEALTH))
+                    && read(d::COUNTER_EFFECT_COUNT) & 0xffff == 0
+                    && matches!(av, d::FO3NV_AV_ACTION_POINTS | d::FO3NV_AV_HEALTH)
                 {
                     out.instant_restoration_av = Some(av);
-                    out.restores_body_parts = read(64) == 34;
-                    // FO3/FNV No Duration is bit 7 (TES5 uses bit 9).
+                    out.restores_body_parts = archetype == d::FO3NV_ARCHETYPE_VALUE_AND_PARTS;
                     // No Death Dispel needs a different lifecycle policy.
-                    if read(0) & (0x80 | 0x10000000) == 0 {
+                    if flags & (d::FO3NV_FLAG_NO_DURATION | d::NO_DEATH_DISPEL) == 0 {
                         out.timed_restoration_av = Some(av);
                     }
                 }
@@ -878,27 +967,40 @@ pub fn parse_mgef_for_game(
         // TES5 xEdit MGEF DATA: archetype@64, primary AV@68,
         // casting type@80, delivery@84. Exclude hostile, recover,
         // detrimental and no-magnitude flags (temporary fortify isn't heal).
-        if data.len() >= 152 {
-            let read = |offset| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-            let av = read(68);
-            if read(0) & (1 | 2 | 4 | 0x400) == 0
-                && read(64) == 0
-                && read(80) == 1
-                && read(84) == 0
-                && read(20) & 0xffff == 0
+        if data.len() >= d::TES5_LEN {
+            let read = |offset| mgef_u32(data, offset);
+            let av = read(d::PRIMARY_AV);
+            let flags = read(d::FLAGS);
+            const CAST_FIRE_AND_FORGET: u32 = 1;
+            const DELIVERY_SELF: u32 = 0;
+            if flags
+                & (d::FLAG_HOSTILE
+                    | d::FLAG_RECOVER
+                    | d::FLAG_DETRIMENTAL
+                    | d::TES5_FLAG_NO_MAGNITUDE)
+                == 0
+                && read(d::ARCHETYPE) == d::ARCHETYPE_VALUE_MODIFIER
+                && read(d::CAST_TYPE) == CAST_FIRE_AND_FORGET
+                && read(d::DELIVERY_TYPE) == DELIVERY_SELF
+                && read(d::COUNTER_EFFECT_COUNT) & 0xffff == 0
                 // Linked abilities, image-space effects, and perks require
                 // additional runtime consumers; don't silently omit them.
-                && read(128) == 0
-                && read(132) == 0
-                && read(136) == 0
-                && (24..=26).contains(&av)
+                && read(d::EQUIP_ABILITY) == 0
+                && read(d::IMAGE_SPACE_MOD) == 0
+                && read(d::PERK) == 0
+                && (d::TES5_AV_HEALTH..=d::TES5_AV_STAMINA).contains(&av)
             {
                 out.instant_restoration_av = Some(av);
                 // TES5 taper duration is DATA+56. No-recast, keyword dispel,
                 // and no-death-dispel require lifecycle policies not yet
                 // implemented by the ordinary restorative tick.
-                if read(0) & (0x200 | 0x20000 | 0x100 | 0x10000000) == 0
-                    && f32::from_bits(read(56)) == 0.0
+                if flags
+                    & (d::TES5_FLAG_NO_DURATION
+                        | d::TES5_FLAG_NO_RECAST
+                        | d::TES5_FLAG_DISPEL_WITH_KEYWORDS
+                        | d::NO_DEATH_DISPEL)
+                    == 0
+                    && f32::from_bits(read(d::TAPER_DURATION)) == 0.0
                 {
                     out.timed_restoration_av = Some(av);
                 }
