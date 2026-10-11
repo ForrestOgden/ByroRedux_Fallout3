@@ -44,6 +44,93 @@ pub(super) fn resolve_shape(
     shape_ref: BlockRef,
     visited: &mut HashSet<usize>,
 ) -> Option<CollisionShape> {
+    // Callers that carry no surface material (phantoms, ragdoll bones —
+    // `build_ragdoll` registers its colliders with the default 0) discard
+    // the leaf sequence.
+    resolve_shape_into(scene, shape_ref, visited, 0, &mut Vec::new())
+}
+
+/// [`resolve_shape`] plus the per-leaf Havok surface material sequence
+/// (#5550): `materials[i]` is the material of the i-th leaf part in the
+/// exact depth-first order `collision_shape_to_parts` emits parts, so
+/// `RigidBodyData::part_surface_materials` is aligned with the shape BY
+/// CONSTRUCTION — each leaf pushes its material at the very site that emits
+/// the leaf, instead of a second walker re-implementing the dispatch and
+/// drifting from it (multi-spheres, children that resolve to `None`, cycles).
+pub(super) fn resolve_shape_with_materials(
+    scene: &NifScene,
+    shape_ref: BlockRef,
+    visited: &mut HashSet<usize>,
+) -> Option<(CollisionShape, Vec<u32>)> {
+    let mut materials = Vec::new();
+    let shape = resolve_shape_into(scene, shape_ref, visited, 0, &mut materials)?;
+    debug_assert_eq!(
+        materials.len(),
+        collision_shape_leaf_count(&shape),
+        "per-leaf material sequence must have exactly one entry per leaf part"
+    );
+    Some((shape, materials))
+}
+
+/// Number of leaf parts `collision_shape_to_parts` flattens `shape` into:
+/// every non-`Compound` variant is one part, compounds recurse.
+pub(super) fn collision_shape_leaf_count(shape: &CollisionShape) -> usize {
+    match shape {
+        CollisionShape::Compound { children } => children
+            .iter()
+            .map(|(_, _, child)| collision_shape_leaf_count(child))
+            .sum(),
+        _ => 1,
+    }
+}
+
+/// `true` when a Havok material value of `0` is a REAL material on this
+/// file's game. Oblivion and FO3/FNV have `STONE = 0` and no "unset" value
+/// (nif.xml `OB_HAV_MAT_STONE`, `FO_HAV_MAT_STONE`); only Skyrim and later
+/// (`SkyrimHavokMaterial`, `#SKY_AND_LATER#`, bsver >= 83) reserve `0` as
+/// `SKY_HAV_MAT_NONE` (#5549).
+fn zero_is_authored_stone(scene: &NifScene) -> bool {
+    scene.bsver < crate::version::bsver::SKYRIM_LE
+}
+
+/// Is `material` an authored value on this file's game, as opposed to an
+/// absent one that should fall back to the enclosing container's default?
+fn material_is_authored(scene: &NifScene, material: u32) -> bool {
+    zero_is_authored_stone(scene) || material != 0
+}
+
+/// Body-level reduction kept for `RigidBodyData::surface_material` (what
+/// "kind of ground" the body is, for footsteps): the first AUTHORED leaf of
+/// the per-leaf sequence. Where `0` is authored STONE that is simply the
+/// first leaf — a `[STONE, WOOD]` body is STONE, not WOOD (#5549) — and on
+/// Skyrim+ it is the first non-NONE leaf. `0` when nothing is authored.
+pub(super) fn body_surface_material(scene: &NifScene, leaf_materials: &[u32]) -> u32 {
+    leaf_materials
+        .iter()
+        .copied()
+        .find(|material| material_is_authored(scene, *material))
+        .unwrap_or(0)
+}
+
+/// Recursive core of [`resolve_shape`]. `inherited` is the nearest
+/// enclosing container's material (Havok's per-subshape default), applied
+/// to a leaf with no authored material of its own. Leaves append their
+/// material to `materials`.
+///
+/// Invariant: on a `None` return `materials` is exactly as it was at
+/// entry, whatever the subtree pushed before failing (cycle, depth cap,
+/// unsupported/corrupt child, non-finite transform) — so a container
+/// that skips an unresolvable child skips its material entry with it.
+///
+/// `visited` records `BlockRef` indices currently on the resolution
+/// stack (the cycle / depth guard documented on [`resolve_shape`]).
+fn resolve_shape_into(
+    scene: &NifScene,
+    shape_ref: BlockRef,
+    visited: &mut HashSet<usize>,
+    inherited: u32,
+    materials: &mut Vec<u32>,
+) -> Option<CollisionShape> {
     let idx = shape_ref.index()?;
     if !visited.insert(idx) {
         log::warn!(
@@ -67,164 +154,13 @@ pub(super) fn resolve_shape(
         visited.remove(&idx);
         return None;
     }
-    let result = resolve_shape_inner(scene, idx, visited);
+    let materials_at_entry = materials.len();
+    let result = resolve_shape_inner(scene, idx, visited, inherited, materials);
     visited.remove(&idx);
+    if result.is_none() {
+        materials.truncate(materials_at_entry);
+    }
     result
-}
-
-/// The per-leaf Havok surface material sequence of the bhk shape tree, in
-/// the exact depth-first order `resolve_shape` (and therefore
-/// `collision_shape_to_parts`) emits leaves as parts. A leaf pushes its own
-/// `HavokMaterial` when authored, else the nearest ancestor's — the
-/// container `Material` field is Havok's per-subshape default. Same cycle
-/// guard and depth accounting as `resolve_shape`; unauthored leaves push 0
-/// (STONE). This is the per-part mapping the Wave-4 plan's "map it per
-/// triangle" step reduces to: one authored material per collider part,
-/// carried into rapier's collider user-data at registration.
-pub(super) fn shape_leaf_materials(
-    scene: &NifScene,
-    shape_ref: BlockRef,
-    visited: &mut HashSet<usize>,
-    inherited: u32,
-    out: &mut Vec<u32>,
-) {
-    let Some(idx) = shape_ref.index() else {
-        out.push(inherited);
-        return;
-    };
-    if !visited.insert(idx) {
-        out.push(inherited);
-        return;
-    }
-    if visited.len() > MAX_COLLISION_SHAPE_DEPTH {
-        visited.remove(&idx);
-        out.push(inherited);
-        return;
-    }
-    shape_leaf_materials_inner(scene, idx, visited, inherited, out);
-    visited.remove(&idx);
-}
-
-/// Body-level reduction kept for [`RigidBodyData::surface_material`]: the
-/// first non-zero entry of the per-leaf sequence.
-pub(super) fn first_shape_material(
-    scene: &NifScene,
-    shape_ref: BlockRef,
-    visited: &mut HashSet<usize>,
-) -> u32 {
-    let mut leaves = Vec::new();
-    shape_leaf_materials(scene, shape_ref, visited, 0, &mut leaves);
-    leaves.into_iter().find(|material| *material != 0).unwrap_or(0)
-}
-
-fn shape_leaf_materials_inner(
-    scene: &NifScene,
-    idx: usize,
-    visited: &mut HashSet<usize>,
-    inherited: u32,
-    out: &mut Vec<u32>,
-) {
-    let Some(block) = scene.get(idx) else {
-        out.push(inherited);
-        return;
-    };
-
-    // Leaf shapes that carry their own material.
-    macro_rules! leaf_material {
-        ($ty:ty) => {
-            if let Some(s) = block.as_any().downcast_ref::<$ty>() {
-                out.push(if s.material != 0 { s.material } else { inherited });
-                return;
-            }
-        };
-    }
-    leaf_material!(BhkSphereShape);
-    leaf_material!(BhkMultiSphereShape);
-    leaf_material!(BhkBoxShape);
-    leaf_material!(BhkCapsuleShape);
-    leaf_material!(BhkCylinderShape);
-    leaf_material!(BhkConvexVerticesShape);
-    leaf_material!(BhkNiTriStripsShape);
-    // Packed tri strips carry materials per sub-part; the body-level
-    // reduction takes the first authored part, and the per-leaf sequence
-    // collapses the sub-parts onto the shape's one part. #5541 — the table
-    // lives on the SHAPE only until 20.0.0.5 (nif.xml `until`); from
-    // 20.2.0.7 it lives on `hkPackedNiTriStripsData`, where the FO3/FNV
-    // parser stores it as `sub_parts` (captured since #2550, read by
-    // nothing). Resolve the data block and take whichever table is
-    // populated — the dominant FO3/FNV MOPP collision shape
-    // (bhkMoppBvTreeShape → packed) reported STONE (0) for wood, metal
-    // and dirt floors otherwise.
-    if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
-        let data_parts = s
-            .data_ref
-            .index()
-            .and_then(|idx| scene.get(idx))
-            .and_then(|data| data.as_any().downcast_ref::<HkPackedNiTriStripsData>());
-        let material = s
-            .sub_shapes
-            .iter()
-            .chain(data_parts.map(|d| d.sub_parts.iter()).into_iter().flatten())
-            .find(|part| part.material != 0)
-            .map(|part| part.material)
-            .unwrap_or(inherited);
-        out.push(material);
-        return;
-    }
-
-    // Containers: their own material is the children's default when the
-    // children carry none of their own.
-    if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
-        let inherited = if s.material != 0 { s.material } else { inherited };
-        for sub_ref in &s.sub_shape_refs {
-            shape_leaf_materials(scene, *sub_ref, visited, inherited, out);
-        }
-        return;
-    }
-    if let Some(s) = block.as_any().downcast_ref::<BhkConvexListShape>() {
-        let inherited = if s.material != 0 { s.material } else { inherited };
-        for sub_ref in &s.sub_shapes {
-            shape_leaf_materials(scene, *sub_ref, visited, inherited, out);
-        }
-        return;
-    }
-    if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
-        let inherited = if s.material != 0 { s.material } else { inherited };
-        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
-        return;
-    }
-    if let Some(s) = block.as_any().downcast_ref::<BhkConvexSweepShape>() {
-        let inherited = if s.material != 0 { s.material } else { inherited };
-        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
-        return;
-    }
-    // MOPP wraps another shape (no material of its own on the bv-tree).
-    if let Some(s) = block.as_any().downcast_ref::<BhkMoppBvTreeShape>() {
-        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
-        return;
-    }
-    // Compressed mesh (Skyrim+): materials are per chunk in the data
-    // block's chunk_materials pairs — the first non-zero entry is the
-    // body-level reduction, and the per-leaf sequence collapses onto the
-    // shape's one part.
-    if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
-        let Some(data_idx) = s.data_ref.index() else {
-            out.push(inherited);
-            return;
-        };
-        let material = scene
-            .get_as::<BhkCompressedMeshShapeData>(data_idx)
-            .and_then(|data| {
-                data.chunk_materials
-                    .iter()
-                    .find(|pair| pair[0] != 0)
-                    .map(|pair| pair[0])
-            })
-            .unwrap_or(inherited);
-        out.push(material);
-        return;
-    }
-    out.push(inherited);
 }
 
 /// Inner body of `resolve_shape`. Extracted so the outer function can
@@ -234,15 +170,26 @@ fn resolve_shape_inner(
     scene: &NifScene,
     idx: usize,
     visited: &mut HashSet<usize>,
+    inherited: u32,
+    materials: &mut Vec<u32>,
 ) -> Option<CollisionShape> {
     let scale = scene.havok_scale;
     let block = scene.get(idx)?;
+    // A leaf's own authored material, else the enclosing container's
+    // default. `0` is authored STONE on Oblivion/FO3/FNV (#5549).
+    let leaf_material = |own: u32| {
+        if material_is_authored(scene, own) {
+            own
+        } else {
+            inherited
+        }
+    };
 
     // Sphere
     if let Some(s) = block.as_any().downcast_ref::<BhkSphereShape>() {
-        return Some(CollisionShape::Ball {
-            radius: finite(s.radius * scale)?,
-        });
+        let radius = finite(s.radius * scale)?;
+        materials.push(leaf_material(s.material));
+        return Some(CollisionShape::Ball { radius });
     }
 
     // bhkPlaneShape — an AABB-bounded infinite plane (#1334). Parsed (no
@@ -284,6 +231,11 @@ fn resolve_shape_inner(
                 Box::new(CollisionShape::Ball { radius }),
             ));
         }
+        // One leaf part per surviving sphere, all carrying the shape's one
+        // material (#5550: the walker this replaced pushed a single entry
+        // for k >= 2 spheres and shifted every later sibling's material).
+        let material = leaf_material(s.material);
+        materials.extend(std::iter::repeat_n(material, children.len()));
         return match children.len() {
             0 => None,
             // A single centred sphere is just a Ball — no Compound needed.
@@ -305,9 +257,9 @@ fn resolve_shape_inner(
         // authored box, which Rapier's `.max(1e-3)` clamp silently collapsed
         // to a paper-thin collider (NIFAL-D6-02 / #2204).
         let half_extents = Vec3::new(hx, hz, hy).abs() * scale.abs();
-        return Some(CollisionShape::Cuboid {
-            half_extents: finite_vec(half_extents)?,
-        });
+        let half_extents = finite_vec(half_extents)?;
+        materials.push(leaf_material(s.material));
+        return Some(CollisionShape::Cuboid { half_extents });
     }
 
     // Capsule
@@ -317,6 +269,7 @@ fn resolve_shape_inner(
         // p1/p2 are finite, so the derived half_height is finite too.
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.radius1.max(s.radius2) * scale)?;
+        materials.push(leaf_material(s.material));
         return Some(segment_shape(
             p1,
             p2,
@@ -333,6 +286,7 @@ fn resolve_shape_inner(
         let p2 = finite_vec(havok_to_engine(s.point2[0], s.point2[1], s.point2[2]) * scale)?;
         let half_height = (p2 - p1).length() * 0.5;
         let radius = finite(s.cylinder_radius * scale)?;
+        materials.push(leaf_material(s.material));
         return Some(segment_shape(
             p1,
             p2,
@@ -356,12 +310,15 @@ fn resolve_shape_inner(
         if verts.iter().any(|v| !v.is_finite()) {
             return None;
         }
+        materials.push(leaf_material(s.material));
         return Some(CollisionShape::ConvexHull { vertices: verts });
     }
 
     // MOPP BV tree — skip the MOPP data, recurse into the wrapped shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkMoppBvTreeShape>() {
-        return resolve_shape(scene, s.shape_ref, visited);
+        // No material of its own on the bv-tree: the wrapped shape inherits
+        // whatever this node inherited.
+        return resolve_shape_into(scene, s.shape_ref, visited, inherited, materials);
     }
 
     // Convex sweep — wraps a child shape swept along a direction. For static
@@ -370,14 +327,23 @@ fn resolve_shape_inner(
     // MOPP wrapper above). Dispatched at blocks/mod.rs but had no resolve arm
     // pre-#1360 → the authored collision silently dropped.
     if let Some(s) = block.as_any().downcast_ref::<BhkConvexSweepShape>() {
-        return resolve_shape(scene, s.shape_ref, visited);
+        return resolve_shape_into(
+            scene,
+            s.shape_ref,
+            visited,
+            leaf_material(s.material),
+            materials,
+        );
     }
 
     // List shape — compound of sub-shapes.
     if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
         let mut children = Vec::with_capacity(s.sub_shape_refs.len());
+        let container_material = leaf_material(s.material);
         for sub_ref in &s.sub_shape_refs {
-            if let Some(child) = resolve_shape(scene, *sub_ref, visited) {
+            if let Some(child) =
+                resolve_shape_into(scene, *sub_ref, visited, container_material, materials)
+            {
                 children.push((Vec3::ZERO, Quat::IDENTITY, Box::new(child)));
             }
         }
@@ -402,8 +368,11 @@ fn resolve_shape_inner(
     // to the "unsupported" log and the authored collision was dropped.
     if let Some(s) = block.as_any().downcast_ref::<BhkConvexListShape>() {
         let mut children = Vec::with_capacity(s.sub_shapes.len());
+        let container_material = leaf_material(s.material);
         for sub_ref in &s.sub_shapes {
-            if let Some(child) = resolve_shape(scene, *sub_ref, visited) {
+            if let Some(child) =
+                resolve_shape_into(scene, *sub_ref, visited, container_material, materials)
+            {
                 children.push((Vec3::ZERO, Quat::IDENTITY, Box::new(child)));
             }
         }
@@ -419,7 +388,13 @@ fn resolve_shape_inner(
 
     // Transform shape — apply 4x4 transform to child shape.
     if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
-        let child = resolve_shape(scene, s.shape_ref, visited)?;
+        let child = resolve_shape_into(
+            scene,
+            s.shape_ref,
+            visited,
+            leaf_material(s.material),
+            materials,
+        )?;
         let (translation, rotation) = decompose_havok_matrix(&s.transform, scale);
         // #2862 (PHYS-D1-03) — every other resolve arm funnels its output
         // through `finite()`/`finite_vec()` before it reaches a
@@ -440,7 +415,9 @@ fn resolve_shape_inner(
 
     // NiTriStrips mesh collision — resolve referenced NiTriStripsData.
     if let Some(s) = block.as_any().downcast_ref::<BhkNiTriStripsShape>() {
-        return resolve_tri_strips_collision(scene, s);
+        let shape = resolve_tri_strips_collision(scene, s)?;
+        materials.push(leaf_material(s.material));
+        return Some(shape);
     }
 
     // Mesh shape (Oblivion 10.0.1.0 only) — references NiTriStripsData just
@@ -451,7 +428,11 @@ fn resolve_shape_inner(
     // identity rather than collapsing the mesh to a point (which would render
     // as empty → None).
     if let Some(s) = block.as_any().downcast_ref::<BhkMeshShape>() {
-        return resolve_tri_strips_data_refs(scene, &s.data_refs, per_axis_scale(&s.scale));
+        let shape =
+            resolve_tri_strips_data_refs(scene, &s.data_refs, per_axis_scale(&s.scale))?;
+        // `bhkMeshShape` carries no material field: the container default.
+        materials.push(inherited);
+        return Some(shape);
     }
 
     // Packed tri strips mesh collision. The packed data is authored in Havok
@@ -461,14 +442,52 @@ fn resolve_shape_inner(
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
         let data_idx = s.data_ref.index()?;
         let data = scene.get_as::<HkPackedNiTriStripsData>(data_idx)?;
-        return resolve_packed_mesh(data, scale, per_axis_scale(&s.scale));
+        let shape = resolve_packed_mesh(data, scale, per_axis_scale(&s.scale))?;
+        // Packed tri strips carry materials per sub-part; the shape is one
+        // part, so the first authored sub-part stands for it. #5541 — the
+        // table lives on the SHAPE only until 20.0.0.5 (nif.xml `until`);
+        // from 20.2.0.7 it lives on `hkPackedNiTriStripsData`, where the
+        // FO3/FNV parser stores it as `sub_parts`. Take whichever table is
+        // populated — the dominant FO3/FNV MOPP collision shape
+        // (bhkMoppBvTreeShape -> packed) reported STONE (0) for wood, metal
+        // and dirt floors otherwise.
+        //
+        // Collapsing N sub-part materials onto one part is lossy by nature;
+        // the tie-break prefers a distinctive (non-STONE) surface, exactly
+        // as before. What changes with #5549 is the all-STONE case: where
+        // `0` is authored STONE (Oblivion, FO3/FNV) a mesh whose sub-parts
+        // are all `0` is STONE, not "unset, so inherit the container's".
+        let sub_materials: Vec<u32> = s
+            .sub_shapes
+            .iter()
+            .chain(data.sub_parts.iter())
+            .map(|part| part.material)
+            .collect();
+        let material = sub_materials
+            .iter()
+            .copied()
+            .find(|material| *material != 0)
+            .or_else(|| (zero_is_authored_stone(scene) && !sub_materials.is_empty()).then_some(0))
+            .unwrap_or(inherited);
+        materials.push(material);
+        return Some(shape);
     }
 
     // Compressed mesh (Skyrim+) — resolve via data ref.
     if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
         let data_idx = s.data_ref.index()?;
         let data = scene.get_as::<BhkCompressedMeshShapeData>(data_idx)?;
-        return resolve_compressed_mesh(data, scale);
+        let shape = resolve_compressed_mesh(data, scale)?;
+        // Materials are per chunk in `chunk_materials` pairs; the shape is
+        // one part, so the first authored chunk stands for it.
+        let material = data
+            .chunk_materials
+            .iter()
+            .find(|pair| material_is_authored(scene, pair[0]))
+            .map(|pair| pair[0])
+            .unwrap_or(inherited);
+        materials.push(material);
+        return Some(shape);
     }
 
     // Phantom shapes (bhkSimpleShapePhantom / bhkAabbPhantom) are trigger
@@ -982,99 +1001,230 @@ mod cycle_tests {
         })
     }
 
-    #[test]
-    fn first_shape_material_prefers_the_container_then_the_first_authored_child() {
-        // Scene:
-        //   [0] BhkListShape { material 0, children [1, 2] }
-        //   [1] BhkSphereShape { material 0 }  (STONE default — not authored)
-        //   [2] BhkSphereShape { material 3 }
-        // The first AUTHORED material in the walk answers: the container's
-        // own material when non-zero, else the first non-zero child. This
-        // is the body-level reduction RigidBodyData::surface_material
-        // carries to the surface-aware footstep consumer.
+    /// Resolve `root` and return `(leaf materials, body-level reduction)`,
+    /// asserting the per-leaf sequence is aligned with the shape's leaves.
+    fn materials_of(scene: &NifScene, root: u32) -> (Vec<u32>, u32) {
+        let (shape, leaves) =
+            resolve_shape_with_materials(scene, BlockRef(root), &mut HashSet::new())
+                .expect("fixture shape must resolve");
+        assert_eq!(
+            leaves.len(),
+            collision_shape_leaf_count(&shape),
+            "one material per leaf part"
+        );
+        let body = body_surface_material(scene, &leaves);
+        (leaves, body)
+    }
+
+    fn skyrim_scene() -> NifScene {
         let mut scene = NifScene::default();
         scene.havok_scale = 1.0;
+        // Skyrim+ reserves material 0 as NONE (`SKY_HAV_MAT_NONE`): "not
+        // authored", so a leaf falls back to its container's default.
+        scene.bsver = crate::version::bsver::SKYRIM_LE;
         scene
-            .blocks
-            .push(list_shape(vec![BlockRef(1u32), BlockRef(2u32)]));
-        scene.blocks.push(sphere_shape(0.5));
-        scene.blocks.push(Box::new(BhkSphereShape {
-            material: 3,
+    }
+
+    fn gamebryo_era_scene(bsver: u32) -> NifScene {
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        // Oblivion (11) and FO3/FNV (34): `STONE = 0`, no "unset" value.
+        scene.bsver = bsver;
+        scene
+    }
+
+    fn sphere_with(material: u32) -> Box<dyn NiObject> {
+        Box::new(BhkSphereShape {
+            material,
             radius: 0.5,
-        }));
-        let mut visited = HashSet::new();
-        assert_eq!(
-            first_shape_material(&scene, BlockRef(0u32), &mut visited),
-            3,
-            "the first non-zero child material answers when the container is unauthored"
-        );
+        })
+    }
 
-        // A container-authored material wins over its children's.
-        scene.blocks[0] = Box::new(BhkListShape {
-            sub_shape_refs: vec![BlockRef(1u32), BlockRef(2u32)],
-            material: 7,
+    fn box_with(material: u32) -> Box<dyn NiObject> {
+        Box::new(BhkBoxShape {
+            material,
+            radius: 0.0,
+            dimensions: [1.0, 1.0, 1.0],
+        })
+    }
+
+    fn list_with(material: u32, refs: &[u32]) -> Box<dyn NiObject> {
+        Box::new(BhkListShape {
+            sub_shape_refs: refs.iter().map(|r| BlockRef(*r)).collect(),
+            material,
             filters: Vec::new(),
-        });
-        let mut visited = HashSet::new();
-        assert_eq!(
-            first_shape_material(&scene, BlockRef(0u32), &mut visited),
-            7,
-            "the container's own material wins when authored"
-        );
+        })
+    }
 
-        // A tree with nothing authored stays STONE (0) — the same value
-        // every non-NIF-derived body defaults to.
-        scene.blocks[0] = list_shape(vec![BlockRef(1u32)]);
-        scene.blocks[2] = sphere_shape(0.5);
-        let mut visited = HashSet::new();
-        assert_eq!(
-            first_shape_material(&scene, BlockRef(0u32), &mut visited),
-            0,
-            "an unauthored tree reduces to STONE"
-        );
+    #[test]
+    fn body_reduction_prefers_the_container_then_the_first_authored_child_on_skyrim() {
+        // Scene (Skyrim: 0 = NONE = not authored):
+        //   [0] BhkListShape { material 0, children [1, 2] }
+        //   [1] BhkSphereShape { material 0 }  (NONE — inherits the container's)
+        //   [2] BhkSphereShape { material 3 }
+        let mut scene = skyrim_scene();
+        scene.blocks.push(list_with(0, &[1, 2]));
+        scene.blocks.push(sphere_with(0));
+        scene.blocks.push(sphere_with(3));
+        let (leaves, body) = materials_of(&scene, 0);
+        assert_eq!(leaves, vec![0, 3]);
+        assert_eq!(body, 3, "the first non-NONE leaf answers when the container is unauthored");
+
+        // A container-authored material is the default of its unauthored
+        // leaves, so it leads the sequence (and the reduction).
+        scene.blocks[0] = list_with(7, &[1, 2]);
+        let (leaves, body) = materials_of(&scene, 0);
+        assert_eq!(leaves, vec![7, 3], "NONE leaf inherits the container's 7");
+        assert_eq!(body, 7, "the container's own material wins when authored");
+
+        // A tree with nothing authored stays 0 — the same value every
+        // non-NIF-derived body defaults to.
+        scene.blocks[0] = list_with(0, &[1]);
+        scene.blocks[2] = sphere_with(0);
+        let (leaves, body) = materials_of(&scene, 0);
+        assert_eq!(leaves, vec![0]);
+        assert_eq!(body, 0, "an unauthored tree reduces to 0");
     }
 
     #[test]
     fn shape_leaf_materials_match_resolve_order_and_inherit_containers() {
-        // Scene:
+        // Scene (Skyrim):
         //   [0] BhkListShape { material 0, children [1, 2] }
         //   [1] BhkSphereShape { material 3 }
         //   [2] BhkListShape  { material 5, children [3] }
         //   [3] BhkBoxShape   { material 0 }  — inherits the parent's 5
         // Leaves in resolve/collision_shape_to_parts order: [3, 5]; the
-        // body-level reduction is the first non-zero entry. This is the
+        // body-level reduction is the first authored entry. This is the
         // per-part mapping: `collision_shape_to_parts` emits one part per
         // leaf in the same order, so part i's collider carries leaf i's
         // material in its user-data.
-        let mut scene = NifScene::default();
-        scene.havok_scale = 1.0;
-        scene
-            .blocks
-            .push(list_shape(vec![BlockRef(1u32), BlockRef(2u32)]));
-        scene.blocks.push(Box::new(BhkSphereShape {
+        let mut scene = skyrim_scene();
+        scene.blocks.push(list_with(0, &[1, 2]));
+        scene.blocks.push(sphere_with(3));
+        scene.blocks.push(list_with(5, &[3]));
+        scene.blocks.push(box_with(0));
+        let (leaves, body) = materials_of(&scene, 0);
+        assert_eq!(leaves, vec![3, 5], "leaf order matches resolve order");
+        assert_eq!(body, 3, "the body-level reduction is the first authored leaf");
+    }
+
+    /// #5549 — on Oblivion and FO3/FNV `0` is `STONE`, a REAL material:
+    /// there is no "unset" value. A leaf authored STONE under a container
+    /// with a different material keeps STONE (it must not inherit), and a
+    /// `[STONE, WOOD]` body reports STONE, not the first non-zero WOOD.
+    #[test]
+    fn stone_zero_is_an_authored_material_on_oblivion_and_fo3_fnv() {
+        for bsver in [crate::version::bsver::OBLIVION, 34] {
+            // [0] List { material 5, children [1, 2] }
+            // [1] Sphere { material 0 = STONE, authored }
+            // [2] Sphere { material 3 = WOOD }
+            let mut scene = gamebryo_era_scene(bsver);
+            scene.blocks.push(list_with(5, &[1, 2]));
+            scene.blocks.push(sphere_with(0));
+            scene.blocks.push(sphere_with(3));
+            let (leaves, body) = materials_of(&scene, 0);
+            assert_eq!(
+                leaves,
+                vec![0, 3],
+                "bsver {bsver}: an authored STONE leaf must not inherit the container's 5"
+            );
+            assert_eq!(
+                body, 0,
+                "bsver {bsver}: [STONE, WOOD] reduces to its first leaf, STONE"
+            );
+        }
+    }
+
+    /// #5550 — the first drift branch: a multi-sphere with k >= 2 finite
+    /// spheres becomes k `Ball` parts. The material sequence must carry k
+    /// entries for it, or every later sibling takes its neighbour's
+    /// material ("the metal box reports wood").
+    #[test]
+    fn a_multi_sphere_contributes_one_material_per_ball_part() {
+        // [0] List { children [1, 2] }
+        // [1] MultiSphere (2 spheres, WOOD = 3)
+        // [2] Box (METAL = 7)
+        let mut scene = skyrim_scene();
+        scene.blocks.push(list_with(0, &[1, 2]));
+        scene.blocks.push(Box::new(BhkMultiSphereShape {
             material: 3,
-            radius: 0.5,
+            shape_property: [0; 3],
+            spheres: vec![[0.0, 0.0, 0.0, 0.5], [2.0, 0.0, 0.0, 0.5]],
         }));
-        scene.blocks.push(Box::new(BhkListShape {
-            sub_shape_refs: vec![BlockRef(3u32)],
-            material: 5,
-            filters: Vec::new(),
+        scene.blocks.push(box_with(7));
+        let (shape, leaves) =
+            resolve_shape_with_materials(&scene, BlockRef(0u32), &mut HashSet::new()).unwrap();
+        assert_eq!(collision_shape_leaf_count(&shape), 3, "Ball, Ball, Cuboid");
+        assert_eq!(leaves, vec![3, 3, 7], "the box keeps METAL, not the second ball's WOOD");
+    }
+
+    /// #5550 — drift branches 2-4: a container child that resolves to
+    /// `None` (a plane, a cycle, a multi-sphere with no finite sphere, a
+    /// non-finite primitive) contributes no leaf part, so it must contribute
+    /// no material entry either.
+    #[test]
+    fn children_that_resolve_to_none_contribute_no_material_entry() {
+        use crate::blocks::collision::BhkPlaneShape;
+        // [0] List { children [1, 2, 3, 4, 5, 0(self)] }
+        // [1] Box (3)
+        // [2] Plane  -> None
+        // [3] MultiSphere (no finite sphere) -> None
+        // [4] Sphere with a NaN radius -> None
+        // [5] Box (7)
+        let mut scene = skyrim_scene();
+        scene.blocks.push(list_with(0, &[1, 2, 3, 4, 5, 0]));
+        scene.blocks.push(box_with(3));
+        scene.blocks.push(Box::new(BhkPlaneShape {
+            material: 9,
+            plane_normal: [0.0, 0.0, 1.0],
+            plane_constant: 0.0,
+            aabb_half_extents: [1.0; 4],
+            aabb_center: [0.0; 4],
         }));
-        scene.blocks.push(Box::new(BhkBoxShape {
+        scene.blocks.push(Box::new(BhkMultiSphereShape {
+            material: 11,
+            shape_property: [0; 3],
+            spheres: vec![[f32::NAN, 0.0, 0.0, 0.5]],
+        }));
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 13,
+            radius: f32::NAN,
+        }));
+        scene.blocks.push(box_with(7));
+        let (shape, leaves) =
+            resolve_shape_with_materials(&scene, BlockRef(0u32), &mut HashSet::new()).unwrap();
+        assert_eq!(collision_shape_leaf_count(&shape), 2, "only the two boxes survive");
+        assert_eq!(leaves, vec![3, 7], "no entry for the plane, multi-sphere, NaN sphere or cycle");
+    }
+
+    /// #5550 — the invariant behind the above: a subtree that fails AFTER
+    /// pushing (a `bhkTransformShape` whose matrix is non-finite wraps a
+    /// perfectly good child) leaves the sequence exactly as it found it.
+    #[test]
+    fn a_failed_subtree_leaves_the_material_sequence_untouched() {
+        // [0] List { children [1, 2] }
+        // [1] Transform (NaN matrix) -> Box (5): child resolves, wrapper fails
+        // [2] Box (7)
+        let mut scene = skyrim_scene();
+        scene.blocks.push(list_with(0, &[1, 3]));
+        scene.blocks.push(Box::new(BhkTransformShape {
+            shape_ref: BlockRef(2u32),
             material: 0,
             radius: 0.0,
-            dimensions: [1.0, 1.0, 1.0],
+            transform: [[f32::NAN; 4]; 4],
         }));
-        let mut visited = HashSet::new();
-        let mut leaves = Vec::new();
-        shape_leaf_materials(&scene, BlockRef(0u32), &mut visited, 0, &mut leaves);
-        assert_eq!(leaves, vec![3, 5], "leaf order matches resolve order");
-
-        let mut visited = HashSet::new();
-        assert_eq!(
-            first_shape_material(&scene, BlockRef(0u32), &mut visited),
-            3,
-            "the body-level reduction is the first non-zero leaf"
+        scene.blocks.push(box_with(5));
+        scene.blocks.push(box_with(7));
+        let (shape, leaves) =
+            resolve_shape_with_materials(&scene, BlockRef(0u32), &mut HashSet::new()).unwrap();
+        assert_eq!(collision_shape_leaf_count(&shape), 1);
+        assert_eq!(leaves, vec![7], "the failed wrapper's child material is not left behind");
+        // A root that fails outright resolves to nothing and returns no sequence.
+        let mut root_fails = skyrim_scene();
+        root_fails.blocks.push(list_with(0, &[0]));
+        assert!(
+            resolve_shape_with_materials(&root_fails, BlockRef(0u32), &mut HashSet::new())
+                .is_none()
         );
     }
 

@@ -35,7 +35,7 @@ mod ragdoll;
 mod shape;
 
 pub use ragdoll::extract_ragdoll;
-use shape::resolve_shape;
+use shape::{resolve_shape, resolve_shape_with_materials};
 
 /// Which kind of collision authoring one block represents — the
 /// discriminator that lets a consumer tell "no collision authored" apart
@@ -355,7 +355,11 @@ fn extract_from_classic(
 
     let scale = scene.havok_scale;
     let mut visited = HashSet::new();
-    let Some(mut shape) = resolve_shape(scene, body.shape_ref, &mut visited) else {
+    // #5550 — the shape and its per-leaf surface materials come from ONE
+    // walk, so the sequence is aligned with the leaf order by construction.
+    let Some((mut shape, leaf_materials)) =
+        resolve_shape_with_materials(scene, body.shape_ref, &mut visited)
+    else {
         log::debug!(
             "extract_from_classic: body {body_idx}'s shape_ref failed to resolve to a CollisionShape \
              (unsupported/corrupt shape tree — see resolve_shape debug logs)"
@@ -450,19 +454,15 @@ fn extract_from_classic(
         angular_damping: body.angular_damping,
         collidable,
         // Body-level reduction of the shape tree's authored Havok material
-        // (see `first_shape_material`) — the surface-aware footsteps /
+        // (see `body_surface_material`) — the surface-aware footsteps /
         // impacts impacts consumer reads "what kind of ground this body is".
-        surface_material: shape::first_shape_material(scene, body.shape_ref, &mut visited),
+        surface_material: shape::body_surface_material(scene, &leaf_materials),
         // Per-part materials, leaf-aligned with `collision_shape_to_parts`'s
         // output order, so a compound body whose bhk children carry
         // different materials puts each part's own material into its
         // collider's user-data (Wave 4's "map it per triangle" step,
         // at the per-part granularity the flatten preserves).
-        part_surface_materials: {
-            let mut leaves = Vec::new();
-            shape::shape_leaf_materials(scene, body.shape_ref, &mut visited, 0, &mut leaves);
-            leaves.into_iter().collect()
-        },
+        part_surface_materials: leaf_materials.into_boxed_slice(),
     };
 
     Some((shape, body_data))
@@ -820,10 +820,10 @@ mod dispatch_coverage_tests {
     /// `shape.rs`'s test module names `Bhk…Shape` types in comments and
     /// fixtures and must not satisfy this scan.
     ///
-    /// #5573 — and only the `resolve_shape_inner` body: `shape.rs` also
-    /// holds the surface-material walker (`shape_leaf_materials_inner`),
-    /// a second `downcast_ref` chain over the same shapes, which would
-    /// otherwise mark a shape resolved after its real resolve arm is
+    /// #5573 — and only the `resolve_shape_inner` body: another production
+    /// fn in `shape.rs` with its own `downcast_ref` chain (the separate
+    /// surface-material walker that #5550 merged into the resolver was one)
+    /// must not mark a shape resolved after its real resolve arm is
     /// deleted. An absent `resolve_shape_inner` yields an empty set so the
     /// guard fails loudly instead of passing vacuously.
     fn resolved_shape_structs_in(src: &str) -> HashSet<String> {
