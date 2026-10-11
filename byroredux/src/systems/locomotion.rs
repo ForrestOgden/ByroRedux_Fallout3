@@ -356,18 +356,42 @@ pub(crate) fn pop_reached_waypoint(new_pos: Vec3, waypoints: &mut VecDeque<Vec3>
 pub(crate) fn step_along_waypoints(
     current: Vec3,
     current_rotation: Quat,
-    mut waypoints: VecDeque<Vec3>,
+    waypoints: VecDeque<Vec3>,
     goal: Vec3,
     dt: f32,
     speed: f32,
     physics: Option<&byroredux_physics::PhysicsWorld>,
 ) -> (Vec3, Option<Quat>, VecDeque<Vec3>) {
+    let (new_pos, rotation, waypoints, _blocked) = step_along_waypoints_detailed(
+        current,
+        current_rotation,
+        waypoints,
+        goal,
+        dt,
+        speed,
+        physics,
+    );
+    (new_pos, rotation, waypoints)
+}
+
+/// [`step_along_waypoints`], plus the underlying step's `blocked` flag (see
+/// [`step_toward_detailed`]) — for movers that must notice a KCC-blocked
+/// walk and give up on it (#5452) rather than grinding into the obstacle.
+pub(crate) fn step_along_waypoints_detailed(
+    current: Vec3,
+    current_rotation: Quat,
+    mut waypoints: VecDeque<Vec3>,
+    goal: Vec3,
+    dt: f32,
+    speed: f32,
+    physics: Option<&byroredux_physics::PhysicsWorld>,
+) -> (Vec3, Option<Quat>, VecDeque<Vec3>, bool) {
     let step_point = waypoints.front().copied().unwrap_or(goal);
     let step_xz = Vec3::new(step_point.x, current.y, step_point.z);
-    let (new_pos, rotation) =
-        step_toward(current, current_rotation, step_xz, dt, speed, physics);
+    let (new_pos, rotation, blocked) =
+        step_toward_detailed(current, current_rotation, step_xz, dt, speed, physics);
     pop_reached_waypoint(new_pos, &mut waypoints);
-    (new_pos, rotation, waypoints)
+    (new_pos, rotation, waypoints, blocked)
 }
 
 #[cfg(test)]

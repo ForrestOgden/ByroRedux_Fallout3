@@ -27,10 +27,14 @@
 //! bed's marker. The fallback logs at debug so a live session can see
 //! which arm fired.
 //!
-//! The walk is the same straight-line `step_toward` locomotion the
-//! force-greet bridge uses (KCC-backed, single resident NAVM tile) —
-//! the v0 pathing caveat the other M42 procedures document applies here
-//! too. Seating is one-shot: `Seated` skips the actor on later ticks,
+//! The walk is the shared KCC-backed locomotion step the other frozen-goal
+//! movers use (#5452): `navmesh_path::cached_walk_step` routes it along the
+//! actor's cached single-resident-tile `NavPath` (straight at the goal when
+//! no tile covers it — the v0 pathing caveat the other M42 procedures
+//! document), and the KCC's `blocked` flag is consumed: an actor held
+//! against an obstacle for [`LOCOMOTION_STUCK_REPICK_SECS`](crate::systems::locomotion::LOCOMOTION_STUCK_REPICK_SECS) while inside
+//! its seat-search radius stops walking and attempts the seat pick from
+//! where it stands, instead of grinding in place forever. Seating is one-shot: `Seated` skips the actor on later ticks,
 //! and the package handover's `clear_ambient_behavior` un-seats
 //! (restoring the pre-park animation, #3333) exactly as Sandbox does.
 //!
@@ -114,6 +118,9 @@ struct EatSleepScratch {
     seats: FrameSeats,
     /// Seconds until an arrived-but-unseated actor may attempt again.
     seat_retry: HashMap<EntityId, f32>,
+    /// Continuous KCC-blocked walk seconds per walking actor (#5452) —
+    /// runtime-only, the `WalkStuckTimer` role for this mover.
+    stuck_secs: HashMap<EntityId, f32>,
 }
 
 /// Which procedure an actor carries this tick — collected first so the
@@ -185,12 +192,19 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
     }
     if actors.is_empty() {
         scratch.seat_retry.clear();
+        scratch.stuck_secs.clear();
         return;
     }
-    // Drop retry clocks of actors that seated, changed procedure or left.
+    // Drop retry / stuck clocks of actors that seated, changed procedure
+    // or left.
     if !scratch.seat_retry.is_empty() {
         scratch
             .seat_retry
+            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
+    }
+    if !scratch.stuck_secs.is_empty() {
+        scratch
+            .stuck_secs
             .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
     }
 
@@ -223,6 +237,19 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
             .map(|transform| transform.translation)
             .unwrap_or_default();
         let flat = Vec3::new(destination.x - current.x, 0.0, destination.z - current.z);
+        // Arrived: seat at the nearest matching marker. Sleep prefers
+        // sleep markers, falling back to sit markers when the cell's
+        // beds author none; Eat sits. #5500 — an In-Cell package's
+        // location IS the resident cell (the GECK greys out its radius),
+        // so its search spans the whole cell rather than 512 BU of
+        // wherever the actor happens to stand: every one of the 70 FNV
+        // In-Cell packages authors radius 0, and a sleeper whose bed sat
+        // further than the default radius took the nearest chair or
+        // nothing.
+        let search_radius = match location {
+            EatSleepLocation::InCell(_) => f32::INFINITY,
+            _ => radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
+        };
         if flat.length() > ARRIVE_RADIUS {
             // Still walking — one KCC-backed step toward the destination.
             // #5373 — the step writes `Transform` (the authoritative
@@ -239,47 +266,42 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 .get::<Transform>(npc)
                 .map(|transform| transform.rotation)
                 .unwrap_or_default();
-            // #5371 — `PhysicsWorld` is a lock-order sink (nothing
-            // acquired under it, docs/engine/ecs.md): take it in its
-            // own scope for the step computation, then apply the write
-            // after it drops. The single-block shape held the guard
-            // across the `Transform` write, inverting the order
-            // production records.
-            let (new_pos, new_rotation) = {
-                let physics_guard =
-                    world.try_resource::<byroredux_physics::PhysicsWorld>();
-                crate::systems::locomotion::step_toward(
-                    current,
-                    rotation,
-                    destination,
-                    dt,
-                    speed,
-                    physics_guard.as_deref(),
-                )
-            };
+            // #5452 — routed along the cached NAVM path like Travel (which
+            // also lines `destination.y` up with the ground contract), and
+            // the KCC's `blocked` flag feeds the stuck clock. #5371 —
+            // `cached_walk_step` keeps `PhysicsWorld` a lock-order sink: the
+            // guard is its own scope, the `Transform` write comes after.
+            let step = super::navmesh_path::cached_walk_step(
+                world,
+                npc,
+                current,
+                rotation,
+                destination,
+                0.0,
+                dt,
+                speed,
+            );
             if let Some(mut transforms) = world.query_mut::<Transform>() {
                 if let Some(transform) = transforms.get_mut(npc) {
-                    transform.translation = new_pos;
-                    if let Some(rotation) = new_rotation {
+                    transform.translation = step.position;
+                    if let Some(rotation) = step.rotation {
                         transform.rotation = rotation;
                     }
                 }
             }
-            continue;
+            let stuck = scratch.stuck_secs.entry(npc).or_insert(0.0);
+            let gave_up =
+                crate::systems::locomotion::advance_stuck_repick(stuck, step.blocked, dt);
+            // Held against an obstacle inside the seat-search radius: the
+            // destination is unreachable but a marker may well be in
+            // range, so try the seat from here. Anywhere else keep
+            // walking (or grinding — a further give-up has no better
+            // option than the next stuck window).
+            if !(gave_up && flat.length() <= search_radius) {
+                continue;
+            }
         }
-        // Arrived: seat at the nearest matching marker. Sleep prefers
-        // sleep markers, falling back to sit markers when the cell's
-        // beds author none; Eat sits. #5500 — an In-Cell package's
-        // location IS the resident cell (the GECK greys out its radius),
-        // so its search spans the whole cell rather than 512 BU of
-        // wherever the actor happens to stand: every one of the 70 FNV
-        // In-Cell packages authors radius 0, and a sleeper whose bed sat
-        // further than the default radius took the nearest chair or
-        // nothing.
-        let search_radius = match location {
-            EatSleepLocation::InCell(_) => f32::INFINITY,
-            _ => radius.unwrap_or(super::sandbox::SEAT_SEARCH_RADIUS),
-        };
+        scratch.stuck_secs.remove(&npc);
         // #5449 — an arrived actor that failed to seat waits out its
         // retry clock instead of re-gathering the world's furniture
         // every frame.
@@ -291,6 +313,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
         }
         if seat_at_marker(world, npc, kind, Some(search_radius), &mut scratch.seats) {
             scratch.seat_retry.remove(&npc);
+            super::navmesh_path::clear_cached_path(world, npc);
         } else {
             scratch.seat_retry.insert(npc, SEAT_RETRY_SECS);
         }
@@ -1061,5 +1084,73 @@ mod tests {
         eat_sleep_system_inner(&world, SEAT_RETRY_SECS, &mut scratch);
         assert!(world.get::<Seated>(actor).is_some(), "the retry seats the actor");
         assert!(scratch.seat_retry.is_empty(), "a seated actor keeps no retry clock");
+    }
+
+    /// A floor topped at y=0 plus a tall wall across x=0 — a straight line
+    /// from x<0 to x>0 crosses solid architecture the capsule cannot step.
+    fn walled_physics() -> byroredux_physics::PhysicsWorld {
+        let mut pw = byroredux_physics::PhysicsWorld::new();
+        pw.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        pw.spawn_fixed_cuboid(Vec3::new(10.0, 300.0, 2000.0), Vec3::new(0.0, 300.0, 0.0));
+        pw
+    }
+
+    /// #5452 — an Eat actor whose straight line to the authored furniture
+    /// anchor crosses a wall used to press into it forever (`blocked`
+    /// discarded, completion a pure distance test), never reaching
+    /// `seat_at_marker`. Held against the wall for the stuck window while
+    /// inside its seat-search radius it now seats at the in-range chair
+    /// from where it stands.
+    #[test]
+    fn walk_blocked_by_a_wall_gives_up_and_seats_within_the_search_radius() {
+        let (mut world, actor) = setup();
+        world.insert_resource(walled_physics());
+        world.insert_resource(SandboxSitClip(Some((7, 0.5))));
+        let start = Vec3::new(-400.0, 0.0, 0.0);
+        world.insert(actor, GlobalTransform { translation: start, ..Default::default() });
+        world.insert(actor, Transform { translation: start, ..Default::default() });
+        // The authored anchor sits behind the wall: 800 BU away at the
+        // start, 434 BU from where the capsule stops (inside the 512 radius).
+        world.insert(actor, EditorPlacement { translation: Vec3::new(400.0, 0.0, 0.0) });
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearEditorLocation,
+                form_id: 0xAB,
+            },
+        );
+        let chair = world.spawn();
+        world.insert(
+            chair,
+            Furniture {
+                markers: vec![FurnitureMarker {
+                    local_offset: [0.0, 0.0, 0.0],
+                    heading_z_radians: None,
+                    animation_type: 1,
+                    kind: FurnitureMarkerKind::Sit,
+                }],
+            },
+        );
+        world.insert(
+            chair,
+            GlobalTransform { translation: Vec3::new(-200.0, 0.0, 0.0), ..Default::default() },
+        );
+
+        let mut tick = make_eat_sleep_system();
+        for _ in 0..200 {
+            // Stand-in for transform propagation: the derived global
+            // follows the authoritative local.
+            let local = world.get::<Transform>(actor).expect("transform").translation;
+            world.insert(actor, GlobalTransform { translation: local, ..Default::default() });
+            tick(&world, 0.1);
+            if world.get::<Seated>(actor).is_some() {
+                break;
+            }
+        }
+        let seated = world
+            .get::<Seated>(actor)
+            .expect("a wall-blocked diner must give up the walk and seat in range");
+        assert_eq!(seated.furniture, chair);
     }
 }

@@ -13,13 +13,22 @@
 //! [`ForceGreetDirective`] bridge the `dialogue.forcegreet` console
 //! door stamps, which quests/aliases adopt when those installers
 //! carry one.
+//!
+//! #5452 — the approach rides `navmesh_path::cached_walk_step` (the cached
+//! resident-tile `NavPath` the frozen/live-goal movers share, repathed on
+//! the Follow threshold since the player moves) and consumes the KCC's
+//! `blocked` flag: a greeter held against architecture for
+//! [`LOCOMOTION_STUCK_REPICK_SECS`](crate::systems::locomotion::LOCOMOTION_STUCK_REPICK_SECS) opens the conversation in place instead
+//! of grinding at the wall forever with the directive never consumed.
 
+use crate::systems::locomotion::advance_stuck_repick;
 use crate::systems::npc_dialogue::forcegreet_open;
 use byroredux_core::ecs::components::{GlobalTransform, Transform};
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_core::math::{Quat, Vec3};
+use std::collections::HashMap;
 
 /// Open distance in Bethesda units — vanilla's force-greet radius family
 /// is 100-200; this is the shared default both the console door and the
@@ -47,14 +56,14 @@ impl Component for ForceGreetDirective {
 /// System: walk directive carriers toward the player; on arrival open
 /// the conversation through the same selection the activation path
 /// uses. Registered in `Stage::Update` after the ambient package
-/// system. Movement rides the shared `step_toward` locomotion helper
-/// (KCC-backed, navmesh-routing when a resident tile covers the actor).
+/// system. Movement rides the shared KCC-backed locomotion step,
+/// navmesh-routing when a resident tile covers the actor (#5452).
 ///
 /// Test-facing form with the walk step enabled; production registers
 /// [`make_forcegreet_system`].
 #[cfg(test)]
 pub(crate) fn forcegreet_system(world: &World, dt: f32) {
-    forcegreet_system_inner(world, dt, true);
+    forcegreet_system_inner(world, dt, true, &mut HashMap::new());
 }
 
 /// #5430 — production constructor. `walk_enabled` is the
@@ -64,17 +73,29 @@ pub(crate) fn forcegreet_system(world: &World, dt: f32) {
 /// The switch is resolved once at registration, like the PostUpdate
 /// locomotion block's.
 pub(crate) fn make_forcegreet_system(walk_enabled: bool) -> impl FnMut(&World, f32) + Send + Sync {
-    move |world: &World, dt: f32| forcegreet_system_inner(world, dt, walk_enabled)
+    // Continuous KCC-blocked approach seconds per greeter (#5452) —
+    // runtime-only scratch, the `WalkStuckTimer` role for this mover.
+    let mut stuck_secs: HashMap<EntityId, f32> = HashMap::new();
+    move |world: &World, dt: f32| {
+        forcegreet_system_inner(world, dt, walk_enabled, &mut stuck_secs)
+    }
 }
 
-fn forcegreet_system_inner(world: &World, dt: f32, walk_enabled: bool) {
+fn forcegreet_system_inner(
+    world: &World,
+    dt: f32,
+    walk_enabled: bool,
+    stuck_secs: &mut HashMap<EntityId, f32>,
+) {
     let directives: Vec<(EntityId, ForceGreetDirective)> = world
         .query::<ForceGreetDirective>()
         .map(|query| query.iter().map(|(npc, d)| (npc, *d)).collect())
         .unwrap_or_default();
     if directives.is_empty() {
+        stuck_secs.clear();
         return;
     }
+    stuck_secs.retain(|npc, _| directives.iter().any(|(carrier, _)| carrier == npc));
     let Some(player) = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|player| player.0)
@@ -144,25 +165,38 @@ fn forcegreet_system_inner(world: &World, dt: f32, walk_enabled: bool) {
                 .get::<crate::components::WalkSpeed>(npc)
                 .map(|speed| speed.0)
                 .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
-            let target = Vec3::new(player_pos.x, current.y, player_pos.z);
             let rotation = world
                 .get::<Transform>(npc)
                 .map(|t| t.rotation)
                 .unwrap_or_default();
-            // Pass 1b — physics alone: nothing else is acquired under
-            // the resource guard.
-            let physics_guard = world.try_resource::<byroredux_physics::PhysicsWorld>();
-            let (new_pos, new_rotation) = crate::systems::locomotion::step_toward(
+            // Pass 1b — the physics guard is scoped inside the helper:
+            // nothing else is acquired under the resource guard.
+            let step = crate::systems::navmesh_path::cached_walk_step(
+                world,
+                npc,
                 current,
                 rotation,
-                target,
+                player_pos,
+                crate::systems::follow::FOLLOW_REPATH_THRESHOLD,
                 dt,
                 speed,
-                physics_guard.as_deref(),
             );
-            steps.push((npc, Step::Walk { new_pos, rotation: new_rotation }));
-            continue;
+            let timer = stuck_secs.entry(npc).or_insert(0.0);
+            if !advance_stuck_repick(timer, step.blocked, dt) {
+                steps.push((
+                    npc,
+                    Step::Walk {
+                        new_pos: step.position,
+                        rotation: step.rotation,
+                    },
+                ));
+                continue;
+            }
+            // Held against architecture for the whole stuck window: no
+            // closer approach exists, so greet from here rather than
+            // pressing into the obstacle with the directive pending.
         }
+        stuck_secs.remove(&npc);
         match open_partner {
             // #5392 — already in conversation with this greeter: the
             // greeting has nothing left to open, so it is consumed.
@@ -214,6 +248,8 @@ fn forcegreet_system_inner(world: &World, dt: f32, walk_enabled: bool) {
         if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
             for npc in opened {
                 directives.remove(npc);
+                stuck_secs.remove(&npc);
+                crate::systems::navmesh_path::clear_cached_path(world, npc);
             }
         }
     }
@@ -445,5 +481,58 @@ mod tests {
         forcegreet_system(&world, 0.5);
         let moved = world.get::<Transform>(npc).expect("transform").translation;
         assert_ne!(moved.x, 400.0, "the step computed through the physics world");
+    }
+
+    /// #5452 — a greeter whose straight line to the player crosses a wall
+    /// used to grind into it forever (`blocked` discarded), the directive
+    /// never opening or being consumed. Held against the wall for
+    /// [`LOCOMOTION_STUCK_REPICK_SECS`] it now greets from where it stands
+    /// (no index here, so the open fails and #5376 consumes the directive —
+    /// a consumed directive proves the open was attempted).
+    #[test]
+    fn walk_blocked_by_a_wall_opens_the_greeting_in_place() {
+        let mut world = World::new();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        let mut pw = byroredux_physics::PhysicsWorld::new();
+        pw.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        pw.spawn_fixed_cuboid(Vec3::new(10.0, 300.0, 2000.0), Vec3::new(0.0, 300.0, 0.0));
+        world.insert_resource(pw);
+
+        let player = world.spawn();
+        let player_pos = Vec3::new(400.0, 0.0, 0.0);
+        world.insert(player, GlobalTransform { translation: player_pos, ..Default::default() });
+        world.insert(player, Transform { translation: player_pos, ..Default::default() });
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+
+        let npc = world.spawn();
+        let start = Vec3::new(-400.0, 0.0, 0.0);
+        world.insert(npc, GlobalTransform { translation: start, ..Default::default() });
+        world.insert(npc, Transform { translation: start, ..Default::default() });
+        world.insert(
+            npc,
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS },
+        );
+
+        let mut tick = make_forcegreet_system(true);
+        let mut consumed_after = None;
+        for frame in 0..200 {
+            let local = world.get::<Transform>(npc).expect("transform").translation;
+            world.insert(npc, GlobalTransform { translation: local, ..Default::default() });
+            tick(&world, 0.1);
+            if world.get::<ForceGreetDirective>(npc).is_none() {
+                consumed_after = Some(frame);
+                break;
+            }
+        }
+        assert!(
+            consumed_after.is_some(),
+            "a wall-blocked greeter must give up the approach and greet in place"
+        );
+        assert!(
+            world.get::<Transform>(npc).expect("transform").translation.x < 0.0,
+            "the greeter never passes the wall"
+        );
     }
 }

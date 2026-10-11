@@ -64,7 +64,9 @@
 //! confirmed against real data.
 
 use byroredux_core::math::coord::zup_to_yup_pos;
-use byroredux_core::math::Vec3;
+use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::World;
+use byroredux_core::math::{Quat, Vec3};
 use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -713,6 +715,91 @@ pub(crate) fn resolve_cached_waypoints(
                 .unwrap_or_default();
             (goal, waypoints)
         }
+    }
+}
+
+/// Result of [`cached_walk_step`]; the caller applies it to the actor.
+pub(crate) struct CachedWalkStep {
+    pub(crate) position: Vec3,
+    pub(crate) rotation: Option<Quat>,
+    /// The KCC delivered less than [`super::locomotion::LOCOMOTION_BLOCKED_FRACTION`]
+    /// of the requested move.
+    pub(crate) blocked: bool,
+}
+
+/// One walk step of a single-actor mover (force-greet, Eat/Sleep) toward
+/// `goal`, routed through the actor's cached resident-tile [`NavPath`]
+/// exactly as Travel/Follow do (#5452): resolve-or-reuse the cache, step
+/// toward the next waypoint (straight at `goal` when no path exists), and
+/// write the advanced queue back. The caller applies `position` /
+/// `rotation` to the actor's `Transform` itself.
+///
+/// Lock discipline: the `NavmeshTile` / `NavPath` read guards drop before
+/// the `PhysicsWorld` guard is taken, which drops before the `NavPath`
+/// write — `PhysicsWorld` stays a lock-order sink (docs/engine/ecs.md).
+/// `goal.y` need not equal `current.y`: the waypoint step re-derives Y from
+/// the ground.
+pub(crate) fn cached_walk_step(
+    world: &World,
+    npc: EntityId,
+    current: Vec3,
+    rotation: Quat,
+    goal: Vec3,
+    repath_threshold: f32,
+    dt: f32,
+    speed: f32,
+) -> CachedWalkStep {
+    use crate::components::{navmesh_residency_generation, NavPath, NavmeshTile};
+    let residency_generation = navmesh_residency_generation(world);
+    let (effective_goal, waypoints) = {
+        let tiles = world.query::<NavmeshTile>();
+        let cached_q = world.query::<NavPath>();
+        let cached = cached_q.as_ref().and_then(|q| q.get(npc));
+        resolve_cached_waypoints(
+            cached,
+            tiles.as_ref(),
+            current,
+            goal,
+            repath_threshold,
+            residency_generation,
+        )
+    };
+    let (position, rotation, waypoints, blocked) = {
+        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
+        super::locomotion::step_along_waypoints_detailed(
+            current,
+            rotation,
+            waypoints,
+            goal,
+            dt,
+            speed,
+            physics.as_deref(),
+        )
+    };
+    // Cached even when empty: "no resident-tile path for this goal" is a
+    // meaningful negative result (see `resolve_cached_waypoints`).
+    if let Some(mut nav_paths) = world.query_mut::<NavPath>() {
+        nav_paths.insert(
+            npc,
+            NavPath {
+                goal: effective_goal,
+                residency_generation,
+                waypoints,
+            },
+        );
+    }
+    CachedWalkStep {
+        position,
+        rotation,
+        blocked,
+    }
+}
+
+/// Drop the actor's cached path once its walk is over, so a stale queue
+/// never outlives the procedure that owned it.
+pub(crate) fn clear_cached_path(world: &World, npc: EntityId) {
+    if let Some(mut nav_paths) = world.query_mut::<crate::components::NavPath>() {
+        nav_paths.remove(npc);
     }
 }
 

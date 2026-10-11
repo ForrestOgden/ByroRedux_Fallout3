@@ -74,7 +74,7 @@ const FOLLOW_DEFAULT_DISTANCE: f32 = 128.0;
 /// `travel_system`'s exact-match reuse. Engine default, not derived from
 /// content — chosen as half of `FOLLOW_DEFAULT_DISTANCE`, the scale this
 /// system already reasons in.
-const FOLLOW_REPATH_THRESHOLD: f32 = 64.0;
+pub(crate) const FOLLOW_REPATH_THRESHOLD: f32 = 64.0;
 
 /// Resolve this actor's follow target once, on first sight. `None` when
 /// there's no `target_form_id` or resolution fails — both are terminal
