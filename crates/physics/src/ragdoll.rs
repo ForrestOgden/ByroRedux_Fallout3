@@ -418,7 +418,18 @@ pub fn build_ragdoll(
         // pivots* by it (`scaled_pivots`); leaving the shape unscaled meant a
         // scaled actor's limb colliders were sized for bind proportions while
         // their articulation was sized for the seed — a self-inconsistent rig.
-        let parts = collision_shape_to_parts(&ragdoll_dynamic_shape(&b.shape), b.scale, cfg);
+        // Bone colliders carry the STONE (0) surface material: bones are
+        // not footstep surfaces, and the ragdoll template's authored
+        // body materials are not threaded through the spec yet (the
+        // material walk exists — `shape_leaf_materials` — so carrying
+        // them is a spec-field addition when a consumer needs it).
+        let parts = collision_shape_to_parts(
+            &ragdoll_dynamic_shape(&b.shape),
+            b.scale,
+            cfg,
+            0,
+            &[],
+        );
         let part_mass = b.mass.max(1e-3) / parts.len() as f32;
         // #2861 — the anti-leak contact margin `register_newcomers` applies to
         // every other collider in the engine. Rapier sums the skin of both
@@ -434,7 +445,7 @@ pub fn build_ragdoll(
             ..
         } = *pw;
         let mut first_collider = None;
-        for (iso, shape) in parts {
+        for (iso, shape, _surface_material) in parts {
             // Havok-parity coefficient combine: see
             // `config::CONTACT_COEFFICIENT_COMBINE_RULE`.
             let col = ColliderBuilder::new(shape)

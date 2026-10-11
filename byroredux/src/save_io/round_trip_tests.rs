@@ -652,6 +652,7 @@ fn rigid_body_data_survives_save_load_round_trip() {
             angular_damping: 0.05,
             collidable: true,
             surface_material: 0,
+            part_surface_materials: Box::new([]),
         },
     );
 

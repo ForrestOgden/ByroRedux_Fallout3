@@ -451,9 +451,19 @@ fn extract_from_classic(
         collidable,
         // Body-level reduction of the shape tree's authored Havok material
         // (see `first_shape_material`) — the surface-aware footsteps /
-        // impacts consumer reads "what kind of ground this body is".
+        // impacts impacts consumer reads "what kind of ground this body is".
         surface_material: shape::first_shape_material(scene, body.shape_ref, &mut visited)
             as u8,
+        // Per-part materials, leaf-aligned with `collision_shape_to_parts`'s
+        // output order, so a compound body whose bhk children carry
+        // different materials puts each part's own material into its
+        // collider's user-data (Wave 4's "map it per triangle" step,
+        // at the per-part granularity the flatten preserves).
+        part_surface_materials: {
+            let mut leaves = Vec::new();
+            shape::shape_leaf_materials(scene, body.shape_ref, &mut visited, 0, &mut leaves);
+            leaves.into_iter().map(|m| m as u8).collect()
+        },
     };
 
     Some((shape, body_data))

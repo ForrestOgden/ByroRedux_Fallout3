@@ -962,7 +962,7 @@ mod tests {
             player,
             RigidBodyData {
                 motion_type: MotionType::CharacterKinematic,
-                ..RigidBodyData::STATIC
+                ..RigidBodyData::static_body()
             },
         );
         world.insert_resource(crate::systems::PlayerEntity(Some(player)));
@@ -976,7 +976,7 @@ mod tests {
                 half_extents: Vec3::new(10.0, 300.0, 300.0),
             },
         );
-        world.insert(wall, RigidBodyData::STATIC);
+        world.insert(wall, RigidBodyData::static_body());
         assert_eq!(
             byroredux_physics::register_newcomers_and_refresh_queries(&world),
             2,

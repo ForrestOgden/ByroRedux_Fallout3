@@ -136,19 +136,45 @@ pub fn collision_shape_to_parts(
     shape: &CollisionShape,
     scale: f32,
     cfg: &ContactConfig,
-) -> Vec<(Pose, SharedShape)> {
-    let mut out: Vec<(Pose, SharedShape)> = Vec::new();
+    default_surface_material: u8,
+    leaf_surface_materials: &[u8],
+) -> Vec<(Pose, SharedShape, u8)> {
+    let mut out: Vec<(Pose, SharedShape, u8)> = Vec::new();
+    let mut leaf_index = 0usize;
     flatten_to_parts(
         shape,
         Pose::IDENTITY,
         sanitize_scale(scale),
         cfg,
+        default_surface_material,
+        leaf_surface_materials,
+        &mut leaf_index,
         &mut out,
     );
     if out.is_empty() {
-        out.push((Pose::IDENTITY, SharedShape::ball(1e-3)));
+        out.push((
+            Pose::IDENTITY,
+            SharedShape::ball(1e-3),
+            default_surface_material,
+        ));
     }
     out
+}
+
+/// The surface material one leaf part carries: the authored per-leaf entry
+/// when the producer supplies the leaf-aligned sequence
+/// (`RigidBodyData::part_surface_materials`, derived from the bhk shape
+/// tree), else the caller's body-level default. Advancing `leaf_index`
+/// keeps the sequence aligned with the depth-first part order
+/// `flatten_to_parts` emits.
+fn leaf_surface_material(
+    leaf_materials: &[u8],
+    default: u8,
+    leaf_index: &mut usize,
+) -> u8 {
+    let material = leaf_materials.get(*leaf_index).copied().unwrap_or(default);
+    *leaf_index += 1;
+    material
 }
 
 /// Recursively walk a `CollisionShape` tree, composing transforms as
@@ -171,7 +197,10 @@ fn flatten_to_parts(
     parent_iso: Pose,
     scale: f32,
     cfg: &ContactConfig,
-    out: &mut Vec<(Pose, SharedShape)>,
+    default_surface_material: u8,
+    leaf_surface_materials: &[u8],
+    leaf_index: &mut usize,
+    out: &mut Vec<(Pose, SharedShape, u8)>,
 ) {
     match shape {
         CollisionShape::Compound { children } => {
@@ -197,13 +226,23 @@ fn flatten_to_parts(
                 let safe_t = if t.is_finite() { *t } else { Vec3::ZERO };
                 let safe_r = if r.is_finite() { *r } else { Quat::IDENTITY };
                 let composed = parent_iso * pose_from_trs(safe_t * scale, safe_r);
-                flatten_to_parts(child, composed, scale, cfg, out);
+                flatten_to_parts(
+                    child,
+                    composed,
+                    scale,
+                    cfg,
+                    default_surface_material,
+                    leaf_surface_materials,
+                    leaf_index,
+                    out,
+                );
             }
         }
         CollisionShape::Ball { radius } => {
             out.push((
                 parent_iso,
                 SharedShape::ball(clamp_shape_extent(*radius * scale)),
+                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
             ));
         }
         CollisionShape::Cuboid { half_extents } => {
@@ -234,6 +273,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(half_extents.y * scale),
                     clamp_shape_extent(half_extents.z * scale),
                 ),
+                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
             ));
         }
         CollisionShape::Capsule {
@@ -246,6 +286,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(*half_height * scale),
                     clamp_shape_extent(*radius * scale),
                 ),
+                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
             ));
         }
         CollisionShape::Cylinder {
@@ -258,6 +299,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(*half_height * scale),
                     clamp_shape_extent(*radius * scale),
                 ),
+                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
             ));
         }
         CollisionShape::ConvexHull { vertices } => {
@@ -297,7 +339,11 @@ fn flatten_to_parts(
                     SharedShape::ball(1e-3)
                 }),
             };
-            out.push((parent_iso, shape));
+            out.push((
+                parent_iso,
+                shape,
+                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+            ));
         }
         CollisionShape::TriMesh { vertices, indices } => {
             // #1779 — reject empty *or* non-finite meshes at the single choke
@@ -307,7 +353,11 @@ fn flatten_to_parts(
             // to a tiny ball instead.
             if vertices.is_empty() || indices.is_empty() || vertices.iter().any(|v| !v.is_finite())
             {
-                out.push((parent_iso, SharedShape::ball(1e-3)));
+                out.push((
+                    parent_iso,
+                    SharedShape::ball(1e-3),
+                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                ));
                 return;
             }
             let pts: Vec<Vec3> =
@@ -332,7 +382,11 @@ fn flatten_to_parts(
             // `assert!` as an originally-empty one, so it takes the same
             // degrade-to-a-ball exit rather than the panic.
             if idx.is_empty() {
-                out.push((parent_iso, SharedShape::ball(1e-3)));
+                out.push((
+                    parent_iso,
+                    SharedShape::ball(1e-3),
+                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                ));
                 return;
             }
             // M28.5 follow-up — TriMesh contact-normal treatment is
@@ -348,13 +402,21 @@ fn flatten_to_parts(
             use rapier3d::parry::shape::TriMeshFlags;
             let flags = TriMeshFlags::from_bits_truncate(cfg.trimesh_flags.0);
             match SharedShape::trimesh_with_flags(pts, idx, flags) {
-                Ok(mesh) => out.push((parent_iso, mesh)),
+                Ok(mesh) => out.push((
+                    parent_iso,
+                    mesh,
+                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+               )),
                 // Every input parry rejects outright (empty/out-of-range
                 // indices) is filtered above; what is left is a topology
                 // failure on a mesh that passed those checks.
                 Err(err) => {
                     log::warn!("collision: TriMesh rejected by parry ({err:?}); using the tiny-ball fallback");
-                    out.push((parent_iso, SharedShape::ball(1e-3)));
+                    out.push((
+                        parent_iso,
+                        SharedShape::ball(1e-3),
+                        leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                    ));
                 }
             }
         }
@@ -447,8 +509,8 @@ mod tests {
 
     /// Test helper — call `collision_shape_to_parts` with the default
     /// `ContactConfig` so existing assertions stay shape-agnostic.
-    fn parts(shape: &CollisionShape) -> Vec<(Pose, SharedShape)> {
-        collision_shape_to_parts(shape, 1.0, &ContactConfig::DEFAULT)
+    fn parts(shape: &CollisionShape) -> Vec<(Pose, SharedShape, u8)> {
+        collision_shape_to_parts(shape, 1.0, &ContactConfig::DEFAULT, 0, &[])
     }
 
     /// `pose_from_trs` renormalizes like nalgebra's `new_normalize` did on
@@ -483,7 +545,7 @@ mod tests {
         );
     }
 
-    fn shape_type_of(parts: &[(Pose, SharedShape)], i: usize) -> ShapeType {
+    fn shape_type_of(parts: &[(Pose, SharedShape, u8)], i: usize) -> ShapeType {
         parts[i].1.shape_type()
     }
 
@@ -548,6 +610,8 @@ mod tests {
             },
             1.0e30,
             &ContactConfig::DEFAULT,
+            0,
+            &[],
         );
         let he = parts[0].1.as_cuboid().unwrap().half_extents;
         assert_eq!(
@@ -740,7 +804,7 @@ mod tests {
 
         let parts = parts(&outer);
         assert_eq!(parts.len(), 2, "both inner balls should survive");
-        for (_, s) in &parts {
+        for (_, s, _) in &parts {
             assert_ne!(
                 s.shape_type(),
                 ShapeType::Compound,
@@ -749,7 +813,7 @@ mod tests {
         }
         let translations: Vec<_> = parts
             .iter()
-            .map(|(iso, _)| (iso.translation.x, iso.translation.y, iso.translation.z))
+            .map(|(iso, _, _)| (iso.translation.x, iso.translation.y, iso.translation.z))
             .collect();
         assert!(translations.contains(&(1.0, 2.0, 0.0)));
         assert!(translations.contains(&(-1.0, 2.0, 0.0)));
@@ -907,7 +971,7 @@ mod tests {
         let shape = CollisionShape::Cuboid {
             half_extents: Vec3::new(1.0, 2.0, 3.0),
         };
-        let scaled = collision_shape_to_parts(&shape, 2.0, &ContactConfig::DEFAULT);
+        let scaled = collision_shape_to_parts(&shape, 2.0, &ContactConfig::DEFAULT, 0, &[]);
         let he = scaled[0].1.as_cuboid().unwrap().half_extents;
         assert_eq!((he.x, he.y, he.z), (2.0, 4.0, 6.0));
     }
@@ -917,7 +981,7 @@ mod tests {
     fn scale_multiplies_every_primitive_dimension() {
         let cfg = &ContactConfig::DEFAULT;
 
-        let ball = collision_shape_to_parts(&CollisionShape::Ball { radius: 2.0 }, 3.0, cfg);
+        let ball = collision_shape_to_parts(&CollisionShape::Ball { radius: 2.0 }, 3.0, cfg, 0, &[]);
         assert_eq!(ball[0].1.as_ball().unwrap().radius, 6.0);
 
         let capsule = collision_shape_to_parts(
@@ -927,6 +991,8 @@ mod tests {
             },
             0.5,
             cfg,
+            0,
+            &[],
         );
         let c = capsule[0].1.as_capsule().unwrap();
         assert_eq!(c.radius, 2.0);
@@ -939,6 +1005,8 @@ mod tests {
             },
             0.25,
             cfg,
+            0,
+            &[],
         );
         let cy = cylinder[0].1.as_cylinder().unwrap();
         assert_eq!(cy.radius, 1.0);
@@ -958,7 +1026,7 @@ mod tests {
                 Vec3::new(0.0, 0.0, 10.0),
             ],
         };
-        let parts = collision_shape_to_parts(&hull, 2.0, cfg);
+        let parts = collision_shape_to_parts(&hull, 2.0, cfg, 0, &[]);
         let aabb = parts[0].1.compute_local_aabb();
         assert!(
             (aabb.maxs.x - 20.0).abs() < 1e-4,
@@ -974,7 +1042,7 @@ mod tests {
             ],
             indices: vec![[0, 1, 2]],
         };
-        let parts = collision_shape_to_parts(&mesh, 3.0, cfg);
+        let parts = collision_shape_to_parts(&mesh, 3.0, cfg, 0, &[]);
         let aabb = parts[0].1.compute_local_aabb();
         assert!(
             (aabb.maxs.x - 30.0).abs() < 1e-4,
@@ -1046,7 +1114,7 @@ mod tests {
                 .map(|x| Vec3::new(x as f32 * 5.0, 0.0, 0.0))
                 .collect(),
         };
-        let parts = collision_shape_to_parts(&shape, 3.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&shape, 3.0, &ContactConfig::DEFAULT, 0, &[]);
         let aabb = parts[0].1.compute_local_aabb();
         assert!(
             (aabb.maxs.x - aabb.mins.x - 60.0).abs() < 1e-2,
@@ -1152,7 +1220,7 @@ mod tests {
                 ),
             ],
         };
-        let parts = collision_shape_to_parts(&compound, 2.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&compound, 2.0, &ContactConfig::DEFAULT, 0, &[]);
         assert_eq!(parts.len(), 2);
 
         let half = parts[0].1.as_cuboid().unwrap().half_extents.x;
@@ -1185,7 +1253,7 @@ mod tests {
         let level1 = CollisionShape::Compound {
             children: vec![(Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Box::new(level2))],
         };
-        let parts = collision_shape_to_parts(&level1, 2.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&level1, 2.0, &ContactConfig::DEFAULT, 0, &[]);
         assert!((parts[0].0.translation.y - 6.0).abs() < 1e-6);
     }
 
@@ -1210,7 +1278,7 @@ mod tests {
                 Box::new(inner),
             )],
         };
-        let parts = collision_shape_to_parts(&outer, 3.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&outer, 3.0, &ContactConfig::DEFAULT, 0, &[]);
         let t = parts[0].0.translation;
         assert!(
             (t.length() - 30.0).abs() < 1e-4,
@@ -1226,7 +1294,7 @@ mod tests {
             half_extents: Vec3::splat(5.0),
         };
         for bad in [0.0_f32, -2.0, f32::NAN, f32::INFINITY] {
-            let parts = collision_shape_to_parts(&shape, bad, &ContactConfig::DEFAULT);
+            let parts = collision_shape_to_parts(&shape, bad, &ContactConfig::DEFAULT, 0, &[]);
             let he = parts[0].1.as_cuboid().unwrap().half_extents;
             assert_eq!(
                 (he.x, he.y, he.z),
@@ -1243,7 +1311,7 @@ mod tests {
         let shape = CollisionShape::Cuboid {
             half_extents: Vec3::splat(MAX_SANE_SHAPE_EXTENT * 0.75),
         };
-        let parts = collision_shape_to_parts(&shape, 1000.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&shape, 1000.0, &ContactConfig::DEFAULT, 0, &[]);
         let he = parts[0].1.as_cuboid().unwrap().half_extents;
         assert_eq!(he.x, MAX_SANE_SHAPE_EXTENT);
     }
@@ -1262,7 +1330,7 @@ mod tests {
                 }),
             )],
         };
-        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT);
+        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT, 0, &[]);
         let c = parts[0].1.as_capsule().unwrap();
         assert_eq!(c.radius, 2.0);
         assert!((c.half_height() - 7.0).abs() < 1e-6);
@@ -1309,7 +1377,7 @@ mod tests {
         };
         let parts = parts(&compound);
         assert_eq!(parts.len(), 2);
-        let types: Vec<ShapeType> = parts.iter().map(|(_, s)| s.shape_type()).collect();
+        let types: Vec<ShapeType> = parts.iter().map(|(_, s, _)| s.shape_type()).collect();
         assert!(types.contains(&ShapeType::TriMesh));
         assert!(types.contains(&ShapeType::Ball));
     }
@@ -1358,5 +1426,60 @@ mod tests {
         });
         assert_eq!(parts.len(), 1);
         assert_eq!(shape_type_of(&parts, 0), ShapeType::Ball);
+    }
+
+    /// Wave 4 per-part surface materials: each part carries the
+    /// leaf-aligned entry from the NIF-derived sequence, and a part past
+    /// the end of a short sequence falls back to the body-level default.
+    /// This is what puts a compound body's per-child materials into each
+    /// collider's user-data at registration.
+    #[test]
+    fn parts_carry_their_leaf_surface_materials() {
+        // Three leaves: Sphere(mat 7), Box (unauthored → 0 in the slice),
+        // Capsule(mat 9) — the slice is what `shape_leaf_materials`
+        // produces for that tree.
+        let shape = CollisionShape::Compound {
+            children: vec![
+                (
+                    Vec3::new(10.0, 0.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: 1.0 }),
+                ),
+                (
+                    Vec3::new(0.0, 10.0, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Cuboid {
+                        half_extents: Vec3::splat(1.0),
+                    }),
+                ),
+                (
+                    Vec3::new(0.0, 0.0, 10.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Capsule {
+                        half_height: 2.0,
+                        radius: 1.0,
+                    }),
+                ),
+            ],
+        };
+        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT, 5, &[7, 0, 9]);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts.iter().map(|(_, _, m)| *m).collect::<Vec<_>>(),
+            vec![7, 0, 9],
+            "each part carries its own leaf's material"
+        );
+
+        // A short sequence falls back to the body-level default per part.
+        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT, 5, &[7]);
+        assert_eq!(
+            parts.iter().map(|(_, _, m)| *m).collect::<Vec<_>>(),
+            vec![7, 5, 5],
+            "parts past the sequence take the body-level default"
+        );
+
+        // An empty sequence (non-NIF body) gives every part the default.
+        let parts = collision_shape_to_parts(&shape, 1.0, &ContactConfig::DEFAULT, 5, &[]);
+        assert!(parts.iter().all(|(_, _, m)| *m == 5));
     }
 }

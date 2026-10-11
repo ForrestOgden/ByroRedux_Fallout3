@@ -72,46 +72,69 @@ pub(super) fn resolve_shape(
     result
 }
 
-/// First non-zero Havok surface material in the bhk shape tree, following
-/// the same container dispatch `resolve_shape` does (a shape's own
-/// `HavokMaterial` u32 wins; containers recurse into their children).
-/// This is the body-level reduction the surface-material consumer wants
-/// — "what kind of ground is this body" — not the per-triangle split a
-/// trimesh's per-subshape materials could give; that mapping is the
-/// Wave-4 plan's next step and stays unresolved here. Same cycle guard
-/// (`visited`) and depth accounting as `resolve_shape`, since both walks
-/// traverse the identical tree. Returns 0 (STONE in every game's
-/// HavokMaterial enum) when the tree carries no authored material.
+/// The per-leaf Havok surface material sequence of the bhk shape tree, in
+/// the exact depth-first order `resolve_shape` (and therefore
+/// `collision_shape_to_parts`) emits leaves as parts. A leaf pushes its own
+/// `HavokMaterial` when authored, else the nearest ancestor's — the
+/// container `Material` field is Havok's per-subshape default. Same cycle
+/// guard and depth accounting as `resolve_shape`; unauthored leaves push 0
+/// (STONE). This is the per-part mapping the Wave-4 plan's "map it per
+/// triangle" step reduces to: one authored material per collider part,
+/// carried into rapier's collider user-data at registration.
+pub(super) fn shape_leaf_materials(
+    scene: &NifScene,
+    shape_ref: BlockRef,
+    visited: &mut HashSet<usize>,
+    inherited: u32,
+    out: &mut Vec<u32>,
+) {
+    let Some(idx) = shape_ref.index() else {
+        out.push(inherited);
+        return;
+    };
+    if !visited.insert(idx) {
+        out.push(inherited);
+        return;
+    }
+    if visited.len() > MAX_COLLISION_SHAPE_DEPTH {
+        visited.remove(&idx);
+        out.push(inherited);
+        return;
+    }
+    shape_leaf_materials_inner(scene, idx, visited, inherited, out);
+    visited.remove(&idx);
+}
+
+/// Body-level reduction kept for [`RigidBodyData::surface_material`]: the
+/// first non-zero entry of the per-leaf sequence.
 pub(super) fn first_shape_material(
     scene: &NifScene,
     shape_ref: BlockRef,
     visited: &mut HashSet<usize>,
 ) -> u32 {
-    let Some(idx) = shape_ref.index() else {
-        return 0;
-    };
-    if !visited.insert(idx) {
-        return 0;
-    }
-    if visited.len() > MAX_COLLISION_SHAPE_DEPTH {
-        visited.remove(&idx);
-        return 0;
-    }
-    let material = first_shape_material_inner(scene, idx, visited);
-    visited.remove(&idx);
-    material
+    let mut leaves = Vec::new();
+    shape_leaf_materials(scene, shape_ref, visited, 0, &mut leaves);
+    leaves.into_iter().find(|material| *material != 0).unwrap_or(0)
 }
 
-fn first_shape_material_inner(scene: &NifScene, idx: usize, visited: &mut HashSet<usize>) -> u32 {
+fn shape_leaf_materials_inner(
+    scene: &NifScene,
+    idx: usize,
+    visited: &mut HashSet<usize>,
+    inherited: u32,
+    out: &mut Vec<u32>,
+) {
     let Some(block) = scene.get(idx) else {
-        return 0;
+        out.push(inherited);
+        return;
     };
 
     // Leaf shapes that carry their own material.
     macro_rules! leaf_material {
         ($ty:ty) => {
             if let Some(s) = block.as_any().downcast_ref::<$ty>() {
-                return s.material;
+                out.push(if s.material != 0 { s.material } else { inherited });
+                return;
             }
         };
     }
@@ -122,77 +145,73 @@ fn first_shape_material_inner(scene: &NifScene, idx: usize, visited: &mut HashSe
     leaf_material!(BhkCylinderShape);
     leaf_material!(BhkConvexVerticesShape);
     leaf_material!(BhkNiTriStripsShape);
-    // Packed tri strips carry materials per sub-part on the shape itself.
+    // Packed tri strips carry materials per sub-part on the shape itself;
+    // the body-level reduction takes the first authored part, and the
+    // per-leaf sequence collapses the sub-parts onto the shape's one part.
     if let Some(s) = block.as_any().downcast_ref::<BhkPackedNiTriStripsShape>() {
-        return s
+        let material = s
             .sub_shapes
             .iter()
             .find(|part| part.material != 0)
             .map(|part| part.material)
-            .unwrap_or(0);
+            .unwrap_or(inherited);
+        out.push(material);
+        return;
     }
 
-    // Containers: the shape's own material wins when authored, else the
-    // children answer — the same precedence Havok's contact resolution
-    // walks the shape tree with.
+    // Containers: their own material is the children's default when the
+    // children carry none of their own.
     if let Some(s) = block.as_any().downcast_ref::<BhkListShape>() {
-        if s.material != 0 {
-            return s.material;
-        }
+        let inherited = if s.material != 0 { s.material } else { inherited };
         for sub_ref in &s.sub_shape_refs {
-            let material = first_shape_material(scene, *sub_ref, visited);
-            if material != 0 {
-                return material;
-            }
+            shape_leaf_materials(scene, *sub_ref, visited, inherited, out);
         }
-        return 0;
+        return;
     }
     if let Some(s) = block.as_any().downcast_ref::<BhkConvexListShape>() {
-        if s.material != 0 {
-            return s.material;
-        }
+        let inherited = if s.material != 0 { s.material } else { inherited };
         for sub_ref in &s.sub_shapes {
-            let material = first_shape_material(scene, *sub_ref, visited);
-            if material != 0 {
-                return material;
-            }
+            shape_leaf_materials(scene, *sub_ref, visited, inherited, out);
         }
-        return 0;
+        return;
     }
     if let Some(s) = block.as_any().downcast_ref::<BhkTransformShape>() {
-        if s.material != 0 {
-            return s.material;
-        }
-        return first_shape_material(scene, s.shape_ref, visited);
+        let inherited = if s.material != 0 { s.material } else { inherited };
+        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
+        return;
     }
     if let Some(s) = block.as_any().downcast_ref::<BhkConvexSweepShape>() {
-        if s.material != 0 {
-            return s.material;
-        }
-        return first_shape_material(scene, s.shape_ref, visited);
+        let inherited = if s.material != 0 { s.material } else { inherited };
+        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
+        return;
     }
     // MOPP wraps another shape (no material of its own on the bv-tree).
     if let Some(s) = block.as_any().downcast_ref::<BhkMoppBvTreeShape>() {
-        return first_shape_material(scene, s.shape_ref, visited);
+        shape_leaf_materials(scene, s.shape_ref, visited, inherited, out);
+        return;
     }
     // Compressed mesh (Skyrim+): materials are per chunk in the data
     // block's chunk_materials pairs — the first non-zero entry is the
-    // body-level reduction.
+    // body-level reduction, and the per-leaf sequence collapses onto the
+    // shape's one part.
     if let Some(s) = block.as_any().downcast_ref::<BhkCompressedMeshShape>() {
         let Some(data_idx) = s.data_ref.index() else {
-            return 0;
+            out.push(inherited);
+            return;
         };
-        if let Some(data) = scene.get_as::<BhkCompressedMeshShapeData>(data_idx) {
-            return data
-                .chunk_materials
-                .iter()
-                .find(|pair| pair[0] != 0)
-                .map(|pair| pair[0])
-                .unwrap_or(0);
-        }
-        return 0;
+        let material = scene
+            .get_as::<BhkCompressedMeshShapeData>(data_idx)
+            .and_then(|data| {
+                data.chunk_materials
+                    .iter()
+                    .find(|pair| pair[0] != 0)
+                    .map(|pair| pair[0])
+            })
+            .unwrap_or(inherited);
+        out.push(material);
+        return;
     }
-    0
+    out.push(inherited);
 }
 
 /// Inner body of `resolve_shape`. Extracted so the outer function can
@@ -999,6 +1018,50 @@ mod cycle_tests {
             first_shape_material(&scene, BlockRef(0u32), &mut visited),
             0,
             "an unauthored tree reduces to STONE"
+        );
+    }
+
+    #[test]
+    fn shape_leaf_materials_match_resolve_order_and_inherit_containers() {
+        // Scene:
+        //   [0] BhkListShape { material 0, children [1, 2] }
+        //   [1] BhkSphereShape { material 3 }
+        //   [2] BhkListShape  { material 5, children [3] }
+        //   [3] BhkBoxShape   { material 0 }  — inherits the parent's 5
+        // Leaves in resolve/collision_shape_to_parts order: [3, 5]; the
+        // body-level reduction is the first non-zero entry. This is the
+        // per-part mapping: `collision_shape_to_parts` emits one part per
+        // leaf in the same order, so part i's collider carries leaf i's
+        // material in its user-data.
+        let mut scene = NifScene::default();
+        scene.havok_scale = 1.0;
+        scene
+            .blocks
+            .push(list_shape(vec![BlockRef(1u32), BlockRef(2u32)]));
+        scene.blocks.push(Box::new(BhkSphereShape {
+            material: 3,
+            radius: 0.5,
+        }));
+        scene.blocks.push(Box::new(BhkListShape {
+            sub_shape_refs: vec![BlockRef(3u32)],
+            material: 5,
+            filters: Vec::new(),
+        }));
+        scene.blocks.push(Box::new(BhkBoxShape {
+            material: 0,
+            radius: 0.0,
+            dimensions: [1.0, 1.0, 1.0],
+        }));
+        let mut visited = HashSet::new();
+        let mut leaves = Vec::new();
+        shape_leaf_materials(&scene, BlockRef(0u32), &mut visited, 0, &mut leaves);
+        assert_eq!(leaves, vec![3, 5], "leaf order matches resolve order");
+
+        let mut visited = HashSet::new();
+        assert_eq!(
+            first_shape_material(&scene, BlockRef(0u32), &mut visited),
+            3,
+            "the body-level reduction is the first non-zero leaf"
         );
     }
 

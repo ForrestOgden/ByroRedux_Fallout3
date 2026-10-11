@@ -140,7 +140,7 @@ fn skeever_ragdoll_survives_six_hundred_floor_ticks() {
     world.insert(floor, CollisionShape::Cuboid {
         half_extents: Vec3::new(5000.0, 5.0, 5000.0),
     });
-    world.insert(floor, RigidBodyData::STATIC);
+    world.insert(floor, RigidBodyData::static_body());
     if no_floor {
         world.remove::<CollisionShape>(floor);
     }

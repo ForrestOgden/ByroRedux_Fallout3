@@ -124,25 +124,43 @@ pub struct RigidBodyData {
     /// ground is this", not the per-triangle split. `0` = STONE, and the
     /// default for every non-NIF-derived body.
     pub surface_material: u8,
+    /// Per-part surface materials, leaf-aligned with
+    /// `collision_shape_to_parts`' output order — one entry per collider
+    /// part the shape flattens to, so a compound body whose bhk children
+    /// carry different materials puts each part's own material into its
+    /// collider's user-data. Derived from the NIF collision tree
+    /// (`shape_leaf_materials`) and NOT saved: the tree is re-parsed from
+    /// content on load and re-derived at import, so a snapshot never
+    /// carries it (`serde(skip)` — the #3470 class; the save-shape
+    /// fingerprint moves without a FORMAT_MAJOR bump). Consumers treat a
+    /// short or empty slice as "fall back to [`Self::surface_material`]"
+    /// for every part beyond it.
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub part_surface_materials: Box<[u8]>,
 }
 
 impl RigidBodyData {
-    /// Default static body (walls, architecture).
-    pub const STATIC: Self = Self {
-        motion_type: MotionType::Static,
-        mass: 0.0,
-        friction: 0.5,
-        restitution: 0.3,
-        linear_damping: 0.0,
-        angular_damping: 0.0,
-        collidable: true,
-        surface_material: 0,
-    };
+    /// Default static body (walls, architecture). Was `pub const STATIC`
+    /// until `part_surface_materials` (a `Box`) made a const impossible —
+    /// call sites see no difference.
+    pub fn static_body() -> Self {
+        Self {
+            motion_type: MotionType::Static,
+            mass: 0.0,
+            friction: 0.5,
+            restitution: 0.3,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            collidable: true,
+            surface_material: 0,
+            part_surface_materials: Box::new([]),
+        }
+    }
 }
 
 impl Default for RigidBodyData {
     fn default() -> Self {
-        Self::STATIC
+        Self::static_body()
     }
 }
 

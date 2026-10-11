@@ -2163,7 +2163,7 @@ mod tests {
         );
         world.insert(
             floor,
-            byroredux_core::ecs::components::collision::RigidBodyData::STATIC,
+            byroredux_core::ecs::components::collision::RigidBodyData::static_body(),
         );
 
         // The player capsule, parked far away in the "source cell".

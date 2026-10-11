@@ -1039,7 +1039,17 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
     let converted: Vec<_> = newcomers
         .into_par_iter()
         .map(|n| {
-            let parts = collision_shape_to_parts(&n.shape, n.global.scale, &cfg);
+            // Per-part surface materials: the NIF import supplies the
+            // leaf-aligned sequence (`part_surface_materials`); a body
+            // without one falls back to its body-level material for every
+            // part.
+            let parts = collision_shape_to_parts(
+                &n.shape,
+                n.global.scale,
+                &cfg,
+                n.body_data.surface_material,
+                &n.body_data.part_surface_materials,
+            );
             (n, parts)
         })
         .collect();
@@ -1122,7 +1132,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         } else {
             rapier3d::prelude::InteractionGroups::all()
         };
-        for (iso, shape) in parts {
+        for (iso, shape, surface_material) in parts {
             // Havok-parity coefficient combine: see
             // `config::CONTACT_COEFFICIENT_COMBINE_RULE`.
             let collider = ColliderBuilder::new(shape)
@@ -1134,8 +1144,10 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 // The authored Havok surface material rides the collider
                 // (user-data dies with it) for the surface-aware footstep
                 // query — `surface_material_under`. Rapier's user-data is
-                // u128; the material keeps the low byte.
-                .user_data(u128::from(n.body_data.surface_material))
+                // u128; the material keeps the low byte. Per-part: each
+                // part carries its own leaf's material when the NIF authored
+                // per-child materials, else the body-level value.
+                .user_data(u128::from(surface_material))
                 .mass(part_mass)
                 .contact_skin(contact_skin)
                 .collision_groups(groups)
@@ -1469,7 +1481,8 @@ mod phase_sync_tests {
             RigidBodyData {
                 collidable: false,
                 surface_material: 0,
-                ..RigidBodyData::STATIC
+                part_surface_materials: Box::new([]),
+                ..RigidBodyData::static_body()
             },
         );
 
@@ -1505,7 +1518,7 @@ mod phase_sync_tests {
             GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
         );
         world.insert(entity, unit_box());
-        world.insert(entity, RigidBodyData::STATIC);
+        world.insert(entity, RigidBodyData::static_body());
 
         physics_sync_system(&world, 0.0);
 
@@ -1533,7 +1546,7 @@ mod phase_sync_tests {
             GlobalTransform::new(Vec3::ZERO, Quat::IDENTITY, 1.0),
         );
         world.insert(entity, unit_box());
-        world.insert(entity, RigidBodyData::STATIC);
+        world.insert(entity, RigidBodyData::static_body());
 
         assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
         assert!(
@@ -1623,7 +1636,7 @@ mod phase_sync_tests {
                 half_extents: Vec3::splat(1.0),
             },
         );
-        world.insert(child, RigidBodyData::STATIC);
+        world.insert(child, RigidBodyData::static_body());
         world.insert(child, Parent(root));
         world.insert(root, Children(vec![child]));
 
@@ -1848,7 +1861,7 @@ mod phase_sync_tests {
         world.insert(old, Transform::IDENTITY);
         world.insert(old, GlobalTransform::IDENTITY);
         world.insert(old, unit_box());
-        world.insert(old, RigidBodyData::STATIC);
+        world.insert(old, RigidBodyData::static_body());
         assert_eq!(register_newcomers_and_refresh_queries(&world), 1);
         assert!(collect_newcomers(&world).is_empty());
         assert!(world.resource::<PhysicsWorld>().registered_shape_generations.is_some());
@@ -1860,7 +1873,7 @@ mod phase_sync_tests {
         world.insert(new, Transform::IDENTITY);
         world.insert(new, GlobalTransform::IDENTITY);
         world.insert(new, unit_box());
-        world.insert(new, RigidBodyData::STATIC);
+        world.insert(new, RigidBodyData::static_body());
         let newcomers = collect_newcomers(&world);
         assert_eq!(newcomers.len(), 1);
         assert_eq!(newcomers[0].entity, new);
@@ -1879,7 +1892,7 @@ mod phase_sync_tests {
         let entity = world.spawn();
         world.insert(entity, unit_box());
         assert!(collect_newcomers(&world).is_empty());
-        world.insert(entity, RigidBodyData::STATIC);
+        world.insert(entity, RigidBodyData::static_body());
         assert!(collect_newcomers(&world).is_empty());
         world.insert(entity, GlobalTransform::IDENTITY);
         let newcomers = collect_newcomers(&world);

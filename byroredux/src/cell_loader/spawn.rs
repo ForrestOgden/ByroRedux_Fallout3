@@ -296,7 +296,7 @@ fn spawn_packed_collision_proxy(
             // conservative and follows any script/animation that moves the
             // placement root instead of drifting away from the visual model.
             motion_type: MotionType::Keyframed,
-            ..RigidBodyData::STATIC
+            ..RigidBodyData::static_body()
         },
     );
     world.insert(ghost, Parent(placement_root));
@@ -373,10 +373,10 @@ fn synthesize_static_trimesh(
     }
 
     let shape = CollisionShape::TriMesh { vertices, indices };
-    // Static architecture — `RigidBodyData::STATIC` (zero mass,
+    // Static architecture — `RigidBodyData::static_body()` (zero mass,
     // friction 0.5, restitution 0.3). Same default the bhk extract
     // path uses for a `motion_type == Static` body.
-    Some((shape, RigidBodyData::STATIC))
+    Some((shape, RigidBodyData::static_body()))
 }
 
 /// Synthesise a static trimesh collider from render geometry and attach it

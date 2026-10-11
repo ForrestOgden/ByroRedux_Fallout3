@@ -2776,7 +2776,7 @@ mod tests {
                 half_extents: Vec3::splat(5.0),
             },
         );
-        world.insert(entity, RigidBodyData::STATIC);
+        world.insert(entity, RigidBodyData::static_body());
         if let Some(form_id) = source_form {
             world.insert(entity, PhysicsSourceForm(form_id));
         }

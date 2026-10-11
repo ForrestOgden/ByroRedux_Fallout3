@@ -712,7 +712,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // import for the surface-aware footstep consumer). Registered column,
     // no `serde(default)` — pre-v36 saves are rejected, per the blanket
     // rule (#3530's precedent).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9a34_b827_c1c4_174f;
+    // 2026-10-10 (Wave 4 follow-through) — refreshed WITHOUT a bump:
+    // `RigidBodyData` gained `part_surface_materials`, the leaf-aligned
+    // per-part sequence — a `serde(skip)` field the import re-derives
+    // from the re-parsed NIF on load, so old and new snapshots have
+    // byte-identical JSON for the type (the #3470 class; the file-scope
+    // fingerprint moves on the raw source regardless).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x073d_be0f_ccf0_0a34;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

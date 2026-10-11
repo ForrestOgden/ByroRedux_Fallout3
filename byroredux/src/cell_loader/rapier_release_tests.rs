@@ -35,7 +35,7 @@ fn world_with_physics() -> World {
 fn spawn_static_collider(world: &mut World) -> byroredux_core::ecs::storage::EntityId {
     let e = world.spawn();
     world.insert(e, CollisionShape::Ball { radius: 16.0 });
-    world.insert(e, RigidBodyData::STATIC);
+    world.insert(e, RigidBodyData::static_body());
     world.insert(e, GlobalTransform::IDENTITY);
     e
 }

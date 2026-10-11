@@ -1349,7 +1349,7 @@ fn combat_approach_line_of_sight_rejects_an_occluded_ring_candidate() {
                 half_extents: Vec3::splat(16.0),
             },
         );
-        world.insert(entity, RigidBodyData::STATIC);
+        world.insert(entity, RigidBodyData::static_body());
         entity
     };
 

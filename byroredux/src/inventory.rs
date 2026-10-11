@@ -3957,7 +3957,7 @@ mod tests {
                 half_extents: Vec3::new(4.0, 4.0, 4.0),
             },
         );
-        world.insert(collider, RigidBodyData::STATIC);
+        world.insert(collider, RigidBodyData::static_body());
         world.insert(collider, PhysicsSourceForm(id));
 
         // A second item behind the first, in the aim line, with its own

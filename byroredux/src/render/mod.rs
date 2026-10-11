@@ -345,7 +345,7 @@ mod fog_height_reference_tests {
 
         let floor = world.spawn();
         world.insert(floor, CollisionShape::Ball { radius: 16.0 });
-        world.insert(floor, RigidBodyData::STATIC);
+        world.insert(floor, RigidBodyData::static_body());
         world.insert(
             floor,
             GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0),
@@ -385,7 +385,7 @@ mod fog_height_reference_tests {
 
         let floor = world.spawn();
         world.insert(floor, CollisionShape::Ball { radius: 16.0 });
-        world.insert(floor, RigidBodyData::STATIC);
+        world.insert(floor, RigidBodyData::static_body());
         world.insert(
             floor,
             GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0),
@@ -405,7 +405,7 @@ mod fog_height_reference_tests {
             player,
             RigidBodyData {
                 motion_type: MotionType::CharacterKinematic,
-                ..RigidBodyData::STATIC
+                ..RigidBodyData::static_body()
             },
         );
         world.insert(

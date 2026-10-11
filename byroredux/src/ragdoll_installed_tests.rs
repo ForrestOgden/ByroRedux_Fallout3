@@ -109,7 +109,7 @@ fn check_fo3_bind_pose(environment: Environment) {
                     half_extents: Vec3::new(1000.0, 10.0, 1000.0),
                 },
             );
-            world.insert(floor, RigidBodyData::STATIC);
+            world.insert(floor, RigidBodyData::static_body());
             assert_eq!(
                 byroredux_physics::register_newcomers_and_refresh_queries(&world),
                 1
