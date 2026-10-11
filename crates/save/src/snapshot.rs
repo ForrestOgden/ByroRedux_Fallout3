@@ -278,7 +278,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// for the surface-aware footstep consumer (`surface_material_under`).
 /// A registered column with no `serde(default)`: a pre-v36 save has no
 /// key to read and is rejected, per the blanket rule.
-pub const FORMAT_MAJOR: u16 = 36;
+///
+/// v36 -> v37 (#5542): that same column widened `u8` -> `u32` — Skyrim's
+/// `SkyrimHavokMaterial` is the CRC32 of the Creation Kit material name,
+/// which a byte truncated into 8 colliding pairs and made unjoinable to
+/// MATT records. The serialized representation changes shape (a u32 where
+/// a u8 was), so a v36 save cannot be re-read as v37 and is rejected,
+/// same rule as any column-shape change.
+pub const FORMAT_MAJOR: u16 = 37;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

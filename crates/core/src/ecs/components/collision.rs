@@ -117,13 +117,18 @@ pub struct RigidBodyData {
     pub collidable: bool,
     /// The Havok surface material the collision authoring carries, as the
     /// per-game material enum's numeric value (Oblivion/Fallout3/Skyrim
-    /// HavokMaterial — nif.xml's per-game `bhkMaterial` wrappers; they
-    /// share the STONE-is-0 start and fit a byte). Body-level reduction of
-    /// the shape tree's first non-zero material; gameplay consumers are
-    /// surface-aware footsteps and impacts, which need "what kind of
-    /// ground is this", not the per-triangle split. `0` = STONE, and the
-    /// default for every non-NIF-derived body.
-    pub surface_material: u8,
+    /// HavokMaterial — nif.xml's per-game `bhkMaterial` wrappers). A u32,
+    /// not a byte: Oblivion (0–31) and FO3/FNV (0–127) share the
+    /// STONE-is-0 start, but Skyrim's `SkyrimHavokMaterial` is the CRC32
+    /// of the Creation Kit material name (`SKY_HAV_MAT_STONE` =
+    /// 3741512247) — truncating it to a byte collided 8 material pairs
+    /// and made the value unjoinable to MATT records (#5542). Body-level
+    /// reduction of the shape tree's first non-zero material; gameplay
+    /// consumers are surface-aware footsteps and impacts, which need
+    /// "what kind of ground is this", not the per-triangle split. `0` =
+    /// STONE on Oblivion/FO3/FNV (and `SKY_HAV_MAT_NONE` on Skyrim), and
+    /// the default for every non-NIF-derived body.
+    pub surface_material: u32,
     /// Per-part surface materials, leaf-aligned with
     /// `collision_shape_to_parts`' output order — one entry per collider
     /// part the shape flattens to, so a compound body whose bhk children
@@ -136,7 +141,7 @@ pub struct RigidBodyData {
     /// short or empty slice as "fall back to [`Self::surface_material`]"
     /// for every part beyond it.
     #[cfg_attr(feature = "inspect", serde(skip))]
-    pub part_surface_materials: Box<[u8]>,
+    pub part_surface_materials: Box<[u32]>,
 }
 
 impl RigidBodyData {

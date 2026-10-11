@@ -618,7 +618,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 36;
+    const BASELINE_MAJOR: u16 = 37;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -718,7 +718,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // from the re-parsed NIF on load, so old and new snapshots have
     // byte-identical JSON for the type (the #3470 class; the file-scope
     // fingerprint moves on the raw source regardless).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x073d_be0f_ccf0_0a34;
+    // 2026-10-11 (#5542) — refreshed WITH a major bump (v36 -> v37):
+    // `RigidBodyData::surface_material` widened u8 -> u32 — Skyrim's
+    // `SkyrimHavokMaterial` is a CRC32, which the byte truncated into 8
+    // colliding material pairs and made unjoinable to MATT records. A
+    // registered column's serialized shape changed; pre-v37 saves are
+    // rejected, per the blanket rule.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x82a7_2b92_1838_47ae;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

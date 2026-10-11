@@ -261,7 +261,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     // above). A trigger with no solid ground in range (airborne edge,
     // streaming gap) reads `None` and takes the default sound. At
     // footstep cadence this is a handful of ray casts per tick.
-    let surface_materials: Vec<Option<u8>> =
+    let surface_materials: Vec<Option<u32>> =
         if let Some(pw) = world.try_resource::<byroredux_physics::PhysicsWorld>() {
             triggers
                 .iter()
@@ -316,7 +316,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
 /// range (airborne edge, streaming gap) — the default plays there too.
 fn select_footstep_sound(
     world: &World,
-    surface: Option<u8>,
+    surface: Option<u32>,
     default: &std::sync::Arc<byroredux_audio::Sound>,
 ) -> std::sync::Arc<byroredux_audio::Sound> {
     surface
@@ -366,7 +366,7 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
         return;
     };
     let events = pw.take_contact_force_events();
-    let mut impacts: Vec<(byroredux_core::math::Vec3, u8)> = Vec::new();
+    let mut impacts: Vec<(byroredux_core::math::Vec3, u32)> = Vec::new();
     for event in &events {
         if event.total_force_magnitude < min_force {
             continue;
@@ -415,9 +415,9 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
 /// for the pair's material when [`ImpactConfig`] carries one, else the
 /// default. Pointer identity distinguishes them in the pin test.
 fn select_impact_sound(
-    surface_sounds: &std::collections::BTreeMap<u8, std::sync::Arc<byroredux_audio::Sound>>,
+    surface_sounds: &std::collections::BTreeMap<u32, std::sync::Arc<byroredux_audio::Sound>>,
     default: Option<&std::sync::Arc<byroredux_audio::Sound>>,
-    material: u8,
+    material: u32,
 ) -> Option<std::sync::Arc<byroredux_audio::Sound>> {
     surface_sounds
         .get(&material)
@@ -678,7 +678,7 @@ mod footstep_tests {
         });
         world.insert_resource(crate::components::ImpactConfig {
             default_sound: Some(Arc::clone(&default)),
-            surface_sounds: std::collections::BTreeMap::from([(3u8, Arc::clone(&surface))]),
+            surface_sounds: std::collections::BTreeMap::from([(3u32, Arc::clone(&surface))]),
             volume: 0.7,
             min_force_magnitude: 5_000.0,
         });

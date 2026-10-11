@@ -136,10 +136,10 @@ pub fn collision_shape_to_parts(
     shape: &CollisionShape,
     scale: f32,
     cfg: &ContactConfig,
-    default_surface_material: u8,
-    leaf_surface_materials: &[u8],
-) -> Vec<(Pose, SharedShape, u8)> {
-    let mut out: Vec<(Pose, SharedShape, u8)> = Vec::new();
+    default_surface_material: u32,
+    leaf_surface_materials: &[u32],
+) -> Vec<(Pose, SharedShape, u32)> {
+    let mut out: Vec<(Pose, SharedShape, u32)> = Vec::new();
     let mut materials = MaterialSource {
         leaf_materials: leaf_surface_materials,
         default: default_surface_material,
@@ -168,8 +168,8 @@ pub fn collision_shape_to_parts(
 /// materials`) plus the body-level default for parts past it, with the
 /// leaf cursor keeping the two aligned to the depth-first part order.
 struct MaterialSource<'a> {
-    leaf_materials: &'a [u8],
-    default: u8,
+    leaf_materials: &'a [u32],
+    default: u32,
     leaf_index: usize,
 }
 
@@ -177,7 +177,7 @@ impl MaterialSource<'_> {
     /// The surface material one leaf part carries: the authored per-leaf
     /// entry when the producer supplies the leaf-aligned sequence, else
     /// the body-level default.
-    fn next(&mut self) -> u8 {
+    fn next(&mut self) -> u32 {
         let material = self
             .leaf_materials
             .get(self.leaf_index)
@@ -209,7 +209,7 @@ fn flatten_to_parts(
     scale: f32,
     cfg: &ContactConfig,
     materials: &mut MaterialSource,
-    out: &mut Vec<(Pose, SharedShape, u8)>,
+    out: &mut Vec<(Pose, SharedShape, u32)>,
 ) {
     match shape {
         CollisionShape::Compound { children } => {
@@ -509,7 +509,7 @@ mod tests {
 
     /// Test helper — call `collision_shape_to_parts` with the default
     /// `ContactConfig` so existing assertions stay shape-agnostic.
-    fn parts(shape: &CollisionShape) -> Vec<(Pose, SharedShape, u8)> {
+    fn parts(shape: &CollisionShape) -> Vec<(Pose, SharedShape, u32)> {
         collision_shape_to_parts(shape, 1.0, &ContactConfig::DEFAULT, 0, &[])
     }
 
@@ -545,7 +545,7 @@ mod tests {
         );
     }
 
-    fn shape_type_of(parts: &[(Pose, SharedShape, u8)], i: usize) -> ShapeType {
+    fn shape_type_of(parts: &[(Pose, SharedShape, u32)], i: usize) -> ShapeType {
         parts[i].1.shape_type()
     }
 

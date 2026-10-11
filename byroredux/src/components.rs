@@ -1827,8 +1827,9 @@ pub(crate) struct FootstepConfig {
     pub(crate) volume: f32,
     /// Footstep sound per Havok surface material
     /// (`RigidBodyData::surface_material` — the per-game HavokMaterial
-    /// enum's byte, read from the collider the walker stands on).
-    pub(crate) surface_sounds: std::collections::BTreeMap<u8, Arc<Sound>>,
+    /// enum's u32, read from the collider the walker stands on; Skyrim's
+    /// values are CRC32s, #5542).
+    pub(crate) surface_sounds: std::collections::BTreeMap<u32, Arc<Sound>>,
 }
 
 impl Resource for FootstepConfig {}
@@ -1874,9 +1875,10 @@ pub(crate) struct ImpactConfig {
     /// silent (no content data yet).
     pub(crate) default_sound: Option<Arc<Sound>>,
     /// Impact sound per Havok surface material
-    /// (`RigidBodyData::surface_material` byte, read off either collider
-    /// of the pair — the impacted side's authored entry wins).
-    pub(crate) surface_sounds: std::collections::BTreeMap<u8, Arc<Sound>>,
+    /// (`RigidBodyData::surface_material` u32, read off either collider
+    /// of the pair — the impacted side's authored entry wins; Skyrim's
+    /// values are CRC32s, #5542).
+    pub(crate) surface_sounds: std::collections::BTreeMap<u32, Arc<Sound>>,
     /// Volume multiplier for every impact play.
     pub(crate) volume: f32,
     /// Minimum `total_force_magnitude` a `started` crossing must carry to
