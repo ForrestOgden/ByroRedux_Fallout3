@@ -535,6 +535,23 @@ transform's sign. Release runs against Skyrim SE now keep the player grounded in
 both `BleakFallsBarrow01` and the `WhiterunDragonsreach` control. Oblivion's
 separate inverted-contact-normal follow-up remains tracked by #2193.
 
+**Havok surface material — raw per-game id, translation parked (#5574).** The
+collision tree's `bhkMaterial` value reaches the canonical `RigidBodyData` as
+`surface_material` (body-level first non-zero) and `part_surface_materials`
+(leaf-aligned with `collision_shape_to_parts`). It is the **per-game id, not a
+canonical surface**: Oblivion's 0–31 enum, FO3/FNV's 0–127 enum and Skyrim's
+CRC32 of the Creation Kit material name (`SKY_HAV_MAT_STONE` = 3741512247) share
+one `u32`, and `0` is STONE on the first two but `SKY_HAV_MAT_NONE` on Skyrim. It
+is carried deliberately raw because no sourced Havok-material → surface table
+exists in-tree (the planned map is MATT/IPDS-keyed, deferred); inventing one would
+break no-fabrication, so the translate step is **parked, not a leak** — the
+consumers (`FootstepConfig` / `ImpactConfig` `surface_sounds`, `BTreeMap<u32, _>`)
+ship empty and nothing is audible. Constraints on the eventual translation: the
+key must be the loaded game's id space (a populated map is per-game data, never a
+`match game` in a consumer), and a switch to a canonical surface id moves the
+saved column, so it needs a `FORMAT_MAJOR` bump. Not saved: `part_surface_materials`
+(`serde(skip)`, re-derived from the NIF on load).
+
 ### Animation / controllers — **converged (surveyed 2026-06-02)**
 
 Both entry points — `anim::import_kf` (KF sequences) and `anim::import_embedded_animations`

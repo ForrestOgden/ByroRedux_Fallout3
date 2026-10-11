@@ -128,6 +128,12 @@ pub struct RigidBodyData {
     /// "what kind of ground is this", not the per-triangle split. `0` =
     /// STONE on Oblivion/FO3/FNV (and `SKY_HAV_MAT_NONE` on Skyrim), and
     /// the default for every non-NIF-derived body.
+    ///
+    /// Deliberately the raw per-game id, not a canonical surface: no
+    /// sourced Havok-material → surface table exists yet, so the
+    /// translation is parked (`docs/engine/nifal.md` "Havok surface
+    /// material", #5574). Any map keyed on it is per-game data in the
+    /// loaded game's id space; consumers must not branch on the game.
     pub surface_material: u32,
     /// Per-part surface materials, leaf-aligned with
     /// `collision_shape_to_parts`' output order — one entry per collider
