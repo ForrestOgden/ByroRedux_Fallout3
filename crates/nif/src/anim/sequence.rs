@@ -50,11 +50,8 @@ pub fn import_sequence(
 
     // #5486 — this sequence's span bounds every interpolator it samples:
     // a sequence with stop_time 1.0 must not pay 1e9-second B-spline
-    // resampling because a shared interpolator claims it. Only a finite
-    // span clamps; the FLT_MAX/FLT_MIN neutral defaults parse to
-    // non-finite differences and leave the interpolator span alone.
-    sampling.seq_span = (seq.start_time.is_finite() && seq.stop_time.is_finite())
-        .then_some((seq.start_time, seq.stop_time));
+    // resampling because a shared interpolator claims it.
+    sampling.seq_span = usable_sequence_span(seq.start_time, seq.stop_time);
 
     for cb in &seq.controlled_blocks {
         let resolved_node_name = resolve_cb_string(scene, cb, CbString::NodeName);
@@ -250,4 +247,13 @@ pub fn import_sequence(
         texture_flip_channels,
         text_keys,
     }
+}
+
+/// #5575 — the sequence span that may clamp B-spline sampling, or `None`
+/// to leave the interpolator span alone. Only a finite, forward span
+/// clamps: the pre-10.1.0.106 neutral defaults (`f32::MAX` / `f32::MIN`)
+/// are each finite but differ by infinity, and an authored `stop <= start`
+/// would trim every interpolator in the sequence to a point.
+pub(crate) fn usable_sequence_span(start: f32, stop: f32) -> Option<(f32, f32)> {
+    ((stop - start).is_finite() && stop > start).then_some((start, stop))
 }

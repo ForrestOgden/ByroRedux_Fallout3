@@ -363,3 +363,22 @@ fn embedded_import_with_sequences_picks_up_a_nicontrollersequence() {
     assert!(clip.is_none());
     assert_eq!(extra, 0);
 }
+
+/// #5575 — only a finite, forward sequence span may clamp B-spline
+/// sampling. The FLT_MAX/FLT_MIN neutral defaults (versions without the
+/// sequence span fields) are each finite but differ by infinity; an
+/// inverted or zero-length span would collapse every interpolator.
+#[test]
+fn only_a_finite_forward_sequence_span_clamps_bspline_sampling() {
+    assert_eq!(usable_sequence_span(0.0, 1.5), Some((0.0, 1.5)));
+    assert_eq!(usable_sequence_span(-2.0, 2.0), Some((-2.0, 2.0)));
+    assert_eq!(
+        usable_sequence_span(f32::MAX, f32::MIN),
+        None,
+        "pre-10.1.0.106 neutral defaults must leave the interpolator span alone"
+    );
+    assert_eq!(usable_sequence_span(1.0, 1.0), None, "zero-length span");
+    assert_eq!(usable_sequence_span(2.0, 1.0), None, "inverted span");
+    assert_eq!(usable_sequence_span(0.0, f32::INFINITY), None);
+    assert_eq!(usable_sequence_span(f32::NAN, 1.0), None);
+}
