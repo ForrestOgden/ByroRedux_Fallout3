@@ -281,6 +281,18 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
             Vec::new()
         };
 
+    // #5556 — snapshot the (Arc-cloned) per-surface table BEFORE the
+    // `AudioWorld` write guard exists, as `impact_audio_system` does, so no
+    // `FootstepConfig` lock is acquired while it is held ("one resource lock
+    // at a time"; the `AudioWorld -> FootstepConfig` edge would otherwise be
+    // new lock-order-detector surface on every footstep). Taken only here —
+    // after the no-trigger early return — so frames without a footstep pay
+    // nothing.
+    let surface_sounds = world
+        .try_resource::<FootstepConfig>()
+        .map(|config| config.surface_sounds.clone())
+        .unwrap_or_default();
+
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         // Audio gone — restore the scratch buffer for next frame
         // (preserves the heap allocation) and bail. Re-acquiring the
@@ -297,7 +309,7 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
         // until IPDS decoding lands, so every surface currently takes
         // the default — the selection itself is pinned by
         // `footstep_selects_the_surface_sound_when_authored`.
-        let sound = select_footstep_sound(world, surface, &sound);
+        let sound = select_footstep_sound(&surface_sounds, surface, &sound);
         audio_world.play_oneshot(
             sound,
             *pos,
@@ -321,20 +333,18 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
 }
 
 /// The sound one footstep plays: the authored per-surface entry for the
-/// material under the walker when [`FootstepConfig`] carries one, else
-/// the default. `surface` is `None` when no solid ground was in probe
-/// range (airborne edge, streaming gap) — the default plays there too.
+/// material under the walker when the [`FootstepConfig`] snapshot carries
+/// one, else the default. `surface` is `None` when no solid ground was in
+/// probe range (airborne edge, streaming gap) — the default plays there
+/// too. Takes the snapshotted table rather than the `World` so it never
+/// acquires a resource lock of its own (#5556).
 fn select_footstep_sound(
-    world: &World,
+    surface_sounds: &std::collections::BTreeMap<u32, std::sync::Arc<byroredux_audio::Sound>>,
     surface: Option<u32>,
     default: &std::sync::Arc<byroredux_audio::Sound>,
 ) -> std::sync::Arc<byroredux_audio::Sound> {
     surface
-        .and_then(|material| {
-            world
-                .try_resource::<crate::components::FootstepConfig>()
-                .and_then(|config| config.surface_sounds.get(&material).cloned())
-        })
+        .and_then(|material| surface_sounds.get(&material).cloned())
         .unwrap_or_else(|| std::sync::Arc::clone(default))
 }
 
@@ -632,22 +642,17 @@ mod footstep_tests {
             .surface_sounds
             .insert(3, Arc::clone(&surface));
 
+        let table = world.resource::<FootstepConfig>().surface_sounds.clone();
         assert!(
-            Arc::ptr_eq(
-                &select_footstep_sound(&world, Some(3), &default),
-                &surface
-            ),
+            Arc::ptr_eq(&select_footstep_sound(&table, Some(3), &default), &surface),
             "the authored per-material entry must win"
         );
         assert!(
-            Arc::ptr_eq(
-                &select_footstep_sound(&world, Some(9), &default),
-                &default
-            ),
+            Arc::ptr_eq(&select_footstep_sound(&table, Some(9), &default), &default),
             "an unauthored material falls back to the default"
         );
         assert!(
-            Arc::ptr_eq(&select_footstep_sound(&world, None, &default), &default),
+            Arc::ptr_eq(&select_footstep_sound(&table, None, &default), &default),
             "no ground in probe range falls back to the default"
         );
     }

@@ -986,6 +986,46 @@ fn footstep_runs_after_camera_follow_in_late() {
     }
 }
 
+/// #5556 — `footstep_system` gained a `PhysicsWorld` read (the per-trigger
+/// surface ray, 886edcded) and a `RapierHandles` read (#5545: the probe
+/// excludes the walker's own capsule) without touching its
+/// `add_exclusive_with_access` row, so `sys.accesses` under-reported the
+/// system: a move into the parallel batch would race `PhysicsWorld` writers
+/// undetected. `footstep_runs_after_camera_follow_in_late` covers ordering
+/// only; this pins the read surface the surface-aware lookup added.
+#[test]
+fn footstep_declares_its_physics_reads() {
+    let report = crate::boot::build_scheduler().access_report();
+    let row = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.systems.iter())
+        .find(|row| row.is_exclusive && row.name.contains("::footstep_system"))
+        .expect("footstep_system is a registered exclusive (#4185)");
+    let declared = row
+        .declared
+        .as_ref()
+        .expect("footstep_system must declare its access (#4185)");
+    assert!(
+        declared
+            .resources_read
+            .iter()
+            .any(|entry| entry.type_name.ends_with("PhysicsWorld")),
+        "footstep_system reads PhysicsWorld (surface_material_under) but its \
+         declaration omits it (#5556); declared reads: {:?}",
+        declared.resources_read.iter().map(|e| e.type_name).collect::<Vec<_>>()
+    );
+    assert!(
+        declared
+            .components_read
+            .iter()
+            .any(|entry| entry.type_name.ends_with("RapierHandles")),
+        "footstep_system reads the player's RapierHandles (#5545) but its \
+         declaration omits it (#5556); declared reads: {:?}",
+        declared.components_read.iter().map(|e| e.type_name).collect::<Vec<_>>()
+    );
+}
+
 /// #3473 — the three P2 gameplay exclusives (`interaction_system`,
 /// `combat_input_system`, `combat_damage_system`) were registered after
 /// #2391 with a plain `add_exclusive`, so `sys.accesses` showed a blank row

@@ -101,12 +101,17 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
     // #5146 adds the character-mode locomotion reads: `PlayerEntity` picks
     // the walking body, `CharacterController.is_grounded` and the
     // `WaterContact` swimlevel gate accumulation to grounded land motion.
+    // #5556 — the Wave-4 surface-aware lookup reads `PhysicsWorld` (the
+    // per-trigger ray, #886edcded) and, since #5545, the player body's
+    // `RapierHandles` to exclude its own capsule; both were missing here.
     scheduler.add_exclusive_with_access(
         Stage::Late,
         footstep_system,
         Access::new()
             .reads_resource::<FootstepConfig>()
             .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .reads::<byroredux_physics::RapierHandles>()
             .writes_resource::<crate::components::FootstepScratch>()
             .writes_resource::<byroredux_audio::AudioWorld>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
