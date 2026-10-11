@@ -3779,6 +3779,7 @@ fn deferred_actor_value_batch_that_zeroes_health_kills_the_actor() {
     use byroredux_core::ecs::components::{ActorVitals, Dead};
     let mut world = World::new();
     world.register::<Dead>();
+    world.register::<byroredux_scripting::story_manager::StoryEvent>();
     world.insert_resource(crate::combat::PendingDeathReconciliations::default());
     let order = crate::cell_loader::load_order::LoadOrder::new(
         vec!["Skyrim.esm".into()],
@@ -3830,6 +3831,22 @@ fn deferred_actor_value_batch_that_zeroes_health_kills_the_actor() {
 
     assert!(world.has::<Dead>(damaged), "Damage past zero");
     assert!(world.has::<Dead>(rebased), "SetBase to zero");
+    // #5434 — each new SDK death raises KILL (no killer); the corpse and
+    // the survivors raise nothing.
+    {
+        let events = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .expect("StoryEvent storage");
+        for dead in [damaged, rebased] {
+            let kill = events.get(dead).expect("a live SDK death raises KILL");
+            assert_eq!(kill.mnemonic, *b"KILL");
+            assert_eq!(kill.reference_1, dead);
+            assert_eq!(kill.reference_2, None);
+        }
+        for quiet in [winded, grazed, corpse] {
+            assert!(events.get(quiet).is_none(), "no KILL without a new death");
+        }
+    }
     assert!(!world.has::<Dead>(winded), "only Health is lethal");
     assert!(!world.has::<Dead>(grazed), "a non-lethal hit");
     assert_eq!(

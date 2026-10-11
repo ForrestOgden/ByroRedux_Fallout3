@@ -3,8 +3,9 @@
 //! The scripting crate owns dispatch (`story_manager_dispatch_system`)
 //! and the marker; this module owns the engine surfaces that raise it.
 //! Phase 1 wires `CLOC` here (the session's location identity from the
-//! cell-loader contexts) — `KILL` is raised directly at the combat
-//! death site in `crate::combat`, which has the aggressor in scope.
+//! cell-loader contexts) — `KILL` is raised by [`raise_kill_story_event`] at
+//! each live death producer (combat carries the aggressor; drowning and
+//! the SDK batch have none).
 //!
 //! Phase 2 tightens the CLOC key to Skyrim's location granularity: when
 //! the current cell resolves an LCTN (`XLCN`, already decoded into
@@ -121,6 +122,33 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
     );
 }
 
+/// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
+/// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
+/// from corpse restores, which re-assert a death that already fired.
+/// Slots: R1 = victim, R2 = killer (`None` for environmental deaths such as
+/// drowning), L1 = the session's current LCTN (`WIKill06` authors a
+/// KILL→L1 alias fill). On pre-Creation titles this is a no-op (no SM tree
+/// installed).
+pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Option<EntityId>) {
+    use byroredux_scripting::story_manager::StoryEvent;
+    // #5372 — resolve the location BEFORE taking the StoryEvent write
+    // guard (`resolve_current_lctn` reads `LoadedCellIndex`).
+    let location_1 = resolve_current_lctn(world);
+    let Some(mut events) = world.query_mut::<StoryEvent>() else {
+        return;
+    };
+    events.insert(
+        victim,
+        StoryEvent {
+            mnemonic: *b"KILL",
+            reference_1: victim,
+            reference_2: killer,
+            location_1,
+            location_2: None,
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +174,88 @@ mod tests {
         assert_eq!(event.reference_2, Some(greeted));
         assert_eq!(event.location_1, None, "no loaded index — no session LCTN");
         assert_eq!(event.location_2, None);
+    }
+
+    /// #5434 — a world whose session sits in a cell that authors LCTN
+    /// `0x0001_0A0B`.
+    fn world_in_located_cell() -> World {
+        use byroredux_plugin::esm::cell::CellData;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        let cell = CellData {
+            form_id: 0x0001_2345,
+            editor_id: "WhiterunBanneredMare".to_string(),
+            display_name: None,
+            references: Vec::new(),
+            is_interior: true,
+            show_sky: None,
+            grid: None,
+            lighting: None,
+            landscape: None,
+            water_height: None,
+            water_height_is_explicit: false,
+            image_space_form: None,
+            water_type_form: None,
+            acoustic_space_form: None,
+            music_type_form: None,
+            music_type_enum: None,
+            climate_override: None,
+            location_form: Some(0x0001_0A0B),
+            encounter_zone_form: None,
+            regions: Vec::new(),
+            lighting_template_form: None,
+            ownership: None,
+            regional_color_override: None,
+            precombined_mesh_hashes: Vec::new(),
+            absorbed_ref_bakes: Vec::new(),
+            navmeshes: Vec::new(),
+            pathgrids: Vec::new(),
+            deleted_refs: Vec::new(),
+        };
+        let mut loaded = byroredux_plugin::esm::records::EsmIndex::default();
+        loaded.cells.cells.insert("whiterunbanneredmare".to_string(), cell);
+        world.insert_resource(LoadedCellIndex(std::sync::Arc::new(loaded)));
+        world.insert_resource(CurrentCellContext {
+            cell_editor_id: "WhiterunBanneredMare".to_string(),
+            esm_path: String::new(),
+            masters: Vec::new(),
+        });
+        world
+    }
+
+    /// #5434 — KILL carries victim → R1, killer → R2 and the session LCTN
+    /// → L1, the same location the AHEL producer resolves (`WIKill06`
+    /// authors a KILL→L1 alias fill).
+    #[test]
+    fn kill_event_carries_victim_killer_and_session_location() {
+        let mut world = world_in_located_cell();
+        let victim = world.spawn();
+        let killer = world.spawn();
+        raise_kill_story_event(&world, victim, Some(killer));
+        let event = *world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .expect("StoryEvent storage")
+            .get(victim)
+            .expect("the KILL marker is raised on the victim");
+        assert_eq!(event.mnemonic, *b"KILL");
+        assert_eq!(event.reference_1, victim);
+        assert_eq!(event.reference_2, Some(killer));
+        assert_eq!(event.location_1, Some(0x0001_0A0B));
+        assert_eq!(event.location_2, None);
+    }
+
+    /// #5434 — an environmental death (drowning, SDK batch) has no killer.
+    #[test]
+    fn kill_event_without_a_killer_leaves_r2_empty() {
+        let mut world = world_in_located_cell();
+        let victim = world.spawn();
+        raise_kill_story_event(&world, victim, None);
+        let event = *world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .expect("StoryEvent storage")
+            .get(victim)
+            .expect("the KILL marker is raised on the victim");
+        assert_eq!(event.reference_2, None);
+        assert_eq!(event.location_1, Some(0x0001_0A0B));
     }
 }

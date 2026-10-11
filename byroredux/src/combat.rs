@@ -362,28 +362,17 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             if let Some(mut dead) = world.query_mut::<Dead>() {
                 dead.insert(target, Dead);
             }
-            // #5366 — KILL story event, raised on the slain actor. The
+            // #5366 / #5434 — KILL story event, raised on the slain actor
+            // (R1 = victim, R2 = killer; corpus-verified — `WIKill06`
+            // fills its `Victim` alias from R1 and `DA08KillFriendNode`'s
+            // tutorial-documented killer conditions run on R2). The
             // Story Manager dispatcher consumes it same-frame or next
-            // (Pattern B marker); on pre-Creation titles it is a no-op —
-            // no SM tree is installed, so no mnemonic root resolves.
-            // Phase 2 slots: R1 = victim, R2 = killer (corpus-verified —
-            // `WIKill06` fills its `Victim` alias from R1 and
-            // `DA08KillFriendNode`'s tutorial-documented killer
-            // conditions run on R2).
-            if let Some(mut story) =
-                world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
-            {
-                story.insert(
-                    target,
-                    byroredux_scripting::story_manager::StoryEvent {
-                        mnemonic: *b"KILL",
-                        reference_1: target,
-                        reference_2: Some(event.aggressor),
-                        location_1: None,
-                        location_2: None,
-                    },
-                );
-            }
+            // (Pattern B marker); on pre-Creation titles it is a no-op.
+            crate::systems::story_events::raise_kill_story_event(
+                world,
+                target,
+                Some(event.aggressor),
+            );
             outcome.push_str(&reconcile_dead_actor(world, target));
         }
 
@@ -831,10 +820,19 @@ mod tests {
 
     #[test]
     fn lethal_hit_marks_dead_and_persists_trace() {
-        let (world, _aggressor, target) = damage_fixture(10.0, Some(18.0), false);
+        let (mut world, aggressor, target) = damage_fixture(10.0, Some(18.0), false);
+        world.register::<byroredux_scripting::story_manager::StoryEvent>();
         combat_damage_system(&world, 0.0);
 
         assert!(world.get::<Dead>(target).is_some());
+        // #5434 — the combat producer routes through the shared KILL
+        // helper: R1 = victim, R2 = the aggressor.
+        let kill = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .and_then(|events| events.get(target).copied())
+            .expect("a lethal hit raises KILL on the victim");
+        assert_eq!(kill.reference_1, target);
+        assert_eq!(kill.reference_2, Some(aggressor));
         let state = world.resource::<CombatState>();
         assert_eq!(state.kills, 1);
         let last = state.last.as_ref().unwrap();

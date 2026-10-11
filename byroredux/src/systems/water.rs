@@ -60,6 +60,8 @@ pub(crate) fn water_damage_system(world: &World, dt: f32) {
                 dead_q.insert(entity, Dead);
             }
             crate::combat::queue_dead_actor_reconciliation(world, entity);
+            // #5434 — drowning is a live death; no killer.
+            crate::systems::story_events::raise_kill_story_event(world, entity, None);
         }
     }
 }
@@ -1027,6 +1029,7 @@ mod tests {
         world.register::<Dead>();
         world.register::<FollowBehavior>();
         world.register::<WaterContact>();
+        world.register::<byroredux_scripting::story_manager::StoryEvent>();
         world.insert_resource(crate::combat::PendingDeathReconciliations::default());
         let actor = world.spawn();
         world.insert(actor, ActorVitals { health: 7 });
@@ -1052,6 +1055,13 @@ mod tests {
         assert_eq!(world.get::<ActorValues>(actor).unwrap().current(7), 0.0);
         assert!(world.get::<Dead>(actor).is_some());
         assert!(world.get::<FollowBehavior>(actor).is_some());
+        let kill = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .and_then(|events| events.get(actor).copied())
+            .expect("#5434: a live death raises KILL on the victim");
+        assert_eq!(kill.mnemonic, *b"KILL");
+        assert_eq!(kill.reference_1, actor);
+        assert_eq!(kill.reference_2, None);
 
         crate::combat::reconcile_pending_dead_actors_system(&world, 0.0);
         assert!(

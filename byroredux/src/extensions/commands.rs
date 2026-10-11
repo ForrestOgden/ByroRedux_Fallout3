@@ -543,6 +543,8 @@ fn commit_actor_value_deaths(world: &World, committed: &[EntityId]) {
             dead.insert(entity, Dead);
         }
         crate::combat::queue_dead_actor_reconciliation(world, entity);
+        // #5434 — an SDK actor-value kill is a live death; no killer.
+        crate::systems::story_events::raise_kill_story_event(world, entity, None);
     }
 }
 

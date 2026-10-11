@@ -1563,6 +1563,8 @@ fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
             dead_q.insert(player, Dead);
         }
         crate::combat::queue_dead_actor_reconciliation(world, player);
+        // #5434 — drowning is a live death; no killer.
+        crate::systems::story_events::raise_kill_story_event(world, player, None);
     }
 }
 
@@ -2557,6 +2559,7 @@ mod tests {
         world.register::<ActorValues>();
         world.register::<ActorVitals>();
         world.register::<Dead>();
+        world.register::<byroredux_scripting::story_manager::StoryEvent>();
         world.insert_resource(crate::combat::PendingDeathReconciliations::default());
         let player = world.spawn();
         world.insert(player, ActorVitals { health: 7 });
@@ -2566,6 +2569,13 @@ mod tests {
 
         assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 0.0);
         assert!(world.get::<Dead>(player).is_some());
+        let kill = world
+            .query::<byroredux_scripting::story_manager::StoryEvent>()
+            .and_then(|events| events.get(player).copied())
+            .expect("#5434: a live death raises KILL on the victim");
+        assert_eq!(kill.mnemonic, *b"KILL");
+        assert_eq!(kill.reference_1, player);
+        assert_eq!(kill.reference_2, None);
     }
 
     /// #3799 — a capsule standing still must stay grounded. Models the
