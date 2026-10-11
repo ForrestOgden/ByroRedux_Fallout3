@@ -84,7 +84,7 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
                 quest.0,
                 index,
                 byroredux_debug_ui::ObjectiveView {
-                    quest: quest_display_name(&definitions, quest),
+                    quest: quest_display_name(Some(&definitions), quest),
                     text: flatten_text(text),
                 },
             ));
@@ -147,16 +147,26 @@ fn revisions(world: &World) -> Option<[QuestRevision; 3]> {
 
 /// Authored display name for a quest, falling back editor id → formatted
 /// FormID so an unnamed quest still labels its objective honestly.
-fn quest_display_name(definitions: &QuestDefinitionRegistry, quest: byroredux_scripting::QuestFormId) -> String {
+///
+/// `definitions` is optional: the objective state can outlive the registry
+/// across a reload boundary, and the label then degrades to the FormID form
+/// instead of panicking the per-frame drain (#5286).
+fn quest_display_name(
+    definitions: Option<&QuestDefinitionRegistry>,
+    quest: byroredux_scripting::QuestFormId,
+) -> String {
     definitions
-        .full_name(quest)
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .or_else(|| {
+        .and_then(|definitions| {
             definitions
-                .editor_id(quest)
+                .full_name(quest)
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    definitions
+                        .editor_id(quest)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                })
         })
         .map(str::to_owned)
         .unwrap_or_else(|| format!("Quest 0x{:08X}", quest.0))
@@ -195,7 +205,7 @@ pub(crate) fn drain_transition_notifications(world: &World) -> Vec<String> {
                     .unwrap_or_else(|| format!("objective {}", event.objective));
                 format!(
                     "{}: {text}",
-                    quest_display_name(definitions.as_ref().expect("guard above"), event.quest)
+                    quest_display_name(definitions.as_deref(), event.quest)
                 )
             };
             match event.kind {
@@ -392,6 +402,23 @@ mod tests {
         assert_eq!(
             drain_transition_notifications(&world),
             vec!["New objective — A Testable Errand: objective 90".to_owned()],
+        );
+    }
+
+    /// #5286 — the drain's documented tolerance for an absent definition
+    /// registry holds for the quest name too: it falls back to the FormID
+    /// label instead of panicking the per-frame drain.
+    #[test]
+    fn transition_drain_survives_an_absent_definition_registry() {
+        let mut world = World::new();
+        world.insert_resource(QuestObjectiveState::default());
+        world
+            .resource_mut::<QuestObjectiveState>()
+            .set_displayed(QuestFormId(0x1000), 10, true);
+        assert!(world.try_resource::<QuestDefinitionRegistry>().is_none());
+        assert_eq!(
+            drain_transition_notifications(&world),
+            vec!["New objective — Quest 0x00001000: objective 10".to_owned()],
         );
     }
 
