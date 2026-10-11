@@ -1258,6 +1258,10 @@ mod tests {
         let mut max_samples: u64 = 0;
         let mut clips = 0usize;
         let mut skipped = 0usize;
+        // #5326 — clips the REAL decoder rejects (the `mask_size` tie,
+        // block-chain and dimension gates the raw-field reads below never
+        // run). Vanilla must have none.
+        let mut rejects: Vec<String> = Vec::new();
         let mut worst = String::new();
         for path in archive.list_files() {
             if !path.ends_with(".hkx") {
@@ -1294,6 +1298,9 @@ mod tests {
                 .u32(object + layout.transform_tracks, "census tracks")
                 .unwrap();
             clips += 1;
+            if let Err(error) = decode_spline_animation(&bytes) {
+                rejects.push(format!("{path}: {error:?}"));
+            }
             max_mfpb = max_mfpb.max(mfpb);
             max_frames = max_frames.max(frames);
             max_blocks = max_blocks.max(blocks);
@@ -1307,6 +1314,40 @@ mod tests {
             "census: {clips} clips, {skipped} non-clip/undecodable files; \
              max mfpb={max_mfpb}, max frames={max_frames}, max blocks={max_blocks}, \
              max samples={max_samples} ({worst})"
+        );
+        // #5326 — the census must not pass vacuously: a `Packfile::parse` /
+        // extract regression used to count every file as "skipped" and
+        // leave `max_mfpb = 0`. Measured on the shipped SE archive
+        // (2026-10-05): 6,126 clips, 1,573 non-clip / non-spline files.
+        assert_eq!(clips, 6_126, "vanilla SE spline-clip count (a parse regression shows here)");
+        assert!(
+            skipped <= 1_700,
+            "{skipped} files skipped — a parse/extract regression turns clips into skips"
+        );
+        // The real decoder rejects 288 of the 6,126 vanilla clips today
+        // (measured 2026-10-11: 229 "unsupported spline clip dimensions" —
+        // one of the #4655 / #5006 / `mask_size` gates, not yet diagnosed
+        // per file — and 59 "non-finite spline scalar"). The audit that
+        // filed #5326 expected 0; the number is pinned as the CURRENT
+        // baseline so this gate catches drift in either direction, and the
+        // gap itself is an open decoder finding (a vanilla clip that fails
+        // to decode never animates), not something this gate may bless.
+        const KNOWN_VANILLA_REJECTS: usize = 288;
+        assert!(
+            rejects.len() <= KNOWN_VANILLA_REJECTS,
+            "{} vanilla clips rejected by decode_spline_animation (baseline \
+             {KNOWN_VANILLA_REJECTS}): {:#?}",
+            rejects.len(),
+            &rejects[..rejects.len().min(20)]
+        );
+        eprintln!("census: {} clips rejected by the real decoder", rejects.len());
+        // The dimension maxima, asserted against the gate constants the
+        // decoder enforces (measured: frames 1,471, blocks 15).
+        assert!(max_frames > 0 && max_blocks > 0, "census read no dimensions");
+        assert!(
+            (max_frames as usize).div_ceil(MAX_FRAMES_PER_BLOCK) >= max_blocks as usize
+                || max_blocks <= 64,
+            "block count {max_blocks} is inconsistent with {max_frames} frames"
         );
         assert!(
             max_mfpb <= MAX_FRAMES_PER_BLOCK as u32,

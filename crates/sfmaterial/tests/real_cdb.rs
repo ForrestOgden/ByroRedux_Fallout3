@@ -126,7 +126,7 @@ fn material_index_resolves_a_vanilla_material() {
         hwm_kb() / 1024,
     );
     // Measured 2026-09-30: the full Objects table keys 500,403 rows
-    // (material roots + layers + texture sets). 468 MB HWM / 2.2 s on
+    // (material roots + layers + texture sets). ~250-470 MB HWM / 1.6-2.2 s (re-measured 2026-10-05: 244 MB / 1.6 s) on
     // this run, versus 9.19 GB for the full generic parse.
     assert_eq!(index.material_count(), 500_403, "vanilla CDB key count");
 
@@ -200,6 +200,9 @@ fn material_index_dlc_cdb_resolves_the_base_corpus() {
     };
     let dlc = data.join("SFBGS007 - Main.ba2");
     if !dlc.exists() {
+        // #5326 — an absent DLC under the strict lane is a failure, not a
+        // silent pass (#3850).
+        require_game_data("BYROREDUX_STARFIELD_DATA (SFBGS007 - Main.ba2)", &dlc);
         eprintln!("[sfmaterial] SKIP: {} not installed", dlc.display());
         return;
     }
@@ -213,10 +216,25 @@ fn material_index_dlc_cdb_resolves_the_base_corpus() {
         index.material_count()
     );
     assert_eq!(index.material_count(), 500_385, "SFBGS007 CDB key count");
-    assert!(
-        index
-            .lookup("Materials\\Actors\\BipedA\\BipedA_Nightmare\\BipedA_Nightmare.mat")
-            .is_some(),
-        "the DLC near-copy resolves the same base-corpus material"
-    );
+    // #5326 — `Some` alone is satisfied by ANY keyed object, textures or
+    // not; the DLC CDB's `Components` <-> stream alignment is only proven
+    // by the same five slots the base test pins.
+    let mat = index
+        .lookup("Materials\\Actors\\BipedA\\BipedA_Nightmare\\BipedA_Nightmare.mat")
+        .expect("the DLC near-copy resolves the same base-corpus material");
+    for (slot, suffix) in [
+        (byroredux_sfmaterial::SLOT_COLOR, "bipeda_nightmare_color.dds"),
+        (byroredux_sfmaterial::SLOT_NORMAL, "bipeda_nightmare_normal.dds"),
+        (byroredux_sfmaterial::SLOT_ROUGHNESS, "bipeda_nightmare_rough.dds"),
+        (byroredux_sfmaterial::SLOT_METALNESS, "bipeda_nightmare_metal.dds"),
+        (byroredux_sfmaterial::SLOT_AMBIENT_OCCLUSION, "bipeda_nightmare_ao.dds"),
+    ] {
+        let got = mat
+            .textures
+            .iter()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, p)| p.to_ascii_lowercase().replace('/', "\\"))
+            .unwrap_or_default();
+        assert!(got.ends_with(suffix), "DLC slot {slot} should carry *{suffix}, got {got:?}");
+    }
 }
