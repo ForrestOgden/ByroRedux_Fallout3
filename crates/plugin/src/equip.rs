@@ -223,9 +223,24 @@ pub fn resolve_armor_meshes<'a>(
         };
     }
 
+    // #5510 — Skyrim's CK documents the rule: "If the biped model for
+    // female is not defined, it will use the biped model for male"
+    // (`ArmorAddon.wiki`, ck.uesp.net). 172 of Skyrim.esm's 766 addons
+    // author `MOD2` with no `MOD3` (shields, closed helms, boots on the
+    // Stormcloak set …); treating that as "no mesh for a female wearer"
+    // left the gear invisible while its occupancy still hid the skin
+    // partitions beneath it. The same rule as the pre-Skyrim ARMO arm
+    // above (#3416). The Fallout 4 CK page documents no such rule and
+    // none is sourced locally, so FO4+ keeps the strict reading until one is.
+    let female_falls_back_to_male = game == GameKind::Skyrim;
     let pick_path = |arma: &'a crate::esm::records::ArmaRecord| -> Option<&'a str> {
         let path = match gender {
             Gender::Male => arma.male_biped_model.as_str(),
+            Gender::Female
+                if arma.female_biped_model.is_empty() && female_falls_back_to_male =>
+            {
+                arma.male_biped_model.as_str()
+            }
             Gender::Female => arma.female_biped_model.as_str(),
         };
         if path.is_empty() {
@@ -1414,6 +1429,62 @@ mod tests {
         assert_eq!(
             resolve_armor_mesh(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim),
             Some(r"Actors\Character\Character Assets\MaleFeet_1.nif")
+        );
+    }
+
+    /// #5510 — a Skyrim addon with a male biped model and no female one
+    /// (`MOD2` without `MOD3`: 172 of Skyrim.esm's 766 ARMAs) draws its male
+    /// mesh on a female wearer, per the CK ("If the biped model for female
+    /// is not defined, it will use the biped model for male"). A female
+    /// model, when authored, still wins; the fallback applies on both
+    /// resolution passes, and not on FO4+ where no such rule is sourced.
+    #[test]
+    fn skyrim_female_wearer_falls_back_to_the_male_biped_model() {
+        let nord_race = 0x0001_3746;
+        let armor = skyrim_armor(vec![0x0001_0001, 0x0001_0002]);
+        let mut idx = empty_index();
+        idx.armor_addons.insert(
+            0x0001_0001,
+            arma_for_race(0x0001_0001, nord_race, vec![], r"Armor\Stormcloak\BootsM_1.nif", ""),
+        );
+        idx.armor_addons.insert(
+            0x0001_0002,
+            arma_for_race(
+                0x0001_0002,
+                nord_race,
+                vec![],
+                r"Armor\Stormcloak\CuirassM_1.nif",
+                r"Armor\Stormcloak\CuirassF_1.nif",
+            ),
+        );
+
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Female, nord_race, &idx, GameKind::Skyrim),
+            vec![
+                r"Armor\Stormcloak\BootsM_1.nif",
+                r"Armor\Stormcloak\CuirassF_1.nif",
+            ],
+            "male-only addon falls back to its male mesh; an authored female mesh wins"
+        );
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Male, nord_race, &idx, GameKind::Skyrim),
+            vec![
+                r"Armor\Stormcloak\BootsM_1.nif",
+                r"Armor\Stormcloak\CuirassM_1.nif",
+            ]
+        );
+
+        // Pass 2 (no race match): the first addon with a usable mesh for the
+        // wearer — the male-only shield now qualifies for a female.
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Female, 0xDEAD, &idx, GameKind::Skyrim),
+            vec![r"Armor\Stormcloak\BootsM_1.nif"]
+        );
+
+        // FO4 has no sourced fallback rule: the strict reading stays.
+        assert_eq!(
+            resolve_armor_meshes(&armor, Gender::Female, nord_race, &idx, GameKind::Fallout4),
+            vec![r"Armor\Stormcloak\CuirassF_1.nif"]
         );
     }
 
