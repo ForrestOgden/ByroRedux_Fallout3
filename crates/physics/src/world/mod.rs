@@ -1319,6 +1319,7 @@ impl PhysicsWorld {
         // tears) is discarded at the drain, so a busy scene cannot grow
         // unboundedly. Appended, not assigned: the substep loop may run
         // several steps per frame and the consumer takes once per frame.
+        let events_before_substep = self.pending_force_events.len();
         self.pending_force_events.extend(
             self.contact_force_rx
                 .lock()
@@ -1376,6 +1377,13 @@ impl PhysicsWorld {
             self.substep_wake_requested = true;
         }
         if restored > 0 {
+            // #5554 — this substep's solve was declared invalid and rolled
+            // back, so the contact-force crossings it produced describe
+            // forces that never happened: an explosion's insane forces
+            // clear any `min_force_magnitude` and would become a burst of
+            // impact one-shots at the corpse. Earlier substeps of the frame
+            // were valid and keep their crossings.
+            self.pending_force_events.truncate(events_before_substep);
             log::error!(
                 "physics: restored {restored} dynamic body/bodies after an invalid solve; \
                  affected bodies were put to sleep at their prior pose"
@@ -3640,6 +3648,76 @@ mod tests {
         assert_eq!(
             w.surface_material_under(Vec3::new(100.0, 64.0, 0.0), 128.0, None),
             Some(7)
+        );
+    }
+
+    /// A ball released slightly inside a floor (so its pair has contact
+    /// force on the very first substep) with CONTACT_FORCE_EVENTS armed,
+    /// plus — when `exploder` — a second body far away launched fast enough
+    /// to trip the invalid-solve restore on that same substep.
+    fn impact_fixture(exploder: bool) -> PhysicsWorld {
+        let mut w = PhysicsWorld::new();
+        uncap_rigid_body_speed(&mut w);
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .user_data(3u128)
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        let ball = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(0.0, 0.4, 0.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5)
+                .density(1.0)
+                .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                .user_data(9u128)
+                .build(),
+            ball,
+            &mut w.bodies,
+        );
+        w.dynamic_bodies.push(ball);
+        if exploder {
+            let bomb = w.bodies.insert(
+                RigidBodyBuilder::dynamic()
+                    .translation(Vector::new(0.0, 100.0, 150.0))
+                    .build(),
+            );
+            w.dynamic_bodies.push(bomb);
+            w.bodies[bomb].set_linvel(Vector::new(1.0e9, 0.0, 0.0), true);
+        }
+        w.wake();
+        w
+    }
+
+    /// #5554 — the drain kept `started` crossings from a substep the engine
+    /// then rolled back as an invalid solve. The control proves the fixture
+    /// really produces a crossing on step 1; the poisoned run (same ball,
+    /// plus a body that trips the restore on that substep) must report none.
+    #[test]
+    fn crossings_from_a_rolled_back_substep_are_discarded() {
+        let mut control = impact_fixture(false);
+        assert!(control.step(PHYSICS_DT) >= 1);
+        assert_eq!(control.recovery_counts().0, 0, "control: no restore");
+        assert!(
+            control
+                .take_contact_force_events()
+                .iter()
+                .any(|event| event.started),
+            "fixture: the ball pressed into the floor must cross on its first substep"
+        );
+
+        let mut poisoned = impact_fixture(true);
+        assert!(poisoned.step(PHYSICS_DT) >= 1);
+        assert_eq!(poisoned.recovery_counts().0, 1, "fixture: the 1e9 body triggers the restore");
+        assert!(
+            poisoned.take_contact_force_events().is_empty(),
+            "a rolled-back substep's contact crossings describe forces that never happened"
         );
     }
 

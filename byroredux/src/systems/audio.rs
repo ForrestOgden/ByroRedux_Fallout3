@@ -415,8 +415,7 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
     let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
         return;
     };
-    for (position, material) in impacts {
-        let Some(sound) = select_impact_sound(&surface_sounds, default.as_ref(), material) else { break };
+    for (position, sound) in impact_sounds_to_play(impacts, &surface_sounds, default.as_ref()) {
         audio_world.play_oneshot(
             sound,
             position,
@@ -430,6 +429,22 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
         );
     }
     drop(audio_world);
+}
+
+/// The `(position, sound)` pairs a frame's impacts resolve to. A material
+/// with no entry and no default skips only ITS impact (#5554: the loop used
+/// to `break` there, abandoning every later impact of the frame).
+fn impact_sounds_to_play(
+    impacts: Vec<(byroredux_core::math::Vec3, u32)>,
+    surface_sounds: &std::collections::BTreeMap<u32, std::sync::Arc<byroredux_audio::Sound>>,
+    default: Option<&std::sync::Arc<byroredux_audio::Sound>>,
+) -> Vec<(byroredux_core::math::Vec3, std::sync::Arc<byroredux_audio::Sound>)> {
+    impacts
+        .into_iter()
+        .filter_map(|(position, material)| {
+            select_impact_sound(surface_sounds, default, material).map(|sound| (position, sound))
+        })
+        .collect()
 }
 
 /// The surface material of a contact pair: collider 1's non-zero material,
@@ -673,6 +688,30 @@ mod footstep_tests {
             Arc::ptr_eq(&select_footstep_sound(&table, None, &default), &default),
             "no ground in probe range falls back to the default"
         );
+    }
+
+    /// #5554 — one impact whose material has no entry (and no default) must
+    /// not end the frame: the loop used to `break`, silencing every later
+    /// impact that DID map.
+    #[test]
+    fn an_unmapped_material_skips_only_its_own_impact() {
+        let sound = |tag: f32| {
+            Arc::new(Sound {
+                sample_rate: 22_050,
+                frames: Arc::from(vec![Frame { left: tag, right: tag }].into_boxed_slice()),
+                settings: SoundSettings::default(),
+                slice: None,
+            })
+        };
+        let wood = sound(0.5);
+        let table = std::collections::BTreeMap::from([(5u32, Arc::clone(&wood))]);
+        let at = |x: f32| byroredux_core::math::Vec3::new(x, 0.0, 0.0);
+        // No default: material 9 maps to nothing; 5 maps to wood.
+        let plan = impact_sounds_to_play(vec![(at(1.0), 9), (at(2.0), 5), (at(3.0), 9), (at(4.0), 5)], &table, None);
+        assert_eq!(plan.len(), 2, "both mappable impacts play, the unmapped ones are skipped");
+        assert_eq!(plan[0].0, at(2.0));
+        assert_eq!(plan[1].0, at(4.0));
+        assert!(plan.iter().all(|(_, s)| Arc::ptr_eq(s, &wood)));
     }
 
     /// #5549 — a pair whose colliders both carry material 0 (STONE, or no
