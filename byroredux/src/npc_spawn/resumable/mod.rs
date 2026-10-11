@@ -389,6 +389,164 @@ fn spawn_placement_root<'a>(
     (placement_root, resolved)
 }
 
+/// One armor mesh queued for the Armor phase — shared by the runtime and
+/// pre-baked state machines (#5312), which used to carry two field-identical
+/// structs built by three copies of the same `map`.
+pub(super) struct SpawnArmor {
+    pub(super) model_path: String,
+    /// The form the mesh resolved from, after leveled-list expansion.
+    pub(super) resolved_fid: u32,
+    /// The form the OTFT/CNTO entry named before expansion — the
+    /// provenance a miss log needs to point at the authoring row.
+    pub(super) source_fid: u32,
+    pub(super) hidden_biped_mask: u32,
+    pub(super) ownership: NpcEquipmentPart,
+}
+
+impl SpawnArmor {
+    /// Convert the equip resolution's armor list into Armor-phase units for
+    /// the actor rooted at `placement_root`.
+    pub(super) fn collect(
+        placement_root: EntityId,
+        armor_to_spawn: Vec<ResolvedArmor<'_>>,
+    ) -> Vec<Self> {
+        armor_to_spawn
+            .into_iter()
+            .map(|armor| Self {
+                ownership: NpcEquipmentPart {
+                    actor: placement_root,
+                    form_id: armor.form_id,
+                    intrinsic_skin: armor.intrinsic_skin,
+                    hidden_biped_mask: armor.hidden_biped_mask,
+                },
+                model_path: armor.model_path.to_owned(),
+                resolved_fid: armor.form_id,
+                source_fid: armor.source_form_id,
+                hidden_biped_mask: armor.hidden_biped_mask,
+            })
+            .collect()
+    }
+}
+
+/// The Armor phase's per-piece unit, shared by both arms (#5312): extract
+/// the model, load it onto the actor's skeleton with the displaced-skin
+/// partitions hidden, parent it as an equipment part, and track it for the
+/// loot-appearance restore. Returns whether the model was found in the
+/// archives; a miss is logged by the caller, which owns the actor identity
+/// for the message.
+#[allow(clippy::too_many_arguments)] // the pieces of one spawn unit; a struct would just re-name them
+fn spawn_armor_unit(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    skel_map: &SkeletonMap,
+    appearance: &mut NpcLootAppearance,
+    equipped_armor_count: &mut u32,
+    armor: &SpawnArmor,
+) -> bool {
+    let Some(data) = tex_provider.extract_mesh(&armor.model_path) else {
+        return false;
+    };
+    let hidden_biped_mask = armor.hidden_biped_mask;
+    let mut hide_displaced_skin = |scene: &mut byroredux_nif::import::ImportedScene| {
+        hide_skin_partitions(scene, hidden_biped_mask);
+    };
+    let pre_spawn: Option<&mut dyn FnMut(&mut byroredux_nif::import::ImportedScene)> =
+        (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
+    let (_, root, _) = load_nif_bytes_with_skeleton(
+        world,
+        ctx,
+        &data,
+        &armor.model_path,
+        tex_provider,
+        mat_provider,
+        Some(skel_map),
+        None,
+        pre_spawn,
+    );
+    if let Some(root) = root {
+        parent_equipment_part(world, root, armor.ownership);
+        if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
+            appearance.original_roots.push(root);
+        }
+        *equipped_armor_count += 1;
+    }
+    true
+}
+
+/// What [`spawn_skeleton_unit`] found.
+enum SkeletonUnit {
+    /// The skeleton NIF is not in the archives; the caller completes the
+    /// spawn with the placement root alone (equip state retained).
+    Missing,
+    Loaded {
+        root: Option<EntityId>,
+        skel_map: SkeletonMap,
+    },
+}
+
+/// The Skeleton phase's shared core (#5312): extract → load → parent under
+/// the placement root → install the fallback ragdoll template. Player
+/// bodies get no bone colliders: the bone bodies are separate Rapier bodies
+/// mapped to the actor through `ActorColliderOwner`, and every
+/// interaction/occlusion/combat ray excludes exactly one body — the
+/// player's capsule. Keyframed bone bodies beside it would intercept those
+/// rays and make the player target/occlude against itself. The post-spawn
+/// pass in `crate::player_body` strips any bhk-derived collision components
+/// the skeleton import created.
+#[allow(clippy::too_many_arguments)] // the pieces of one spawn unit; a struct would just re-name them
+fn spawn_skeleton_unit(
+    world: &mut World,
+    ctx: &mut VulkanContext,
+    tex_provider: &TextureProvider,
+    mat_provider: Option<&mut MaterialProvider>,
+    npc: &NpcRecord,
+    skel_path: &str,
+    placement_root: EntityId,
+    player_body: bool,
+) -> SkeletonUnit {
+    let Some(data) = tex_provider.extract_mesh(skel_path) else {
+        log::warn!(
+            "NPC {:08X} ({}): skeleton '{}' not found in archives — skipping mesh spawn \
+             (equip state retained)",
+            npc.form_id,
+            npc.editor_id,
+            skel_path,
+        );
+        return SkeletonUnit::Missing;
+    };
+    let (_, root, skel_map) = load_nif_bytes_with_skeleton(
+        world,
+        ctx,
+        &data,
+        skel_path,
+        tex_provider,
+        mat_provider,
+        None,
+        None,
+        None,
+    );
+    let fallback_collider = if player_body {
+        None
+    } else {
+        keyframe_live_ragdoll_bones(world, placement_root, &skel_map)
+    };
+    if let Some(root) = root {
+        parent_part(world, placement_root, root);
+        if let Some(collider) = fallback_collider {
+            install_fallback_ragdoll_template(world, root, collider);
+        }
+    } else {
+        log::debug!(
+            "NPC {:08X}: skeleton '{}' produced no root entity",
+            npc.form_id,
+            skel_path,
+        );
+    }
+    SkeletonUnit::Loaded { root, skel_map }
+}
+
 fn parent_equipment_part(world: &mut World, part_root: EntityId, ownership: NpcEquipmentPart) {
     parent_part(world, ownership.actor, part_root);
     world.insert(part_root, ownership);

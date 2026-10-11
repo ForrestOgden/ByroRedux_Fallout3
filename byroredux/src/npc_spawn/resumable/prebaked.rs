@@ -11,7 +11,7 @@ pub(super) struct PrebakedNpcState {
     pub(super) skeleton_path: Option<String>,
     pub(super) facegen_path: Option<String>,
     pub(super) tint_path: Option<String>,
-    pub(super) armor: Vec<PrebakedArmor>,
+    pub(super) armor: Vec<SpawnArmor>,
     /// #3409 — biped bits an equipped item took from the FaceGen head, in
     /// `hide_skin_partitions` format. See `NpcEquipState::facegen_hidden_mask`.
     pub(super) facegen_hidden_mask: u32,
@@ -69,13 +69,6 @@ pub(super) enum PrebakedPhase {
     Finalize,
 }
 
-pub(super) struct PrebakedArmor {
-    pub(super) form_id: u32,
-    pub(super) model_path: String,
-    pub(super) hidden_biped_mask: u32,
-    pub(super) ownership: NpcEquipmentPart,
-}
-
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_prebaked_state(
@@ -113,21 +106,7 @@ pub(super) fn prepare_prebaked_state(
         .iter()
         .map(|path| RestorePart::body(path))
         .collect();
-    let armor = equip
-        .armor_to_spawn
-        .into_iter()
-        .map(|armor| PrebakedArmor {
-            ownership: NpcEquipmentPart {
-                actor: placement_root,
-                form_id: armor.form_id,
-                intrinsic_skin: armor.intrinsic_skin,
-                hidden_biped_mask: armor.hidden_biped_mask,
-            },
-            form_id: armor.form_id,
-            model_path: armor.model_path.to_owned(),
-            hidden_biped_mask: armor.hidden_biped_mask,
-        })
-        .collect();
+    let armor = SpawnArmor::collect(placement_root, equip.armor_to_spawn);
     // The player body does not insert these: the player entity already owns
     // its Inventory/EquipmentSlots/EquippedWeapon (stamped from the same
     // resolved `NPC_ 0x7` by `inventory::attach_to_player`), and its equip
@@ -199,40 +178,18 @@ pub(super) fn advance_prebaked_unit(
             let Some(skel_path) = state.skeleton_path.as_deref() else {
                 return UnitOutcome::Complete(None);
             };
-            let Some(data) = tex_provider.extract_mesh(skel_path) else {
-                log::warn!(
-                    "NPC {:08X} ({}): skeleton '{}' not in archives — skipping mesh spawn (equip state retained)",
-                    npc.form_id,
-                    npc.editor_id,
-                    skel_path,
-                );
-                return UnitOutcome::Complete(Some(state.placement_root));
-            };
-            let (_, skel_root, skel_map) = load_nif_bytes_with_skeleton(
+            let SkeletonUnit::Loaded { root: skel_root, skel_map } = spawn_skeleton_unit(
                 world,
                 ctx,
-                &data,
-                skel_path,
                 tex_provider,
                 mat_provider,
-                None,
-                None,
-                None,
-            );
-            // Same no-bone-collider contract as the runtime Skeleton phase:
-            // the player's rays exclude only its capsule, so a player-body
-            // skeleton must not register bone bodies beside it.
-            let fallback_collider = if state.player_body {
-                None
-            } else {
-                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map)
+                npc,
+                skel_path,
+                state.placement_root,
+                state.player_body,
+            ) else {
+                return UnitOutcome::Complete(Some(state.placement_root));
             };
-            if let Some(root) = skel_root {
-                parent_part(world, state.placement_root, root);
-                if let Some(collider) = fallback_collider {
-                    super::install_fallback_ragdoll_template(world, root, collider);
-                }
-            }
             state.skel_root = skel_root;
             state.skel_map = skel_map;
             state.phase = PrebakedPhase::Facegen;
@@ -362,42 +319,25 @@ pub(super) fn advance_prebaked_unit(
                 state.phase = PrebakedPhase::Finalize;
                 return UnitOutcome::Continue;
             };
-            match tex_provider.extract_mesh(&armor.model_path) {
-                Some(data) => {
-                    let hidden_biped_mask = armor.hidden_biped_mask;
-                    let mut hide_displaced_skin =
-                        |scene: &mut byroredux_nif::import::ImportedScene| {
-                            hide_skin_partitions(scene, hidden_biped_mask);
-                        };
-                    let pre_spawn: Option<
-                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
-                    let (_, root, _) = load_nif_bytes_with_skeleton(
-                        world,
-                        ctx,
-                        &data,
-                        &armor.model_path,
-                        tex_provider,
-                        mat_provider,
-                        Some(&state.skel_map),
-                        None,
-                        pre_spawn,
-                    );
-                    if let Some(root) = root {
-                        parent_equipment_part(world, root, armor.ownership);
-                        if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
-                            state.appearance.original_roots.push(root);
-                        }
-                        state.equipped_armor_count += 1;
-                    }
-                }
-                None => log::debug!(
-                    "NPC {:08X} ({}): armor {:08X} model '{}' not in archives",
+            if !spawn_armor_unit(
+                world,
+                ctx,
+                tex_provider,
+                mat_provider,
+                &state.skel_map,
+                &mut state.appearance,
+                &mut state.equipped_armor_count,
+                armor,
+            ) {
+                log::debug!(
+                    "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
+                     model '{}' not in archives",
                     npc.form_id,
                     npc.editor_id,
-                    armor.form_id,
+                    armor.resolved_fid,
+                    armor.source_fid,
                     armor.model_path,
-                ),
+                );
             }
             let next = index + 1;
             state.phase = if next < state.armor.len() {

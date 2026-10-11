@@ -65,7 +65,7 @@ pub(super) struct RuntimeNpcState {
     pub(super) inventory: Option<Inventory>,
     pub(super) equipment_slots: Option<EquipmentSlots>,
     pub(super) equipped_weapon: Option<EquippedWeapon>,
-    pub(super) armor: Vec<RuntimeArmor>,
+    pub(super) armor: Vec<SpawnArmor>,
     pub(super) equipped_armor_count: u32,
     /// Blend the head / hand cuts into the neighbouring skin at spawn
     /// (Oblivion / FO3 / FNV runtime-assembled actors — see `seam_blend`).
@@ -96,14 +96,6 @@ pub(super) enum RuntimePhase {
     HeadSubPart(usize),
     Armor(usize),
     Finalize,
-}
-
-pub(super) struct RuntimeArmor {
-    pub(super) model_path: String,
-    pub(super) resolved_fid: u32,
-    pub(super) source_fid: u32,
-    pub(super) hidden_biped_mask: u32,
-    pub(super) ownership: NpcEquipmentPart,
 }
 
 /// Every RACE head-part mesh matching one of `roles`, in role order,
@@ -358,22 +350,7 @@ pub(super) fn prepare_runtime_state(
         Vec::new()
     };
 
-    let armor = equip
-        .armor_to_spawn
-        .into_iter()
-        .map(|armor| RuntimeArmor {
-            ownership: NpcEquipmentPart {
-                actor: placement_root,
-                form_id: armor.form_id,
-                intrinsic_skin: armor.intrinsic_skin,
-                hidden_biped_mask: armor.hidden_biped_mask,
-            },
-            model_path: armor.model_path.to_owned(),
-            resolved_fid: armor.form_id,
-            source_fid: armor.source_form_id,
-            hidden_biped_mask: armor.hidden_biped_mask,
-        })
-        .collect();
+    let armor = SpawnArmor::collect(placement_root, equip.armor_to_spawn);
 
     RuntimeNpcState {
         appearance,
@@ -455,22 +432,7 @@ pub(super) fn prepare_creature_state(
     // no-op for creatures in practice (`CREA` references no `RACE`) but
     // keeps this call site correct without an is_creature special case.
     let equip = build_npc_equip_state(resolved, index, game, gender);
-    let armor = equip
-        .armor_to_spawn
-        .into_iter()
-        .map(|armor| RuntimeArmor {
-            ownership: NpcEquipmentPart {
-                actor: placement_root,
-                form_id: armor.form_id,
-                intrinsic_skin: armor.intrinsic_skin,
-                hidden_biped_mask: armor.hidden_biped_mask,
-            },
-            model_path: armor.model_path.to_owned(),
-            resolved_fid: armor.form_id,
-            source_fid: armor.source_form_id,
-            hidden_biped_mask: armor.hidden_biped_mask,
-        })
-        .collect();
+    let armor = SpawnArmor::collect(placement_root, equip.armor_to_spawn);
 
     let _ = world;
     RuntimeNpcState {
@@ -538,51 +500,18 @@ pub(super) fn advance_runtime_unit(
             }
             let skel_path = state.skeleton_path.clone();
             let skel_path = skel_path.as_str();
-            let Some(skel_data) = tex_provider.extract_mesh(skel_path) else {
-                log::warn!(
-                    "NPC {:08X} ({}): skeleton '{}' not found in archives — skipping spawn",
-                    npc.form_id,
-                    npc.editor_id,
-                    skel_path,
-                );
-                return UnitOutcome::Complete(Some(state.placement_root));
-            };
-            let (_, skel_root, skel_map) = load_nif_bytes_with_skeleton(
+            let SkeletonUnit::Loaded { root: skel_root, skel_map } = spawn_skeleton_unit(
                 world,
                 ctx,
-                &skel_data,
-                skel_path,
                 tex_provider,
                 mat_provider.as_deref_mut(),
-                None,
-                None,
-                None,
-            );
-            // Player bodies get no bone colliders: the bone bodies are
-            // separate Rapier bodies mapped to the actor through
-            // `ActorColliderOwner`, and every interaction/occlusion/combat
-            // ray excludes exactly one body — the player's capsule. Keyframed
-            // bone bodies beside it would intercept those rays and make the
-            // player target/occlude against itself. The post-spawn pass in
-            // `crate::player_body` strips any bhk-derived collision
-            // components the skeleton import created.
-            let fallback_collider = if state.player_body {
-                None
-            } else {
-                keyframe_live_ragdoll_bones(world, state.placement_root, &skel_map)
+                npc,
+                skel_path,
+                state.placement_root,
+                state.player_body,
+            ) else {
+                return UnitOutcome::Complete(Some(state.placement_root));
             };
-            if let Some(root) = skel_root {
-                parent_part(world, state.placement_root, root);
-                if let Some(fallback) = fallback_collider {
-                    super::install_fallback_ragdoll_template(world, root, fallback);
-                }
-            } else {
-                log::debug!(
-                    "NPC {:08X}: skeleton '{}' produced no root entity",
-                    npc.form_id,
-                    skel_path,
-                );
-            }
             state.skel_root = skel_root;
             state.skel_map = skel_map;
             if state.blend_skin_seams && state.skel_root.is_some() {
@@ -837,36 +766,17 @@ pub(super) fn advance_runtime_unit(
                 state.phase = RuntimePhase::Finalize;
                 return UnitOutcome::Continue;
             };
-            match tex_provider.extract_mesh(&armor.model_path) {
-                Some(data) => {
-                    let hidden_biped_mask = armor.hidden_biped_mask;
-                    let mut hide_displaced_skin =
-                        |scene: &mut byroredux_nif::import::ImportedScene| {
-                            hide_skin_partitions(scene, hidden_biped_mask);
-                        };
-                    let pre_spawn: Option<
-                        &mut dyn FnMut(&mut byroredux_nif::import::ImportedScene),
-                    > = (hidden_biped_mask != 0).then_some(&mut hide_displaced_skin);
-                    let (_, root, _) = load_nif_bytes_with_skeleton(
-                        world,
-                        ctx,
-                        &data,
-                        &armor.model_path,
-                        tex_provider,
-                        mat_provider,
-                        Some(&state.skel_map),
-                        None,
-                        pre_spawn,
-                    );
-                    if let Some(root) = root {
-                        parent_equipment_part(world, root, armor.ownership);
-                        if !armor.ownership.intrinsic_skin || armor.hidden_biped_mask != 0 {
-                            state.appearance.original_roots.push(root);
-                        }
-                        state.equipped_armor_count += 1;
-                    }
-                }
-                None => log::debug!(
+            if !spawn_armor_unit(
+                world,
+                ctx,
+                tex_provider,
+                mat_provider,
+                &state.skel_map,
+                &mut state.appearance,
+                &mut state.equipped_armor_count,
+                armor,
+            ) {
+                log::debug!(
                     "NPC {:08X} ({}): armor {:08X} (from CNTO {:08X}) \
                      model '{}' not in archives",
                     npc.form_id,
@@ -874,7 +784,7 @@ pub(super) fn advance_runtime_unit(
                     armor.resolved_fid,
                     armor.source_fid,
                     armor.model_path,
-                ),
+                );
             }
             let next = index + 1;
             state.phase = if next < state.armor.len() {
