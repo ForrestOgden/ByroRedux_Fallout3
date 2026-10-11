@@ -6,7 +6,17 @@
 //! Better-than-Bethesda axis: proper reverb zones, full HRTF where
 //! kira allows, no Wwise/FMOD middleware tax.
 //!
-//! # Phase 1 (this commit)
+//! # Which entry point the engine uses
+//!
+//! Every shipped sound (footsteps, impacts, splashes, dialogue voice,
+//! ambient and music) goes through [`AudioWorld`]'s queue API —
+//! [`AudioWorld::play_oneshot`] and friends — which needs only `&World`.
+//! The entity-shaped flow (`OneShotSound` + [`AudioEmitter`] spawned by
+//! [`spawn_oneshot_at`], Phases 1 and 3) has no engine producer; it is kept
+//! for tests and tooling that want a one-off emitter entity, and its
+//! dispatch path is exercised only by `tests.rs`.
+//!
+//! # Phase 1
 //!
 //! - [`AudioWorld`] resource — wraps `kira::AudioManager` with a
 //!   graceful-degradation fallback. Init failure (no audio device,
@@ -24,7 +34,7 @@
 //!   follows moving emitters,
 //!   plays new emitters, and prunes finished one-shots.
 //!
-//! # Phase 2 (this commit)
+//! # Phase 2
 //!
 //! - [`load_sound_from_bytes`] — decode a fully-buffered audio blob
 //!   (typically extracted from a Bethesda BSA) through kira's
@@ -34,7 +44,7 @@
 //!   `Arc<StaticSoundData>`. Repeat plays of the same SFX (footsteps,
 //!   weapon fire, dialogue line) skip the decode cost entirely.
 //!
-//! # Phase 3 (this commit)
+//! # Phase 3
 //!
 //! - [`audio_system`] is no longer a stub — it now lazily creates a
 //!   `kira::ListenerHandle` from the `AudioListener` entity's
@@ -46,12 +56,12 @@
 //!   gameplay components.
 //! - [`spawn_oneshot_at`] — public helper that composes the
 //!   `OneShotSound + AudioEmitter + Transform + GlobalTransform`
-//!   bundle on a fresh entity. The intended consumer is gameplay
-//!   code (footstep timer, weapon-fire trigger, dialogue dispatcher)
-//!   that owns the policy of *when* to play; this helper owns the
-//!   ECS-shape of *how* to play.
+//!   bundle on a fresh entity. No engine code calls it: gameplay
+//!   systems hold `&World` and cannot spawn, so they use
+//!   [`AudioWorld::play_oneshot`] (Phase 3.5). It remains for tests and
+//!   tooling that want the entity-shaped flow.
 //!
-//! # Phase 3.5 (this commit)
+//! # Phase 3.5
 //!
 //! - [`AudioWorld::play_oneshot`] — fire-and-forget queue API.
 //!   Gameplay code with `&World` access (a System, which can't spawn
@@ -63,7 +73,7 @@
 //!   required — sidesteps the "Systems can't `&mut World::spawn`"
 //!   constraint that motivates this API.
 //!
-//! # Phase 4 (this commit)
+//! # Phase 4
 //!
 //! - `AudioEmitter.looping = true` is no longer just metadata. The
 //!   dispatch path applies kira's `StaticSoundData::loop_region(..)`
@@ -74,7 +84,7 @@
 //!   tweened `stop()` on the kira handle; the next prune tick
 //!   observes `Stopped` and drops the entry.
 //!
-//! # Phase 5 (this commit)
+//! # Phase 5
 //!
 //! - [`load_streaming_sound_from_bytes`] / [`load_streaming_sound_from_file`]
 //!   — kira's `StreamingSoundData` lets multi-minute music play
@@ -88,7 +98,7 @@
 //! - [`AudioWorld::stop_music`] — explicit stop (cell exit, menu
 //!   open, etc.) with a configurable fade duration.
 //!
-//! # Phase 6 (this commit)
+//! # Phase 6
 //!
 //! - [`AudioWorld::set_reverb_send_db`] — global reverb send level.
 //!   On manager init, the audio crate creates one kira send track
@@ -127,7 +137,7 @@
 //! [`Attenuation`] distances are authored in **metres** and must not be
 //! pre-scaled by callers. See #3178.
 //!
-//! # Future work (not in this commit)
+//! # Future work
 //!
 //! Listed by name rather than phase number (Phases 4–6 above have
 //! shipped; see `docs/feature-matrix.md` for authoritative status):
@@ -1011,6 +1021,10 @@ impl Component for AudioEmitter {
 /// removes the entity." This avoids needing a per-emitter playback
 /// handle held inside the component (which would force `'static` on
 /// the kira sound handle and complicate Drop).
+///
+/// The only non-test insert is [`spawn_oneshot_at`], which the engine
+/// does not call (it queues through [`AudioWorld::play_oneshot`]); this
+/// path is test/tooling-only.
 pub struct OneShotSound;
 
 impl Component for OneShotSound {
@@ -1580,9 +1594,10 @@ fn prune_stopped_sounds(world: &World, audio_world: &mut AudioWorld) {
 /// gameplay components (e.g. parenting under an actor for
 /// short-lived position tracking) before the system fires.
 ///
-/// This is the public ECS-shape contract Phase 3 commits to.
-/// Gameplay code (footstep timer, weapon-fire trigger, dialogue
-/// dispatcher) owns the *when*; this helper owns the *how*.
+/// This is the public ECS-shape contract Phase 3 committed to. No engine
+/// system uses it — gameplay code queues through
+/// [`AudioWorld::play_oneshot`] because a system cannot spawn — so it is
+/// exercised by `tests.rs` and available to tooling.
 pub fn spawn_oneshot_at(
     world: &mut World,
     sound: Arc<StaticSoundData>,
@@ -1668,6 +1683,10 @@ pub fn load_streaming_sound_from_bytes(
 /// that opens the file lazily — kira holds an `std::fs::File` and
 /// pulls decoded frames as the playback head advances. Use this for
 /// loose `Data/Music/*.mp3` / `*.wav` files that aren't archived.
+///
+/// No engine caller yet: archive-extracted music streams through
+/// [`load_streaming_sound_from_bytes`] (`asset_provider/audio.rs`). Kept
+/// for a loose-file music path.
 pub fn load_streaming_sound_from_file(
     path: impl AsRef<std::path::Path>,
 ) -> Result<StreamingSoundData<FromFileError>, FromFileError> {
