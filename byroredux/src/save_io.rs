@@ -1431,7 +1431,7 @@ fn reload_interior_session(
     // REFR/ACHR spawns and keep the player glued to a dead vehicle. Must
     // stay after the preflight: an aborted load keeps the live session,
     // cinematic state included.
-    crate::cell_loader::purge_cinematic_retention_state(world);
+    crate::cell_loader::purge_cinematic_retention_state(world, ctx);
 
     // Tear down whatever's loaded, then reload the saved cell fresh.
     if streaming.is_some() {
@@ -1586,7 +1586,7 @@ fn reload_exterior_session(
 
     // #5056 — same pre-teardown purge as the interior reload above, after
     // this path's own preflight (`build_exterior_world_context`) passed.
-    crate::cell_loader::purge_cinematic_retention_state(world);
+    crate::cell_loader::purge_cinematic_retention_state(world, ctx);
 
     // Tear down whatever's loaded, then rebuild the saved worldspace fresh.
     if streaming.is_some() {

@@ -81,9 +81,10 @@ fn player_owned_entities(world: &World) -> HashSet<EntityId> {
 
 /// Drop every live `ActorCinematicState` / `HorseTetherState` row, emptying
 /// [`cinematic_retained_entities`] for the teardown that follows, and
-/// despawn the `CinematicReAdoption` pending list — released convoy
-/// entities waiting for a cell to load under them carry no `CellRoot`,
-/// so the teardown's `CellRootIndex` walk cannot see them (#5379).
+/// release the `CinematicReAdoption` pending list's convoys through the
+/// canonical [`release_entities`] teardown — released convoy entities
+/// waiting for a cell to load under them carry no `CellRoot`, so the
+/// teardown's `CellRootIndex` walk cannot see them (#5379).
 ///
 /// #5056 — session-replacement loads (save load, debug load) tear down and
 /// re-spawn the whole world. Both components carry session-local `EntityId`s
@@ -108,7 +109,38 @@ fn player_owned_entities(world: &World) -> HashSet<EntityId> {
 /// an aborted load must keep the live session intact, and ordinary cell
 /// transitions (door walks, radius streaming) must NOT purge — retention
 /// there is the by-design cross-boundary mechanism (#3254, #3817).
-pub(crate) fn purge_cinematic_retention_state(world: &mut World) {
+pub(crate) fn purge_cinematic_retention_state(world: &mut World, ctx: &mut VulkanContext) {
+    detach_cinematic_state_rows(world);
+    // #5379 — released convoy entities still waiting for a cell to load
+    // under them sit on `CinematicReAdoption.pending` with NO `CellRoot`,
+    // so the teardown below cannot enumerate them (it walks
+    // `CellRootIndex` victims). Un-purged they survive the load, the
+    // reload spawns fresh copies of the same REFR/ACHR, and ghost +
+    // fresh share a `FormIdPair` — #5056's hazard (2) reopened through
+    // the #3817 path.
+    //
+    // #5490 — the list holds PARENTLESS roots only (#5384), whose render
+    // subtrees lost their `CellRoot` to `strip_retained_cell_root` and are
+    // therefore unreachable too. A bare `despawn_batch` of the roots left
+    // those children pointing at a dead `Parent` (frozen ghost geometry,
+    // and `validate_world` refusing every later save) and skipped the GPU /
+    // item-instance / Rapier release `release_entities` owns. Hand the
+    // whole `Children` closure to that canonical path instead.
+    let victims = take_pending_readoption_victims(world);
+    if !victims.is_empty() {
+        release_entities(
+            world,
+            ctx,
+            &victims,
+            "session replace: pending cinematic re-adoption (#5379/#5490)",
+        );
+    }
+}
+
+/// The #5056 half of the purge: drop every `ActorCinematicState` /
+/// `HorseTetherState` row so [`cinematic_retained_entities`] is empty for
+/// the teardown that follows.
+fn detach_cinematic_state_rows(world: &mut World) {
     let detached = remove_all::<byroredux_scripting::ActorCinematicState>(world)
         + remove_all::<byroredux_scripting::HorseTetherState>(world);
     if detached > 0 {
@@ -117,30 +149,36 @@ pub(crate) fn purge_cinematic_retention_state(world: &mut World) {
              teardown despawns the convoy instead of retaining it (#5056)"
         );
     }
-    // #5379 — released convoy entities still waiting for a cell to load
-    // under them sit on `CinematicReAdoption.pending` with NO `CellRoot`,
-    // so the teardown below cannot enumerate them (it walks
-    // `CellRootIndex` victims). Un-purged they survive the load, the
-    // reload spawns fresh copies of the same REFR/ACHR, and ghost +
-    // fresh share a `FormIdPair` — #5056's hazard (2) reopened through
-    // the #3817 path. Despawn them here, then clear the list.
+}
+
+/// Drain [`CinematicReAdoption`] and return the full `Children` closure of
+/// its roots (#5490), minus anything the #5483 player-protection set
+/// names. Pure over the `World` — no GPU — so the closure contract is
+/// unit-testable; [`purge_cinematic_retention_state`] feeds the result to
+/// [`release_entities`].
+fn take_pending_readoption_victims(world: &mut World) -> Vec<EntityId> {
     let pending: Vec<EntityId> = world
-        .try_resource::<CinematicReAdoption>()
-        .map(|pending| pending.pending.clone())
+        .try_resource_mut::<CinematicReAdoption>()
+        .map(|mut pending| std::mem::take(&mut pending.pending))
         .unwrap_or_default();
-    if !pending.is_empty() {
-        let queued = pending.len();
-        // `despawn_batch` is a no-op on ids an earlier path already
-        // despawned, so the list can go in wholesale.
-        world.despawn_batch(pending);
-        if let Some(mut pending) = world.try_resource_mut::<CinematicReAdoption>() {
-            pending.pending.clear();
-        }
-        log::info!(
-            "session replace: despawned {queued} pending cinematic re-adoption \
-             entit(y/ies) the teardown could not enumerate (#5379)"
-        );
+    if pending.is_empty() {
+        return Vec::new();
     }
+    let protected = player_owned_entities(world);
+    let mut victims: Vec<EntityId> = pending
+        .iter()
+        .flat_map(|root| byroredux_core::ecs::collect_subtree(world, *root))
+        .filter(|entity| !protected.contains(entity))
+        .collect();
+    victims.sort_unstable();
+    victims.dedup();
+    log::info!(
+        "session replace: releasing {} pending cinematic re-adoption root(s) and their \
+         {} subtree entit(y/ies) the teardown could not enumerate (#5379/#5490)",
+        pending.len(),
+        victims.len(),
+    );
+    victims
 }
 
 /// Remove every instance of one component. Read-then-write: the query guard
@@ -1148,7 +1186,7 @@ mod cinematic_retention_tests {
             },
         );
 
-        purge_cinematic_retention_state(&mut world);
+        detach_cinematic_state_rows(&mut world);
 
         let retained = cinematic_retained_entities(&world);
         assert!(
@@ -1191,49 +1229,77 @@ mod cinematic_retention_tests {
         );
     }
 
-    /// #5379 — the purge must also despawn the `CinematicReAdoption`
-    /// pending list: those released convoy entities carry no `CellRoot`,
-    /// so the teardown's victim walk cannot enumerate them and they would
-    /// survive the session replacement as `FormIdPair` ghost twins of the
-    /// fresh spawns the reload creates.
+    /// #5379 / #5490 — the purge must also release the
+    /// `CinematicReAdoption` pending list: those released convoy entities
+    /// carry no `CellRoot`, so the teardown's victim walk cannot enumerate
+    /// them and they would survive the session replacement as `FormIdPair`
+    /// ghost twins of the fresh spawns the reload creates. The list holds
+    /// PARENTLESS roots only (#5384), so the victims are the roots' whole
+    /// `Children` closure — a root-only despawn left the subtree pointing
+    /// at a dead `Parent` (frozen ghost geometry, `validate_world`
+    /// refusing every later save, un-released GPU/Rapier state).
     #[test]
-    fn purge_despawns_pending_readoption_entities() {
+    fn pending_readoption_victims_are_the_whole_subtree_closure() {
+        use byroredux_core::ecs::components::{Children, Parent};
         let mut world = World::new();
-        world.register::<byroredux_core::ecs::Transform>();
-        let ghost = world.spawn();
-        world.insert(ghost, byroredux_core::ecs::Transform::IDENTITY);
+        world.register::<Children>();
+        world.register::<Parent>();
+        let root = world.spawn();
+        let child = world.spawn();
+        let grandchild = world.spawn();
         let bystander = world.spawn();
-        world.insert(
-            bystander,
-            byroredux_core::ecs::Transform::from_translation(byroredux_core::math::Vec3::ONE),
-        );
-        world.insert_resource(CinematicReAdoption { pending: vec![ghost] });
+        world.insert(root, Children(vec![child]));
+        world.insert(child, Parent(root));
+        world.insert(child, Children(vec![grandchild]));
+        world.insert(grandchild, Parent(child));
+        world.insert_resource(CinematicReAdoption { pending: vec![root] });
 
-        purge_cinematic_retention_state(&mut world);
-
-        assert!(
-            world
-                .query::<byroredux_core::ecs::Transform>()
-                .unwrap()
-                .get(ghost)
-                .is_none(),
-            "the pending ghost must be despawned with the session"
+        let mut victims = take_pending_readoption_victims(&mut world);
+        victims.sort_unstable();
+        assert_eq!(
+            victims,
+            vec![root, child, grandchild],
+            "the closure, not the roots alone — and not the bystander"
         );
-        assert!(
-            world
-                .query::<byroredux_core::ecs::Transform>()
-                .unwrap()
-                .get(bystander)
-                .is_some(),
-            "entities not on the pending list are the teardown's business, not the purge's"
-        );
+        assert!(!victims.contains(&bystander));
         assert_eq!(
             world
                 .try_resource::<CinematicReAdoption>()
                 .map(|pending| pending.pending.clone()),
             Some(Vec::new()),
-            "the pending list is cleared"
+            "the pending list is drained"
         );
+
+        // Despawning exactly this set leaves no child naming a dead parent
+        // (the `validate_world` Hierarchy arm, SAVE-D4-2026-10-09-01).
+        let victim_set: HashSet<EntityId> = victims.iter().copied().collect();
+        world.despawn_batch(victims);
+        let dangling = world
+            .query::<Parent>()
+            .map(|parents| {
+                parents
+                    .iter()
+                    .filter(|(_, parent)| victim_set.contains(&parent.0))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(dangling, 0, "no surviving entity may keep a dead Parent");
+    }
+
+    /// #5490 / #5483 — the closure never includes the player rig, even if
+    /// a pending root's subtree reaches it.
+    #[test]
+    fn pending_readoption_victims_spare_the_player_rig() {
+        use byroredux_core::ecs::components::Children;
+        let mut world = World::new();
+        world.register::<Children>();
+        let cart = world.spawn();
+        let player = world.spawn();
+        world.insert(cart, Children(vec![player]));
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert_resource(CinematicReAdoption { pending: vec![cart] });
+
+        assert_eq!(take_pending_readoption_victims(&mut world), vec![cart]);
     }
 }
 
@@ -1372,7 +1438,7 @@ mod purge_wiring_tests {
     /// `unload_current_interior` compute their retention sets.
     fn assert_purge_precedes_teardown(src: &str, label: &str) {
         let purge = src
-            .find("purge_cinematic_retention_state(world)")
+            .find("purge_cinematic_retention_state(world, ctx)")
             .unwrap_or_else(|| {
                 panic!("{label}: purge_cinematic_retention_state call missing — \
                         a session replacement that skips the purge retains a \
