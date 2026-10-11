@@ -220,15 +220,14 @@ pub(crate) fn default_water_for_worldspace(
     if game == GameKind::Oblivion {
         // No DNAM on Oblivion WRLD → sea level Z=0, only where the
         // worldspace advertises default water via NAM2. #5374: Oblivion
-        // authors no PNAM, so the bit-gated walk above can never leave a
-        // child — pre-FO3 inheritance is "child ⟹ inherit everything"
-        // (54/54 roots author NAM2, 0/30 children do), resolved by the
-        // flag-less walk. BravilWorld, LeyawiinWorld, the Imperial City
+        // authors no PNAM, so the parse boundary stamps the inherit-all
+        // word onto every child (wrld.rs — LAND|LOD|WATER|CLIMATE); the
+        // bit-gated walk above is therefore the whole resolution, with
+        // no second, game-aware copy of it here (#5516 removed the
+        // flag-less fallback that only hand-built zero-flag records
+        // could reach). BravilWorld, LeyawiinWorld, the Imperial City
         // districts and the New Sheoth worldspaces all resolve Tamriel's /
-        // SEWorld's water form this way.
-        let water_form = water_form.or_else(|| {
-            inherit_all_up_chain(worldspaces, worldspace_key, |_, w| w.water_form)
-        });
+        // SEWorld's water form through the stamp.
         return match water_form {
             Some(form) => (Some(0.0), Some(form)),
             None => (None, None),
@@ -461,46 +460,6 @@ where
     }
 }
 
-/// #5374 — the pre-FO3 inheritance walk. Oblivion authors no PNAM at
-/// all: a child worldspace (`WNAM` set) inherits every inheritable
-/// field from its parent, and "absent ⟺ inherited" is the shape the
-/// #2735 correlation read out of FO3+'s PNAM bits. The census pins
-/// the premise: 54/54 Oblivion roots author `NAM2` while 0/30 children
-/// do, and the below-sea-level cells cluster exactly in the child
-/// worldspaces (Bravil's canals, Leyawiin's river, the Imperial City
-/// lake shore, New Sheoth). Same walk as [`inherit_up_chain`] with the
-/// bit gate removed — a child with its own value still wins.
-fn inherit_all_up_chain<T, F>(
-    worldspaces: &HashMap<String, WorldspaceRecord>,
-    start_key: &str,
-    extract: F,
-) -> Option<T>
-where
-    F: Fn(&str, &WorldspaceRecord) -> Option<T>,
-{
-    let mut current = start_key.to_string();
-    let mut visited = std::collections::HashSet::new();
-    loop {
-        let record = worldspaces.get(&current)?;
-        if let Some(value) = extract(&current, record) {
-            return Some(value);
-        }
-        if !visited.insert(current.clone()) {
-            log::warn!(
-                "inherit_all_up_chain: cyclic WNAM chain from '{start_key}' \
-                 (revisited '{current}') — treating as unresolved",
-            );
-            return None;
-        }
-        let parent_fid = record.parent_worldspace?;
-        let parent_key = worldspaces
-            .iter()
-            .find(|(_, record)| record.form_id == parent_fid)
-            .map(|(key, _)| key.clone())?;
-        current = parent_key;
-    }
-}
-
 /// Resolve a worldspace's climate FormID (the `CLMT` a `CNAM` sub-record
 /// authors), chasing the `WNAM` parent-worldspace chain when the
 /// worldspace has no own `CNAM` and its `PNAM` flags opt into climate
@@ -559,16 +518,22 @@ pub(crate) fn resolve_worldspace_climate(
 ///
 /// 1. the WRLD `CNAM` link, chasing the `WNAM` parent chain when the
 ///    PNAM climate-inherit bit opts in ([`resolve_worldspace_climate`],
-///    #2450/EXAL-02) — every game's primary rung;
+///    #2450/EXAL-02) — every game's primary rung; on Oblivion the
+///    #5374 parse stamp gives every child the bit, so this rung also
+///    carries pre-FO3 inherit-all;
 /// 2. the region chain (the center cell's `XCLR` → REGN `CNAM`; see
-///    [`region_climate_for_center`]) — data-driven, all games, though
-///    only Oblivion-era regions author a REGN `CNAM` at all (#5421);
+///    [`region_climate_for_center`]) — data-driven, all games, and
+///    **inert on all vanilla content** (#5421 / #5519): xEdit defines
+///    no REGN `CNAM` sub-record, and the four-game census finds zero
+///    occurrences (Oblivion 211 REGN, Skyrim 317, FO3 139, FO4 106).
+///    Kept for mod data — a plugin can author one even if no stock
+///    tool exposes the field;
 /// 3. the Oblivion-only naming / richest-climate rung
-///    ([`named_or_richest_climate`]): vanilla `Oblivion.esm` authors no
-///    climate on the Tamriel WRLD (zero `CNAM` bytes; the only
-///    TamrielClimate references on disk are one special-case worldspace
-///    and one Shivering-Isles region), so neither rung above can
-///    resolve Cyrodiil's climate.
+///    ([`oblivion_climate_rungs`]): vanilla `Oblivion.esm` authors no
+///    climate on the Tamriel WRLD (zero `CNAM` bytes) and no REGN
+///    `CNAM` exists anywhere, so neither rung above can resolve
+///    Cyrodiil's climate — the CS naming convention
+///    (`<worldspace>Climate` along the whole `WNAM` chain, #5388) does.
 pub(crate) fn resolve_exterior_climate(
     cells: &byroredux_plugin::esm::cell::EsmCellIndex,
     climates: &HashMap<u32, ClimateRecord>,
@@ -601,30 +566,31 @@ pub(crate) fn resolve_exterior_climate(
 }
 
 /// #5388 — the Oblivion-only climate rungs, in order (each
-/// data-anchored before the next): pre-FO3 inheritance is "child ⟹
-/// inherit everything" (#5374's rule, applied to climate — SEWorld's
-/// children resolve SEWorld's authored `CNAM` = SEWorldClimate, whose
-/// default is SEFog 30); then the CS naming convention along the whole
-/// `WNAM` chain, root included — "<key>Climate" (Tamriel's children
-/// find `TamrielClimate` through the root; vanilla authors no Tamriel
-/// WRLD `CNAM` at all); then, as a LOGGED last resort, the climate
-/// carrying the most authored weathers. Pre-fix the naming rung tested
-/// only the child's own key ("ICMarketDistrictClimate" does not exist)
-/// and every one of the 30 child worldspaces fell to the richest
+/// data-anchored before the next): the CS naming convention along the
+/// whole `WNAM` chain, root included — "<key>Climate" (Tamriel's
+/// children find `TamrielClimate` through the root; vanilla authors no
+/// Tamriel WRLD `CNAM` at all); then, as a LOGGED last resort, the
+/// climate carrying the most authored weathers. Pre-fix the naming rung
+/// tested only the child's own key ("ICMarketDistrictClimate" does not
+/// exist) and every one of the 30 child worldspaces fell to the richest
 /// climate, `AllWeather` — New Sheoth rendered Tamriel's Clear palette
 /// instead of the Shivering Isles fog.
+///
+/// #5516 removed a first rung that re-walked the chain for authored
+/// `CNAM`s unconditionally: the parse-time #5374 stamp gives every
+/// Oblivion child the inherit-all word, so
+/// [`resolve_worldspace_climate`]'s bit-gated walk — which
+/// [`resolve_exterior_climate`] always runs first — already resolves
+/// inherited climates (SEWorld's children resolve SEWorld's authored
+/// `CNAM` = SEWorldClimate, whose default is SEFog 30). The removed
+/// rung could only fire on hand-built records with zero flags, i.e.
+/// test fixtures.
 fn oblivion_climate_rungs(
     cells: &byroredux_plugin::esm::cell::EsmCellIndex,
     climates: &HashMap<u32, ClimateRecord>,
     worldspace_key: &str,
 ) -> Option<u32> {
     let chain = worldspace_name_chain(&cells.worldspaces, worldspace_key);
-    if let Some(form) = chain
-        .iter()
-        .find_map(|key| cells.worldspace_climates.get(key).copied())
-    {
-        return Some(form);
-    }
     if let Some(form) = chain.iter().find_map(|key| named_climate(climates, key)) {
         return Some(form);
     }
@@ -2834,29 +2800,32 @@ mod tests {
     }
 
     #[test]
-    fn oblivion_child_inherits_parents_water_without_pnam() {
-        // #5374 — Oblivion authors no PNAM: pre-FO3 inheritance is
-        // "child ⟹ inherit everything" (the census: 54/54 roots author
-        // NAM2, 0/30 children do; the below-sea-level cells cluster in
-        // the children — BravilWorld, LeyawiinWorld, the IC districts,
-        // New Sheoth). A child with NO own NAM2 resolves the parent's
-        // water form; a child with its own keeps it.
+    fn oblivion_child_inherits_parents_water_through_the_parse_stamp() {
+        // #5374 / #5516 — Oblivion authors no PNAM, so the parse
+        // boundary stamps the inherit-all word onto every child; the
+        // bit-gated walk is the whole resolution (the census: 54/54
+        // roots author NAM2, 0/30 children do; the below-sea-level
+        // cells cluster in the children — BravilWorld, LeyawiinWorld,
+        // the IC districts, New Sheoth). A child with NO own NAM2
+        // resolves the parent's water form; a child with its own keeps
+        // it. `0x08` is the stamped `INHERIT_WATER` bit a parsed child
+        // carries.
         let map = parent_child(
             WorldspaceRecord {
                 water_form: Some(0x0000_00AB),
                 ..Default::default()
             },
-            0,
+            pnam::INHERIT_WATER,
             WorldspaceRecord::default(),
         );
         assert_eq!(
             default_water_for_worldspace(&map, "c", GameKind::Oblivion),
             (Some(0.0), Some(0x0000_00AB)),
             "a child worldspace without its own NAM2 inherits the parent's \
-             water (the flag-less walk)"
+             water through the stamped inherit bit"
         );
         // A root worldspace with no own water still resolves nothing —
-        // the flag-less walk only follows a real WNAM.
+        // the walk only follows a real WNAM.
         let root = HashMap::from([(
             "r".to_string(),
             WorldspaceRecord {
@@ -2874,7 +2843,7 @@ mod tests {
                 water_form: Some(0x0000_00AB),
                 ..Default::default()
             },
-            0,
+            pnam::INHERIT_WATER,
             WorldspaceRecord {
                 water_form: Some(0x0000_00CD),
                 ..Default::default()
@@ -5543,13 +5512,33 @@ mod default_weather_rule_tests {
             "the stand-in carries the canonical-default sentinel, not a lottery weight"
         );
 
-        // Leaving the pocket (the plain worldspace resolve) picks the
-        // same stand-in — the same function, the same rule.
-        let worldspace_pass = resolve_default_weather(&climate, &weathers);
-        assert_eq!(
-            resolved.map(|(w, c)| (w.form_id, c)),
-            worldspace_pass.map(|(w, c)| (w.form_id, c))
-        );
+        // #5517 — "both callers share the rule" cannot be pinned by
+        // calling the function twice (that compared it with itself), so
+        // pin it on the production text instead: both caller files
+        // route their default-weather pick through
+        // `resolve_default_weather`, and neither re-inlines the
+        // stand-in pick (`default_weather_by_edid`) — the re-inlining
+        // that #5424 fixed. `strip_test_modules` because exterior.rs
+        // interleaves test modules with production code.
+        let exterior_src = byroredux_core::source_scan::strip_test_modules(include_str!(
+            "cell_loader/exterior.rs"
+        ));
+        let world_setup_src = byroredux_core::source_scan::strip_test_modules(include_str!(
+            "scene/world_setup.rs"
+        ));
+        for (name, src) in [
+            ("cell_loader/exterior.rs", exterior_src.as_str()),
+            ("scene/world_setup.rs", world_setup_src.as_str()),
+        ] {
+            assert!(
+                src.contains("resolve_default_weather("),
+                "{name} must route its default-weather pick through the shared rule"
+            );
+            assert!(
+                !src.contains("default_weather_by_edid"),
+                "{name} re-inlines the DefaultWeather stand-in pick — the #5424 regression"
+            );
+        }
     }
 
     /// The normal path is unchanged beside the stand-in: the
@@ -5599,6 +5588,7 @@ mod default_weather_rule_tests {
 
 #[cfg(test)]
 mod oblivion_climate_rung_tests {
+    use super::pnam::INHERIT_CLIMATE;
     use super::resolve_exterior_climate;
     use byroredux_plugin::esm::cell::EsmCellIndex;
     use byroredux_plugin::esm::reader::GameKind;
@@ -5639,21 +5629,26 @@ mod oblivion_climate_rung_tests {
                 ..parent
             },
         );
+        // #5516 — the stamped inherit word a parsed Oblivion child
+        // carries (the CLIMATE bit is what the climate walk keys on).
         index.worldspaces.insert(
             "sethefringe".to_owned(),
             WorldspaceRecord {
                 form_id: 0x03,
                 parent_worldspace: Some(0x02),
+                parent_flags: INHERIT_CLIMATE,
                 ..Default::default()
             },
         );
         index
     }
 
-    /// #5388 — the inherit-all rung: an SEWorld child with no own CNAM
-    /// resolves the PARENT's authored `CNAM` (SEWorldClimate), not the
-    /// richest climate. Pre-fix every child fell to `AllWeather` and New
-    /// Sheoth rendered Tamriel's palette.
+    /// #5388 — the inheritance rung, now carried by the #5374 parse
+    /// stamp: an SEWorld child with no own CNAM resolves the PARENT's
+    /// authored `CNAM` (SEWorldClimate) through
+    /// `resolve_worldspace_climate`'s bit-gated walk, not the richest
+    /// climate. Pre-fix every child fell to `AllWeather` and New Sheoth
+    /// rendered Tamriel's palette.
     #[test]
     fn oblivion_child_inherits_the_parent_authored_climate() {
         let mut index = child_world_index(

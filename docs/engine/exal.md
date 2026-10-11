@@ -129,11 +129,19 @@ Climate resolution is settled at ONE boundary, `env_translate`
 (#5423 collapsed the rungs that had accreted beside the cell loader into
 `resolve_exterior_climate`): the worldspace `CNAM` (chasing the `WNAM` parent
 chain when the `PNAM` climate-inherit bit is set — `resolve_worldspace_climate`,
-#2450 / EXAL-02), else the region chain (the center cell's `XCLR` → REGN `CNAM`;
-only Oblivion-era regions author one, #5421), else — Oblivion only, table-shaped
-per game — the CS `"<worldspace>Climate"` naming convention or the
-richest-authored climate (vanilla `Oblivion.esm` authors no Tamriel WRLD
-climate at all). The **per-cell `XCCM` override** (`resolve_cell_climate`,
+#2450 / EXAL-02; on Oblivion the #5374 parse stamp gives every child worldspace
+the bit, because pre-FO3 authors no `PNAM` at all and "child ⟹ inherit
+everything" is the era's rule — the stamp lives at the parse boundary in
+`wrld.rs`, one place), else the region chain (the center cell's `XCLR` → REGN
+`CNAM` — xEdit-undefined and **0 vanilla occurrences in any game**: 211 REGN in
+Oblivion, 317 in Skyrim, 139 in FO3, 106 in FO4, none with a `CNAM`; #5421
+disproved the earlier "Oblivion-era regions author one" claim, #5519 retired
+it from the docs; the rung is kept for mod data), else — Oblivion only,
+table-shaped per game — the CS `"<worldspace>Climate"` naming convention
+searched along the **whole `WNAM` chain, root included** (#5388: Tamriel's
+children find `TamrielClimate` through the root; vanilla authors no Tamriel
+WRLD `CNAM` at all) or, as a logged last resort, the richest-authored climate.
+The **per-cell `XCCM` override** (`resolve_cell_climate`,
 #2451 / EXAL-03) re-resolves on each cell-boundary crossing through
 `scene::apply_cell_climate_override`, which re-applies sky + weather through the
 same `apply_environment` path a worldspace change uses — so an override
@@ -496,6 +504,29 @@ Per-game impls (the runtime source per the Q3 finding):
     ladder its terrain siblings use (`LodBandLadder::for_object_game`). It is
     **not** a `PlacementLodProvider` fix and **not** a `terrain_lod.rs`
     extension — both of those were the pre-#3321 guesses.
+
+- **The legacy family enumerates from an authored index, not a lattice
+  (#5222).** `LegacyLodQuadIndex` (`cell_loader/legacy_lod_index.rs`) scans
+  the archive name tables once per streaming state — the
+  `meshes\landscape\lod\<ws>\blocks\` object tables and the
+  `textures\...\lod\<ws>\diffuse\` terrain-colour names — because 26 of 29
+  FO3 worldspace/level sets sit off the `(0,0)` grid that any derived origin
+  reproduces: every lattice probe missed, and no distant object drew outside
+  `wasteland`. The ladder's bands still partition distance; only the
+  enumeration is authored. The scan is gated on **either** family table
+  (#5518) — the terrain layout and the object scheme are independent
+  per-title decisions, and the object ring consumes this same index under
+  its own table. `select_authored_lod_quads` then resolves same-level
+  footprint overlaps with a majority-residue prune (#5387): leftover runs
+  from different LOD generations sit on other lattice residues and overlap
+  the dominant tiling (six FO3 worldspaces, `washmontop` worst at 65
+  overlapping pairs of 37 level-8 quads); the residue class with the most
+  members wins, ties breaking on the smallest `(rx, ry)` — an arbitrary
+  stand-in for data that is available (audit D6-01: 3 of the 7 multi-residue
+  sets are decided by that tie-break, and in two of them the losing
+  generation covers 2 authored cells the winner does not, so those cells
+  draw no distant objects). FNV and the terrain diffuse tables census 0
+  overlaps and pass through untouched.
 
 The renderer's draw path reads `WorldLodRes` only — it never knows which provider
 filled it. This is the §1 contract applied to LOD: one consumer, per-game

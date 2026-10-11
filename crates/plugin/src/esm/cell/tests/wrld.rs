@@ -57,7 +57,33 @@ pub(super) fn build_wrld_group(records: &[Vec<u8>]) -> Vec<u8> {
 
 /// Drive `parse_wrld_group` over a synthetic GRUP-WRLD buffer.
 pub(super) fn parse_synthetic_wrld(buf: &[u8]) -> SyntheticWrldParse {
-    parse_synthetic_wrld_with_remap(buf, None)
+    parse_synthetic_wrld_for_game(buf, crate::esm::reader::GameKind::Skyrim)
+}
+
+/// #5516 — the game-parameterized variant: the #5374 inherit-all stamp
+/// (and other game-aware parse arms) need driving as their own era.
+pub(super) fn parse_synthetic_wrld_for_game(
+    buf: &[u8],
+    game: crate::esm::reader::GameKind,
+) -> SyntheticWrldParse {
+    let mut reader = EsmReader::new(buf);
+    let gh = reader.read_group_header().expect("WRLD group header");
+    let end = reader.group_content_end(&gh);
+    let mut exterior = HashMap::new();
+    let mut worldspaces = HashMap::new();
+    let mut climates = HashMap::new();
+    let mut persistent = HashMap::new();
+    super::super::wrld::parse_wrld_group(
+        &mut reader,
+        end,
+        &mut exterior,
+        &mut persistent,
+        &mut worldspaces,
+        &mut climates,
+        game,
+    )
+    .expect("parse_wrld_group");
+    (worldspaces, climates, exterior, persistent)
 }
 
 fn parse_synthetic_wrld_with_remap(
@@ -1003,5 +1029,50 @@ fn overrunning_child_grup_in_a_skip_arm_seeks_to_parent_end() {
     assert!(
         worldspaces.contains_key("skiparmclampworld"),
         "the WRLD preceding the overrunning child must still be indexed"
+    );
+}
+
+/// #5374 / #5516 — the pre-FO3 inherit-all stamp, pinned at the parse
+/// boundary: an Oblivion child (WNAM set, no PNAM on disk) comes out
+/// with the inherit-all word `0x1B` (LAND|LOD|WATER|CLIMATE) so the
+/// bit-gated walks resolve its parent's water/climate/LOD with no
+/// second, game-aware walk at the consumer side. A root stays 0, and
+/// an authored zero PNAM on FO3+ stays a real zero — the stamp is
+/// Oblivion-only.
+#[test]
+fn oblivion_child_gets_the_inherit_all_stamp_and_eras_stay_real() {
+    let parent = build_wrld_record(
+        0x0000_0100,
+        &[(b"EDID", b"Tamriel\0".to_vec()), (b"NAM2", 0x0000_00ABu32.to_le_bytes().to_vec())],
+    );
+    let child = build_wrld_record(
+        0x0000_0200,
+        &[
+            (b"EDID", b"ICMarketDistrict\0".to_vec()),
+            // WNAM — the parent FormID. Oblivion authors no PNAM.
+            (b"WNAM", 0x0000_0100u32.to_le_bytes().to_vec()),
+        ],
+    );
+    let group = build_wrld_group(&[parent, child]);
+
+    // Oblivion: child stamped 0x1B, root untouched.
+    let (worldspaces, _, _, _) =
+        parse_synthetic_wrld_for_game(&group, crate::esm::reader::GameKind::Oblivion);
+    assert_eq!(
+        worldspaces["icmarketdistrict"].parent_flags, 0x1B,
+        "an Oblivion child with no PNAM carries the inherit-all word"
+    );
+    assert_eq!(
+        worldspaces["tamriel"].parent_flags, 0,
+        "a root worldspace is never stamped"
+    );
+
+    // The same buffer as Skyrim: the child's authored zero PNAM stays a
+    // real zero — the stamp must not leak across eras.
+    let (worldspaces, _, _, _) =
+        parse_synthetic_wrld_for_game(&group, crate::esm::reader::GameKind::Skyrim);
+    assert_eq!(
+        worldspaces["icmarketdistrict"].parent_flags, 0,
+        "FO3+ authored-zero PNAM is genuine (no inherit-all)"
     );
 }

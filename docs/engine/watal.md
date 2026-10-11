@@ -671,6 +671,21 @@ pub(crate) fn attach_mesh_water(/* canonical Material + mesh geometry */);
 The final two return fields are the optional normal path and three optional
 noise-layer paths; absence is the procedural-texture sentinel.
 
+**Pre-FO3 parent inheritance (#5374).** Oblivion authors no `PNAM` at all:
+a child worldspace (`WNAM` set) inherits every inheritable field from its
+parent — "child ⟹ inherit everything" is the era's rule, where FO3+ spells
+the same thing in PNAM bits. The rule is stamped at the parse boundary
+(`cell/wrld.rs`: every Oblivion child gets the inherit-all word
+`LAND|LOD|WATER|CLIMATE` in `parent_flags`), so `default_water_for_worldspace`
+resolves an Oblivion child's `NAM2` through the same bit-gated
+`inherit_up_chain` walk every other era uses — one walk, no second
+game-aware copy at the consumer side (#5516 removed the flag-less fallback
+that had accreted beside it). Census premise: 54/54 Oblivion roots author
+`NAM2`, 0/30 children do, and the below-sea-level cells cluster exactly in
+the children (Bravil's canals, Leyawiin's river, the Imperial City lake
+shore, New Sheoth). The same stamp governs Oblivion climate inheritance
+(exal.md's climate rungs).
+
 **Mesh water volume.** Skyrim's placed water meshes author their gameplay
 volume as a `bhkSimpleShapePhantom` (`collision::extract_phantom_bounds`), and
 `attach_mesh_water` places that box under the REFR transform. Every vanilla
