@@ -557,3 +557,58 @@ fn pre_reload_restore_must_not_install_saved_item_instance_pool_early() {
     assert!(world.resource::<ItemInstancePool>().get(saved_id_1).is_some());
     assert!(world.resource::<ItemInstancePool>().get(saved_id_2).is_some());
 }
+
+/// #5435 — an in-process load must not leak the outgoing session's CLOC
+/// location. Before the reset, loading a save in a different cell raised a
+/// CLOC whose `L1` was the pre-load session's LCTN, and loading a save in
+/// the same cell raised nothing; now both behave like a fresh boot (one
+/// CLOC, `L1 = None`).
+#[test]
+fn load_reset_makes_the_first_cloc_independent_of_the_outgoing_session() {
+    use byroredux_scripting::story_manager::{
+        emit_change_location_on_key_change, StoryEvent, StoryLocationCursor,
+    };
+    let cloc_after_load = |loaded_key: u64, loaded_lctn: u32| {
+        let mut world = World::new();
+        world.register::<StoryEvent>();
+        world.insert_resource(StoryLocationCursor::default());
+        let player = world.spawn();
+        // The outgoing session sat in key 1 / LCTN 0xAAAA.
+        assert!(emit_change_location_on_key_change(&world, Some(1), player, Some(0xAAAA)));
+        world.remove::<StoryEvent>(player);
+
+        reset_story_location_cursor(&world);
+
+        assert!(
+            emit_change_location_on_key_change(&world, Some(loaded_key), player, Some(loaded_lctn)),
+            "the first post-load frame raises CLOC whatever the outgoing key was"
+        );
+        let event = *world.get::<StoryEvent>(player).expect("the CLOC marker");
+        event
+    };
+    for (key, lctn) in [(2, 0xBBBB), (1, 0xAAAA)] {
+        let event = cloc_after_load(key, lctn);
+        assert_eq!(event.mnemonic, *b"CLOC");
+        assert_eq!(event.location_1, None, "no leaked pre-load location (key {key})");
+        assert_eq!(event.location_2, Some(lctn));
+    }
+}
+
+/// #5435 — the reset has to sit inside the live-load drain, after the
+/// session replacement: `execute_pending_save_loads` needs a live
+/// `VulkanContext`, so what is checkable is that the call is there.
+#[test]
+fn live_load_drain_resets_the_story_location_cursor() {
+    let source = include_str!("../save_io.rs");
+    let start = source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist");
+    let body = &source[start..];
+    let reload = body
+        .find("reload_exterior_session(")
+        .expect("the drain must reload the saved exterior");
+    let reset = body
+        .find("reset_story_location_cursor(world)")
+        .expect("the drain must reset the CLOC cursor on load (#5435)");
+    assert!(reset > reload, "the reset follows the session replacement");
+}

@@ -141,9 +141,10 @@ impl Resource for SmTree {}
 
 /// Last location key the CLOC producer observed, plus the LCTN it
 /// resolved to (the `L1` the next change carries). `NOT_SAVED_BY_DESIGN`:
-/// after a load the first post-load frame fires a fresh CLOC, which is
-/// the engine behavior the event describes anyway (you changed location
-/// by loading).
+/// every load — fresh-process or in-process — resets it (#5435,
+/// `save_io::reset_story_location_cursor`), so the first post-load frame
+/// raises one CLOC with `L1 = None`: arriving in a location by loading is
+/// a location change, and the loaded game was never anywhere before it.
 #[derive(Default)]
 pub struct StoryLocationCursor {
     pub key: Option<u64>,

@@ -504,7 +504,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── Story Manager (#5366) ───────────────────────────────────
         ("StoryEvent", "one-frame Pattern-B marker drained by story_manager_dispatch_system at its head; carries session-local EntityIds only (#2672)"),
         ("SmTree", "immutable fold of the parsed SMBN/SMEN/SMQN node map; rebuilt from the load order by install_story_manager every boot, same posture as NavmeshTile"),
-        ("StoryLocationCursor", "session-local CLOC change-detection cursor; a fresh boot/load legitimately re-fires the event the cursor would have suppressed"),
+        ("StoryLocationCursor", "session-local CLOC change-detection cursor; reset by execute_pending_save_loads on every in-process load (#5435), so every load — like a fresh boot — raises one CLOC with L1 = None"),
         ("StoryClock", "total game hours derived every frame from the saved GameTimeRes (#5366 Phase 3)"),
         ("StoryManagerRng", "selection RNG for random node policies (#5366 Phase 3); which radiant a post-load pick chooses is not state anything reads back"),
         // ── Dialogue trees (#5367) ──────────────────────────────────

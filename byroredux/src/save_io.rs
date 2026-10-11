@@ -1698,6 +1698,23 @@ fn clear_player_gear_handoff_scratch(world: &mut World, player: byroredux_core::
     world.remove::<crate::npc_spawn::PendingGearRelease>(player);
 }
 
+/// #5435 — forget the outgoing session's CLOC location. The cursor is
+/// session-local and unsaved; left alone across an in-process load it made
+/// the loaded game's first CLOC carry the PRE-load session's LCTN as `L1`
+/// (a different cell), or fire nothing at all (same cell), while a
+/// fresh-process load fired with `L1 = None`. Resetting it makes every load
+/// behave like a fresh boot: the first post-load frame raises one CLOC
+/// whose `L1` is empty and `L2` is the loaded location — arriving in a
+/// location by loading is a location change, and the loaded game was never
+/// anywhere before it.
+fn reset_story_location_cursor(world: &World) {
+    if let Some(mut cursor) =
+        world.try_resource_mut::<byroredux_scripting::StoryLocationCursor>()
+    {
+        *cursor = byroredux_scripting::StoryLocationCursor::default();
+    }
+}
+
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
 /// via the existing loaders (full GPU/physics/camera setup), restore saved
 /// resources, then overlay the form-id-keyed mutable component deltas.
@@ -1833,6 +1850,10 @@ pub fn execute_pending_save_loads(
     else {
         return;
     };
+
+    // #5435 — the session was replaced; the CLOC cursor still describes the
+    // outgoing one.
+    reset_story_location_cursor(world);
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw
