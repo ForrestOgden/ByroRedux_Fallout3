@@ -292,10 +292,11 @@ pub struct PhysicsWorld {
     // event handler from rayon workers, so `PhysicsWorld` must stay `Sync`,
     // and `std::sync::mpsc::Receiver` is not. Single-consumer either way.
     /// The `started` force-threshold crossings drained from the channel
-    /// during the last substep, taken by
-    /// [`Self::take_contact_force_events`] (the Wave-4 clutter-impact
-    /// consumer). Cleared at every substep start, so a consumer that runs
-    /// once per frame never sees an event twice.
+    /// over the last `step`, taken by [`Self::take_contact_force_events`]
+    /// (the Wave-4 clutter-impact consumer). Cleared once at `step` entry
+    /// (the static-scene fast path clears too); substeps APPEND, so a
+    /// multi-substep frame keeps every substep's crossings and a consumer
+    /// that takes once per frame never sees an event twice.
     pending_force_events: Vec<ContactForceEvent>,
     pub integration_parameters: IntegrationParameters,
     pub gravity: Vector,
@@ -658,8 +659,9 @@ impl PhysicsWorld {
     }
 
     /// The authored Havok surface material packed into a collider's
-    /// user-data at registration (`register_newcomers` /
-    /// `build_ragdoll`). `None` for a dead handle.
+    /// user-data at registration by `register_newcomers`. `build_ragdoll`
+    /// packs nothing: its colliders carry the default 0 (read as STONE).
+    /// `None` for a dead handle.
     pub fn collider_surface_material(
         &self,
         handle: rapier3d::prelude::ColliderHandle,
