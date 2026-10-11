@@ -797,9 +797,15 @@ mod system_access_declaration_tests {
             }
             for (index, _) in body.match_indices('(') {
                 let head = &body[..index];
+                // Char-aware scan: a non-ASCII delimiter (comments use ·, —,
+                // θ, …) is multi-byte, so advancing a raw byte index by 1
+                // lands mid-character and panics the slice. Step by the
+                // found char's own length instead.
                 let callee_start = head
-                    .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                    .map_or(0, |i| i + 1);
+                    .char_indices()
+                    .rev()
+                    .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_'))
+                    .map_or(0, |(i, c)| i + c.len_utf8());
                 let callee = &head[callee_start..];
                 if callee.is_empty()
                     || !callee.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
