@@ -83,6 +83,7 @@ pub fn import_kf(scene: &NifScene) -> Vec<AnimationClip> {
         }
     }
 
+    sampling.log_degraded();
     for clip in &mut clips {
         crate::import::units::animation(scene, clip);
     }
@@ -750,6 +751,7 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
         }
     }
 
+    sampling.log_degraded();
     if !clip_has_data(&clip) {
         return None;
     }

@@ -383,10 +383,16 @@ mod amplification_tests {
             }
         }
         assert!(declined, "the budget must run out eventually");
+        assert_eq!(sampling.degraded(), 1, "the first decline is counted (#5577)");
         // Once declined, even the smallest channel stays declined — a
         // shared interpolator can no longer multiply the cost past it.
         assert!(sampling.reserve(0.0, 0.0, 1).is_none());
         assert!(sampling.reserve(0.0, 100.0, 3).is_none());
+        assert_eq!(
+            sampling.degraded(),
+            3,
+            "every declined channel is counted, not just the first (#5577)"
+        );
     }
 
     /// #5572 — the curve parameter spans the interpolator's own span, so

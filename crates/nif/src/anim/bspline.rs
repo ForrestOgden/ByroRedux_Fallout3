@@ -69,7 +69,10 @@ pub struct BsplineSampling {
     /// applies.
     pub seq_span: Option<(f32, f32)>,
     remaining_keys: usize,
-    warned: bool,
+    /// #5577 — channels the aggregate budget declined (they fell back
+    /// to a one-key static pose). Charged in import order, so which
+    /// channels degrade depends on sequence / block order.
+    degraded: usize,
 }
 
 impl Default for BsplineSampling {
@@ -83,7 +86,7 @@ impl BsplineSampling {
         Self {
             seq_span: None,
             remaining_keys: BSPLINE_IMPORT_KEY_BUDGET,
-            warned: false,
+            degraded: 0,
         }
     }
 
@@ -114,14 +117,7 @@ impl BsplineSampling {
             .clamp(2, BSPLINE_MAX_SAMPLES_PER_CHANNEL);
         let cost = n_samples.saturating_mul(keys_per_sample);
         if cost > self.remaining_keys {
-            if !self.warned {
-                log::warn!(
-                    "B-spline import key budget ({}) exhausted — further \
-                     B-spline channels fall back to their static pose (#5486)",
-                    BSPLINE_IMPORT_KEY_BUDGET,
-                );
-                self.warned = true;
-            }
+            self.degraded += 1;
             return None;
         }
         self.remaining_keys -= cost;
@@ -132,6 +128,27 @@ impl BsplineSampling {
             interp_start,
             interp_stop,
         })
+    }
+}
+
+impl BsplineSampling {
+    /// Channels the aggregate budget declined so far (#5577).
+    pub fn degraded(&self) -> usize {
+        self.degraded
+    }
+
+    /// Log once, at the end of an import, how many channels the
+    /// aggregate budget degraded to their static pose. Silent when none.
+    pub fn log_degraded(&self) {
+        if self.degraded > 0 {
+            log::warn!(
+                "B-spline import key budget ({}) exhausted — {} channel(s) fell \
+                 back to their static pose; which channels degrade depends on \
+                 sequence/block order (#5486, #5577)",
+                BSPLINE_IMPORT_KEY_BUDGET,
+                self.degraded,
+            );
+        }
     }
 }
 
