@@ -29,6 +29,7 @@ use byroredux_core::math::coord::EXTERIOR_CELL_UNITS;
 use byroredux_core::string::StringPool;
 use byroredux_renderer::VulkanContext;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -420,6 +421,10 @@ pub struct WorldStreamingState {
     /// (= detach) before the channel close, defeating the join. Send
     /// sites go through [`WorldStreamingState::send_request`].
     pub request_tx: Option<mpsc::Sender<LoadCellRequest>>,
+    /// Shutdown cancel flag shared with the worker (#5491). Closing
+    /// `request_tx` alone leaves a queued backlog for the worker to keep
+    /// parsing; setting this first makes it discard the backlog.
+    pub(crate) cancel: Arc<AtomicBool>,
     /// mpsc receiver for completed payloads. Drained each frame by the
     /// App driver; non-blocking via `try_recv`.
     pub payload_rx: mpsc::Receiver<LoadCellPayload>,
@@ -465,9 +470,13 @@ impl WorldStreamingState {
         let (payload_tx, payload_rx) = mpsc::channel::<LoadCellPayload>();
         let stream_pool = Arc::new(build_stream_parse_pool());
         let worker_pool = Arc::clone(&stream_pool);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
         let worker = std::thread::Builder::new()
             .name("byro-cell-stream".into())
-            .spawn(move || cell_pre_parse_worker(request_rx, payload_tx, worker_pool))
+            .spawn(move || {
+                cell_pre_parse_worker(request_rx, payload_tx, worker_pool, worker_cancel)
+            })
             .expect("failed to spawn cell-stream worker thread");
         Self {
             wctx: Arc::new(wctx),
@@ -500,6 +509,7 @@ impl WorldStreamingState {
             telemetry: StreamingTelemetry::default(),
             worker: Some(worker),
             request_tx: Some(request_tx),
+            cancel,
             payload_rx,
             active_apply: None,
         }
@@ -684,13 +694,17 @@ impl WorldStreamingState {
         let Some(handle) = self.worker.take() else {
             return;
         };
-        // Close the request channel BEFORE the join. The worker's
-        // `request_rx.recv()` returns Err on its next loop iteration
-        // and the thread exits. The matching `payload_rx` will be
-        // dropped automatically when `self` is dropped — if the worker
-        // is currently inside `payload_tx.send(payload)` it observes
-        // the closed receiver and bails via the existing post-#854
-        // break path.
+        // #5491 — cancel BEFORE closing the channel. Dropping
+        // `request_tx` alone does not stop the worker: `recv` keeps
+        // returning every request queued before the disconnect, and the
+        // worker's `payload_tx.send` keeps succeeding because
+        // `payload_rx` lives on `self` until this method returns — so a
+        // deep backlog (the normal state after exterior entry) was parsed
+        // through the whole join timeout and the worker was then
+        // detached. With the flag set, the worker discards the backlog at
+        // its next receive, so the join waits only for the cell already
+        // in flight.
+        self.cancel.store(true, Ordering::Release);
         let _ = self.request_tx.take();
         match join_with_timeout(handle, timeout) {
             Ok(()) => log::info!("cell-stream worker joined cleanly on shutdown"),

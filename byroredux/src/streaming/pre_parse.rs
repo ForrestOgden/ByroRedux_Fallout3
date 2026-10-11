@@ -10,6 +10,7 @@ use super::telemetry::StreamingWorkerTimings;
 use super::{LoadCellPayload, LoadCellRequest, PartialNifImport};
 use byroredux_core::string::StringPool;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -121,6 +122,7 @@ pub(super) fn cell_pre_parse_worker(
     request_rx: mpsc::Receiver<LoadCellRequest>,
     payload_tx: mpsc::Sender<LoadCellPayload>,
     stream_pool: Arc<rayon::ThreadPool>,
+    cancel: Arc<AtomicBool>,
 ) {
     log::info!("cell-stream worker thread started");
     // #3089 — CONC-2026-08-16-01. Built once for the streaming state's
@@ -147,7 +149,7 @@ pub(super) fn cell_pre_parse_worker(
     // `Geometry.csg` handles for precombine decode, opened once per plugin
     // for the thread's life (M49).
     let mut csg_handles = crate::cell_loader::precombined::CsgHandleCache::default();
-    while let Some(req) = recv_next_batch_request(&request_rx, &mut batch_keys) {
+    while let Some(req) = recv_next_live_request(&request_rx, &mut batch_keys, &cancel) {
         let LoadCellRequest {
             gx,
             gy,
@@ -179,6 +181,28 @@ pub(super) fn cell_pre_parse_worker(
         }
     }
     log::info!("cell-stream worker thread exiting");
+}
+
+/// [`recv_next_batch_request`], honouring the shutdown cancel flag (#5491).
+///
+/// Dropping the request sender does NOT stop a worker with a backlog:
+/// `mpsc::Receiver::recv` keeps returning every message sent before the
+/// disconnect and reports `Disconnected` only once the queue is empty, and
+/// the payload receiver lives on the state being shut down, so the worker's
+/// `send` keeps succeeding through the whole join timeout. `shutdown` sets
+/// `cancel` first; a request received after that is discarded unparsed and
+/// the loop ends, bounding the join to the cell already in flight.
+pub(crate) fn recv_next_live_request<T>(
+    request_rx: &mpsc::Receiver<T>,
+    batch_keys: &mut HashSet<String>,
+    cancel: &AtomicBool,
+) -> Option<T> {
+    let req = recv_next_batch_request(request_rx, batch_keys)?;
+    if cancel.load(Ordering::Acquire) {
+        batch_keys.clear();
+        return None;
+    }
+    Some(req)
 }
 
 /// Receive the next request while preserving a worker batch memo only across

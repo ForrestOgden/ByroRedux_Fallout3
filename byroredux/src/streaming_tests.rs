@@ -9,7 +9,7 @@
 use super::{
     build_stream_parse_pool, classify_payload, compute_streaming_deltas, is_spt_model_path,
     join_with_timeout, parse_model_keys, pre_parse_cell_panic_safe, pre_parse_model_skip_reason,
-    recv_next_batch_request, stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload,
+    recv_next_batch_request, recv_next_live_request, stale_pending_coords, world_pos_to_grid, JoinTimeout, LoadCellPayload,
     LoadedCell, PayloadDecision, PreParseModelSkip, StreamingDeltas, StreamingLatencySummary,
     StreamingTelemetry, StreamingWorkerTimings,
 };
@@ -584,6 +584,49 @@ fn worker_batch_memo_is_cleared_at_an_empty_queue_boundary() {
     assert!(
         batch_keys.is_empty(),
         "keys from one dispatch must not survive its empty-queue boundary"
+    );
+}
+
+/// #5491 — shutdown must cancel the queue, not only close it. A worker
+/// looping over 49 queued 50 ms requests used to keep draining them after
+/// the sender dropped (`recv` returns queued messages until empty), so the
+/// join hit its deadline. With the cancel flag set first, it exits after
+/// the request already in flight.
+#[test]
+fn cancel_flag_stops_a_worker_with_a_queued_backlog() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let (request_tx, request_rx) = std::sync::mpsc::channel::<u32>();
+    for i in 0..49 {
+        request_tx.send(i).unwrap();
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let handled = Arc::new(AtomicUsize::new(0));
+    let (worker_cancel, worker_handled) = (Arc::clone(&cancel), Arc::clone(&handled));
+    let worker = std::thread::spawn(move || {
+        let mut batch_keys = HashSet::new();
+        while recv_next_live_request(&request_rx, &mut batch_keys, &worker_cancel).is_some() {
+            std::thread::sleep(Duration::from_millis(50)); // one slow cell
+            worker_handled.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    std::thread::sleep(Duration::from_millis(10)); // a request is in flight
+    let started = Instant::now();
+    cancel.store(true, Ordering::Release);
+    drop(request_tx);
+    join_with_timeout(worker, Duration::from_secs(1)).expect("the worker must exit promptly");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "join took {:?} — the backlog was parsed instead of cancelled",
+        started.elapsed()
+    );
+    assert!(
+        handled.load(Ordering::SeqCst) <= 2,
+        "only the in-flight request may complete, handled {}",
+        handled.load(Ordering::SeqCst)
     );
 }
 

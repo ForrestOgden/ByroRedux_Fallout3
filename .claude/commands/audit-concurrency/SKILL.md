@@ -311,7 +311,10 @@ Paths: `byroredux/src/streaming/`, `byroredux/src/asset_provider/texture_prefetc
 First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs' crates byroredux tools | grep -v test` (a new worker thread outside this list is a coverage gap)
 **Checklist**:
 - **Streaming worker shutdown.** `WorldStreamingState::shutdown` takes the `worker` handle first, then
-  drops `request_tx` (the worker's `recv()` errors and it exits), *then* `join_with_timeout` (poll on
+  sets the shared `cancel` flag and drops `request_tx` (#5491: dropping the sender alone does NOT stop the
+  worker — `mpsc::recv` keeps returning every queued request until the queue is empty, and `payload_rx`
+  outlives the join, so a backlog kept parsing; the worker checks `cancel` in `recv_next_live_request`),
+  *then* `join_with_timeout` (poll on
   `is_finished`, no watcher thread); `Drop` only calls `shutdown(1 s)` as a safety net, so a prior explicit
   shutdown short-circuits it. The worker runs each cell under `catch_unwind`
   (`pre_parse_cell_panic_safe`).
