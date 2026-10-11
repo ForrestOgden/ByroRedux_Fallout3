@@ -62,30 +62,79 @@ use super::common::{read_zstring, remap_fid};
 use crate::esm::reader::{FormIdRemap, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
-/// Built-in reflection type ids (xEdit `wbStringTableLookup`'s negative
-/// enum). Values are the raw i32 as stored on disk (`0xFFFFFF02` =
-/// -254 = String, `0xFFFFFF0D` = -243 = UInt32, `0xFFFFFF11` = -239 =
-/// Float, …).
+/// Built-in reflection type ids as the raw i32 stored on disk
+/// (`0xFFFFFF02` = -254 = String, `0xFFFFFF0D` = -243 = UInt32,
+/// `0xFFFFFF11` = -239 = Float, …). The same values
+/// `byroredux-sfmaterial`'s `BuiltinType` names as `u32`; this crate does
+/// not depend on that one, so the ids live here once and
+/// [`BUILTINS`] is the only table that maps them.
+mod builtin {
+    pub const NULL: i32 = -255;
+    pub const STRING: i32 = -254;
+    pub const LIST: i32 = -253;
+    pub const MAP: i32 = -252;
+    pub const REF: i32 = -251;
+    pub const INT8: i32 = -248;
+    pub const UINT8: i32 = -247;
+    pub const INT16: i32 = -246;
+    pub const UINT16: i32 = -245;
+    pub const INT32: i32 = -244;
+    pub const UINT32: i32 = -243;
+    pub const INT64: i32 = -242;
+    pub const UINT64: i32 = -241;
+    pub const BOOL: i32 = -240;
+    pub const FLOAT: i32 = -239;
+    pub const DOUBLE: i32 = -238;
+}
+
+/// CLAS flag bit 2 `User`: the class's values ride side chunks, nothing
+/// inline in a diff stream (the CDB reader's `ClassFlags::IS_USER`).
+const CLASS_FLAG_USER: u16 = 1 << 2;
+
+/// A DIFF stream's field-index terminator.
+const DIFF_TERMINATOR: u16 = 0xFFFF;
+
+/// How a built-in's value is laid out inline in a diff stream.
+#[derive(Clone, Copy)]
+enum InlineValue {
+    /// Nothing inline: `Null`, and `List` / `Map` (chunk-typed side chunks).
+    Nothing,
+    /// A fixed number of bytes.
+    Fixed(usize),
+    /// `u16` length prefix, then that many bytes.
+    LengthPrefixedString,
+    /// `i32` target type, then the target's own value (a List/Map target is
+    /// the null sentinel — nothing inline).
+    Ref,
+}
+
+/// Every built-in: raw id, label, inline layout. One table so the label
+/// and the value-skip walk cannot disagree about which ids exist.
+const BUILTINS: [(i32, &str, InlineValue); 16] = [
+    (builtin::NULL, "Null", InlineValue::Nothing),
+    (builtin::STRING, "String", InlineValue::LengthPrefixedString),
+    (builtin::LIST, "List", InlineValue::Nothing),
+    (builtin::MAP, "Map", InlineValue::Nothing),
+    (builtin::REF, "Ref", InlineValue::Ref),
+    (builtin::INT8, "Int8", InlineValue::Fixed(1)),
+    (builtin::UINT8, "UInt8", InlineValue::Fixed(1)),
+    (builtin::INT16, "Int16", InlineValue::Fixed(2)),
+    (builtin::UINT16, "UInt16", InlineValue::Fixed(2)),
+    (builtin::INT32, "Int32", InlineValue::Fixed(4)),
+    (builtin::UINT32, "UInt32", InlineValue::Fixed(4)),
+    (builtin::INT64, "Int64", InlineValue::Fixed(8)),
+    (builtin::UINT64, "UInt64", InlineValue::Fixed(8)),
+    (builtin::BOOL, "Bool", InlineValue::Fixed(1)),
+    (builtin::FLOAT, "Float", InlineValue::Fixed(4)),
+    (builtin::DOUBLE, "Double", InlineValue::Fixed(8)),
+];
+
+fn builtin_entry(raw: i32) -> Option<&'static (i32, &'static str, InlineValue)> {
+    BUILTINS.iter().find(|(id, _, _)| *id == raw)
+}
+
 pub fn builtin_type_label(raw: i32) -> Option<&'static str> {
-    Some(match raw {
- -255 => "Null",
- -254 => "String",
- -253 => "List",
- -252 => "Map",
- -251 => "Ref",
- -248 => "Int8",
- -247 => "UInt8",
- -246 => "Int16",
- -245 => "UInt16",
- -244 => "Int32",
- -243 => "UInt32",
- -242 => "Int64",
- -241 => "UInt64",
- -240 => "Bool",
- -239 => "Float",
- -238 => "Double",
-        _ => return None,
-    })
+    builtin_entry(raw).map(|(_, label, _)| *label)
 }
 
 /// One field of a reflection class: name and type resolved through the
@@ -299,7 +348,7 @@ fn collect_diff_indices(
     let mut indices = Vec::new();
     loop {
         let idx = read_i16(payload, &mut pos)?;
-        if idx == 0xFFFF {
+        if idx == DIFF_TERMINATOR {
             return Some(indices);
         }
         let field = class.fields.get(idx as usize)?;
@@ -322,7 +371,7 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
         let Some(class) = classes.iter().find(|c| c.name_offset == type_ref) else {
             return false;
         };
-        if class.flags & 0b100 != 0 {
+        if class.flags & CLASS_FLAG_USER != 0 {
             return true; // User class — side chunk, nothing inline.
         }
         // Struct — nested diff-pair stream (reader.rs' diff loop recurses
@@ -332,7 +381,7 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
             let Some(idx) = read_i16(src, &mut nested_pos) else {
                 return false;
             };
-            if idx == 0xFFFF {
+            if idx == DIFF_TERMINATOR {
                 *pos = nested_pos;
                 return true;
             }
@@ -344,9 +393,12 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
             }
         }
     }
-    match type_ref {
-        -255 => true,                                 // Null
-        -254 => match src.get(*pos..*pos + 2) {       // String: u16 len + bytes
+    let Some(&(_, _, inline)) = builtin_entry(type_ref) else {
+        return false; // unknown built-in — refuse to guess
+    };
+    match inline {
+        InlineValue::Nothing => true,
+        InlineValue::LengthPrefixedString => match src.get(*pos..*pos + 2) {
             Some(len) => {
                 let len = u16::from_le_bytes(len.try_into().unwrap()) as usize;
                 *pos += 2 + len;
@@ -354,23 +406,21 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
             }
             None => false,
         },
-        -251 => {                                     // Ref: i32 target + recurse
+        InlineValue::Ref => {
             let Some(target) = src.get(*pos..*pos + 4) else {
                 return false;
             };
             *pos += 4;
             let target = i32::from_le_bytes(target.try_into().unwrap());
-            if target == -253 || target == -252 {
+            if target == builtin::LIST || target == builtin::MAP {
                 return true; // List/Map ref → null sentinel, nothing inline.
             }
             skip_diff_value(src, pos, target, classes)
         }
-        -248 | -247 | -240 => { *pos += 1; *pos <= src.len() } // i8/u8/bool
-        -246 | -245 => { *pos += 2; *pos <= src.len() }        // i16/u16
-        -244 | -243 | -239 => { *pos += 4; *pos <= src.len() } // i32/u32/float
-        -242 | -241 | -238 => { *pos += 8; *pos <= src.len() } // i64/u64/double
-        -253 | -252 => true,   // List/Map — chunk-typed, side chunk
-        _ => false,            // unknown built-in — refuse to guess
+        InlineValue::Fixed(n) => {
+            *pos += n;
+            *pos <= src.len()
+        }
     }
 }
 
@@ -418,6 +468,32 @@ pub fn parse_wths(
 mod tests {
     use super::*;
     use crate::esm::records::test_support::sub;
+
+    /// The builtin ids are the on-disk `0xFFFFFF01..=0xFFFFFF12` tags that
+    /// `byroredux-sfmaterial::BuiltinType` names (that crate is not a
+    /// dependency of this one, #5615), as the same bit patterns viewed as
+    /// i32. Pins the single [`BUILTINS`] table against the documented set.
+    #[test]
+    fn builtin_table_is_the_documented_tag_set() {
+        let tags: Vec<u32> = BUILTINS.iter().map(|(id, _, _)| *id as u32).collect();
+        assert_eq!(
+            tags,
+            [
+                0xFFFFFF01, 0xFFFFFF02, 0xFFFFFF03, 0xFFFFFF04, 0xFFFFFF05, 0xFFFFFF08,
+                0xFFFFFF09, 0xFFFFFF0A, 0xFFFFFF0B, 0xFFFFFF0C, 0xFFFFFF0D, 0xFFFFFF0E,
+                0xFFFFFF0F, 0xFFFFFF10, 0xFFFFFF11, 0xFFFFFF12,
+            ]
+        );
+        assert_eq!(builtin_type_label(-243), Some("UInt32"));
+        assert_eq!(builtin_type_label(-249), None, "gap ids stay unknown");
+        let mut labels: Vec<&str> = BUILTINS.iter().map(|(_, l, _)| *l).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(labels.len(), BUILTINS.len(), "labels are unique");
+        // An unknown built-in refuses to guess rather than skipping bytes.
+        let mut pos = 0;
+        assert!(!skip_diff_value(&[0; 8], &mut pos, -249, &[]));
+    }
 
     /// Hand-built reflection container exercising every decoded chunk
     /// kind, in authored order: BETH → STRT → TYPE → CLAS → OBJT.
