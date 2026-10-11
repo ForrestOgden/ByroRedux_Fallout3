@@ -77,14 +77,10 @@ pub fn list_slots(dir: &Path) -> Vec<u32> {
     slots
 }
 
-/// Most recently modified valid save slot, used by the player-facing
-/// quickload action. Invalid names and unreadable metadata are ignored.
-pub fn latest_slot(dir: &Path) -> Option<u32> {
-    slots_by_recency(dir).into_iter().next()
-}
-
-/// Valid slot filenames ordered newest-first. Modification-time ties are
-/// broken by higher slot number so quickload behavior is deterministic.
+/// Valid slot filenames ordered newest-first, used by the player-facing
+/// quickload action (its first entry is the newest slot). Modification-time
+/// ties are broken by higher slot number so quickload behavior is
+/// deterministic. Invalid names and unreadable metadata are ignored.
 pub fn slots_by_recency(dir: &Path) -> Vec<u32> {
     let mut slots: Vec<(u32, std::time::SystemTime)> = match fs::read_dir(dir) {
         Ok(entries) => entries
@@ -306,21 +302,25 @@ mod tests {
     }
 
     #[test]
-    fn latest_slot_ignores_newer_tmp_and_empty_directory() {
+    fn newest_slot_ignores_newer_tmp_and_empty_directory() {
         let dir =
             std::env::temp_dir().join(format!("byro_save_latest_filter_{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        assert_eq!(latest_slot(&dir), None);
+        assert_eq!(slots_by_recency(&dir).first(), None);
         // The staging shape `write_slot` actually creates (#5247).
         fs::write(
             dir.join(format!(".save_9.ess.{}.0.tmp", std::process::id())),
             b"newer temp",
         )
         .unwrap();
-        assert_eq!(latest_slot(&dir), None, "temp files are never live slots");
+        assert_eq!(
+            slots_by_recency(&dir).first(),
+            None,
+            "temp files are never live slots"
+        );
         fs::write(slot_path(&dir, 2), b"valid-name slot").unwrap();
-        assert_eq!(latest_slot(&dir), Some(2));
+        assert_eq!(slots_by_recency(&dir).first(), Some(&2));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -373,7 +373,7 @@ mod tests {
 
         write_slot(&dir, 0, payload).unwrap();
         assert_eq!(list_slots(&dir), vec![0, 2]);
-        assert_eq!(latest_slot(&dir), Some(0));
+        assert_eq!(slots_by_recency(&dir).first(), Some(&0));
 
         let _ = fs::remove_dir_all(&dir);
     }
