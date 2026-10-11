@@ -53,7 +53,8 @@
 //! decoded here. The instance half (`OBJT`/`LIST`/`USER` chunks, the
 //! actual parameter values: fog distances, colors, wind) is censused
 //! but not interpreted; xEdit has no shipped reader for it either, and
-//! grounding those layouts is the tracked follow-up (see the issue).
+//! grounding those layouts is the tracked follow-up (#5627; #5364 landed
+//! the schema half only).
 //! Until a value reader lands, exteriors on WTHS-only climates keep
 //! resolving weather through the authored `DefaultWeather` WTHR
 //! (#5363's fallback).
@@ -188,7 +189,7 @@ pub struct BgsReflection {
     pub diff_field_indices: Option<Vec<u16>>,
     /// The instance chunks (`OBJT`/`LIST`/`USER`/`USRD`/`MAPC`),
     /// censused as `(signature, payload size)` — the value half is the
-    /// tracked follow-up, and this census is the evidence base for it.
+    /// tracked follow-up (#5627), and this census is the evidence base for it.
     pub instance_chunks: Vec<([u8; 4], usize)>,
     /// Signatures of chunks the walker did not recognize (skipped by
     /// size). Empty on vanilla data.

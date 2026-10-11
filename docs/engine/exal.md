@@ -150,7 +150,7 @@ acquire/release, not a snap. An `XCCM` pointing at an unparsed CLMT falls back t
 the worldspace climate (never to the procedural sky), and an override climate
 with no resolvable default weather leaves the current sky in place. Default
 weather itself is ONE rule (`resolve_default_weather`, #5424): the climate's
-highest-chance WTHR, else — while Starfield's WTHS stays undecoded — the
+highest-chance WTHR, else — while Starfield's WTHS values stay undecoded (schema decoded, #5364; value reader #5627) — the
 authored `DefaultWeather` WTHR stands in for WSLT-only climates (#5363), for
 the worldspace resolve and the XCCM re-resolve alike.
 
