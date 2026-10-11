@@ -188,6 +188,19 @@ impl MaterialSource<'_> {
     }
 }
 
+/// The #2862 release-profile backstop for a `Compound` child transform:
+/// non-finite translation or rotation lanes are neutralised to identity
+/// (the child shape still comes through). Factored out of
+/// `flatten_to_parts` so the backstop is unit-testable in every profile —
+/// the `debug_assert!` beside it is compiled out of release builds, and no
+/// CI lane runs this crate's tests in release (#5551).
+fn sanitize_child_pose(translation: Vec3, rotation: Quat) -> (Vec3, Quat) {
+    (
+        if translation.is_finite() { translation } else { Vec3::ZERO },
+        if rotation.is_finite() { rotation } else { Quat::IDENTITY },
+    )
+}
+
 /// Recursively walk a `CollisionShape` tree, composing transforms as
 /// we descend. Non-compound variants are emitted as a single part at
 /// `parent_iso`; compounds recurse without emitting anything
@@ -232,8 +245,7 @@ fn flatten_to_parts(
                 // drop the child outright — same "clamp to a safe value,
                 // don't discard the shape" posture as the Cuboid extent
                 // clamp above (#2543).
-                let safe_t = if t.is_finite() { *t } else { Vec3::ZERO };
-                let safe_r = if r.is_finite() { *r } else { Quat::IDENTITY };
+                let (safe_t, safe_r) = sanitize_child_pose(*t, *r);
                 let composed = parent_iso * pose_from_trs(safe_t * scale, safe_r);
                 flatten_to_parts(child, composed, scale, cfg, materials, out);
             }
@@ -766,14 +778,33 @@ mod tests {
             iso.translation
         );
         assert!(
-            iso.rotation
-                .into_inner()
-                .coords
-                .iter()
-                .all(|c| c.is_finite()),
+            iso.rotation.is_finite(),
             "non-finite compound child rotation must not reach Rapier: {:?}",
             iso.rotation
         );
+    }
+
+    /// #5551 — the default-lane twin of the release-only test above: the
+    /// #2862 backstop is a pure function, so it is covered without
+    /// depending on the release profile (same shape as #4686's
+    /// `clamp_shape_extent` twin).
+    #[test]
+    fn sanitize_child_pose_neutralizes_non_finite_lanes_and_keeps_finite_ones() {
+        let (t, r) = sanitize_child_pose(
+            Vec3::new(f32::NAN, f32::INFINITY, 0.0),
+            Quat::from_xyzw(f32::NAN, 0.0, 0.0, f32::NAN),
+        );
+        assert_eq!(t, Vec3::ZERO);
+        assert_eq!(r, Quat::IDENTITY);
+        // Each half is judged independently: a bad rotation does not
+        // discard a good translation, and vice versa.
+        let good_t = Vec3::new(1.0, -2.0, 3.0);
+        let good_r = Quat::from_rotation_y(0.5);
+        let (t, r) = sanitize_child_pose(good_t, Quat::from_xyzw(f32::INFINITY, 0.0, 0.0, 1.0));
+        assert_eq!((t, r), (good_t, Quat::IDENTITY));
+        let (t, r) = sanitize_child_pose(Vec3::new(0.0, f32::NEG_INFINITY, 0.0), good_r);
+        assert_eq!((t, r), (Vec3::ZERO, good_r));
+        assert_eq!(sanitize_child_pose(good_t, good_r), (good_t, good_r));
     }
 
     #[test]
