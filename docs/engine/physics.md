@@ -416,6 +416,34 @@ for. Pinned by
 `restitution_zero_body_does_not_bounce_on_restitution_floor`
 (`world/mod.rs` tests).
 
+### Surface materials and contact events
+
+Every collider also carries the body's authored **Havok surface
+material** in its user-data, so gameplay can ask "what kind of ground
+is this". The source is `RigidBodyData::surface_material` — the
+body-level reduction of the shape tree's first authored `HavokMaterial`
+(`first_shape_material`), plus the leaf-aligned per-part sequence
+`RigidBodyData::part_surface_materials`, which `collision_shape_to_
+parts` maps 1:1 onto parts so a compound body whose bhk children carry
+different materials reads back per-part. Both are `serde(skip)`-ed:
+the NIF is re-parsed on load and the values re-derived. Consumers:
+
+- `PhysicsWorld::surface_material_under` — a ground-probe ray that
+  returns the hit collider's material byte; `footstep_system` feeds it
+  to `select_footstep_sound`, preferring `FootstepConfig`'s authored
+  per-material entry over the default sound.
+- Contact-force **impact events**: dynamic bodies' colliders subscribe
+  their pairs to `ActiveEvents::CONTACT_FORCE_EVENTS`; the step drains
+  only the `started` force-threshold crossings (rapier 0.35+'s
+  "first step a pair's force exceeds its threshold" signal — Havok's
+  collision-listener impact), and `impact_audio_system` plays one
+  one-shot at the pair midpoint per crossing that clears
+  `ImpactConfig`'s force floor. Both sound maps ship empty until the
+  IPDS/IPCT impact records are decoded — the plumbing is
+  content-agnostic and pinned by tests
+  (`contact_force_started_event_carries_surface_materials`,
+  `parts_carry_their_leaf_surface_materials`).
+
 ## NIF collision extraction
 
 `crates/nif/src/import/collision/mod.rs` walks the bhk shape tree and
@@ -537,8 +565,13 @@ These are intentionally deferred:
   correctly but still needs a dedicated runtime sensor path rather than a
   solid rigid body. ESM XPRM trigger volumes already use the scripting
   trigger system; this gap is specifically NIF-authored phantoms.
-- **Collision events into scripting** — `ActivateEvent` / `HitEvent`
-  plumbing from physics contacts stays deferred.
+- **Collision events into scripting** — contact events now exist at the
+  physics boundary (`register_newcomers` subscribes dynamic bodies'
+  colliders to `ActiveEvents::CONTACT_FORCE_EVENTS`, the step drains the
+  `started` force-threshold crossings, and `impact_audio_system` consumes
+  them for surface-material-driven impact sounds), but the `ActivateEvent`
+  / `HitEvent` scripting-marker plumbing from those contacts stays
+  deferred.
 - **Havok MOPP BVtree consumption** — Rapier builds its own BVH over
   trimeshes, so the MOPP bytecode stays opaque (`BhkMoppBvTreeShape`
   recurses straight into its wrapped shape).
