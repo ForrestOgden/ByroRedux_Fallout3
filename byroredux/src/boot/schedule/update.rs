@@ -439,7 +439,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // without activation. After the ambient package system so a fresh
     // install greets on the next tick; before the Late dialogue
     // selection so the opened surface serials once.
-    scheduler.add_exclusive(Stage::Update, crate::systems::forcegreet::forcegreet_system);
+    //
+    // #5430 — the approach step is AI motion, so it honours the
+    // `BYRO_NO_AI_LOCOMOTION` kill switch; the in-radius open does not.
+    scheduler.add_exclusive(
+        Stage::Update,
+        crate::systems::forcegreet::make_forcegreet_system(super::ai_locomotion_enabled()),
+    );
     // M47.3 — legacy ObScript quest scripts (Oblivion/FO3/FNV): run each
     // running quest's GameMode block on the vanilla 5 s cadence. Exclusive
     // beside `ambient_ai_package_system`: it drives `QuestStageState`

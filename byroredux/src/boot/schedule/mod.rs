@@ -19,6 +19,13 @@ use update::register_update_systems;
 
 use byroredux_core::ecs::Scheduler;
 
+/// `BYRO_NO_AI_LOCOMOTION=1` is the single AI-motion kill switch (M42.10).
+/// Read once here so every mover — the PostUpdate locomotion block and
+/// the Update-stage force-greet walk step (#5430) — shares one definition.
+fn ai_locomotion_enabled() -> bool {
+    std::env::var_os("BYRO_NO_AI_LOCOMOTION").is_none()
+}
+
 /// Phase 2 of construction (#1670) — ECS system wiring: build the
 /// `Scheduler` and register every stage's systems. Extracted verbatim
 /// from the former 581-LOC `App::new` (no outer-`world` dependency — the
@@ -274,8 +281,8 @@ mod ambient_locomotion_default_on_tests {
         assert!(
             setup.contains("std::env::var_os(\"BYRO_NO_AI_LOCOMOTION\")"),
             "the BYRO_NO_AI_LOCOMOTION kill-switch is missing from \
-             boot/schedule/post_update.rs — ambient locomotion would have \
-             no off switch"
+             boot/schedule/mod.rs (`ai_locomotion_enabled`) — ambient \
+             locomotion would have no off switch"
         );
         for stale_gate in [
             "BYRO_SANDBOX_SIT",
@@ -296,7 +303,7 @@ mod ambient_locomotion_default_on_tests {
     }
 
     /// #4709 — the kill switch is documented as the AI-motion debugging aid,
-    /// so the block it gates must hold exactly the eight motion systems.
+    /// so the block it gates must hold exactly the nine motion systems.
     /// The pin above only checked that the env var is read, which is how
     /// combat feedback ended up inside the block unnoticed: isolating
     /// motion silently muted P2 combat takes and sounds.
@@ -324,10 +331,18 @@ mod ambient_locomotion_default_on_tests {
                 &name[..name.find('(').expect("a system constructor call")]
             })
             .collect();
+        // #5430 — `eat_sleep_system` is registered as a bare fn path, not a
+        // `make_*` constructor, so the scan above cannot see it: moving it
+        // out of the block used to fail nothing.
+        let bare = "crate::systems::eat_sleep::eat_sleep_system";
+        if block.contains(bare) {
+            gated.push("eat_sleep_system");
+        }
         gated.sort_unstable();
         assert_eq!(
             gated,
             [
+                "eat_sleep_system",
                 "escort_system",
                 "follow_system",
                 "guard_system",
@@ -339,6 +354,14 @@ mod ambient_locomotion_default_on_tests {
             ],
             "BYRO_NO_AI_LOCOMOTION must gate exactly the AI-motion systems"
         );
+        // #5430 — the force-greet walk step is Update-stage, so it is gated
+        // by threading the same switch into its constructor rather than by
+        // sitting in the block; pin that it does not go back to ungated.
+        assert!(
+            setup.contains("make_forcegreet_system(super::ai_locomotion_enabled())"),
+            "the force-greet walk step must take the BYRO_NO_AI_LOCOMOTION \
+             kill switch (boot/schedule/update.rs)"
+        );
         assert!(
             after.contains(&format!("crate::systems::{}()", "make_combat_feedback_system")),
             "combat feedback must register after (outside) the locomotion \
@@ -347,7 +370,7 @@ mod ambient_locomotion_default_on_tests {
     }
 
     #[test]
-    fn walk_animation_registers_after_all_six_movers() {
+    fn walk_animation_registers_after_all_seven_movers() {
         let setup = BOOT_SRC
             .split("mod ambient_locomotion_default_on_tests")
             .next()
@@ -363,6 +386,8 @@ mod ambient_locomotion_default_on_tests {
             "crate::systems::make_escort_system()",
             "crate::systems::make_guard_system()",
             "crate::systems::make_patrol_system()",
+            // #5430 — the Eat/Sleep walk-then-seat mover, a bare fn path.
+            "crate::systems::eat_sleep::eat_sleep_system",
         ] {
             let at = setup
                 .rfind(mover)

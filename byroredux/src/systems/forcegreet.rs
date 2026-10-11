@@ -49,7 +49,25 @@ impl Component for ForceGreetDirective {
 /// uses. Registered in `Stage::Update` after the ambient package
 /// system. Movement rides the shared `step_toward` locomotion helper
 /// (KCC-backed, navmesh-routing when a resident tile covers the actor).
+///
+/// Test-facing form with the walk step enabled; production registers
+/// [`make_forcegreet_system`].
+#[cfg(test)]
 pub(crate) fn forcegreet_system(world: &World, dt: f32) {
+    forcegreet_system_inner(world, dt, true);
+}
+
+/// #5430 — production constructor. `walk_enabled` is the
+/// `BYRO_NO_AI_LOCOMOTION` kill switch: false keeps the open path
+/// (arrival-in-radius greetings are not motion) but never steps the NPC
+/// toward the player, so a locomotion-isolated run has no walking NPCs.
+/// The switch is resolved once at registration, like the PostUpdate
+/// locomotion block's.
+pub(crate) fn make_forcegreet_system(walk_enabled: bool) -> impl FnMut(&World, f32) + Send + Sync {
+    move |world: &World, dt: f32| forcegreet_system_inner(world, dt, walk_enabled)
+}
+
+fn forcegreet_system_inner(world: &World, dt: f32, walk_enabled: bool) {
     let directives: Vec<(EntityId, ForceGreetDirective)> = world
         .query::<ForceGreetDirective>()
         .map(|query| query.iter().map(|(npc, d)| (npc, *d)).collect())
@@ -110,6 +128,11 @@ pub(crate) fn forcegreet_system(world: &World, dt: f32) {
         };
         let flat = Vec3::new(player_pos.x - current.x, 0.0, player_pos.z - current.z);
         if flat.length() > directive.radius {
+            // #5430 — kill switch: the directive stays pending, the NPC
+            // stands still.
+            if !walk_enabled {
+                continue;
+            }
             // Still approaching: one walk step toward the player.
             // #5373 — the step writes `Transform` (the authoritative
             // world pose on a propagation root), never
@@ -271,6 +294,37 @@ mod tests {
 
              system+propagation frames (still {last_distance} away)"
         );
+    }
+
+    /// #5430 — with the locomotion kill switch off the approach step is
+    /// never taken, yet the directive stays pending (not consumed).
+    #[test]
+    fn kill_switch_blocks_the_forcegreet_walk_but_keeps_the_directive() {
+        let mut world = World::new();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        let player = world.spawn();
+        world.insert(player, GlobalTransform::default());
+        world.insert(player, Transform::default());
+        world.insert_resource(crate::systems::character::PlayerEntity(Some(player)));
+        let npc = world.spawn();
+        let start = Vec3::new(400.0, 0.0, 0.0);
+        world.insert(npc, GlobalTransform { translation: start, ..Default::default() });
+        world.insert(npc, Transform { translation: start, ..Default::default() });
+        world.insert(
+            npc,
+            ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS },
+        );
+
+        let mut off = make_forcegreet_system(false);
+        off(&world, 0.5);
+        assert_eq!(world.get::<Transform>(npc).unwrap().translation, start);
+        assert!(world.get::<ForceGreetDirective>(npc).is_some());
+
+        let mut on = make_forcegreet_system(true);
+        on(&world, 0.5);
+        assert_ne!(world.get::<Transform>(npc).unwrap().translation, start);
     }
 
     /// A player at the origin and a greeter already inside its radius

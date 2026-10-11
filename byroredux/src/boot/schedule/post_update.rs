@@ -87,7 +87,7 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
     //    and its take/restore protocol assumes every mover has already
     //    written for the tick (a swap decided on a pre-move position
     //    would flicker at leg boundaries).
-    let locomotion_enabled = std::env::var_os("BYRO_NO_AI_LOCOMOTION").is_none();
+    let locomotion_enabled = super::ai_locomotion_enabled();
     if locomotion_enabled {
         // M42.1 — sandbox seat-snap. The seat placement + clip-swap
         // pipeline is fully verified (live bone inspection: actors land on
