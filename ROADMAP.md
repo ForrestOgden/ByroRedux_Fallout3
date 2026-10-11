@@ -594,6 +594,15 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   and the 2026-10 dependency refresh (wgpu 30, egui 0.36, image 0.25). Re-run
   `scripts/fsr-bench-matrix.sh 3 300` with a
   same-machine control; no HEAD frame-time claim is current until then.
+  The harness pair has moved twice since the record
+  (`scripts/check-bench-harness-provenance.sh a37fcba3c` reports DIVERGED);
+  both edits now carry a recorded disposition (#5451): `8fdd9ae56` only
+  appends the camera-pose columns, and `a4ede5fa0` (`Update.bsa` mounted in
+  the Prospector scene) was controlled on 2026-10-11 — one binary, one
+  session, 5 interleaved runs each — with identical state_hash / entities /
+  draws / lights / TLAS and a 12.03 vs 12.06 ms median
+  (`docs/audits/CONTROL_prospector_update-bsa_a4ede5fa0.tsv`). Neither
+  changes the Prospector row; the 616-commit staleness above is what remains.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a

@@ -1,0 +1,14 @@
+# #5451 same-machine control for a4ede5fa0 (#5257): prospector scene, FNV, --upscaler taa, orbit, 300 frames, renderer-stepped.
+# One release binary (target/release/byroredux, built 2026-10-11 13:22), one session, runs interleaved A,B,A,B,...
+# A = scene args before a4ede5fa0 (no Update.bsa); B = args after it (--bsa Update.bsa, --textures-bsa Update.bsa last in each pool).
+variant	run	wall_ms	frame_p50_ms	frame_p95_ms	fence_ms	entities	draws	lights	tlas	state_hash
+A	1	12.36	10.00	23.85	10.15	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+B	1	12.06	10.10	24.03	9.73	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+A	2	11.74	9.88	23.56	9.73	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+B	2	11.75	10.17	23.91	9.71	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+A	3	11.78	9.63	23.60	10.18	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+B	3	11.83	9.72	23.99	10.04	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+A	4	12.03	9.73	23.83	10.17	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+B	4	12.60	9.67	24.13	10.79	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+A	5	12.69	9.77	24.48	10.90	2359	814/221b/63c	25	803	02cc9d5fc71fb916
+B	5	12.07	9.83	24.00	10.31	2359	814/221b/63c	25	803	02cc9d5fc71fb916

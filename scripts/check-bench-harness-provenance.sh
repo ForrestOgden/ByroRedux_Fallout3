@@ -20,6 +20,17 @@
 #   scripts/check-bench-harness-provenance.sh --self-test
 #
 # Needs full history: `git log <record>..HEAD` cannot answer on a shallow clone.
+#
+# A divergence is a finding until someone has judged whether it moves the
+# measurement. Where a judgement exists it is recorded below and printed next
+# to the commit, so a reader sees "diverged, and here is what was established"
+# instead of re-deriving it (#5451). It annotates only: the DIVERGED verdict,
+# the exit code and --strict are unchanged, because a recorded control for one
+# axis does not make a re-run byte-comparable.
+declare -A DISPOSITION=(
+  [8fdd9ae56]="by inspection: appends the camera_pos/camera_forward columns only (#5128); no run arguments, gates or arithmetic changed"
+  [a4ede5fa0]="measurement-neutral by same-session A/B control (#5451): identical state_hash/entities/draws/lights/TLAS; wall_ms median 12.03 vs 12.06 over 5 interleaved runs each (docs/audits/CONTROL_prospector_update-bsa_a4ede5fa0.tsv)"
+)
 
 set -uo pipefail
 
@@ -60,6 +71,15 @@ check_record() {
   printf '%s%s: DIVERGED — %s commit(s) to the harness pair since this record.\n' \
     "${label:+$label  }" "$record" "$n"
   printf '%s\n' "$log"
+  local line hash key
+  while IFS= read -r line; do
+    hash="$(awk '{print $1}' <<<"$line")"
+    for key in "${!DISPOSITION[@]}"; do
+      if [[ "$hash" == "$key"* || "$key" == "$hash"* ]]; then
+        printf '      %s: %s\n' "$hash" "${DISPOSITION[$key]}"
+      fi
+    done
+  done <<<"$log"
   printf '    A re-run is NOT a guaranteed apples-to-apples comparison.\n'
   return 1
 }
@@ -78,6 +98,15 @@ if (( SELF_TEST )); then
   if [[ "$out" != *DIVERGED* || "$out" != *0e91fc5e* ]]; then
     echo "check-bench-harness-provenance: self-test did not detect the known" \
          "post-34074b93 harness divergence" >&2
+    printf '%s\n' "$out" >&2
+    fail=1
+  fi
+  # #5451 — a recorded disposition must reach the report. `a4ede5fa0` is an
+  # ancestor of HEAD forever and touched the matrix script after `a37fcba3c`.
+  out="$(check_record a37fcba3c 2>&1)"
+  if [[ "$out" != *a4ede5fa0:*measurement-neutral* ]]; then
+    echo "check-bench-harness-provenance: self-test did not print the recorded" \
+         "disposition for a4ede5fa0" >&2
     printf '%s\n' "$out" >&2
     fail=1
   fi
