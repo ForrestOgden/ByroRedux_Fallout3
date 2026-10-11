@@ -355,7 +355,7 @@ boundary — ÷ the shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`, in
 defect that commit fixed; `water.frag` only clamps). `oceanness` retains its
 native 0..1 scale and feeds both absorption and forward scattering.
 #5151 lifted Starfield's DNAM metres → Bethesda units at the same boundary
-(`spatial_units::normalize`, Starfield-gated, FO76 untouched): depth,
+(`spatial_units::normalize`, Starfield-gated; FO76 gets its absorption lift only, #5169): depth,
 underwater fog near/far, and noise falloff ×70, absorption ÷70.
 Three DNAM lane families keep an **unsettled unit**, tracked capture-gated
 in #5170: the noise-UV tile sizes (120/124/128, vanilla 72.11 / 39 / 13 —
@@ -435,7 +435,7 @@ over speed > 0 layers):
 | FO76 | DNAM[84/88/92], degrees; layer 1 promoted | wind-FROM bearing, tentatively | +90° applied | +12.5° corrected mean, R = 0.36 — closer to converted than any mirror, but weak (re-run: −77.5° raw, n = 138, p ≈ 1e-8); **tentative**, both frames not fully excluded |
 | Starfield | DNAM[84/88/92], degrees; layer 1 promoted | **unverified — no census support** | none applied (+90° retired 2026-10-01) | +50.3° raw mean, n = 36, R = 0.21, p ≈ 0.2 — supports neither frame. The un-rotated read is the pre-2026-09-24 status quo, not a claim about the authored frame |
 | FO3 / FNV | layers: DNAM/DATA[100/104/108], degrees; `wind_direction`: DATA/DNAM[4] | **untestable by this method** — 71/78 FNV and 47/53 FO3 records carry non-zero layer speeds but none ships a NAM0 to census against | none applied | no NAM0 ⇒ no flow heading to diff against. `wind_direction` is the dead editor default 90.0 on every shipped record, so it never counts as authored |
-| Oblivion | layer 0: `atan2(y, x)` of the DATA[28]/[32] scroll-speed pair; `wind_direction`: DATA[4] | layer 0 is a **Cartesian direction-of-travel angle** counter-clockwise from the pair's x axis, not a bearing | none applied (#4910: the +90° read turned (x, y) into (−y, x) with no evidence for any Oblivion record, `DefaultWater` among them) | frame follows from the field's definition, not a census; `wind_direction` varies per record and is authored when present |
+| Oblivion | layer 0: `atan2(y, x)` of the DATA[28]/[32] scroll-speed pair; `wind_direction`: DATA[4] | layer 0 is a **Cartesian direction-of-travel angle** counter-clockwise from the pair's x axis, not a bearing | none applied (#4910: the +90° read turned (x, y) into (−y, x) with no evidence for any Oblivion record, `DefaultWater` among them) — **frame OPEN**, see the #5182 table in the next section: "not a bearing" refutes the +90° formula but does not establish φ = θ | no census backs the un-rotated read; `wind_direction` varies per record and is authored when present |
 
 Engine XZ: φ is measured from +X toward +Z, and +Z is game **south**, because
 Z-up (x, y, z) maps to Y-up (x, z, −y). Whether `wind_direction` is an authored
@@ -798,14 +798,19 @@ Distant worldspace water reuses canonical `WaterPlane` / `WaterMaterial`; it
 does not introduce a second *WaterLod* material representation. Since #5243
 (2026-10-04, W2-01) the mesh is **per cell**: one quad per distant cell at
 that cell's *effective* water height — explicit `XCLW` → that height, absent
-`XCLW` → the WRLD `NAM3`/`NAM4` default, authored dry sentinel → skipped —
-ringed between the streaming hole and the terrain-LOD reach, with quads
-whose LAND minimum sits above their water skipped as fully occluded. Since
-#5244 the hole is exactly the streaming boundary (`radius_unload`): the
-loaded full-detail set covers ≤ `radius_unload` and the distant mesh emits
-≥ `radius_unload`+1 — contiguous by construction, where the old
-one-cell margin (#1871 heritage, from the wrong-height-sheet era) cut a
-permanent waterless ring at every boundary. The pre-#5243 single sheet at
+`XCLW` → the **full-detail default** (`default_water_for_worldspace`: `DNAM`,
+or Oblivion's sea level 0 — #5337: not `NAM4`, which differs on real content
+and which a near cell does not use), authored dry sentinel → skipped —
+out to the terrain-LOD reach, with quads whose LAND minimum sits above their
+water skipped as fully occluded. The hole is the **resident set** (#5334),
+not a radius: streaming requests only out to `radius_load` and unloads only
+beyond `radius_unload`, so the ring at `radius_load`+1 is resident as
+hysteresis at best — a `radius_unload` disc left it with neither near nor
+distant water at worldspace entry and along the leading edge of travel.
+Every wet cell that is not resident gets a quad, as terrain LOD holes only
+actual residency (`cell_is_full_detail`). The old one-cell margin
+(#1871 heritage, from the wrong-height-sheet era) cut a permanent waterless
+ring at every boundary. The pre-#5243 single sheet at
 the worldspace
 default was wrong on both sides of the census: FNV WastelandNV, Skyrim
 Tamriel and FO4 Commonwealth author **zero** inherit cells (every wet cell
@@ -815,12 +820,20 @@ rim. `crates/plugin/examples/xclw_census.rs` is the re-checkable census.
 The render-only `WaterLodInfo { height, water_form, quad_heights }`
 component retains provenance (default height, water form, and the live
 quad-height histogram `water.dump` reports) for diagnostics and streaming
-teardown. Older games naturally use the same path with their translated
-sentinel material fields. Grid crossings rebuild the mesh
-(`rebuild_lod_water_mesh`) — the hole is *which cells are skipped*, so the
-old translate-the-annulus trick cannot follow a per-cell mesh; only the
-mesh handle swaps, and an emptied ring keeps the entity mesh-less until a
-later crossing finds water again.
+teardown. The default height and form are settled once at the translate
+boundary (`env_translate::resolve_distant_water`): the full-detail pair
+(`DNAM`/`NAM2`) for inherit cells, the authored `NAM3` form where there is
+one. Oblivion authors `NAM2` but no `NAM3`/`NAM4`/`DNAM`, so it takes sea
+level 0 and the `NAM2` form from the full-detail resolver and draws distant
+water like every other title (#5335); worldspaces with neither draw none.
+Residency changes and grid crossings rebuild the mesh
+(`rebuild_lod_water_mesh`, coalesced to 250 ms, ring re-selected from a
+per-cell projection computed once at spawn — #5289) — the hole is *which
+cells are skipped*, so the old translate-the-annulus trick cannot follow a
+per-cell mesh; only the mesh handle swaps. An emptied ring keeps the entity
+mesh-less (and zeroes the `water.dump` histogram) until a later rebuild
+finds water again; a failed upload keeps the previous mesh and is retried
+on the next real change, not every frame (#5339).
 
 ### 5.3 `PhysicsWaterConstants` — engine-defined buoyancy (ECS Resource)
 

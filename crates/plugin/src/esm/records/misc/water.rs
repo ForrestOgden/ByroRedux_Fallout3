@@ -310,18 +310,18 @@ pub struct WaterParams {
     /// Never filled from NAM0, which is carried only as
     /// `WatrRecord::linear_velocity` (#4900).
     ///
-    /// **Frame (#4932).** The field holds one of two conventions, both
-    /// stored untransformed (the translate boundary,
-    /// `watr_angle_to_engine_xz`, applies the one +90° rotation to either):
+    /// **Frame (#4932, scoped per game by #4910).** Stored untransformed, in
+    /// the record's own frame. Whether the translate boundary
+    /// (`watr_angle_to_engine_xz`, which takes the `GameKind`) applies the
+    /// +90° rotation is a per-game census result, not a property of this
+    /// field: Skyrim and FO4 convert (FO76 tentatively), while Oblivion,
+    /// FO3/FNV and Starfield are un-rotated and their frame is OPEN — see
+    /// `docs/engine/watal.md` §2 for the table and its evidence.
     ///
-    /// - Skyrim / FO4 / FO76 / Starfield DNAM layer angles and FO3/FNV
-    ///   `DNAM[100]`: degrees on the wire, a wind-FROM compass bearing in
-    ///   the record's Z-up frame — 0 blows from game north (the pattern
-    ///   travels south), 90° from east, clockwise seen from above.
-    /// - Oblivion layer 0: `atan2(y, x)` of the `DATA[28..36]` scroll-speed
-    ///   pair — a direction-of-travel angle counter-clockwise from the
-    ///   pair's own x axis, not a wind-FROM bearing. It shares the slot
-    ///   because Oblivion authors no per-layer angle.
+    /// Oblivion layer 0 is `atan2(y, x)` of the `DATA[28..36]` scroll-speed
+    /// pair — a direction-of-travel angle counter-clockwise from the pair's
+    /// own x axis, not a wind-FROM bearing. It shares the slot because
+    /// Oblivion authors no per-layer angle.
     ///
     /// Per-game detail is in `docs/engine/watal.md` §2.
     pub noise_wind_directions: [f32; 3],

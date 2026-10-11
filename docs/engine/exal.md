@@ -568,16 +568,22 @@ reading as a live capability. `OFST` is now walked past like any other
 unconsumed sub-record; re-add the capture with its first real consumer, not
 before. `NAM3`/`NAM4` are consumed as of
 #2449 / EXAL-01: `env_translate::translate_lod_water` reads them, and
-`cell_loader::water::spawn_lod_water_plane` spawns a single worldspace-wide
-LOD water quad (a hole-cut annulus excluding the full-detail streamed area)
-at worldspace entry — see that fn's doc for why it's a fixed entry-time
-snapshot rather than a `LodBlock`-style continuously-reconciled ring (a
-renderer TLAS/BLAS interaction ruled out mirroring `LodBlock`'s per-block
-streaming exactly for this pass). The LOD-water fields are genuinely
+`cell_loader::water::spawn_lod_water_plane` spawns ONE worldspace-wide
+render-only entity at worldspace entry whose mesh is **per cell** since
+#5243 (one quad per wet distant cell at its effective height) and is
+**rebuilt** — only the mesh handle swaps — whenever the resident set changes
+or the player crosses a grid cell (`rebuild_lod_water_mesh`, #5334; the hole
+is the actual resident set, as terrain LOD's is). It is not a
+`LodBlock`-style per-block ring (a renderer TLAS/BLAS interaction ruled that
+out) and no longer a fixed entry-time snapshot. The LOD-water fields are genuinely
 distinct from their full-detail NAM2 / DNAM siblings on real content
 (NAM3 ≠ NAM2 on 18/28 Fallout3.esm worldspaces; NAM4 ≠ DNAM water on 22/30
-Skyrim.esm), which is why the consumer reads them directly rather than
-reusing the full-detail values.
+Skyrim.esm), which is why the consumer reads `NAM3` for the plane's
+appearance directly. It does *not* read `NAM4` for the height an inherit
+(absent-XCLW) cell far-draws at: that is the full-detail default
+(`DNAM` / Oblivion sea level), so the water does not step at the streaming
+boundary (#5337); Oblivion, which authors no LOD water fields, draws
+distant water from the full-detail pair alone (#5335).
 
 ---
 

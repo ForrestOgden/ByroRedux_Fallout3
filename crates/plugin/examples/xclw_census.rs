@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
                 if let Some((px, py)) = ring_grid {
                     let d = (cell.grid.unwrap_or((px, py)).0 - px)
                         .abs()
-                        .max(cell.grid.unwrap_or((px, py)).1 - py);
+                        .max((cell.grid.unwrap_or((px, py)).1 - py).abs());
                     if d > 0 {
                         *rings.entry(d).or_default() += 1;
                         if (eff - 2600.0).abs() < 1.0 {
