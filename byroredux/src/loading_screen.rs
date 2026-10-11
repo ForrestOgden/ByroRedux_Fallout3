@@ -81,8 +81,6 @@ pub(crate) struct StageCamera {
 /// reads — the draw filter and retirement both key off this struct.
 #[derive(Debug)]
 pub(crate) struct ModelStage {
-    #[allow(dead_code)]
-    key: String,
     root: EntityId,
     /// Every mesh handle under the stage root — the per-frame draw filter
     /// retains exactly these while the cover is up.
@@ -204,10 +202,9 @@ impl LoadingScreen {
         let args = crate::cli_args::effective_args();
         match verdict {
             LoadScreenVerdict::Model(Some(resolved)) => {
-                // CLI archive/load-order identity is included because identical
-                // Bethesda paths may name different models in different installs.
-                let key = format!("{:?}:{:?}:{}", index.game, args, resolved.model_path);
-                if !self.spawn_model_stage(world, ctx, screen, &resolved, &key) {
+                // Every model cover spawns a fresh stage (only the image artwork
+                // is keyed for reuse), so no identity key is built here.
+                if !self.spawn_model_stage(world, ctx, screen, &resolved) {
                     self.tip = None;
                     return false;
                 }
@@ -315,7 +312,6 @@ impl LoadingScreen {
         ctx: &mut VulkanContext,
         screen: &LoadScreenRecord,
         resolved: &ResolvedLoadScreenModel,
-        key: &str,
     ) -> bool {
         let args = crate::cli_args::effective_args();
         let tex_provider = crate::asset_provider::build_texture_provider(&args);
@@ -423,7 +419,6 @@ impl LoadingScreen {
             None => {}
         }
         self.artwork = Some(Artwork::Stage(Box::new(ModelStage {
-            key: key.to_owned(),
             root,
             mesh_handles,
             camera,
@@ -831,7 +826,6 @@ mod tests {
         let mut screen = LoadingScreen {
             phase: Phase::Loading,
             artwork: Some(Artwork::Stage(Box::new(ModelStage {
-                key: "k".into(),
                 root: 7,
                 mesh_handles: [11u32].into(),
                 camera: StageCamera {
