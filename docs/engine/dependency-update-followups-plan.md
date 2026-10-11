@@ -413,6 +413,48 @@ Batch these as convenient. Each is S effort with low risk.
 
 These are larger. Each needs its own plan and has a prerequisite on our side.
 
+**Status (2026-10-10) — every track resolved to its gated state:**
+
+- **Surface-aware footsteps: implemented through the footstep half**
+  (`886edcded`). `RigidBodyData::surface_material` (the body-level
+  reduction of the shape tree's first authored HavokMaterial —
+  `first_shape_material` walks the same container dispatch
+  `resolve_shape` does) reaches the footstep decision: sync packs it
+  into every part collider's user-data, `PhysicsWorld::surface_material_
+  under` reads it back with the ground-probe filter, and
+  `select_footstep_sound` prefers the authored per-material entry over
+  the default sound. The save-shape change took the FORMAT_MAJOR bump
+  the blanket rule demands (v35 → v36). **Scoped remainders:** the
+  per-triangle split (a trimesh's per-subshape materials through
+  `collision_shape_to_parts`), and the clutter-impact half —
+  `ContactForceEvent::started` needs an `EventQueue` first, which the
+  `PhysicsWorld` has never run (no contact events are drained today);
+  that drain plus an impact-sound bridge is its own increment. The
+  content mapping stays empty until IPDS/IPCT decode lands — the
+  mechanism is content-agnostic and pinned by tests.
+- **Cloth: unchanged — blocked upstream of the update.** rapier 0.36's
+  soft bodies are ready, but `BSClothExtraData` is still an opaque Havok
+  blob (`crates/nif/src/blocks/extra_data.rs`); decoding that packed
+  format is its own research milestone (the PHYSAL FO4+ blob problem),
+  not a design pass away.
+- **Collider debug view: scoped, not started.** There is no line-drawing
+  path anywhere in the renderer — no debug lines, no wireframe pass —
+  so the overlay's real prerequisite is a line-list pipeline (vertex
+  stream, draw pass, budget), after which rapier's `DebugRenderPipeline`
+  (or a hand-rolled extraction over `PhysicsWorld`'s colliders, which
+  the query layer can already enumerate) becomes a consumer. That
+  pipeline is the design's first milestone; the overlay alone was never
+  the cost.
+- **Zero-copy Scaleform frames: stood down — the gate resolves no.**
+  #4717's pacing landed (fixed in `e405774ef`): a static 30 Hz movie
+  went from 150 to 26 passes per 150 ticks, and live Skyrim
+  `hudmenu.swf` from ~154 to ~36 passes per ~10 s. The 5–8 ms per pass
+  therefore now costs ~0.1–0.2 % of wall time at live cadence instead
+  of the multi-percent share the audit measured — the plan's own
+  "only worth it if it still hurts" criterion answers no. The wgpu 30
+  capability (external semaphores, persistent-initial-state import)
+  stays available if the readback ever shows up in a profile again.
+
 - **Surface-aware footsteps and impact sounds.**
   - parry 0.31 reports which sub-shape a query hit (for a trimesh, the triangle).
   - rapier 0.35 added `ContactForceEvent::started`, which is true on the step a

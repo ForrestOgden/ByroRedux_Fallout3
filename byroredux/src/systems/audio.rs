@@ -507,7 +507,7 @@ mod footstep_tests {
     /// lands, so every surface currently takes the default.
     #[test]
     fn footstep_selects_the_surface_sound_when_authored() {
-        let (mut world, default) = synth_world(0.5);
+        let (world, default) = synth_world(0.5);
         let surface = Arc::new(Sound {
             sample_rate: 22_050,
             frames: Arc::from(
