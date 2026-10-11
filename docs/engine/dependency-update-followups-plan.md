@@ -38,7 +38,19 @@ per-operation MultiSAP hitch. The single surviving spike is the initial
 max 138.94 ms, wall 54.5 fps, zero SLOW FRAME lines (`SLOW_FRAME_WARN_MS` = 200 —
 it never fires for this class, so the zero is not by itself evidence). The 2026-09-28
 readiness metric (~1.27 s) has no emitting log line in the current build and was not
-re-measured. Wave 3+ remains.
+re-measured. **Wave 3 landed 2026-10-10** — 9 commits `500fcb8ca` (egui
+discards), `43d0e19d6` (rfd 0.17.1 floor + launcher picker parenting),
+`0eb8896bb` (shared `[f32;3]` lerp + `FloatExt::smoothstep` +
+`Vec3::rotate_y`; the ragdoll `from_mat3` stays — that is the Shepperd
+conversion the plan pins), `86f5a1a0a` (Ruffle callback-registry check +
+prune; empty-URL ImportAssets skip), `e25d89d17` (phys.stats contact
+trio), `0781077b8` (guest-proposal pin + hostcall fuel),
+`ff79c94a3` (toml_edit 0.25), `fb902f4bc` (kira cpal-realtime without
+-dbus), `1ca54a3ac` (disk-storage-only refresh + read-only output
+refusal). The optional `DeterministicLocaleBackend` was skipped: no
+locale-dependent test path exists and it would add the workspace's first
+chrono dependency. Full workspace suite + clippy green. Wave 3+ remains
+superseded — only Wave 4 candidates (parked in [ROADMAP.md](../../ROADMAP.md)) are open.
 
 Waves are ordered by what they need, not by size:
 
