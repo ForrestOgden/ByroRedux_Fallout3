@@ -1272,8 +1272,9 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_material_cdb,
-        synthetic_material_cdb_with_effect_settings, SyntheticCdbChunks,
+        assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_cdb_chunks_with,
+        synthetic_material_cdb, synthetic_material_cdb_with_effect_settings,
+        SyntheticCdbChunks,
     };
     use super::*;
 
@@ -1318,6 +1319,52 @@ mod tests {
         idx.effect.insert(20, Some(true));
         let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
         assert_eq!(m.is_glass, Some(true));
+    }
+
+    /// #5578 — the `ObjectInfo.Parent` DECODE in `stream_db_file_index`
+    /// is exercised through a real (synthetic) CDB, not a hand-set
+    /// `idx.parents`. The fixture's effect settings are moved off the layer
+    /// material (reached through the join chain) onto object 99, which only
+    /// the root's `Parent` edge reaches. A decoder that stops reading
+    /// `Parent` (renamed field, changed layout, `id_named` shape mismatch)
+    /// fails here in the default lane, no game data needed.
+    #[test]
+    fn parent_edge_is_decoded_from_the_dbfile_index_and_inherited() {
+        let build = |parent: u32| {
+            let mut chunks = synthetic_cdb_chunks_with("Data\\Textures\\widget_color.DDS", true);
+            let dbfile = chunks
+                .iter()
+                .position(|(kind, _)| **kind == *b"OBJT")
+                .expect("the fixture carries the DBFileIndex OBJT");
+            // Objects LIST (right after the DBFileIndex OBJT): list type ref
+            // (4) + count (4) + DBID (4) + HasData (1) → Parent.Value at 13.
+            let objects = &mut chunks[dbfile + 1].1;
+            objects[13..17].copy_from_slice(&parent.to_le_bytes());
+            // Components LIST: type ref (4) + count (4) + 8-byte rows; the
+            // last two rows are the Effect + Emissive settings components.
+            let comps = &mut chunks[dbfile + 2].1;
+            let rows = (comps.len() - 8) / 8;
+            for r in rows - 2..rows {
+                let at = 8 + r * 8;
+                comps[at..at + 4].copy_from_slice(&99u32.to_le_bytes());
+            }
+            MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect("synthetic CDB indexes")
+        };
+
+        let inherited = build(99);
+        assert_eq!(inherited.parents.get(&10), Some(&99), "Parent decoded off the wire");
+        let mat = inherited.lookup("Materials\\Test\\Widget.mat").expect("keyed root");
+        assert_eq!(mat.is_glass, Some(true), "IsGlass inherited through the decoded edge");
+        assert_eq!(mat.blending_mode.as_deref(), Some("AlphaBlend"));
+        assert_eq!(mat.emissive_enabled, Some(true));
+
+        // Control: with no Parent edge the same rows are unreachable, so the
+        // test discriminates the decode instead of passing on the join chain.
+        let orphaned = build(0);
+        assert!(orphaned.parents.is_empty());
+        let mat = orphaned.lookup("Materials\\Test\\Widget.mat").expect("keyed root");
+        assert_eq!(mat.is_glass, None);
+        assert_eq!(mat.emissive_enabled, None);
     }
 
     /// The chunk list of the unmutated synthetic CDB, with the position
