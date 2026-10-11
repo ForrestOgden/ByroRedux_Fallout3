@@ -32,6 +32,16 @@
 #define RESERVOIR_LIGHT_MASK 1023u
 #define RESERVOIR_SURFACE_MASK 4194303u
 
+// ReSTIR-DI direct-light EMA caps/floors + camera history mode (#5617)
+#define RESTIR_HISTORY_CAP_PARKED 1024.0
+#define RESTIR_HISTORY_CAP_MOVING 16.0
+#define RESTIR_ALPHA_FLOOR_PARKED 0.002
+#define RESTIR_ALPHA_FLOOR_MOVING 0.1
+#define HISTORY_MODE_MOVING 0.0
+#define HISTORY_MODE_PARKED 1.0
+#define HISTORY_MODE_SCENE_STATIC 2.0
+#define HISTORY_MODE_RIG_STATIC 3.0
+
 // Ray-query alpha-skip walk budget (#2265 / TD7-001)
 #define MAX_ALPHA_SKIP_LAYERS 8u
 // Transmission-lobe self-skip hop budget (#5249)

@@ -7,6 +7,9 @@
 
 use super::super::frame_upscaler::FsrFrameParameters;
 use super::super::scene_buffer;
+use crate::shader_constants::{
+    HISTORY_MODE_MOVING, HISTORY_MODE_PARKED, HISTORY_MODE_RIG_STATIC, HISTORY_MODE_SCENE_STATIC,
+};
 use super::frame_params::{
     build_fsr_frame_parameters, camera_frame_deltas, dof_effective_view_proj, fsr_gated_dof,
     is_camera_cut, origin_corrected_prev_view_proj, taa_jitter, CameraFrameDeltas,
@@ -98,10 +101,10 @@ pub(super) fn restir_history_mode(
     rig_static: bool,
 ) -> f32 {
     match (camera_static, scene_static, rig_static) {
-        (false, _, _) => 0.0,
-        (true, true, _) => 2.0,
-        (true, false, true) => 3.0,
-        (true, false, false) => 1.0,
+        (false, _, _) => HISTORY_MODE_MOVING,
+        (true, true, _) => HISTORY_MODE_SCENE_STATIC,
+        (true, false, true) => HISTORY_MODE_RIG_STATIC,
+        (true, false, false) => HISTORY_MODE_PARKED,
     }
 }
 

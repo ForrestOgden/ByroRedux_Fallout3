@@ -3589,11 +3589,11 @@ void main() {
                     reprojValid = true;
                     prevAccum = max(vec3(rp.accumR, rp.accumG, rp.accumB), vec3(0.0));
                     // #5369 — the garbage guard clamps to the deep parked
-                    // cap (computed below from the history mode), not a
-                    // hard 64: the old constant silently defeated
+                    // cap (RESTIR_HISTORY_CAP_PARKED, the same constant the
+                    // history mode selects below), not a hard 64: the old constant silently defeated
                     // `historyCap`'s raise and pinned the parked tail at
                     // ~1/65 no matter what the EMA constants said.
-                    histPrev = clamp(rpHistLen, 0.0, 1024.0);
+                    histPrev = clamp(rpHistLen, 0.0, RESTIR_HISTORY_CAP_PARKED);
                 }
             }
 
@@ -3889,7 +3889,7 @@ void main() {
             //
             // #4942 — the long parked history keys on the same scene-static
             // signal as SVGF's progressive mode (#4046), not the bare camera
-            // flag: `dofParams.w > 1.5` is "camera parked AND nothing else
+            // flag: `dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5` is "camera parked AND nothing else
             // changed last build" (`restir_history_mode`). A moving occluder,
             // a looted object or a moving light drops the cap back to 16, so
             // the EMA restarts from there instead of holding a long tail.
@@ -3926,9 +3926,9 @@ void main() {
             vec3 accum;
             float histLen;
             if (reprojValid) {
-                bool sceneStatic = dofParams.w > 1.5;
-                float historyCap = sceneStatic ? 1024.0 : 16.0;
-                float alphaFloor = sceneStatic ? 0.002 : 0.1;
+                bool sceneStatic = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;
+                float historyCap = sceneStatic ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING;
+                float alphaFloor = sceneStatic ? RESTIR_ALPHA_FLOOR_PARKED : RESTIR_ALPHA_FLOOR_MOVING;
                 histLen = min(histPrev + 1.0, historyCap);
                 float alpha = max(1.0 / histLen, alphaFloor);
                 accum = mix(prevAccum, ratioFrame, alpha);
@@ -4182,7 +4182,7 @@ void main() {
             // in a row, capping effective SPP at ~64 of the 255-frame histAge
             // budget — the dominant cause of residual floor speckle (TARGET 1).
             float frameCount = cameraPos.w;
-            float giSeed = dofParams.w > 0.5 ? frameCount : floor(frameCount * 0.25);
+            float giSeed = dofParams.w > HISTORY_MODE_PARKED - 0.5 ? frameCount : floor(frameCount * 0.25);
             // DECORRELATED per-(pixel, frame) 2D sample for the hemisphere
             // direction. Was two interleaved-gradient-noise values — a SCALAR
             // dither used for both axes, which produced CORRELATED/structured

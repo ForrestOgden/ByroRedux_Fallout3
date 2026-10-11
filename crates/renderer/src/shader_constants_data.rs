@@ -104,6 +104,43 @@ const _: () = {
     assert!(RESERVOIR_SURFACE_MASK == 0x003f_ffff);
 };
 
+// ReSTIR-DI direct-light EMA (the shadow-ratio estimator in `triangle.frag`,
+// #5369 / #5617). The per-surface history length is stored in a
+// packHalf2x16 half and the EMA weight is `max(1/histLen, alphaFloor)`:
+//
+// - parked and scene-static (history mode >= `HISTORY_MODE_SCENE_STATIC`):
+//   a 1024-frame tail with a 0.002 floor — measured on the Cornell penumbra
+//   at one shadow ray per pixel (`cornell_parked_penumbra_converges_at_one_shadow_ray`);
+// - otherwise: a 16-frame tail with a 0.1 floor, so ghosts stay responsive.
+pub const RESTIR_HISTORY_CAP_PARKED: f32 = 1024.0;
+pub const RESTIR_HISTORY_CAP_MOVING: f32 = 16.0;
+pub const RESTIR_ALPHA_FLOOR_PARKED: f32 = 0.002;
+pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
+
+// `GpuCamera.dof_params.w`: the history mode `restir_history_mode` encodes
+// and `triangle.frag` decodes with two thresholds only — "camera parked" is
+// `> HISTORY_MODE_PARKED - 0.5`, "scene-static (deep history)" is
+// `> HISTORY_MODE_SCENE_STATIC - 0.5`. Mode 3 (parked, light-rig geometry
+// static under intensity flicker) rides above the deep threshold.
+pub const HISTORY_MODE_MOVING: f32 = 0.0;
+pub const HISTORY_MODE_PARKED: f32 = 1.0;
+pub const HISTORY_MODE_SCENE_STATIC: f32 = 2.0;
+pub const HISTORY_MODE_RIG_STATIC: f32 = 3.0;
+
+const _: () = {
+    // packHalf2x16 halves are integer-exact only up to 2048: a deeper cap
+    // would stall `histLen + 1` and freeze the EMA weight.
+    const HALF_INTEGER_EXACT_MAX: f32 = 2048.0;
+    assert!(RESTIR_HISTORY_CAP_PARKED <= HALF_INTEGER_EXACT_MAX);
+    assert!(RESTIR_HISTORY_CAP_MOVING <= RESTIR_HISTORY_CAP_PARKED);
+    assert!(RESTIR_ALPHA_FLOOR_PARKED <= RESTIR_ALPHA_FLOOR_MOVING);
+    // The thresholds sit half a step below their mode, so each mode is
+    // strictly above its own threshold and the previous mode strictly below.
+    assert!(HISTORY_MODE_MOVING < HISTORY_MODE_PARKED);
+    assert!(HISTORY_MODE_PARKED < HISTORY_MODE_SCENE_STATIC);
+    assert!(HISTORY_MODE_SCENE_STATIC < HISTORY_MODE_RIG_STATIC);
+};
+
 // Ray-query alpha-skip walk budget. Bounds any loop that walks a ray query
 // past alpha-tested/uncovered geometry (reflection self-skips, water's
 // foliage-cutout skips, opaque shadow-transmittance layering) — eight
@@ -2210,6 +2247,16 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("RESERVOIR_LIGHT_BITS", ShaderValue::Uint(RESERVOIR_LIGHT_BITS)),
     HeaderLine::Define("RESERVOIR_LIGHT_MASK", ShaderValue::Uint(RESERVOIR_LIGHT_MASK)),
     HeaderLine::Define("RESERVOIR_SURFACE_MASK", ShaderValue::Uint(RESERVOIR_SURFACE_MASK)),
+    HeaderLine::Blank,
+    HeaderLine::Comment("ReSTIR-DI direct-light EMA caps/floors + camera history mode (#5617)"),
+    HeaderLine::Define("RESTIR_HISTORY_CAP_PARKED", ShaderValue::Float(RESTIR_HISTORY_CAP_PARKED)),
+    HeaderLine::Define("RESTIR_HISTORY_CAP_MOVING", ShaderValue::Float(RESTIR_HISTORY_CAP_MOVING)),
+    HeaderLine::Define("RESTIR_ALPHA_FLOOR_PARKED", ShaderValue::Float(RESTIR_ALPHA_FLOOR_PARKED)),
+    HeaderLine::Define("RESTIR_ALPHA_FLOOR_MOVING", ShaderValue::Float(RESTIR_ALPHA_FLOOR_MOVING)),
+    HeaderLine::Define("HISTORY_MODE_MOVING", ShaderValue::Float(HISTORY_MODE_MOVING)),
+    HeaderLine::Define("HISTORY_MODE_PARKED", ShaderValue::Float(HISTORY_MODE_PARKED)),
+    HeaderLine::Define("HISTORY_MODE_SCENE_STATIC", ShaderValue::Float(HISTORY_MODE_SCENE_STATIC)),
+    HeaderLine::Define("HISTORY_MODE_RIG_STATIC", ShaderValue::Float(HISTORY_MODE_RIG_STATIC)),
     HeaderLine::Blank,
     HeaderLine::Comment("Ray-query alpha-skip walk budget (#2265 / TD7-001)"),
     HeaderLine::Define("MAX_ALPHA_SKIP_LAYERS", ShaderValue::Uint(MAX_ALPHA_SKIP_LAYERS)),

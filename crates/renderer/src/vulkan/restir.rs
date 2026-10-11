@@ -321,14 +321,56 @@ mod tests {
             "spatial reuse may borrow light candidates, never old surface radiance"
         );
         assert!(
-            src.contains("bool sceneStatic = dofParams.w > 1.5;")
-                && src.contains("sceneStatic ? 1024.0 : 16.0")
-                && src.contains("sceneStatic ? 0.002 : 0.1")
-                && src.contains("clamp(rpHistLen, 0.0, 1024.0)"),
+            src.contains("bool sceneStatic = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;")
+                && src.contains(
+                    "sceneStatic ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING"
+                )
+                && src.contains(
+                    "sceneStatic ? RESTIR_ALPHA_FLOOR_PARKED : RESTIR_ALPHA_FLOOR_MOVING"
+                )
+                && src.contains("clamp(rpHistLen, 0.0, RESTIR_HISTORY_CAP_PARKED)"),
             "direct-light history must converge when camera AND scene are static and \
              remain responsive otherwise (#4942: not the bare camera flag; #5369: \
              the parked tail is deep enough that the standing MC speckle sits \
              under one perceivable level, and mode 3 keeps it under flicker)"
+        );
+    }
+
+    /// #5617 — the numbers behind those names. The shader reads them from the
+    /// generated header, so the values are pinned here (not as literals in
+    /// `triangle.frag`) and the header must carry every one; a retune is one
+    /// edit in `shader_constants_data.rs` plus this pin. The half-float
+    /// integer-exact ceiling for the history length is a compile-time assert
+    /// beside the constants.
+    #[test]
+    fn restir_direct_light_ema_constants_come_from_the_generated_header() {
+        use crate::shader_constants::{
+            render_shader_constants_header, RESTIR_ALPHA_FLOOR_MOVING, RESTIR_ALPHA_FLOOR_PARKED,
+            RESTIR_HISTORY_CAP_MOVING, RESTIR_HISTORY_CAP_PARKED,
+        };
+        // #5369: deep enough that the standing MC speckle sits under one
+        // perceivable level; the moving tail stays responsive.
+        assert_eq!(RESTIR_HISTORY_CAP_PARKED, 1024.0);
+        assert_eq!(RESTIR_HISTORY_CAP_MOVING, 16.0);
+        assert_eq!(RESTIR_ALPHA_FLOOR_PARKED, 0.002);
+        assert_eq!(RESTIR_ALPHA_FLOOR_MOVING, 0.1);
+        let header = render_shader_constants_header();
+        for define in [
+            "#define RESTIR_HISTORY_CAP_PARKED 1024.0\n",
+            "#define RESTIR_HISTORY_CAP_MOVING 16.0\n",
+            "#define RESTIR_ALPHA_FLOOR_PARKED 0.002\n",
+            "#define RESTIR_ALPHA_FLOOR_MOVING 0.1\n",
+            "#define HISTORY_MODE_PARKED 1.0\n",
+            "#define HISTORY_MODE_SCENE_STATIC 2.0\n",
+        ] {
+            assert!(header.contains(define), "generated header lacks {define:?}");
+        }
+        // No bare copy of the numbers may creep back into the shader's
+        // EMA/guard sites.
+        let src = include_str!("../../shaders/triangle.frag");
+        assert!(
+            !src.contains("? 1024.0 : 16.0") && !src.contains("clamp(rpHistLen, 0.0, 1024.0)"),
+            "triangle.frag must name the ReSTIR history caps"
         );
     }
 
