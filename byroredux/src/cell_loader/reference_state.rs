@@ -556,6 +556,14 @@ pub(crate) fn script_killed_corpse_forms_for_load_order(
     load_order: &LoadOrder,
 ) -> std::collections::HashSet<u32> {
     let mut killed = std::collections::HashSet::new();
+    // #5450 — only FO3/FNV can match: `script_is_vanilla` accepts only the
+    // twelve FO3/FNV master names in `VANILLA_KILL_SCRIPT_PLUGINS`, and the
+    // family EDIDs are FO3/FNV scripts. On every other game the walk below
+    // is a full pass over every placement (hash lookups per ref) on the
+    // main thread at first-cell load that can only return the empty set.
+    if !matches!(index.game, byroredux_plugin::esm::reader::GameKind::Fallout3NV) {
+        return killed;
+    }
     let cells = index
         .cells
         .cells
@@ -786,6 +794,47 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
 mod script_kill_tests {
     use super::*;
 
+    fn placed(
+        form_id: u32,
+        base_form_id: u32,
+        target: Option<u32>,
+    ) -> byroredux_plugin::esm::cell::PlacedRef {
+        use byroredux_plugin::esm::cell::{LinkedRef, PlacedRef};
+        PlacedRef {
+            form_id,
+            base_form_id,
+            group_type: 0xFF,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            enable_parent: None,
+            teleport: None,
+            reputation_ref: None,
+            primitive: None,
+            linked_refs: target
+                .map(|target| vec![LinkedRef { keyword: 0, target }])
+                .unwrap_or_default(),
+            location_ref_types: Vec::new(),
+            rooms: Vec::new(),
+            portals: Vec::new(),
+            radius_override: None,
+            alt_texture_ref: None,
+            land_texture_ref: None,
+            texture_slot_swaps: Vec::new(),
+            emissive_light_ref: None,
+            material_swap_ref: None,
+            ownership: None,
+            script_instance: None,
+            lock: None,
+            water_velocity: None,
+            item_count: None,
+            initially_disabled: false,
+            starts_dead: false,
+            starts_unconscious: false,
+            ragdoll_pose: Vec::new(),
+        }
+    }
+
     /// #5223 — the recognizer's measured population on the shipped
     /// masters: FO3 = 85 dismember-trigger link targets + 3 self-killed
     /// placements (88 distinct); FNV = 10 + 2 (12 distinct). Pinned so a
@@ -933,7 +982,6 @@ mod script_kill_tests {
     /// to a vanilla-master-defined SCPT marks corpses.
     #[test]
     fn kill_on_load_recognition_requires_exact_edid_and_vanilla_master() {
-        use byroredux_plugin::esm::cell::{LinkedRef, PlacedRef};
         use byroredux_plugin::esm::records::{NpcRecord, ScriptRecord};
 
         // FNV plus one mod: form ids with top byte 0 resolve to the
@@ -982,39 +1030,6 @@ mod script_kill_tests {
         npc(0x0000_A003, 0x0000_4444); // vanilla self-kill
         npc(0x0000_A004, 0x0100_3333); // overridden self-kill
 
-        let placed = |form_id: u32, base_form_id: u32, target: Option<u32>| PlacedRef {
-            form_id,
-            base_form_id,
-            group_type: 0xFF,
-            position: [0.0; 3],
-            rotation: [0.0; 3],
-            scale: 1.0,
-            enable_parent: None,
-            teleport: None,
-            reputation_ref: None,
-            primitive: None,
-            linked_refs: target
-                .map(|target| vec![LinkedRef { keyword: 0, target }])
-                .unwrap_or_default(),
-            location_ref_types: Vec::new(),
-            rooms: Vec::new(),
-            portals: Vec::new(),
-            radius_override: None,
-            alt_texture_ref: None,
-            land_texture_ref: None,
-            texture_slot_swaps: Vec::new(),
-            emissive_light_ref: None,
-            material_swap_ref: None,
-            ownership: None,
-            script_instance: None,
-            lock: None,
-            water_velocity: None,
-            item_count: None,
-            initially_disabled: false,
-            starts_dead: false,
-            starts_unconscious: false,
-            ragdoll_pose: Vec::new(),
-        };
 
         // Pass 1 triggers (linked targets) and pass 2 actors.
         let refs = vec![
@@ -1041,6 +1056,84 @@ mod script_kill_tests {
             !killed.contains(&0x0000_6004),
             "a self-kill script overridden by a non-vanilla plugin must NOT mark its placement"
         );
+    }
+
+    /// #5450 — the whole-load-order corpse scan only has a result on
+    /// FO3/FNV. The same trigger placement that marks its link target on
+    /// an FO3/FNV index must cost a game-gated early return (and yield the
+    /// empty set) on every other game, rather than a full pass over every
+    /// placement.
+    #[test]
+    fn load_order_scan_is_gated_to_fo3_fnv() {
+        use byroredux_plugin::esm::cell::CellData;
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{NpcRecord, ScriptRecord};
+
+        let load_order = LoadOrder::new(
+            vec!["falloutnv.esm".to_owned()],
+            vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+        );
+        let build = |game: GameKind| {
+            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+            index.game = game;
+            index.scripts.insert(
+                0x0000_1111,
+                ScriptRecord {
+                    form_id: 0x0000_1111,
+                    editor_id: "GenericBipedHeadDismembermentSCRIPT".to_owned(),
+                    ..Default::default()
+                },
+            );
+            index.npcs.insert(
+                0x0000_A001,
+                NpcRecord {
+                    form_id: 0x0000_A001,
+                    script_form_id: 0x0000_1111,
+                    ..Default::default()
+                },
+            );
+            let cell = CellData {
+                form_id: 0x0001_2345,
+                editor_id: "Cell".to_owned(),
+                display_name: None,
+                references: vec![placed(0x0000_6001, 0x0000_A001, Some(0x0000_5001))],
+                is_interior: true,
+                show_sky: None,
+                grid: None,
+                lighting: None,
+                landscape: None,
+                water_height: None,
+                water_height_is_explicit: false,
+                image_space_form: None,
+                water_type_form: None,
+                acoustic_space_form: None,
+                music_type_form: None,
+                music_type_enum: None,
+                climate_override: None,
+                location_form: None,
+                encounter_zone_form: None,
+                regions: Vec::new(),
+                lighting_template_form: None,
+                ownership: None,
+                regional_color_override: None,
+                precombined_mesh_hashes: Vec::new(),
+                absorbed_ref_bakes: Vec::new(),
+                navmeshes: Vec::new(),
+                pathgrids: Vec::new(),
+                deleted_refs: Vec::new(),
+            };
+            index.cells.cells.insert("cell".to_owned(), cell);
+            index
+        };
+
+        let fnv = script_killed_corpse_forms_for_load_order(&build(GameKind::Fallout3NV), &load_order);
+        assert!(fnv.contains(&0x0000_5001), "positive control: FO3/FNV still recognizes");
+        for game in [GameKind::Oblivion, GameKind::Skyrim, GameKind::Fallout4] {
+            assert!(
+                script_killed_corpse_forms_for_load_order(&build(game), &load_order).is_empty(),
+                "{game:?} cannot match and must not scan"
+            );
+        }
     }
 }
 
