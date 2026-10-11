@@ -5381,6 +5381,69 @@ fn dialogue_greeting_and_forcegreet_fnv_floor() {
     );
 }
 
+/// #5429 — the FO3 leg of the #5367 dialogue floor. The greeting,
+/// line-lifetime, force-greet and voice layers ship as an "FO3/FNV"
+/// feature, but only `dialogue_greeting_and_forcegreet_fnv_floor` guarded
+/// them, on FNV alone. These are the FO3 premises measured over
+/// `Fallout3.esm` (2026-10-08/09 audits, `docs/engine/dialogue-trees.md`
+/// census row: 6,381 DIAL / 22,327 INFO / 374 greeting DIALs / 386
+/// Dialogue PACKs): the literal `GREETING` topic (2,542 INFOs) and `HELLO`
+/// exist, procedure-15 packages are subsystem-scale, and every INFO
+/// authors its own `QSTI` (the owner the voice file name is composed
+/// from).
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn dialogue_greeting_and_forcegreet_fo3_floor() {
+    let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) else {
+        eprintln!("[FO3 dialogue] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Fallout3.esm")).expect("read Fallout3.esm");
+    let index = parse_esm(&bytes).expect("parse Fallout3.esm");
+
+    // Phase G — the generic activation greeting exists by the corpus rule.
+    let greeting_infos = index
+        .dialogues
+        .values()
+        .find(|record| record.editor_id == "GREETING")
+        .map(|record| record.infos.len());
+    assert!(
+        greeting_infos.is_some_and(|count| count >= 2_500),
+        "the literal GREETING topic must carry its ~2,542 INFOs: {greeting_infos:?}"
+    );
+    assert!(
+        index
+            .dialogues
+            .values()
+            .any(|record| record.editor_id == "HELLO"),
+        "the literal HELLO generic topic must exist"
+    );
+
+    // Phase F — Dialogue-procedure packages (census: 386 on the GOTY master).
+    let dialogue_packages = index
+        .packages
+        .values()
+        .filter(|pack| pack.procedure_type == 15)
+        .count();
+    assert!(
+        dialogue_packages >= 380,
+        "Dialogue-procedure PACK floor (measured 386): {dialogue_packages}"
+    );
+
+    // Phase V — every INFO names its owning quest; the voice file name is
+    // `<quest>_<topic>_<id>_<n>.ogg`, so an INFO with `quest == 0` has no
+    // authored shape and plays silently.
+    let (total, quest_less) = index
+        .dialogues
+        .values()
+        .flat_map(|record| record.infos.iter())
+        .fold((0usize, 0usize), |(total, quest_less), info| {
+            (total + 1, quest_less + usize::from(info.quest == 0))
+        });
+    assert!(total >= 22_000, "INFO floor (measured 22,327): {total}");
+    assert_eq!(quest_less, 0, "QSTI must be present on every FO3 INFO");
+}
+
 /// #5367 / #5511 — the Skyrim force-greet dialect, censused through
 /// `PackRecord::force_greet` with the `PKCU` template resolved.
 ///

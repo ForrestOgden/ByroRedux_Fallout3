@@ -34,6 +34,26 @@ fail() {
     exit 1
 }
 
+# #5429 — the layers are documented "FO3/FNV" but only FNV has a measured live
+# route (Doc Mitchell's house + PACK 0x000613BB). FO3 is a declared SKIP, never
+# a pass: its data premises (GREETING/HELLO topics, Dialogue PACKs, per-INFO
+# QSTI) are pinned by the ignored `dialogue_greeting_and_forcegreet_fo3_floor`
+# real-data test in crates/plugin/tests/parse_real_esm.rs, and its voice archive
+# is not mounted by any profile (#5433), so Phase V cannot run live either.
+# A measured FO3 cell/NPC/PACK pin is the open work.
+case "${1:-fnv}" in
+    fnv) ;;
+    fo3)
+        echo "smoke[dt1-dialogue-layers]: SKIP -- no measured FO3 live route (#5429); \
+data premises are gated by dialogue_greeting_and_forcegreet_fo3_floor"
+        exit 77
+        ;;
+    *)
+        echo "smoke[dt1-dialogue-layers]: FAIL -- unknown game '$1' (fnv|fo3)" >&2
+        exit 2
+        ;;
+esac
+
 # #5427 — the SKIP≠PASS contract every per-game gate honours: a runner
 # without the game's data measures nothing (exit 77, never a pass),
 # before any port or build work.
