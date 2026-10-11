@@ -33,7 +33,7 @@ renderer architecture (BLAS/TLAS, sync, swapchain, teardown ordering) see
 | `ui.frag` | UI bindless texture sampling — no shading, straight texel output |
 | `composite.vert` | Fullscreen triangle via `gl_VertexIndex` — no vertex buffer; reused unmodified as `presentation.frag`'s vertex stage |
 | `composite.frag` | HDR compose — direct + SVGF-denoised indirect + dual caustic accumulator (glass/water), volumetric froxel sample (bloom is added afterwards, in place, by `bloom_apply.comp`). Emits linear HDR to an intermediate image (no tone-map, no swapchain write — see `presentation.frag`) |
-| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, applies the #5154 luma-preserving chroma compress and `tonemap(compressed * exposureTex)` (the exposure meter's per-FIF texel; ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
+| `presentation.frag` | FSR 3.1 presentation pass — samples the upscaled (or native-blit-fallback) scene, multiplies the scene by the exposure meter's per-FIF `exposureTex` texel, applies the #5482 IMGS/IMAD grade to that exposed radiance (saturation, contrast with the shadow toe, brightness, cinematic tint), then the #5154 luma-preserving chroma compress and `tonemap(compressed)` (ACES\|AgX display-transform switch) and underwater extinction, writes the swapchain (`PRESENT_SRC_KHR`) |
 
 ### Compute
 
@@ -356,11 +356,14 @@ is not named here.
                            resolution HDR → output-resolution HDR. Raw
                            correctness debug views force the native path.
 20 [Presentation pass]    ─  raster (`record_presentation_pass`):
-                           composite.vert / presentation.frag — the #5154
+                           composite.vert / presentation.frag —
+                           `exposed = scene × exposureTex` (the meter's
+                           exposure), the #5482 IMGS/IMAD grade on the
+                           exposed radiance (saturation → contrast with the
+                           shadow toe → brightness → tint), the #5154
                            luma-preserving chroma compress, then
-                           `tonemap(compressed * exposureTex)` (the meter's
-                           exposure; ACES|AgX via `tonemap.rs`), underwater
-                           extinction,
+                           `tonemap(compressed)` (ACES|AgX via
+                           `tonemap.rs`), underwater extinction,
                            writes the swapchain (`PRESENT_SRC_KHR`); then,
                            in the same subpass, `PresentationPipeline::
                            record_overlay` draws the Scaleform/Ruffle UI
@@ -463,7 +466,7 @@ attachment until #4005, contradicting both — the code was right.
 | 256 | 16 | `jitter` | xy = TAA Halton jitter (NDC); z = debug flags (bitcast f32); w = is_exterior |
 | 272 | 16 | `sky_tint` | xyz = TOD/weather zenith colour; w = sun angular radius (rad) |
 | 288 | 16 | `sun_direction` | xyz = direction **to** sun (unit); w = sun intensity |
-| 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = history mode written by `restir_history_mode` (0 moving, 1 parked, 2 parked + scene-static; `> 0.5` advances the GI seed, `> 1.5` selects the long ReSTIR direct EMA) |
+| 304 | 16 | `dof_params` | x = aperture half-radius; y = focus distance; z = `light_atten_knee` (ambient-cull falloff knee); w = history mode written by `restir_history_mode` (0 moving, 1 parked, 2 parked + scene-static, 3 parked + rig-geometry-static under flicker; `> 0.5` advances the GI seed, `> 1.5` selects the long ReSTIR direct EMA) |
 | 320 | 16 | `render_origin` | xyz = camera-relative render origin (#markarth-precision); **w = FSR one-frame history-reset flag** (1.0 = reset pending), read by `triangle.frag`'s FSR-temporal debug view (#2164). Not a free slot — same trap as `VolumetricsParams.render_origin.w` (#1928) |
 | 336 | 16 | `render_debug` | x = `RenderDebugMode` shader discriminant; y = optional `f32::to_bits` RT-LOD scale; z = diagnostic LOD-counter enable; **w = packed weather surface** (low 16 bits rain wetness, high 16 bits snow coverage), written by `pack_weather_surface` and decoded by `triangle.frag`. Not a free slot — same trap as the `render_origin.w` row above (#3989); the `DBG_*` mask is already 32/32 bits, so the next debug-flag expansion is exactly the change that must not take this lane |
 | 352 | 16 | `exterior_sky_tint` | xyz = the outdoor palette's sky zenith colour (#3323). In an interior it comes from the canonical outdoor `SkyParamsRes` that every cell boot now carries (`0572bfd5a`, #4902 — no "no exterior loaded yet" state and no render-time fallback), so only a non-cell harness still sees `SkyParams::default()`'s value. Its one shader reader is `triangle.frag`'s window-portal escape, and there only as the fallback when the sky cube is not live: the escape samples the baked outdoor cube along `-V` (#4950) through `exteriorSkyRadianceOr`. **w = sky-cubemap ready flag** (1.0 when `SkyCubePipeline` exists, else 0.0), written in `assemble_camera_and_lights.rs` and gating every `skyCube` read (`bindings.glsl`, `lighting.glsl`, `triangle.frag`): set 1 / binding 20 is `PARTIALLY_BOUND` and never written when the bake fails to initialise, so reading it without this gate samples undefined data. Not a free slot — same trap as the `render_origin.w` / `render_debug.w` rows above (#4299) |

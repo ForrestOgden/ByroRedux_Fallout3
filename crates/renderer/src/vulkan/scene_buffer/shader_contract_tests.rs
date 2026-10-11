@@ -7147,6 +7147,12 @@ fn every_camera_ubo_mirror_describes_dof_w_as_the_history_mode() {
             line.contains("w = history mode (0 moving, 1 parked, 2 parked + scene-static"),
             "{name}: dofParams.w comment must describe the #4942 history mode: {line}"
         );
+        // #5532 — mode 3 (#5369) must be in every mirror; the prefix match
+        // above stayed green when it was missing.
+        assert!(
+            line.contains("3 parked + rig-geometry-static under flicker"),
+            "{name}: dofParams.w comment must describe history mode 3 (#5369): {line}"
+        );
     }
 }
 
