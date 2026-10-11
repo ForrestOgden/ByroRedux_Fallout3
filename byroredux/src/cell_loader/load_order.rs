@@ -49,6 +49,12 @@ pub(crate) struct LoadOrder {
     names: Vec<String>,
     slots: Vec<esm::reader::GlobalSlot>,
     dependencies: Vec<Vec<u32>>,
+    /// #5428 — SCPT FormID → load-order position of the **last plugin that
+    /// wrote** that script record. An override keeps the master's FormID, so
+    /// the FormID's slot byte names the original *definer*, never the plugin
+    /// whose body won the merge; this table is the winner. Empty for hand-
+    /// built test orders (consumers then fall back to the slot owner).
+    script_winners: HashMap<u32, usize>,
 }
 
 impl LoadOrder {
@@ -77,7 +83,25 @@ impl LoadOrder {
             names,
             slots,
             dependencies,
+            script_winners: HashMap::new(),
         }
+    }
+
+    /// Record that the plugin at `position` wrote the SCPT `form_id`;
+    /// called in load order, so the last call per FormID is the winner.
+    /// (Production fills the table in bulk while folding the plugins; this
+    /// is the fixture-side entry point.)
+    #[cfg(test)]
+    pub(crate) fn note_script_writer(&mut self, form_id: u32, position: usize) {
+        self.script_winners.insert(form_id, position);
+    }
+
+    /// Basename of the plugin whose SCPT record for `form_id` won the merge
+    /// (#5428), or `None` when no plugin of this order is known to have
+    /// written it.
+    pub(crate) fn script_winner(&self, form_id: u32) -> Option<&str> {
+        let position = *self.script_winners.get(&form_id)?;
+        self.names.get(position).map(String::as_str)
     }
 
     /// Build an order in which every plugin is a regular master taking a
@@ -101,6 +125,7 @@ impl Default for LoadOrder {
             names: Vec::new(),
             slots: Vec::new(),
             dependencies: Vec::new(),
+            script_winners: HashMap::new(),
         }
     }
 }
@@ -691,19 +716,22 @@ where
     })?;
 
     let mut merged = esm::records::EsmIndex::default();
-    for (path, plugin_records) in plugin_paths.iter().zip(walked) {
+    let mut script_winners: HashMap<u32, usize> = HashMap::new();
+    for (position, (path, plugin_records)) in plugin_paths.iter().zip(walked).enumerate() {
         let plugin_records = plugin_records
             .expect("the scope joins every walk it spawned before returning")
             .unwrap_or_else(|e| {
                 log::warn!("Record parse failed for '{}': {}", path, e);
                 esm::records::EsmIndex::default()
             });
+        // #5428 — `merge_from` keeps the later record under the shared
+        // FormID, so the last writer per SCPT is the one whose body is live.
+        script_winners.extend(plugin_records.scripts.keys().map(|id| (*id, position)));
         merged.merge_from(plugin_records);
     }
-    Ok((
-        merged,
-        LoadOrder::with_dependencies(load_order, slots, dependencies),
-    ))
+    let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
+    order.script_winners = script_winners;
+    Ok((merged, order))
 }
 
 /// Allocate one global load-order slot without ever entering reserved or

@@ -393,9 +393,11 @@ fn base_script_form_id(
 /// records may define the kill-on-load scripts: the shipped FO3 GOTY and
 /// FNV masters. A merged table is sound because a name can only sit in
 /// the load order of the game that ships it. A patch or mod that
-/// *overrides* one of these SCPTs wins the merged index under the vanilla
-/// form id but resolves to the overriding plugin here, so its conditional
-/// body is declined instead of spawning live actors as corpses.
+/// *overrides* one of these SCPTs keeps the vanilla form id (and so its
+/// slot byte), so the form id alone cannot tell it apart; the load order's
+/// per-SCPT last-writer table does (#5428), and the overriding plugin
+/// fails this list — its conditional body is declined instead of
+/// spawning live actors as corpses.
 const VANILLA_KILL_SCRIPT_PLUGINS: [&str; 12] = [
     "fallout3.esm",
     "anchorage.esm",
@@ -411,12 +413,19 @@ const VANILLA_KILL_SCRIPT_PLUGINS: [&str; 12] = [
     "gunrunnersarsenal.esm",
 ];
 
-/// #5304 — true when the SCPT with this form id was *defined* by one of
-/// the shipped vanilla masters (see [`VANILLA_KILL_SCRIPT_PLUGINS`]).
+/// #5304 / #5428 — true when the winning SCPT record for this form id was
+/// *written* by one of the shipped vanilla masters (see
+/// [`VANILLA_KILL_SCRIPT_PLUGINS`]). The winner is the load order's
+/// last-writer table: an override patch keeps the master's form id, so the
+/// slot byte ([`plugin_for_form_id`](super::load_order::plugin_for_form_id))
+/// would still name the vanilla master. The slot owner is only the
+/// fallback for orders with no writer table (hand-built fixtures).
 /// Unresolvable form ids decline: the recognizer only ever trusts
 /// provably-vanilla scripts.
 fn script_is_vanilla(script_form_id: u32, load_order: &LoadOrder) -> bool {
-    super::load_order::plugin_for_form_id(script_form_id, load_order)
+    load_order
+        .script_winner(script_form_id)
+        .or_else(|| super::load_order::plugin_for_form_id(script_form_id, load_order))
         .is_some_and(|plugin| VANILLA_KILL_SCRIPT_PLUGINS.contains(&plugin))
 }
 
@@ -1009,8 +1018,9 @@ mod script_kill_tests {
         script(0x0000_1111, "GenericBipedHeadDismembermentSCRIPT");
         // … a mod script whose EDID merely contains the substring …
         script(0x0100_2222, "MyDismembermentSCRIPT");
-        // … a same-EDID override of a self-kill script, defined by the mod
-        // plugin (a patch replacing the vanilla body) …
+        // … a NEW same-EDID self-kill script defined under the mod's own
+        // slot (not an override — that case is pinned by
+        // `kill_on_load_recognition_declines_a_true_override_of_a_vanilla_script`) …
         script(0x0100_3333, "GenericKillSCRIPT");
         // … and a vanilla-defined self-kill script.
         script(0x0000_4444, "GenericKillSCRIPT");
@@ -1028,7 +1038,7 @@ mod script_kill_tests {
         npc(0x0000_A001, 0x0000_1111); // vanilla dismember family
         npc(0x0000_A002, 0x0100_2222); // name-alike
         npc(0x0000_A003, 0x0000_4444); // vanilla self-kill
-        npc(0x0000_A004, 0x0100_3333); // overridden self-kill
+        npc(0x0000_A004, 0x0100_3333); // same-EDID script under a mod slot
 
 
         // Pass 1 triggers (linked targets) and pass 2 actors.
@@ -1054,8 +1064,80 @@ mod script_kill_tests {
         );
         assert!(
             !killed.contains(&0x0000_6004),
-            "a self-kill script overridden by a non-vanilla plugin must NOT mark its placement"
+            "a same-EDID self-kill script defined by a non-vanilla plugin must NOT mark its placement"
         );
+    }
+
+    /// #5428 — a TRUE override keeps the vanilla master's FormID (and so
+    /// its slot byte), and wins the merged index under it. The recognizer
+    /// must decline it by the load order's last-writer table, not by the
+    /// FormID's slot: a patch that rewrites a kill script's body must not
+    /// spawn live actors as corpses. Covers both passes.
+    #[test]
+    fn kill_on_load_recognition_declines_a_true_override_of_a_vanilla_script() {
+        use byroredux_plugin::esm::records::{NpcRecord, ScriptRecord};
+
+        let build = |patch_wins_family: bool, patch_wins_self_kill: bool| {
+            let mut load_order = LoadOrder::new(
+                vec!["falloutnv.esm".to_owned(), "KillPatch.esp".to_owned()],
+                vec![
+                    byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+                    byroredux_plugin::esm::reader::GlobalSlot::Regular(1),
+                ],
+            );
+            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+            // Both scripts keep their vanilla (slot 0) FormIDs, exactly as an
+            // override record does.
+            for (form_id, edid, patched) in [
+                (0x0000_1111_u32, "GenericBipedHeadDismembermentSCRIPT", patch_wins_family),
+                (0x0000_4444_u32, "GenericKillSCRIPT", patch_wins_self_kill),
+            ] {
+                index.scripts.insert(
+                    form_id,
+                    ScriptRecord {
+                        form_id,
+                        editor_id: edid.to_owned(),
+                        ..Default::default()
+                    },
+                );
+                load_order.note_script_writer(form_id, 0);
+                if patched {
+                    load_order.note_script_writer(form_id, 1);
+                }
+            }
+            for (npc, script) in [(0x0000_A001_u32, 0x0000_1111_u32), (0x0000_A003, 0x0000_4444)] {
+                index.npcs.insert(
+                    npc,
+                    NpcRecord {
+                        form_id: npc,
+                        script_form_id: script,
+                        ..Default::default()
+                    },
+                );
+            }
+            let refs = vec![
+                placed(0x0000_6001, 0x0000_A001, Some(0x0000_5001)),
+                placed(0x0000_6003, 0x0000_A003, None),
+            ];
+            script_killed_corpse_forms(&refs, &index, &load_order)
+        };
+
+        let untouched = build(false, false);
+        assert!(untouched.contains(&0x0000_5001) && untouched.contains(&0x0000_6003));
+
+        let family_patched = build(true, false);
+        assert!(
+            !family_patched.contains(&0x0000_5001),
+            "an overridden dismember-family script must not mark its link target"
+        );
+        assert!(family_patched.contains(&0x0000_6003));
+
+        let self_kill_patched = build(false, true);
+        assert!(
+            !self_kill_patched.contains(&0x0000_6003),
+            "an overridden self-kill script must not mark its placement"
+        );
+        assert!(self_kill_patched.contains(&0x0000_5001));
     }
 
     /// #5450 — the whole-load-order corpse scan only has a result on
