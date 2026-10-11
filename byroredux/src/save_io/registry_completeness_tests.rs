@@ -706,6 +706,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DoorTeleport", "XTEL destination data, rederived identically from the plugin's parsed REFR every cell load"),
         ("PlacementContentWithheld", "marker on a placement root spawned disabled (#4820), re-stamped every cell load from the same inputs that withheld the content — the saved ReferenceEnableState ledger and the REFR's authored Initially Disabled flag"),
         ("FootstepConfig", "engine-wide footstep sound configuration loaded once at startup from a vanilla BSA"),
+        ("ImpactConfig", "engine-wide clutter-impact sound configuration (Wave 4) — same posture as FootstepConfig: the per-material map ships empty until IPDS/IPCT decode lands and is rebuilt at boot, not gameplay save state"),
         ("WaterAudioConfig", "engine-wide water sound configuration loaded from the archive at startup; audio assets are re-resolved, not gameplay save state"),
         ("WaterAudioState", "per-frame ripple-audio cooldown derived from transient SplashEvent/RippleEvent markers"),
         ("WaterDisturbanceScratch", "per-frame scratch buffer for submersion_system's collect-then-publish pattern (#3257) — capacity-only persistence, no gameplay state"),

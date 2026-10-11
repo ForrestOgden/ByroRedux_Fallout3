@@ -1135,12 +1135,26 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
         for (iso, shape, surface_material) in parts {
             // Havok-parity coefficient combine: see
             // `config::CONTACT_COEFFICIENT_COMBINE_RULE`.
+            // Wave 4 clutter impacts: dynamic bodies subscribe their
+            // contact pairs to rapier's force-threshold events (the pair
+            // flag is a union, so a dynamic-vs-static pair generates from
+            // the dynamic side alone — resting statics stay
+            // unsubscribed). The threshold stays rapier's 0.0 default;
+            // the consumer gates on force magnitude.
+            let active_events =
+                if matches!(n.body_data.motion_type, byroredux_core::ecs::components::MotionType::Dynamic)
+                {
+                    rapier3d::prelude::ActiveEvents::CONTACT_FORCE_EVENTS
+                } else {
+                    rapier3d::prelude::ActiveEvents::empty()
+                };
             let collider = ColliderBuilder::new(shape)
                 .position(iso)
                 .friction(n.body_data.friction)
                 .restitution(n.body_data.restitution)
                 .friction_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
                 .restitution_combine_rule(crate::config::CONTACT_COEFFICIENT_COMBINE_RULE)
+                .active_events(active_events)
                 // The authored Havok surface material rides the collider
                 // (user-data dies with it) for the surface-aware footstep
                 // query — `surface_material_under`. Rapier's user-data is

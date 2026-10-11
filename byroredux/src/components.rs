@@ -1862,6 +1862,44 @@ impl Default for WaterAudioConfig {
     }
 }
 
+/// Resource — Wave-4 clutter-impact audio configuration. `impact_audio_
+/// system` plays the authored per-material entry for a `started`
+/// contact-force crossing (rapier `ContactForceEvent`, drained by
+/// `PhysicsWorld::take_contact_force_events`), falling back to the
+/// default sound. The map ships empty until IPDS/IPCT decode lands —
+/// until then `default_sound` is `None` too and the system is a no-op,
+/// the same posture as [`FootstepConfig::surface_sounds`].
+pub(crate) struct ImpactConfig {
+    /// Impact sound for an unauthored material. `None` keeps the system
+    /// silent (no content data yet).
+    pub(crate) default_sound: Option<Arc<Sound>>,
+    /// Impact sound per Havok surface material
+    /// (`RigidBodyData::surface_material` byte, read off either collider
+    /// of the pair — the impacted side's authored entry wins).
+    pub(crate) surface_sounds: std::collections::BTreeMap<u8, Arc<Sound>>,
+    /// Volume multiplier for every impact play.
+    pub(crate) volume: f32,
+    /// Minimum `total_force_magnitude` a `started` crossing must carry to
+    /// play. Filters the constant low-force chatter of resting contact —
+    /// a resting clutter's weight at BU gravity is `mass × 686.7`, so the
+    /// default sits well above a small object's static load. Calibrate
+    /// when content data exists.
+    pub(crate) min_force_magnitude: f32,
+}
+
+impl Resource for ImpactConfig {}
+
+impl Default for ImpactConfig {
+    fn default() -> Self {
+        Self {
+            default_sound: None,
+            surface_sounds: std::collections::BTreeMap::new(),
+            volume: 0.7,
+            min_force_magnitude: 5_000.0,
+        }
+    }
+}
+
 /// Reusable cadence state for recurring near-surface ripple sounds. Splash
 /// edges are never delayed; this cooldown only prevents a stationary actor
 /// from producing a one-shot every frame while `RippleEvent` is present.

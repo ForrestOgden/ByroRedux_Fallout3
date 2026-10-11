@@ -260,6 +260,26 @@ pub struct PhysicsWorld {
     pub narrow_phase: NarrowPhase,
     pub ccd_solver: CCDSolver,
     pub pipeline: PhysicsPipeline,
+    /// Rapier's contact-force event channel. Colliders authored with
+    /// `ActiveEvents::CONTACT_FORCE_EVENTS` (dynamic bodies — see
+    /// `register_newcomers`) push `ContactForceEvent`s here through
+    /// [`Self::event_collector`] during `pipeline.step`; `run_substep`
+    /// drains the `started` crossings into [`Self::pending_force_events`]
+    /// for [`Self::take_contact_force_events`]. Collision-start/stop and
+    /// soft-body tear senders are dropped: a sender whose receiver died
+    /// discards its kind, which is exactly the engine's subscription (no
+    /// ECS collision-event consumer exists).
+    event_collector: ChannelEventCollector,
+    contact_force_rx: std::sync::Mutex<std::sync::mpsc::Receiver<ContactForceEvent>>,
+    // NOTE: a `Mutex`, not a bare `Receiver` — the narrow phase invokes the
+    // event handler from rayon workers, so `PhysicsWorld` must stay `Sync`,
+    // and `std::sync::mpsc::Receiver` is not. Single-consumer either way.
+    /// The `started` force-threshold crossings drained from the channel
+    /// during the last substep, taken by
+    /// [`Self::take_contact_force_events`] (the Wave-4 clutter-impact
+    /// consumer). Cleared at every substep start, so a consumer that runs
+    /// once per frame never sees an event twice.
+    pending_force_events: Vec<ContactForceEvent>,
     pub integration_parameters: IntegrationParameters,
     pub gravity: Vector,
     /// Seconds of unsimulated time left over from the last frame.
@@ -408,6 +428,14 @@ impl PhysicsWorld {
             ..Default::default()
         };
 
+        // The collision-event + soft-body-tear receivers are dropped on
+        // purpose — see the `event_collector` field doc.
+        let (collision_tx, _collision_rx) = std::sync::mpsc::channel();
+        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel();
+        let (tear_tx, _tear_rx) = std::sync::mpsc::channel();
+        let event_collector =
+            ChannelEventCollector::new(collision_tx, contact_force_tx.clone(), tear_tx);
+
         Self {
             bodies: RigidBodySet::new(),
             colliders: ColliderSet::new(),
@@ -419,6 +447,9 @@ impl PhysicsWorld {
             narrow_phase: NarrowPhase::new(),
             ccd_solver: CCDSolver::new(),
             pipeline: PhysicsPipeline::new(),
+            event_collector,
+            contact_force_rx: std::sync::Mutex::new(contact_force_rx),
+            pending_force_events: Vec::new(),
             integration_parameters,
             gravity: Vector::new(0.0, -686.7, 0.0),
             accumulator: 0.0,
@@ -550,6 +581,42 @@ impl PhysicsWorld {
             counters.solver.ncontacts,
             counters.solver.nconstraints,
         )
+    }
+
+    /// The `started` contact-force crossings of the last `step` frame —
+    /// one event per pair on the step its total force first crossed the
+    /// collider's threshold (Havok's collision-listener "impact" signal,
+    /// rapier 0.35+). Taken, not read: the consumer owns the Vec and the
+    /// buffer is cleared at the next `step` entry either way. Empty on a
+    /// quiesced frame (the static-scene fast path never runs the
+    /// pipeline). The Wave-4 clutter-impact sound consumer drives this.
+    pub fn take_contact_force_events(&mut self) -> Vec<ContactForceEvent> {
+        std::mem::take(&mut self.pending_force_events)
+    }
+
+    /// The authored Havok surface material packed into a collider's
+    /// user-data at registration (`register_newcomers` /
+    /// `build_ragdoll`). `None` for a dead handle.
+    pub fn collider_surface_material(
+        &self,
+        handle: rapier3d::prelude::ColliderHandle,
+    ) -> Option<u8> {
+        Some(self.colliders.get(handle)?.user_data as u8)
+    }
+
+    /// World-space midpoint of a contact pair's two colliders' parent
+    /// bodies — where a surface-driven impact sound plays. `None` when
+    /// either collider is a dead handle or has no parent body.
+    pub fn contact_event_position(&self, event: &ContactForceEvent) -> Option<Vec3> {
+        let a = self.colliders.get(event.collider1)?.parent()?;
+        let b = self.colliders.get(event.collider2)?.parent()?;
+        let pa = self.bodies.get(a)?.translation();
+        let pb = self.bodies.get(b)?.translation();
+        Some(Vec3::new(
+            (pa.x + pb.x) * 0.5,
+            (pa.y + pb.y) * 0.5,
+            (pa.z + pb.z) * 0.5,
+        ))
     }
 
     /// Whether the last step left any dynamic body awake. Rapier's active set
@@ -886,6 +953,11 @@ impl PhysicsWorld {
         // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
         self.bodies_restored_last_frame = 0;
         self.recover_pre_broken_bodies();
+        // Frame-entry clear for the impact events: substeps append, and the
+        // fast path clears too, so a consumer taking once per frame after
+        // `step` never replays last frame's crossings and never misses a
+        // multi-substep frame's worth.
+        self.pending_force_events.clear();
         if !self.has_awake_dynamics() && !self.pending_wake {
             self.insert_pending_query_leaves();
             self.accumulator = 0.0;
@@ -1012,9 +1084,23 @@ impl PhysicsWorld {
             &mut self.soft_bodies,
             &mut self.ccd_solver,
             &(),
-            &(),
+            &self.event_collector,
         );
         self.accumulator -= PHYSICS_DT;
+        // Wave 4 clutter impacts: keep only the `started` force-threshold
+        // crossings — the "first step a pair's force exceeds its
+        // threshold" signal Havok's collision listeners give. Everything
+        // else (every-step force reports, collision start/stop, soft-body
+        // tears) is discarded at the drain, so a busy scene cannot grow
+        // unboundedly. Appended, not assigned: the substep loop may run
+        // several steps per frame and the consumer takes once per frame.
+        self.pending_force_events.extend(
+            self.contact_force_rx
+                .lock()
+                .expect("contact-force event receiver poisoned")
+                .try_iter()
+                .filter(|event| event.started),
+        );
         // The previous substep's quarantined bodies: this step processed
         // their disable, so they come back now, parked (see the
         // `quarantine_cooldown` field doc), and one more step is armed so the
@@ -3193,6 +3279,73 @@ mod tests {
             w.surface_material_under(Vec3::new(0.0, 20.0, 0.0), 5.0),
             None,
             "nothing solid within range reads as None"
+        );
+    }
+
+    /// The Wave-4 clutter-impact signal: a dynamic ball dropped onto a
+    /// floor produces exactly one `started` contact-force crossing, both
+    /// colliders' authored surface materials are readable from the event,
+    /// and the impact position resolves. This is the end-to-end pin for
+    /// the `ChannelEventCollector` drain — before it, `pipeline.step`
+    /// ran with the no-op `()` handler and no contact event ever
+    /// existed in the engine.
+    #[test]
+    fn contact_force_started_event_carries_surface_materials() {
+        let mut w = PhysicsWorld::new();
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .user_data(3u128)
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        let ball = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(0.0, 8.0, 0.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5)
+                .density(1.0)
+                // What `register_newcomers` sets for every Dynamic body.
+                .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                .user_data(9u128)
+                .build(),
+            ball,
+            &mut w.bodies,
+        );
+        w.dynamic_bodies.push(ball);
+        w.wake();
+
+        let mut saw_started = false;
+        for _ in 0..240 {
+            w.step(PHYSICS_DT);
+            if let Some(event) = w
+                .take_contact_force_events()
+                .into_iter()
+                .find(|event| event.started)
+            {
+                let materials = [
+                    w.collider_surface_material(event.collider1),
+                    w.collider_surface_material(event.collider2),
+                ];
+                assert!(
+                    materials.contains(&Some(3)) && materials.contains(&Some(9)),
+                    "the event must name the floor's and the ball's materials, got {materials:?}"
+                );
+                assert!(
+                    w.contact_event_position(&event).is_some(),
+                    "the impact position resolves from the two parent bodies"
+                );
+                saw_started = true;
+                break;
+            }
+        }
+        assert!(
+            saw_started,
+            "dropping a ball onto a floor must produce a started force crossing"
         );
     }
 

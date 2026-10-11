@@ -9,7 +9,7 @@ use byroredux_core::ecs::{
 use byroredux_core::string::StringPool;
 
 use crate::components::{
-    CellRootIndex, FootstepConfig, InputState, NameIndex, SubtreeCache, WaterAudioConfig,
+    CellRootIndex, FootstepConfig, ImpactConfig, InputState, NameIndex, SubtreeCache, WaterAudioConfig,
     WaterAudioState,
 };
 use crate::components::LoadingCoverClock;
@@ -212,6 +212,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // Defaults are safe: `None` makes `footstep_system` no-op.
     world.insert_resource(FootstepConfig::default());
     world.insert_resource(WaterAudioConfig::default());
+    // Wave 4 clutter impacts — defaults keep `impact_audio_system` a
+    // no-op until content data (IPDS/IPCT decode) fills the map.
+    world.insert_resource(ImpactConfig::default());
     world.insert_resource(WaterAudioState::default());
     // M44 Phase 3.5 / #932 — `footstep_system` reuses this Vec<Vec3>
     // scratch across frames instead of allocating a fresh one each

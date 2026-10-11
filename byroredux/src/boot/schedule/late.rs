@@ -5,9 +5,10 @@ use byroredux_core::ecs::{
     Stage, TotalTime, Transform,
 };
 
-use crate::components::{FootstepConfig, InputState};
+use crate::components::{FootstepConfig, ImpactConfig, InputState};
 use crate::systems::{
-    footstep_system, log_stats_system, make_billboard_system, metrics_sample_system, MetricsState,
+    footstep_system, impact_audio_system, log_stats_system, make_billboard_system,
+    metrics_sample_system, MetricsState,
 };
 
 /// `Stage::Late` registrations (#3739 split of `build_scheduler`).
@@ -112,6 +113,20 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::CharacterController>()
             .reads::<byroredux_core::ecs::components::water::WaterContact>()
             .writes::<crate::components::FootstepEmitter>(),
+    );
+    // Wave 4 clutter impacts — drains the `started` contact-force
+    // crossings `physics_sync_system`'s step collected and plays the
+    // surface-material-driven impact sound. Exclusive on `PhysicsWorld`
+    // (the take is a write) beside the AudioWorld write; runs right after
+    // the footstep adapter so the two audio consumers never interleave
+    // their one-lock-at-a-time sequences with each other.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        impact_audio_system,
+        Access::new()
+            .reads_resource::<ImpactConfig>()
+            .writes_resource::<byroredux_physics::PhysicsWorld>()
+            .writes_resource::<byroredux_audio::AudioWorld>(),
     );
     // M41.x — ragdoll writeback. Stage::Late guarantees it runs after
     // `physics_sync_system` (Stage::Physics) has stepped the multibody

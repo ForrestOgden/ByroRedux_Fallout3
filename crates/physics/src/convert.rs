@@ -140,15 +140,17 @@ pub fn collision_shape_to_parts(
     leaf_surface_materials: &[u8],
 ) -> Vec<(Pose, SharedShape, u8)> {
     let mut out: Vec<(Pose, SharedShape, u8)> = Vec::new();
-    let mut leaf_index = 0usize;
+    let mut materials = MaterialSource {
+        leaf_materials: leaf_surface_materials,
+        default: default_surface_material,
+        leaf_index: 0,
+    };
     flatten_to_parts(
         shape,
         Pose::IDENTITY,
         sanitize_scale(scale),
         cfg,
-        default_surface_material,
-        leaf_surface_materials,
-        &mut leaf_index,
+        &mut materials,
         &mut out,
     );
     if out.is_empty() {
@@ -161,20 +163,29 @@ pub fn collision_shape_to_parts(
     out
 }
 
-/// The surface material one leaf part carries: the authored per-leaf entry
-/// when the producer supplies the leaf-aligned sequence
-/// (`RigidBodyData::part_surface_materials`, derived from the bhk shape
-/// tree), else the caller's body-level default. Advancing `leaf_index`
-/// keeps the sequence aligned with the depth-first part order
-/// `flatten_to_parts` emits.
-fn leaf_surface_material(
-    leaf_materials: &[u8],
+/// The per-leaf surface-material source threaded through `flatten_to_parts`:
+/// the NIF-derived leaf-aligned sequence (`RigidBodyData::part_surface_
+/// materials`) plus the body-level default for parts past it, with the
+/// leaf cursor keeping the two aligned to the depth-first part order.
+struct MaterialSource<'a> {
+    leaf_materials: &'a [u8],
     default: u8,
-    leaf_index: &mut usize,
-) -> u8 {
-    let material = leaf_materials.get(*leaf_index).copied().unwrap_or(default);
-    *leaf_index += 1;
-    material
+    leaf_index: usize,
+}
+
+impl MaterialSource<'_> {
+    /// The surface material one leaf part carries: the authored per-leaf
+    /// entry when the producer supplies the leaf-aligned sequence, else
+    /// the body-level default.
+    fn next(&mut self) -> u8 {
+        let material = self
+            .leaf_materials
+            .get(self.leaf_index)
+            .copied()
+            .unwrap_or(self.default);
+        self.leaf_index += 1;
+        material
+    }
 }
 
 /// Recursively walk a `CollisionShape` tree, composing transforms as
@@ -197,9 +208,7 @@ fn flatten_to_parts(
     parent_iso: Pose,
     scale: f32,
     cfg: &ContactConfig,
-    default_surface_material: u8,
-    leaf_surface_materials: &[u8],
-    leaf_index: &mut usize,
+    materials: &mut MaterialSource,
     out: &mut Vec<(Pose, SharedShape, u8)>,
 ) {
     match shape {
@@ -226,23 +235,14 @@ fn flatten_to_parts(
                 let safe_t = if t.is_finite() { *t } else { Vec3::ZERO };
                 let safe_r = if r.is_finite() { *r } else { Quat::IDENTITY };
                 let composed = parent_iso * pose_from_trs(safe_t * scale, safe_r);
-                flatten_to_parts(
-                    child,
-                    composed,
-                    scale,
-                    cfg,
-                    default_surface_material,
-                    leaf_surface_materials,
-                    leaf_index,
-                    out,
-                );
+                flatten_to_parts(child, composed, scale, cfg, materials, out);
             }
         }
         CollisionShape::Ball { radius } => {
             out.push((
                 parent_iso,
                 SharedShape::ball(clamp_shape_extent(*radius * scale)),
-                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                materials.next(),
             ));
         }
         CollisionShape::Cuboid { half_extents } => {
@@ -273,7 +273,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(half_extents.y * scale),
                     clamp_shape_extent(half_extents.z * scale),
                 ),
-                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                materials.next(),
             ));
         }
         CollisionShape::Capsule {
@@ -286,7 +286,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(*half_height * scale),
                     clamp_shape_extent(*radius * scale),
                 ),
-                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                materials.next(),
             ));
         }
         CollisionShape::Cylinder {
@@ -299,7 +299,7 @@ fn flatten_to_parts(
                     clamp_shape_extent(*half_height * scale),
                     clamp_shape_extent(*radius * scale),
                 ),
-                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                materials.next(),
             ));
         }
         CollisionShape::ConvexHull { vertices } => {
@@ -342,7 +342,7 @@ fn flatten_to_parts(
             out.push((
                 parent_iso,
                 shape,
-                leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                materials.next(),
             ));
         }
         CollisionShape::TriMesh { vertices, indices } => {
@@ -356,7 +356,7 @@ fn flatten_to_parts(
                 out.push((
                     parent_iso,
                     SharedShape::ball(1e-3),
-                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                    materials.next(),
                 ));
                 return;
             }
@@ -385,7 +385,7 @@ fn flatten_to_parts(
                 out.push((
                     parent_iso,
                     SharedShape::ball(1e-3),
-                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                    materials.next(),
                 ));
                 return;
             }
@@ -405,7 +405,7 @@ fn flatten_to_parts(
                 Ok(mesh) => out.push((
                     parent_iso,
                     mesh,
-                    leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                    materials.next(),
                )),
                 // Every input parry rejects outright (empty/out-of-range
                 // indices) is filtered above; what is left is a topology
@@ -415,7 +415,7 @@ fn flatten_to_parts(
                     out.push((
                         parent_iso,
                         SharedShape::ball(1e-3),
-                        leaf_surface_material(leaf_surface_materials, default_surface_material, leaf_index),
+                        materials.next(),
                     ));
                 }
             }

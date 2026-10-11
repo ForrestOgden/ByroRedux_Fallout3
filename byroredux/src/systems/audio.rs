@@ -328,6 +328,103 @@ fn select_footstep_sound(
         .unwrap_or_else(|| std::sync::Arc::clone(default))
 }
 
+/// Wave 4 clutter impacts: drain the `started` contact-force crossings
+/// the physics step collected and play one surface-material-driven
+/// impact sound per crossing that clears [`ImpactConfig`]'s force floor.
+///
+/// No-ops cleanly when `ImpactConfig` isn't registered, carries no
+/// `default_sound` (no content data yet — the shipped default state), no
+/// `PhysicsWorld` resource exists, or `AudioWorld` is inactive. The
+/// sound selection mirrors the footstep path's: the impacted side's
+/// authored per-material entry wins, else collider 2's, else the
+/// default; `select_impact_sound` pins it.
+pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
+    // Snapshot the (Arc-cloned) sound table before any other resource
+    // lock: the play loop must not hold an ImpactConfig read beside the
+    // AudioWorld write (same one-lock-at-a-time discipline as
+    // footstep_system's scratch note).
+    let Some((surface_sounds, default, volume, min_force)) =
+        world.try_resource::<crate::components::ImpactConfig>().map(|config| {
+            (
+                config.surface_sounds.clone(),
+                config.default_sound.clone(),
+                config.volume,
+                config.min_force_magnitude,
+            )
+        })
+    else {
+        return;
+    };
+    if default.is_none() && surface_sounds.is_empty() {
+        // No content data: nothing any crossing could play. The events
+        // stay buffered in the PhysicsWorld until its next `step` clears
+        // them.
+        return;
+    }
+
+    let Some(mut pw) = world.try_resource_mut::<byroredux_physics::PhysicsWorld>() else {
+        return;
+    };
+    let events = pw.take_contact_force_events();
+    let mut impacts: Vec<(byroredux_core::math::Vec3, u8)> = Vec::new();
+    for event in &events {
+        if event.total_force_magnitude < min_force {
+            continue;
+        }
+        // The impacted side's material wins: collider 1's authored byte,
+        // else collider 2's. Both STONE (0) falls through to the default
+        // via the selection below.
+        let Some(material) = (pw
+            .collider_surface_material(event.collider1)
+            .filter(|m| *m != 0))
+        .or_else(|| pw.collider_surface_material(event.collider2).filter(|m| *m != 0))
+        else {
+            continue;
+        };
+        let Some(position) = pw.contact_event_position(event) else {
+            continue;
+        };
+        impacts.push((position, material));
+    }
+    drop(pw);
+    if impacts.is_empty() {
+        return;
+    }
+
+    let Some(mut audio_world) = world.try_resource_mut::<byroredux_audio::AudioWorld>() else {
+        return;
+    };
+    for (position, material) in impacts {
+        let Some(sound) = select_impact_sound(&surface_sounds, default.as_ref(), material) else { break };
+        audio_world.play_oneshot(
+            sound,
+            position,
+            byroredux_audio::Attenuation {
+                // Impacts carry further than footsteps — a thrown tankard
+                // landing across the room is the signal the ear keys on.
+                min_distance: 1.0,
+                max_distance: 24.0,
+            },
+            volume,
+        );
+    }
+    drop(audio_world);
+}
+
+/// The sound one clutter impact plays: the authored per-material entry
+/// for the pair's material when [`ImpactConfig`] carries one, else the
+/// default. Pointer identity distinguishes them in the pin test.
+fn select_impact_sound(
+    surface_sounds: &std::collections::BTreeMap<u8, std::sync::Arc<byroredux_audio::Sound>>,
+    default: Option<&std::sync::Arc<byroredux_audio::Sound>>,
+    material: u8,
+) -> Option<std::sync::Arc<byroredux_audio::Sound>> {
+    surface_sounds
+        .get(&material)
+        .cloned()
+        .or_else(|| default.cloned())
+}
+
 /// Dispatch one-shot water sounds emitted by the water interaction system.
 /// Splashes are edge-triggered; when no splash fires, at most one ready
 /// ripple plays at ×0.45 volume. Ripples have a per-surface cooldown, so a
@@ -542,6 +639,71 @@ mod footstep_tests {
         assert!(
             Arc::ptr_eq(&select_footstep_sound(&world, None, &default), &default),
             "no ground in probe range falls back to the default"
+        );
+    }
+
+    /// Wave 4 clutter-impact selection: the authored per-material entry
+    /// wins over the default, and an unauthored material falls back. The
+    /// shipped `ImpactConfig::default()` is empty + defaultless — the
+    /// production no-op state — so this fixture authors both explicitly.
+    #[test]
+    fn impact_selects_the_surface_sound_when_authored() {
+        let mut world = World::new();
+        let default = Arc::new(Sound {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![
+                    Frame {
+                        left: 0.0,
+                        right: 0.0
+                    };
+                    50
+                ]
+                .into_boxed_slice(),
+            ),
+            settings: SoundSettings::default(),
+            slice: None,
+        });
+        let surface = Arc::new(Sound {
+            sample_rate: 22_050,
+            frames: Arc::from(
+                vec![Frame {
+                    left: 0.0,
+                    right: 0.0
+                }]
+                .into_boxed_slice(),
+            ),
+            settings: SoundSettings::default(),
+            slice: None,
+        });
+        world.insert_resource(crate::components::ImpactConfig {
+            default_sound: Some(Arc::clone(&default)),
+            surface_sounds: std::collections::BTreeMap::from([(3u8, Arc::clone(&surface))]),
+            volume: 0.7,
+            min_force_magnitude: 5_000.0,
+        });
+        let surface_sounds = world
+            .resource::<crate::components::ImpactConfig>()
+            .surface_sounds
+            .clone();
+
+        assert!(
+            Arc::ptr_eq(
+                &select_impact_sound(&surface_sounds, Some(&default), 3).unwrap(),
+                &surface
+            ),
+            "the authored per-material entry must win"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &select_impact_sound(&surface_sounds, Some(&default), 0).unwrap(),
+                &default
+            ),
+            "an unauthored material falls back to the default"
+        );
+        assert!(
+            select_impact_sound(&surface_sounds, None, 0).is_none(),
+            "no default and no authored entry plays nothing"
         );
     }
 
