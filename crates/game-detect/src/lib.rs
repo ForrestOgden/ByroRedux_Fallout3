@@ -289,6 +289,39 @@ mod tests {
         );
     }
 
+    /// #5433 — the FO3 half of #5367 Phase V (and FO3 footsteps, splash and
+    /// REGN audio) needs `--sounds-bsa` from the profile, exactly as FNV does
+    /// (#3788). FO3 ships its dialogue under `sound\voice\fallout3.esm\...`
+    /// across `Fallout - Voices.bsa` and `Fallout - MenuVoices.bsa`.
+    #[test]
+    fn fo3_profile_declares_sound_and_voice_archives() {
+        let path = std::path::Path::new("../../assets/debug_profiles.toml");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let document: toml::Table = toml::from_str(&text).unwrap();
+        let fo3 = document["profiles"]["fo3"]
+            .as_table()
+            .expect("shipped profiles have no `fo3` block");
+        let sounds = fo3
+            .get("default_sounds_bsas")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().map(|v| v.as_str().unwrap_or("")).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for required in [
+            "Fallout - Sound.bsa",
+            "Fallout - Voices.bsa",
+            "Fallout - MenuVoices.bsa",
+        ] {
+            assert!(
+                sounds.contains(&required),
+                "fo3.default_sounds_bsas {sounds:?} must list {required} — without a \
+                 sound archive FO3 voice lines, footsteps, splash and REGN audio all \
+                 silently fall back (#5433)",
+            );
+        }
+    }
+
     #[test]
     fn configured_roots_are_read_back_as_candidates() {
         let dir = tempfile::tempdir().unwrap();

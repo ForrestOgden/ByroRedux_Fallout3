@@ -138,6 +138,20 @@ root = ""
 esm = "Fallout3.esm"
 default_bsas = ["Fallout - Meshes.bsa"]
 default_textures_bsas = ["Fallout - Textures.bsa"]
+# #5433 — without a sound archive every FO3 audio consumer (footsteps,
+# splash, REGN ambient) and the #5367 Phase V voice lines silently fall
+# back (the FNV sibling is #3788). Voice path convention verified against
+# the real archives: `sound\voice\fallout3.esm\<voicetype>\<quest>_<topic>_
+# <info>_<n>.ogg`, the same shape FNV uses under `falloutnv.esm`. FO3
+# splits its lines across two archives — `Fallout - Voices.bsa` and
+# `Fallout - MenuVoices.bsa` both carry `sound\voice\fallout3.esm\...`
+# (e.g. `*_greeting_*.ogg` in each) — so both are listed. The provider is
+# last-wins (#3917); entry overlap between the archives was not measured.
+default_sounds_bsas = [
+    "Fallout - Sound.bsa",
+    "Fallout - Voices.bsa",
+    "Fallout - MenuVoices.bsa",
+]
 default_materials_bsas = []
 # F6 (2026-05-26) — `Megaton01` was a phantom; vanilla ships
 # `MegatonPlayerHouse` (929 REFRs), `MegatonMoriartysSaloon`
