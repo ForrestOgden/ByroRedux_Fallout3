@@ -1402,7 +1402,7 @@ fn spawn_collision_shapes(
         // nested-Compound parry3d panic this used to guard against was
         // fixed structurally by #373, which made the Rapier conversion
         // (`crates/physics/src/convert.rs`) flatten any Compound-of-
-        // Compound into a `Vec<(Isometry3, SharedShape)>` before it ever
+        // Compound into a `Vec<(Pose, SharedShape, u32)>` before it ever
         // reaches parry3d — a step that happens downstream of this spawn
         // site, not here.
         let shape = coll.shape.clone();

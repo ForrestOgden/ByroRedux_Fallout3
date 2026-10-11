@@ -82,8 +82,9 @@ pub fn rotation_scaled_axis(rotation: Quat) -> Vec3 {
 /// ConvexHull) or a composite mesh (TriMesh).
 ///
 /// Parry / Rapier forbid **composite-inside-compound** (TriMesh /
-/// HeightField / Polyline / Compound). Returning a `Vec<(Isometry3,
-/// SharedShape)>` instead of a single `SharedShape::compound` lets the
+/// HeightField / Polyline / Compound). Returning a `Vec<(Pose,
+/// SharedShape, u32)>` (placement, shape, surface material) instead of a
+/// single `SharedShape::compound` lets the
 /// physics sync attach one `Collider` per part, which is the idiomatic
 /// Rapier pattern and works for every valid mix of primitives and
 /// meshes. See #373.
@@ -318,12 +319,17 @@ fn flatten_to_parts(
             let pts: Vec<Vec3> =
                 vertices.iter().map(|v| *v * scale).collect();
             // #3066 / #2551 — classify the point set BEFORE parry sees it.
-            // `convex_hull` has two distinct failure modes on untrusted NIF
-            // data, and only one of them is recoverable by the caller:
-            // a set with no extent at all unwraps an internal
-            // `MissingSupportPoint` (a *panic*, not a `None`), while a merely
-            // collinear set returns `None`. Coplanar sets are not a failure
-            // mode at all — parry builds a flat polyhedron from them.
+            // Two failure modes of `convex_hull` on untrusted NIF data differ
+            // in what the caller can recover: a merely collinear set yields
+            // `None` (the old answer, a millimetre ball, silently dropped an
+            // authored solid), and a set with no extent at all is an
+            // `Err(MissingSupportPoint)` that parry 0.31 also turns into
+            // `None`. (parry 0.17 *panicked* on the latter; that is why the
+            // classifier was written, and it stays for the collinear →
+            // capsule recovery and as a guard against the `assert!`s that
+            // remain inside parry's hull builder, e.g. triangle_facet.rs.)
+            // Coplanar sets are not a failure mode at all — parry builds a
+            // flat polyhedron from them.
             let shape = match hull_degeneracy(&pts) {
                 HullDegeneracy::Pointlike => {
                     log::warn!(
@@ -419,9 +425,11 @@ fn flatten_to_parts(
                     mesh,
                     materials.next(),
                )),
-                // Every input parry rejects outright (empty/out-of-range
-                // indices) is filtered above; what is left is a topology
-                // failure on a mesh that passed those checks.
+                // Every input parry rejects outright is filtered above
+                // (`with_flags` errs only on empty indices, and `set_flags`'
+                // `TopologyError` is discarded inside it), so under parry 0.31
+                // this arm is a defensive fallback for a future parry that
+                // rejects more — it is not reachable after the checks above.
                 Err(err) => {
                     log::warn!("collision: TriMesh rejected by parry ({err:?}); using the tiny-ball fallback");
                     out.push((
@@ -445,8 +453,10 @@ const DEGENERATE_HULL_RADIUS: f32 = 1e-3;
 
 /// How degenerate a `ConvexHull` point set is, as far as `parry` cares.
 enum HullDegeneracy {
-    /// No extent — every point is (near) coincident. `parry` *panics* on
-    /// these: `convex_hull` unwraps a `MissingSupportPoint`.
+    /// No extent — every point is (near) coincident. parry 0.17 *panicked*
+    /// on these (`convex_hull` unwrapped a `MissingSupportPoint`); 0.31
+    /// returns `None`. Still classified here so the fallback is a ball by
+    /// decision rather than by whatever parry does next.
     Pointlike,
     /// Extent along one axis only. `parry` returns `None` for these.
     Collinear {
@@ -462,8 +472,8 @@ enum HullDegeneracy {
 ///
 /// Bethesda content authors `bhkConvexVerticesShape` blocks that collapse to
 /// a line or a point (17 across the FO3 base+DLC corpus). Handing those to
-/// `convex_hull` either panics the engine mid-frame or yields `None`, and the
-/// old answer for the `None` case — `SharedShape::ball(1e-3)` — is a
+/// `convex_hull` either panicked the engine mid-frame (parry 0.17) or yields
+/// `None`, and the old answer for the `None` case — `SharedShape::ball(1e-3)` — is a
 /// millimetre ball at the shape origin, so an authored solid silently stopped
 /// colliding anywhere near where it was placed.
 ///
