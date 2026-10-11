@@ -549,13 +549,23 @@ further conversion is needed inside Rapier.
 These are intentionally deferred:
 
 - **Constraints / joints** — `bhkRagdollConstraint` /
-  `bhkLimitedHingeConstraint` are decoded and threaded into ragdolls for the
+  `bhkLimitedHingeConstraint` / `bhkPrismaticConstraint` (and the
+  malleable/breakable wrappers) are decoded and threaded into ragdolls for the
   classic-chain games (Oblivion / FO3 / FNV / Skyrim) by **PHYSAL** (the
   physics abstraction layer — see [`physal.md`](physal.md)), which builds them
-  as Rapier multibody joints and writes the simulated poses back onto the
-  skeleton. Other constraint types (`bhkHingeConstraint`, prismatic, stiff
-  spring) stay parse-only; active (motorised) ragdolls and joint-limit fidelity
-  are PHYSAL follow-ups.
+  as Rapier multibody joints with Havok-convention limits (#5536: the authored
+  range applies to θ_Havok — negate+swap on the non-flip edge, pass through on
+  the flip edge) and soft 30 Hz limit springs (#5538), and writes the
+  simulated poses back onto the skeleton. `bhkHingeConstraint` and stiff
+  spring stay parse-only; active (motorised) ragdolls are PHYSAL follow-ups.
+  The real-data articulation gate (FO3 skeleton, six environments × two
+  yaws — four physics audits recorded it "not run" while it was red):
+  ```bash
+  # 1.96 toolchain cargo; the module path is ragdoll::installed_tests — a
+  # filter like `ragdoll_installed` matches 0 tests and exits green.
+  BYROREDUX_FO3_DATA=/mnt/data/SteamLibrary/steamapps/common/Fallout\ 3\ goty/Data \
+    cargo test -p byroredux --bin byroredux -- --ignored ragdoll::installed_tests
+  ```
 - **FO4+ Havok content-system blob** — `bhkNPCollisionObject`'s
   serialised physics system isn't decoded. Geometry proxies above provide
   collision presence and placement tracking, but not authored mass, motion

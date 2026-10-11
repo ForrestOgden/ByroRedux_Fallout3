@@ -651,6 +651,22 @@ fn prismatic_locked() -> JointAxesMask {
         | JointAxesMask::ANG_Z
 }
 
+/// #5538 — Havok-like soft joint limits. Rapier's default joint
+/// softness is 1e6 Hz with ζ = 1 (`SpringCoefficients::joint_defaults`),
+/// which corrects a limit violation in a single substep: a bind pose a
+/// fraction of a radian outside the enforced range produced 617 BU/s and
+/// 100 rad/s at tick 0 on the FO3 skeleton, tripping the DOF clamp and
+/// starting the recovery→detach ladder that tore the rig apart within 30
+/// ticks. 30 Hz with ζ = 1 (rapier's own contact-default frequency,
+/// critically damped) pulls a violating seed in over frames instead —
+/// the audit's probe measured 0 clamps, all joints intact and every body
+/// asleep by tick 570 on FO3, FNV and SSE alike. Applies to both the
+/// locked DOF and the limits (rapier feeds the one field to both).
+const RAGDOLL_JOINT_SOFTNESS: SpringCoefficients<f32> = SpringCoefficients {
+    natural_frequency: 30.0,
+    damping_ratio: 1.0,
+};
+
 fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
     match j {
         RagdollJointSpec::Ragdoll {
@@ -664,23 +680,29 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             twist_min,
             twist_max,
         } => {
-            // Orient so frame1 is the parent's. Under flip the twist axis
-            // direction reverses, so the twist limit range negates+swaps.
+            // #5536 — Havok measures the twist of A (attached) relative to
+            // B (reference); rapier's coordinate is the CHILD's rotation
+            // relative to the parent. On the non-flip edge (A parent, B
+            // child) that is −θ_Havok, so the authored range negates+swaps;
+            // on the flip edge (A is the child) it is +θ_Havok and the
+            // range passes through unchanged. The pre-#5536 code had the
+            // two branches exactly mirrored, enforcing the wrong half of
+            // every authored asymmetric range.
             let (t1, p1, pv1, t2, p2, pv2, tmin, tmax) = if !flip {
                 (
-                    *twist_a, *plane_a, *pivot_a, *twist_b, *plane_b, *pivot_b, *twist_min,
-                    *twist_max,
-                )
-            } else {
-                (
-                    *twist_b,
-                    *plane_b,
-                    *pivot_b,
                     *twist_a,
                     *plane_a,
                     *pivot_a,
+                    *twist_b,
+                    *plane_b,
+                    *pivot_b,
                     -*twist_max,
                     -*twist_min,
+                )
+            } else {
+                (
+                    *twist_b, *plane_b, *pivot_b, *twist_a, *plane_a, *pivot_a, *twist_min,
+                    *twist_max,
                 )
             };
             let cone = cone_max.abs();
@@ -690,6 +712,7 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
                 .limits(JointAxis::AngX, [tmin, tmax]) // twist
                 .limits(JointAxis::AngY, [-cone, cone]) // swing
                 .limits(JointAxis::AngZ, [-cone, cone]) // swing
+                .softness(RAGDOLL_JOINT_SOFTNESS)
                 .build()
         }
         RagdollJointSpec::LimitedHinge {
@@ -702,31 +725,41 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             min_angle,
             max_angle,
         } => {
+            // #5536 — same derivation as the ragdoll twist above: Havok's
+            // hinge angle is A relative to B, right-handed about B's axle
+            // from B's perp (the 2007 SDK's own limit visualiser draws the
+            // [min,max] arc about B's axle from B's perp); rapier's AngX is
+            // the child relative to the parent, from frame1's perp. Non-flip
+            // (A parent) ⇒ negate+swap the authored range; flip (A child)
+            // ⇒ pass through. The pre-#5536 branches were mirrored the
+            // other way, so every vanilla elbow and knee enforced the
+            // hyperextension half and forbade flexion.
             let (a1, p1, pv1, a2, p2, pv2, amin, amax) = if !flip {
                 (
-                    *axis_a, *perp_a, *pivot_a, *axis_b, *perp_b, *pivot_b, *min_angle, *max_angle,
-                )
-            } else {
-                (
-                    *axis_b,
-                    *perp_b,
-                    *pivot_b,
                     *axis_a,
                     *perp_a,
                     *pivot_a,
+                    *axis_b,
+                    *perp_b,
+                    *pivot_b,
                     -*max_angle,
                     -*min_angle,
+                )
+            } else {
+                (
+                    *axis_b, *perp_b, *pivot_b, *axis_a, *perp_a, *pivot_a, *min_angle, *max_angle,
                 )
             };
             // #2448 / PHYS-02 — the authored perp axis IS the zero-angle
             // reference `min_angle`/`max_angle` are measured from.
             // `frame_rot` orthogonalises it against the axis and falls back
             // to a synthesized perpendicular only for a degenerate (zero /
-            // parallel) input — e.g. Oblivion's zeroed `perp_axis_in_b1`.
+            // parallel) input.
             GenericJointBuilder::new(lin_locked() | JointAxesMask::ANG_Y | JointAxesMask::ANG_Z)
                 .local_frame1(pose_from_trs(pv1, frame_rot(a1, p1)))
                 .local_frame2(pose_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::AngX, [amin, amax])
+                .softness(RAGDOLL_JOINT_SOFTNESS)
                 .build()
         }
         RagdollJointSpec::Prismatic {
@@ -739,9 +772,10 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
             min_distance,
             max_distance,
         } => {
-            // #3792 — same flip treatment as LimitedHinge: swapping which
-            // side is frame1 reverses the sign convention of the
-            // along-axis coordinate, so the distance limits negate+swap.
+            // #3792 / #5536 — same derivation as LimitedHinge applied to the
+            // along-rail coordinate: Havok measures A relative to B, rapier
+            // the child relative to the parent, so non-flip negates+swaps
+            // the authored travel and flip passes it through.
             let (a1, p1, pv1, a2, p2, pv2, dmin, dmax) = if !flip {
                 (
                     *axis_a,
@@ -750,8 +784,8 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
                     *axis_b,
                     *perp_b,
                     *pivot_b,
-                    *min_distance,
-                    *max_distance,
+                    -*max_distance,
+                    -*min_distance,
                 )
             } else {
                 (
@@ -761,8 +795,8 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
                     *axis_a,
                     *perp_a,
                     *pivot_a,
-                    -*max_distance,
-                    -*min_distance,
+                    *min_distance,
+                    *max_distance,
                 )
             };
             // `frame_rot` maps the authored sliding axis onto local X, so
@@ -772,6 +806,7 @@ fn build_joint(j: &RagdollJointSpec, flip: bool) -> GenericJoint {
                 .local_frame1(pose_from_trs(pv1, frame_rot(a1, p1)))
                 .local_frame2(pose_from_trs(pv2, frame_rot(a2, p2)))
                 .limits(JointAxis::LinX, [dmin, dmax])
+                .softness(RAGDOLL_JOINT_SOFTNESS)
                 .build()
         }
     }
@@ -1309,6 +1344,148 @@ mod tests {
                 min_distance: -travel,
                 max_distance: travel,
             },
+        }
+    }
+
+    /// #5536 — Havok measures the hinge angle of A (attached) relative to
+    /// B (reference), right-handed about B's axle from B's perp; rapier's
+    /// coordinate is the CHILD's rotation relative to the parent. On the
+    /// non-flip edge (A is the parent) θ_rapier = −θ_Havok, so the authored
+    /// range must negate+swap; on the flip edge (A is the child) the range
+    /// passes through unchanged. The pre-fix branches were exactly
+    /// mirrored, so every vanilla asymmetric limit — elbow, knee, ankle,
+    /// wrist — enforced the hyperextension half and forbade flexion.
+    #[test]
+    fn authored_limits_apply_to_the_havok_angle_on_both_flip_orientations() {
+        let hinge = RagdollJointSpec::LimitedHinge {
+            axis_a: Vec3::X,
+            perp_a: Vec3::Y,
+            pivot_a: Vec3::ZERO,
+            axis_b: Vec3::X,
+            perp_b: Vec3::Y,
+            pivot_b: Vec3::ZERO,
+            min_angle: 0.0,
+            max_angle: 1.9,
+        };
+        let non_flipped = build_joint(&hinge, false);
+        let l = non_flipped.limits(JointAxis::AngX).unwrap();
+        assert_eq!(
+            [l.min, l.max],
+            [-1.9, 0.0],
+            "non-flip (A is the parent): θ_rapier = −θ_Havok ⇒ negate+swap"
+        );
+        let flipped = build_joint(&hinge, true);
+        let l = flipped.limits(JointAxis::AngX).unwrap();
+        assert_eq!(
+            [l.min, l.max],
+            [0.0, 1.9],
+            "flip (A is the child): θ_rapier = +θ_Havok ⇒ pass through"
+        );
+
+        // The ragdoll twist carries the same derivation.
+        let rag = RagdollJointSpec::Ragdoll {
+            twist_a: Vec3::X,
+            plane_a: Vec3::Y,
+            pivot_a: Vec3::ZERO,
+            twist_b: Vec3::X,
+            plane_b: Vec3::Y,
+            pivot_b: Vec3::ZERO,
+            cone_max: std::f32::consts::FRAC_PI_2,
+            twist_min: 0.2,
+            twist_max: 1.4,
+        };
+        let non_flipped = build_joint(&rag, false);
+        let l = non_flipped.limits(JointAxis::AngX).unwrap();
+        assert_eq!([l.min, l.max], [-1.4, -0.2]);
+        let flipped = build_joint(&rag, true);
+        let l = flipped.limits(JointAxis::AngX).unwrap();
+        assert_eq!([l.min, l.max], [0.2, 1.4]);
+
+        // And the prismatic travel.
+        let rail = RagdollJointSpec::Prismatic {
+            axis_a: Vec3::X,
+            perp_a: Vec3::Y,
+            pivot_a: Vec3::ZERO,
+            axis_b: Vec3::X,
+            perp_b: Vec3::Y,
+            pivot_b: Vec3::ZERO,
+            min_distance: 0.0,
+            max_distance: 10.0,
+        };
+        let non_flipped = build_joint(&rail, false);
+        let l = non_flipped.limits(JointAxis::LinX).unwrap();
+        assert_eq!([l.min, l.max], [-10.0, 0.0]);
+        let flipped = build_joint(&rail, true);
+        let l = flipped.limits(JointAxis::LinX).unwrap();
+        assert_eq!([l.min, l.max], [0.0, 10.0]);
+    }
+
+    /// #5536, behavioural half — an authored flexion-only Havok range
+    /// `[0, 1.9]` must hold a flexion seed and correct a hyperextension
+    /// seed, on BOTH flip orientations. The child's legal rotation sign
+    /// depends on the orientation: non-flip (A parent) θ_Havok = −(child
+    /// rotation), so flexion seeds the child at −φ; flip (A child)
+    /// θ_Havok = +(child rotation), so flexion seeds at +φ. Pre-fix both
+    /// orientations did the opposite.
+    #[test]
+    fn hinge_flexion_seed_holds_and_hyperextension_is_corrected() {
+        for (flip, body_a, body_b, flexion_sign) in
+            [(false, 0usize, 1usize, -1.0f32), (true, 1usize, 0usize, 1.0f32)]
+        {
+            for (label, seed, expect_held) in [
+                ("flexion", 0.5f32 * flexion_sign, true),
+                ("hyperextension", -0.5 * flexion_sign, false),
+            ] {
+                let mut pw = PhysicsWorld::new();
+                pw.gravity = Vector::ZERO;
+                let mut child = ball_body(2, 50.0, 1000.0);
+                child.rotation = Quat::from_rotation_x(seed);
+                let spec = RagdollSpec {
+                    bodies: vec![ball_body(1, 0.0, 1000.0), child],
+                    constraints: vec![RagdollConstraintSpec {
+                        body_a,
+                        body_b,
+                        joint: RagdollJointSpec::LimitedHinge {
+                            axis_a: Vec3::X,
+                            perp_a: Vec3::Y,
+                            pivot_a: Vec3::new(25.0, 0.0, 0.0),
+                            axis_b: Vec3::X,
+                            perp_b: Vec3::Y,
+                            pivot_b: Vec3::new(-25.0, 0.0, 0.0),
+                            min_angle: 0.0,
+                            max_angle: 1.9,
+                        },
+                    }],
+                };
+                let rag =
+                    build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane seed");
+                for _ in 0..120 {
+                    pw.step(PHYSICS_DT);
+                }
+                let root = pw.bodies.get(rag.bodies[0].1).unwrap();
+                let leaf = pw.bodies.get(rag.bodies[1].1).unwrap();
+                let relative = (root.rotation().inverse() * leaf.rotation())
+                    .to_scaled_axis()
+                    .x;
+                if expect_held {
+                    assert!(
+                        (relative - flexion_sign * 0.4).abs() < 0.15 || relative.abs() > 0.35,
+                        "flip={flip} {label}: the in-range seed must be held, not driven to the \
+                         mirror — relative X angle {relative:.3}"
+                    );
+                    assert!(
+                        relative * flexion_sign > 0.3,
+                        "flip={flip} {label}: the seed must keep its authored SIGN (got \
+                         {relative:.3}); the mirrored range would hold only the other half"
+                    );
+                } else {
+                    assert!(
+                        relative * flexion_sign < 0.1,
+                        "flip={flip} {label}: the out-of-range seed must be corrected toward \
+                         the range, not held at {relative:.3}"
+                    );
+                }
+            }
         }
     }
 
