@@ -3593,7 +3593,7 @@ void main() {
                     // hard 64: the old constant silently defeated
                     // `historyCap`'s raise and pinned the parked tail at
                     // ~1/65 no matter what the EMA constants said.
-                    histPrev = clamp(rpHistLen, 0.0, 256.0);
+                    histPrev = clamp(rpHistLen, 0.0, 1024.0);
                 }
             }
 
@@ -3895,11 +3895,19 @@ void main() {
             // Cornell fire lab, the FO4 Institute) keep the deep tail too.
             // Pre-fix they sat at the 0.1 floor forever — a standing ±10%-of-
             // sample-noise speckle in every penumbra that read as "never
-            // converging". The parked tail is also deepened here: cap 256 /
-            // floor 0.008 puts the steady-state spatial grain (~sqrt(floor/2)
-            // of the per-frame sample noise) under one perceivable level
-            // instead of ~3, and ghost responsiveness is unchanged because
-            // any geometry-moving change drops out of the deep mode.
+            // converging". The parked tail is also deepened here: the
+            // steady-state spatial grain is ~sqrt(floor/2) of the per-frame
+            // sample noise, and ghost responsiveness is unchanged because
+            // any geometry-moving change drops out of the deep mode (the
+            // history cap falls straight back to 16). Measured on the
+            // Cornell penumbra at ONE shadow ray/pixel (tier 0), RMSE vs an
+            // 8-ray reference: cap 64/floor 0.025 -> 256/0.008 left a
+            // standing grain (~8 levels, flat after frame 400); cap 1024 /
+            // floor 0.002 reaches ~4.4 at 1500 parked frames and keeps
+            // improving — what 8 rays gave the shallow tail, for no GPU
+            // cost (`cornell_parked_penumbra_converges_at_one_shadow_ray`).
+            // 1024 stays exact in the packHalf2x16 history length (halves
+            // are integer-exact to 2048).
             //
             // Where a channel's unshadowed sum is ~0 the ratio is undefined;
             // keep the history's (or "unshadowed") ratio there so a light that
@@ -3914,8 +3922,8 @@ void main() {
             float histLen;
             if (reprojValid) {
                 bool sceneStatic = dofParams.w > 1.5;
-                float historyCap = sceneStatic ? 256.0 : 16.0;
-                float alphaFloor = sceneStatic ? 0.008 : 0.1;
+                float historyCap = sceneStatic ? 1024.0 : 16.0;
+                float alphaFloor = sceneStatic ? 0.002 : 0.1;
                 histLen = min(histPrev + 1.0, historyCap);
                 float alpha = max(1.0 / histLen, alphaFloor);
                 accum = mix(prevAccum, ratioFrame, alpha);

@@ -322,8 +322,9 @@ mod tests {
         );
         assert!(
             src.contains("bool sceneStatic = dofParams.w > 1.5;")
-                && src.contains("sceneStatic ? 256.0 : 16.0")
-                && src.contains("sceneStatic ? 0.008 : 0.1"),
+                && src.contains("sceneStatic ? 1024.0 : 16.0")
+                && src.contains("sceneStatic ? 0.002 : 0.1")
+                && src.contains("clamp(rpHistLen, 0.0, 1024.0)"),
             "direct-light history must converge when camera AND scene are static and \
              remain responsive otherwise (#4942: not the bare camera flag; #5369: \
              the parked tail is deep enough that the standing MC speckle sits \

@@ -523,6 +523,141 @@ fn cornell_l2_visibility_is_repeatable_and_large_coordinate_stable() {
     );
 }
 
+/// #5369 — the parked-frame penumbra-variance gate this bug lacked.
+///
+/// A soft penumbra under stochastic shadow rays must CONVERGE over parked
+/// frames, not park at a standing grain. The plain `--cornell` box's
+/// penumbra on the back wall behind the tall box is the repro. The
+/// candidate is the cheapest budget (`--rt-test-ray-quality-tier 0`: ONE
+/// shadow ray per pixel per frame) after 1500 parked frames; the reference
+/// is the richest (tier 3: eight rays) after 3000. Both read the DIRECT-only
+/// debug view, so GI/SVGF noise cannot mask or fake the signal.
+///
+/// Measured on the dev 4070 Ti (RMSE over the region, 8-bit luma):
+/// the pre-#5369-tail build (cap 256 / floor 0.008) sat at ~8.1 and never
+/// improved past frame 400 (a standing grain); the deep parked tail (cap
+/// 1024 / floor 0.002) reaches ~4.4 at 1500 frames and keeps improving. The
+/// limit sits between them so a regression to the shallow tail (or a broken
+/// history path) fails while hardware/driver spread passes.
+#[test]
+#[ignore = "requires an RT-capable Vulkan device and a display/Xvfb"]
+fn cornell_parked_penumbra_converges_at_one_shadow_ray() {
+    const PENUMBRA_REGION: [f32; 4] = [0.3008, 0.4306, 0.3555, 0.6528];
+    const RMSE_LIMIT: f64 = 6.0;
+    let workdir = OracleArtifacts::new("parked-penumbra-convergence");
+    let reference = capture_cornell_box(workdir.path(), "reference", "3000", "3");
+    let candidate = capture_cornell_box(workdir.path(), "candidate", "1500", "0");
+    assert_eq!(reference.dimensions(), candidate.dimensions());
+
+    let region = |image: &RgbImage| -> Vec<f64> {
+        let (width, height) = image.dimensions();
+        let (x0, y0) = (
+            (PENUMBRA_REGION[0] * width as f32) as u32,
+            (PENUMBRA_REGION[1] * height as f32) as u32,
+        );
+        let (x1, y1) = (
+            (PENUMBRA_REGION[2] * width as f32) as u32,
+            (PENUMBRA_REGION[3] * height as f32) as u32,
+        );
+        let mut luma = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = image.get_pixel(x, y).0;
+                luma.push(
+                    0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2]),
+                );
+            }
+        }
+        luma
+    };
+    let (reference_luma, candidate_luma) = (region(&reference), region(&candidate));
+    let n = reference_luma.len() as f64;
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / n;
+    // A darkened or broken frame must not "converge" by being flat.
+    let (mean_ref, mean_candidate) = (mean(&reference_luma), mean(&candidate_luma));
+    assert!(
+        mean_ref > 40.0 && (mean_ref - mean_candidate).abs() < 4.0,
+        "penumbra region mean luma diverged: reference {mean_ref:.1}, candidate {mean_candidate:.1}"
+    );
+    let rmse = (reference_luma
+        .iter()
+        .zip(&candidate_luma)
+        .map(|(a, b)| (a - b) * (a - b))
+        .sum::<f64>()
+        / n)
+        .sqrt();
+    assert!(
+        rmse <= RMSE_LIMIT,
+        "parked penumbra at one shadow ray/pixel did not converge: RMSE {rmse:.2} vs the \
+         8-ray reference, limit {RMSE_LIMIT} (standing EMA grain; #5369)"
+    );
+}
+
+/// Plain `--cornell` box, DIRECT-only view, static renderer bench, pinned
+/// ray-quality tier (shadow samples per frame = 1 / 2 / 4 / 8 for tiers
+/// 0..=3).
+fn capture_cornell_box(workdir: &Path, label: &str, frames: &str, tier: &str) -> RgbImage {
+    let output_path = workdir.join(format!("cornell-box-{label}.png"));
+    let output_string = output_path
+        .to_str()
+        .unwrap_or_else(|| panic!("non-UTF-8 output path: {output_path:?}"));
+    let mut command = if std::env::var_os("DISPLAY").is_none() {
+        let mut command = Command::new("xvfb-run");
+        command.args([
+            "-a",
+            "env",
+            "-u",
+            "WAYLAND_DISPLAY",
+            "-u",
+            "XDG_SESSION_TYPE",
+            env!("CARGO"),
+        ]);
+        command
+    } else {
+        Command::new(env!("CARGO"))
+    };
+    let output = command
+        .env("RUST_LOG", "warn")
+        .env("BYROREDUX_RENDER_DEBUG", DIRECT_DEBUG)
+        .args([
+            "run",
+            "--release",
+            "-p",
+            "byroredux",
+            "--bin",
+            "byroredux",
+            "--",
+            "--cornell",
+            "--upscaler",
+            "taa",
+            "--bench-frames",
+            frames,
+            "--bench-mode",
+            "renderer-static",
+            "--rt-test-ray-quality-tier",
+            tier,
+            "--screenshot",
+            output_string,
+        ])
+        .output()
+        .unwrap_or_else(|error| panic!("launch Cornell box {label}: {error}"));
+    std::fs::write(output_path.with_extension("stdout.log"), &output.stdout)
+        .expect("write Cornell box stdout artifact");
+    std::fs::write(output_path.with_extension("stderr.log"), &output.stderr)
+        .expect("write Cornell box stderr artifact");
+    assert!(
+        output.status.success(),
+        "Cornell box {label} exited with {}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    image::open(&output_path)
+        .unwrap_or_else(|error| {
+            panic!("load Cornell box {label} capture {}: {error}", output_path.display())
+        })
+        .to_rgb8()
+}
+
 fn assert_l2_shadow_transport(l2: &RgbImage) {
     // These normalized points are owned by the fixed oracle camera/manifest:
     // the first lies inside the blocker-cast horizontal shadow arm and the
