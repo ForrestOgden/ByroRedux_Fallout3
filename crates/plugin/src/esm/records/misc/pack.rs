@@ -822,6 +822,18 @@ pub fn parse_pack(
     let pkcu_index = subs.iter().position(|sub| sub.sub_type == *b"PKCU");
     for (sub_index, sub) in subs.iter().enumerate() {
         match &sub.sub_type {
+            // #5504 — Oblivion's legacy 4-byte PKDT: u16 flags @0, u8
+            // procedure @2, one junk byte @3. `Oblivion.esm` authors 561 of
+            // them beside 6,648 eight-byte ones; validated against EDIDs
+            // (49/50 "…Sleep…" carry 4, 24/24 "…Wander…" carry 5, 14/19
+            // "…Follow…" carry 1 — the same 0..=6 procedure enum the
+            // 8-byte form uses). Skipping it left 479 Wander/Travel/Eat/
+            // Sleep/Follow/Escort packages reading as Find.
+            b"PKDT" if (4..8).contains(&sub.data.len()) => {
+                let mut r = SubReader::new(&sub.data);
+                out.package_flags = u32::from(r.u16_or_default());
+                out.procedure_type = r.u8_or_default() as u32;
+            }
             b"PKDT" if sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 out.package_flags = r.u32_or_default();
@@ -843,11 +855,21 @@ pub fn parse_pack(
             }
             b"PKDD" if sub.data.len() >= 8 => {
                 // #5367 Phase F — the Dialogue procedure's data input: the
-                // topic to force. Byte 0 is the Dialogue Type enum
-                // (#5376: 0 = Conversation, 1 = Say To — a spoken line
-                // without a menu, never a player conversation); offset
-                // 4 of the 24-byte payload is the topic.
-                out.dialogue_type = sub.data[0];
+                // topic to force. xEdit FO3 (`wbDefinitionsFO3.pas`
+                // PKDD) / FNV (`wbDefinitionsFNV.pas` PKDD) layout:
+                // FOV f32 @0, Topic FormID @4, Flags u32 @8, unused 4 @12,
+                // Dialogue Type u32 @16 (#5376: 0 = Conversation,
+                // 1 = Say To — a spoken line without a menu, never a
+                // player conversation), unknown 4 @20. The type is
+                // `SetOptionalFrom(3)`: 12/16-byte payloads carry none and
+                // read as Conversation. Byte 0 is the LOW BYTE OF THE FOV
+                // FLOAT (0x00 for every round FOV) — reading it left the
+                // Say-To gate dead on all vanilla data (#5492).
+                out.dialogue_type = sub
+                    .data
+                    .get(16..20)
+                    .map(|b| u32::from_le_bytes(b.try_into().expect("four-byte slice")))
+                    .map_or(0, |ty| u8::try_from(ty).unwrap_or(u8::MAX));
                 let topic = remap_fid(
                     u32::from_le_bytes(sub.data[4..8].try_into().unwrap()),
                     remap,
@@ -928,7 +950,12 @@ pub fn parse_pack(
             // `PackTarget`'s doc comment). Only types 0 (Specific
             // Reference) / 1 (Object ID) carry a FormID that needs
             // remapping to global space; the rest pass through raw.
-            b"PTDT" if sub.data.len() >= 16 => {
+            // #5504 — Oblivion's PTDT is 12 bytes in all 1,776 records
+            // (type i32, target u32, count i32): the FO3/FNV trailing f32
+            // does not exist there, and FO3 authors 26 twelve-byte ones
+            // too. The unread f32 is the only thing past byte 12, so the
+            // gate is the three fields actually decoded.
+            b"PTDT" if sub.data.len() >= 12 => {
                 let mut r = SubReader::new(&sub.data);
                 let target_type = r.u32_or_default();
                 let raw = r.u32_or_default();
@@ -2229,5 +2256,59 @@ mod tests {
         let subs = vec![sub(b"PKDD", zero)];
         let pack = parse_pack(1, &subs, &None, GameKind::Fallout3NV);
         assert_eq!(pack.dialogue_topic, None);
+    }
+
+    /// #5492 — `PKDD` Dialogue Type is the u32 at offset 16, not byte 0
+    /// (the low byte of the FOV float, 0x00 for every round FOV). A 24-byte
+    /// payload with FOV 100.0 and type 1 must read as Say To; 12/16-byte
+    /// payloads (`SetOptionalFrom(3)`) read as Conversation.
+    #[test]
+    fn pkdd_dialogue_type_is_the_u32_at_offset_16() {
+        let build = |len: usize, fov: f32, ty: u32| {
+            let mut d = vec![0u8; len];
+            d[0..4].copy_from_slice(&fov.to_le_bytes());
+            d[4..8].copy_from_slice(&0x0003_06CFu32.to_le_bytes());
+            if len >= 20 {
+                d[16..20].copy_from_slice(&ty.to_le_bytes());
+            }
+            parse_pack(1, &[sub(b"PKDD", d)], &None, GameKind::Fallout3NV)
+        };
+        assert_eq!(build(24, 100.0, 1).dialogue_type, 1, "Say To");
+        assert_eq!(build(24, 100.0, 0).dialogue_type, 0, "Conversation");
+        // A FOV whose low byte is non-zero must not leak into the type.
+        assert_eq!(build(24, f32::from_bits(0x42C8_0001), 0).dialogue_type, 0);
+        // The topic decode is unchanged.
+        assert_eq!(build(24, 100.0, 1).dialogue_topic, Some(0x0003_06CF));
+        // Optional-from-3: short payloads carry no type.
+        assert_eq!(build(12, 100.0, 1).dialogue_type, 0);
+        assert_eq!(build(16, 100.0, 1).dialogue_type, 0);
+    }
+
+    /// #5504 — Oblivion's legacy 4-byte `PKDT` (u16 flags, u8 procedure,
+    /// junk byte) decodes instead of leaving the package reading as Find,
+    /// and its 12-byte `PTDT` (type, target, count — no trailing f32)
+    /// yields a target.
+    #[test]
+    fn oblivion_legacy_pkdt_and_twelve_byte_ptdt_decode() {
+        let mut pkdt = Vec::new();
+        pkdt.extend_from_slice(&0x0121u16.to_le_bytes()); // flags
+        pkdt.push(1); // procedure 1 = Follow
+        pkdt.push(0xCD); // junk byte
+        let mut ptdt = Vec::new();
+        ptdt.extend_from_slice(&0u32.to_le_bytes()); // Specific Reference
+        ptdt.extend_from_slice(&0x0000_0014u32.to_le_bytes()); // the player
+        ptdt.extend_from_slice(&50i32.to_le_bytes());
+        let subs = vec![sub(b"PKDT", &pkdt), sub(b"PTDT", &ptdt)];
+        let pack = parse_pack(0xA2, &subs, &None, GameKind::Oblivion);
+        assert_eq!(pack.procedure_type, 1);
+        assert_eq!(pack.package_flags, 0x0121);
+        let target = pack.target.expect("the 12-byte PTDT yields a target");
+        assert_eq!(target.target, PackTargetKind::SpecificReference(0x14));
+        assert_eq!(target.count_or_distance, 50);
+        // The 8-byte form is untouched.
+        let mut pkdt8 = 0x0000_0421u32.to_le_bytes().to_vec();
+        pkdt8.extend_from_slice(&6u32.to_le_bytes());
+        let pack = parse_pack(0xA3, &[sub(b"PKDT", &pkdt8)], &None, GameKind::Oblivion);
+        assert_eq!((pack.package_flags, pack.procedure_type), (0x421, 6));
     }
 }

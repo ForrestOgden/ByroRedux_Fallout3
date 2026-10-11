@@ -5742,3 +5742,69 @@ fn story_manager_fo4_dialect_floor() {
         1
     );
 }
+
+/// #5504 — Oblivion's legacy 4-byte `PKDT` (u16 flags, u8 procedure) and
+/// 12-byte `PTDT` (type, target, count) decode. Before the fix both
+/// sub-records were skipped by FO3/FNV-shaped length gates: 479 Wander /
+/// Travel / Eat / Sleep / Follow / Escort packages read as Find, and no
+/// Oblivion package carried a target (OBL-2026-10-09-D2-01). Floors are the
+/// 4-byte-form counts measured from the raw `Oblivion.esm` (the 8-byte form
+/// adds to them), plus the 1,776 `PTDT` records.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn parse_rate_oblivion_pack_legacy_pkdt_and_ptdt() {
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[Oblivion] skipping: BYROREDUX_OBLIVION_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    let count = |procedure: u32| {
+        index
+            .packages
+            .values()
+            .filter(|p| p.procedure_type == procedure)
+            .count()
+    };
+    for (procedure, name, floor) in [
+        (5, "Wander", 179),
+        (6, "Travel", 158),
+        (3, "Eat", 73),
+        (4, "Sleep", 49),
+        (1, "Follow", 15),
+        (2, "Escort", 5),
+    ] {
+        assert!(
+            count(procedure) >= floor,
+            "{name} packages: {} < {floor}",
+            count(procedure)
+        );
+    }
+    let targets = index.packages.values().filter(|p| p.target.is_some()).count();
+    assert!(targets >= 1700, "PACK.target on {targets} packages, expected >= 1700");
+}
+
+/// #5492 — `PKDD` Dialogue Type is the u32 at offset 16. Measured Say-To
+/// (type 1) PKDDs on the raw masters: FO3 19, FNV 21 (the old byte-0 read
+/// found none).
+#[test]
+#[ignore = "needs FO3/FNV game data on disk"]
+fn parse_rate_fo3_fnv_pkdd_say_to_floor() {
+    for (env, default, master, say_to) in [
+        (test_paths::FO3_ENV, test_paths::FO3_DEFAULT, "Fallout3.esm", 19),
+        (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", 21),
+    ] {
+        let Some(data) = data_dir(env, default) else {
+            eprintln!("[{master}] skipping: game data missing");
+            continue;
+        };
+        let bytes = std::fs::read(data.join(master)).expect("read master");
+        let index = parse_esm(&bytes).expect("parse master");
+        let found = index
+            .packages
+            .values()
+            .filter(|p| p.dialogue_type == 1)
+            .count();
+        assert_eq!(found, say_to, "{master}: Say-To dialogue packages");
+    }
+}
