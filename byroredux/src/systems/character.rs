@@ -2618,7 +2618,7 @@ mod tests {
     #[test]
     fn the_controller_leaves_authored_water_damage_to_water_damage_system() {
         let src = include_str!("character.rs");
-        let production = &src[..src.find("#[cfg(test)]").expect("test module")];
+        let production = byroredux_core::source_scan::production_text(src);
         assert!(
             !production.contains("water_damage_for_contact"),
             "authored water damage must be applied only by water_damage_system"
