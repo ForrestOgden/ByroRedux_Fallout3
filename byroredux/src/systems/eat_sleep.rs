@@ -44,6 +44,13 @@
 //! frame, and every attempt in a frame shares one marker gather
 //! ([`FrameSeats`]) held in the system's persistent [`EatSleepScratch`] —
 //! the same factory-captured scratch `sandbox_seat_system` uses (#2033).
+//!
+//! #5527 — the same cadence covers an actor whose `PLDT` anchor is not
+//! resolvable yet (an `InCell` package outside its resident interior, a
+//! reference not loaded yet): it idles on [`ANCHOR_RETRY_SECS`] instead of
+//! re-resolving every frame for the whole package window, and the pose /
+//! speed / destination reads the walk leg needs are gathered once per frame
+//! in one query pass instead of four `world.get` lock round-trips per actor.
 
 use byroredux_core::ecs::components::{
     EatBehavior, EatSleepLocation, EatSleepState, EditorPlacement, FurnitureMarker,
@@ -51,7 +58,7 @@ use byroredux_core::ecs::components::{
 };
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
-use byroredux_core::math::Vec3;
+use byroredux_core::math::{Quat, Vec3};
 
 use byroredux_scripting::PackageTargetRegistry;
 use std::collections::HashMap;
@@ -69,6 +76,13 @@ const ARRIVE_RADIUS: f32 = 64.0;
 /// cadence `ambient_ai_package_system` re-evaluates at — so a freed marker
 /// is found promptly without a whole-world furniture gather per frame.
 const SEAT_RETRY_SECS: f32 = 2.0;
+
+/// Real seconds between anchor resolution attempts for an actor whose `PLDT`
+/// anchor is not resolvable yet (#5527) — the seat-retry cadence, for the
+/// same reason: a cell that becomes resident or a reference that finishes
+/// loading is picked up within one in-game minute, without a map probe (and
+/// a lowercase cell-key allocation) per idle actor per frame.
+const ANCHOR_RETRY_SECS: f32 = SEAT_RETRY_SECS;
 
 /// One world-space seat: `((furniture entity, marker index), transform)`.
 type Seat = ((EntityId, u32), GlobalTransform);
@@ -118,6 +132,9 @@ struct EatSleepScratch {
     seats: FrameSeats,
     /// Seconds until an arrived-but-unseated actor may attempt again.
     seat_retry: HashMap<EntityId, f32>,
+    /// Seconds until an actor whose anchor did not resolve may resolve it
+    /// again (#5527).
+    anchor_retry: HashMap<EntityId, f32>,
     /// Continuous KCC-blocked walk seconds per walking actor (#5452) —
     /// runtime-only, the `WalkStuckTimer` role for this mover.
     stuck_secs: HashMap<EntityId, f32>,
@@ -144,6 +161,14 @@ struct EatSleepActor {
     kind: EatOrSleep,
     radius: Option<f32>,
     location: EatSleepLocation,
+    /// The recorded walk destination, once the anchor has resolved.
+    destination: Option<Vec3>,
+    /// World position from this frame's propagated `GlobalTransform`.
+    global: Option<Vec3>,
+    /// Local rotation (the authoritative pose on a propagation root).
+    rotation: Quat,
+    /// Authored walk speed, if the actor carries one.
+    walk_speed: Option<f32>,
 }
 
 /// Eat/Sleep system factory: captures the persistent [`EatSleepScratch`]
@@ -163,6 +188,10 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 kind: EatOrSleep::Eat,
                 radius: behavior.radius,
                 location: behavior.location,
+                destination: None,
+                global: None,
+                rotation: Quat::IDENTITY,
+                walk_speed: None,
             });
         }
     }
@@ -173,6 +202,10 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
                 kind: EatOrSleep::Sleep,
                 radius: behavior.radius,
                 location: behavior.location,
+                destination: None,
+                global: None,
+                rotation: Quat::IDENTITY,
+                walk_speed: None,
             });
         }
     }
@@ -192,6 +225,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
     }
     if actors.is_empty() {
         scratch.seat_retry.clear();
+        scratch.anchor_retry.clear();
         scratch.stuck_secs.clear();
         return;
     }
@@ -202,10 +236,47 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
             .seat_retry
             .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
     }
+    if !scratch.anchor_retry.is_empty() {
+        scratch
+            .anchor_retry
+            .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
+    }
     if !scratch.stuck_secs.is_empty() {
         scratch
             .stuck_secs
             .retain(|npc, _| actors.iter().any(|actor| actor.npc == *npc));
+    }
+    // #5527 — everything the loop below reads per actor, gathered in one
+    // pass: a single read-lock acquire per storage instead of one
+    // `world.get` (acquire + release + lock-tracker entry) per component per
+    // actor per frame. Nothing in the loop changes another actor's
+    // `GlobalTransform`, `WalkSpeed` or recorded destination, and its own
+    // `Transform` write happens after its own read, so the snapshot is exact.
+    // Every guard drops with this block, before the writes below.
+    {
+        let state_q = world.query::<EatSleepState>();
+        let global_q = world.query::<GlobalTransform>();
+        let speed_q = world.query::<crate::components::WalkSpeed>();
+        let transform_q = world.query::<Transform>();
+        for actor in &mut actors {
+            actor.destination = state_q
+                .as_ref()
+                .and_then(|q| q.get(actor.npc))
+                .map(|state| state.destination);
+            actor.global = global_q
+                .as_ref()
+                .and_then(|q| q.get(actor.npc))
+                .map(|transform| transform.translation);
+            actor.walk_speed = speed_q
+                .as_ref()
+                .and_then(|q| q.get(actor.npc))
+                .map(|speed| speed.0);
+            actor.rotation = transform_q
+                .as_ref()
+                .and_then(|q| q.get(actor.npc))
+                .map(|transform| transform.rotation)
+                .unwrap_or_default();
+        }
     }
 
     for EatSleepActor {
@@ -213,29 +284,41 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
         kind,
         radius,
         location,
+        destination,
+        global,
+        rotation,
+        walk_speed,
     } in actors
     {
         // One-shot walk destination: resolve on first sight, reuse
         // after. Inserted through a scoped write so no read guard is
         // held across it.
-        let destination = match world.get::<EatSleepState>(npc).map(|state| state.destination) {
+        let destination = match destination {
             Some(destination) => destination,
             None => {
+                // #5527 — an anchor that did not resolve waits out its
+                // clock instead of re-resolving every frame.
+                if let Some(wait) = scratch.anchor_retry.get_mut(&npc) {
+                    *wait -= dt;
+                    if *wait > 0.0 {
+                        continue;
+                    }
+                }
                 // #5391 — an `InCell` package whose cell is not resident
-                // idles (resolved again next tick, no walk, no seat).
-                let Some(destination) = resolve_anchor(world, npc, location) else {
+                // idles (resolved again after `ANCHOR_RETRY_SECS`, no
+                // walk, no seat).
+                let Some(destination) = resolve_anchor(world, npc, global, location) else {
+                    scratch.anchor_retry.insert(npc, ANCHOR_RETRY_SECS);
                     continue;
                 };
+                scratch.anchor_retry.remove(&npc);
                 if let Some(mut states) = world.query_mut::<EatSleepState>() {
                     states.insert(npc, EatSleepState { destination });
                 }
                 destination
             }
         };
-        let current = world
-            .get::<GlobalTransform>(npc)
-            .map(|transform| transform.translation)
-            .unwrap_or_default();
+        let current = global.unwrap_or_default();
         let flat = Vec3::new(destination.x - current.x, 0.0, destination.z - current.z);
         // Arrived: seat at the nearest matching marker. Sleep prefers
         // sleep markers, falling back to sit markers when the cell's
@@ -258,14 +341,7 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
             // local on the next propagation, so writing it erased the
             // step every frame and the diner never reached its marker.
             // Same write shape as travel/wander's pass 2.
-            let speed = world
-                .get::<crate::components::WalkSpeed>(npc)
-                .map(|speed| speed.0)
-                .unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
-            let rotation = world
-                .get::<Transform>(npc)
-                .map(|transform| transform.rotation)
-                .unwrap_or_default();
+            let speed = walk_speed.unwrap_or(crate::systems::locomotion::LOCOMOTION_WALK_SPEED);
             // #5452 — routed along the cached NAVM path like Travel (which
             // also lines `destination.y` up with the ground contract), and
             // the KCC's `blocked` flag feeds the stuck clock. #5371 —
@@ -329,8 +405,16 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
 /// (163 FNV actor/target pairs place the target after the actor); the
 /// old code cached the actor's then-current position for the life of
 /// the package and froze the diner at its spawn point.
-fn resolve_anchor(world: &World, npc: EntityId, location: EatSleepLocation) -> Option<Vec3> {
-    let current = world.get::<GlobalTransform>(npc)?.translation;
+///
+/// `global` is the actor's world position from the frame's gather pass; an
+/// actor without a `GlobalTransform` idles, as before.
+fn resolve_anchor(
+    world: &World,
+    npc: EntityId,
+    global: Option<Vec3>,
+    location: EatSleepLocation,
+) -> Option<Vec3> {
+    let current = global?;
     match location {
         // #5500 — an unresolvable reference (not loaded yet) resolves
         // again next tick rather than freezing the actor's current
@@ -1036,6 +1120,64 @@ mod tests {
         eat_sleep_system(&world, 1.0);
         assert!(world.get::<EatSleepState>(actor).is_none());
         assert_eq!(world.get::<Transform>(actor).expect("transform").translation, Vec3::ZERO);
+    }
+
+    /// #5527 — an actor whose anchor does not resolve used to re-resolve on
+    /// every frame for the whole package window (a map probe plus, for
+    /// `InCell`, a lowercase cell-key allocation). It now waits out
+    /// [`ANCHOR_RETRY_SECS`]: an anchor that becomes resolvable mid-wait is
+    /// not found until the clock expires, then is, and the clock is dropped.
+    #[test]
+    fn unresolved_anchor_retries_on_a_coarse_cadence() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+        let (mut world, actor) = setup();
+        world.register::<FormIdComponent>();
+        let mut pool = byroredux_core::form_id::FormIdPool::default();
+        let fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("FalloutNV.esm"),
+            local: LocalFormId(0x0100_0042),
+        });
+        world.insert_resource(pool);
+        world.insert(actor, FormIdComponent(fid));
+        world.insert(
+            actor,
+            EatBehavior {
+                radius: Some(512.0),
+                location: EatSleepLocation::NearLinkedReference,
+                form_id: 0xAB,
+            },
+        );
+        let mut scratch = EatSleepScratch::default();
+
+        // No XLKR edge registered: the anchor is unresolvable and arms the clock.
+        eat_sleep_system_inner(&world, 0.1, &mut scratch);
+        assert!(world.get::<EatSleepState>(actor).is_none());
+        assert_eq!(scratch.anchor_retry.get(&actor), Some(&ANCHOR_RETRY_SECS));
+
+        // The edge appears, but the clock has not expired: not looked at.
+        byroredux_scripting::install_package_linked_references(
+            &mut world,
+            vec![(0x0100_0042, vec![(0, 0x0100_0099)])],
+        );
+        byroredux_scripting::install_package_target_positions(
+            &mut world,
+            vec![(0x0100_0099, Vec3::new(400.0, 0.0, 0.0))],
+        );
+        eat_sleep_system_inner(&world, 0.5, &mut scratch);
+        assert!(
+            world.get::<EatSleepState>(actor).is_none(),
+            "still inside the anchor retry wait"
+        );
+
+        // The clock expires: the anchor resolves and the clock is dropped.
+        eat_sleep_system_inner(&world, ANCHOR_RETRY_SECS, &mut scratch);
+        assert_eq!(
+            world.get::<EatSleepState>(actor).expect("anchor resolved").destination,
+            Vec3::new(400.0, 0.0, 0.0)
+        );
+        assert!(scratch.anchor_retry.is_empty(), "a resolved actor keeps no anchor clock");
     }
 
     /// #5449 — an arrived actor with nowhere to sit used to re-gather every
