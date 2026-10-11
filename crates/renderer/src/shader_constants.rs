@@ -1096,10 +1096,7 @@ mod tests {
             ("volumetrics.rs", include_str!("vulkan/volumetrics.rs")),
         ] {
             // Code lines only, same reason as the sibling test below.
-            let production: String = src
-                .split("#[cfg(test)]")
-                .next()
-                .unwrap_or(src)
+            let production: String = crate::source_scan::production_text_or_whole(src)
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()

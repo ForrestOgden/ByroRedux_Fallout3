@@ -1345,9 +1345,7 @@ mod caps_tests {
         // inspection: `is_device_suitable` needs a live `VkInstance` and a
         // physical device, neither of which a unit test can conjure.
         let source = include_str!("device.rs");
-        let production = &source[..source
-            .find("#[cfg(test)]")
-            .expect("device.rs must retain its test module")];
+        let production = crate::source_scan::production_text(source);
         let normalized: String = production.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
             normalized.contains("if!ray_query_supported{returnOk(None);}"),
@@ -1449,8 +1447,7 @@ mod caps_tests {
     #[test]
     fn first_instance_feature_is_enabled_and_every_indirect_consumer_is_gated() {
         fn production(source: &str) -> String {
-            let end = source.find("#[cfg(test)]").unwrap_or(source.len());
-            source[..end]
+            crate::source_scan::production_text_or_whole(source)
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect()

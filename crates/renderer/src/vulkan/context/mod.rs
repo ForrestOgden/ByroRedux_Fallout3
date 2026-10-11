@@ -1909,10 +1909,7 @@ mod rigid_history_hasher_tests {
     // needle can't match this file's own assertion strings.
     fn production_src() -> String {
         const CONTEXT_MOD_RS: &str = include_str!("mod.rs");
-        let mod_production = CONTEXT_MOD_RS
-            .split_once("\n#[cfg(test)]")
-            .expect("context/mod.rs lost its test modules")
-            .0;
+        let mod_production = crate::source_scan::production_text(CONTEXT_MOD_RS);
         format!("{mod_production}\n{}", include_str!("init.rs"))
     }
 
@@ -2113,8 +2110,7 @@ mod scratch_telemetry_coverage_tests {
     /// `source_scan::production_text` this tolerates a file with no test
     /// module, which most of the crate's files are.
     fn production_part(text: &str) -> &str {
-        text.split_once("\n#[cfg(test)]\nmod ")
-            .map_or(text, |(head, _)| head)
+        crate::source_scan::production_text_or_whole(text)
     }
 
     fn strip_visibility(line: &str) -> &str {

@@ -656,10 +656,7 @@ mod tests {
     #[test]
     fn per_frame_water_reuses_fx_storage_and_billboards_allocate_no_scratch_map() {
         let water = include_str!("water.rs");
-        let water = water
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production water source");
+        let water = byroredux_core::source_scan::production_text(water);
         assert!(!water.contains("use std::collections::"));
         for needle in [
             "FxHashSet::<EntityId>::default()",
@@ -676,10 +673,7 @@ mod tests {
         }
 
         let billboard = include_str!("billboard.rs");
-        let billboard = billboard
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production billboard source");
+        let billboard = byroredux_core::source_scan::production_text(billboard);
         assert!(!billboard.contains("use std::collections::"));
         assert!(billboard.contains("let swq = world.query::<SpeedTreeWind>()"));
         // #3192 — the parked-camera pass is driven by the `SpeedTreeWind`

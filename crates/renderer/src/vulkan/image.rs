@@ -487,10 +487,7 @@ mod tests {
     #[test]
     fn the_bind_and_view_error_arms_free_before_destroying() {
         let src = include_str!("image.rs");
-        let production = src
-            .split_once("\n#[cfg(test)]")
-            .expect("image.rs lost its test module")
-            .0;
+        let production = crate::source_scan::production_text(src);
         // Anchor on the call syntax, not the bare name: the module doc above
         // names both functions in prose, and matching that slices the wrong
         // branch — it did, the first time this was written.

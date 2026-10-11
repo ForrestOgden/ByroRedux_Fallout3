@@ -742,9 +742,7 @@ mod tests {
             let src = std::fs::read_to_string(path).unwrap();
             // `production_text` requires a test module to cut; screenshot.rs
             // has none, so cut when present and take the whole text otherwise.
-            let production = src
-                .split_once("\n#[cfg(test)]\nmod ")
-                .map_or(src.as_str(), |(prod, _)| prod);
+            let production = crate::source_scan::production_text_or_whole(&src);
             let rel = path
                 .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/vulkan"))
                 .unwrap()
@@ -783,9 +781,7 @@ mod tests {
     #[test]
     fn teardown_path_recovers_poisoned_locks_beyond_the_allocator_family() {
         let src = include_str!("context/teardown.rs");
-        let production = src
-            .split_once("\n#[cfg(test)]\nmod ")
-            .map_or(src, |(prod, _)| prod);
+        let production = crate::source_scan::production_text(src);
         assert!(
             !production.contains("lock poisoned"),
             "VulkanContext::drop must recover poisoned locks (lock_recovering), \

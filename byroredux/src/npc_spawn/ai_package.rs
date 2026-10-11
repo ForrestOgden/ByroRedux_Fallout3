@@ -1795,10 +1795,7 @@ mod tests {
     /// #4824: behavior tests alone cannot detect a wasted candidate clone.
     #[test]
     fn suspended_actors_are_filtered_before_candidate_stacks_are_cloned() {
-        let source = include_str!("ai_package.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let source = byroredux_core::source_scan::production_text(include_str!("ai_package.rs"));
         let system = source
             .split("fn ambient_ai_package_system(")
             .nth(1)

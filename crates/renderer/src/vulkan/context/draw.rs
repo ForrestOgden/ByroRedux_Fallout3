@@ -1314,10 +1314,9 @@ mod draw_frame_size_budget_tests {
                 rest = &rest[pos + needle.len()..];
             }
         }
-        let upload = include_str!("build_and_upload_instances.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let upload = crate::source_scan::production_text(include_str!(
+            "build_and_upload_instances.rs"
+        ));
         ordered(
             upload,
             &[
@@ -1333,10 +1332,7 @@ mod draw_frame_size_budget_tests {
                 "t.parameter_upload_ns = parameter_t0.elapsed()",
             ],
         );
-        let fog = include_str!("../volumetrics.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let fog = crate::source_scan::production_text(include_str!("../volumetrics.rs"));
         ordered(
             fog,
             &[
@@ -1383,31 +1379,12 @@ mod draw_frame_size_budget_tests {
     /// Production lines of a context source file: everything except its
     /// `#[cfg(test)]` modules. `draw.rs` and `frame_params.rs` interleave
     /// test modules with production code, so every test module is stripped
-    /// rather than cutting at the first one the way
-    /// [`crate::source_scan::production_text`] does.
+    /// (brace-matched, literal-aware) rather than cutting at the first one
+    /// the way [`crate::source_scan::production_text`] does (#5469: this
+    /// used to be a local line-counting copy that counted braces inside
+    /// string literals).
     fn production_lines(src: &str) -> usize {
-        let mut out = 0usize;
-        let mut depth: i32 = 0;
-        for line in src.lines() {
-            let trimmed = line.trim_start();
-            if depth == 0 && (trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test")) {
-                // Skip the attribute line(s) and the module that follows.
-                continue;
-            }
-            if depth > 0 {
-                depth += line.matches('{').count() as i32;
-                depth -= line.matches('}').count() as i32;
-                continue;
-            }
-            if trimmed.starts_with("mod ") && trimmed.ends_with('{') {
-                // A #[cfg(test)] mod opening — enter it (only reachable when
-                // the attribute was consumed above on a prior line).
-                depth = 1;
-                continue;
-            }
-            out += 1;
-        }
-        out
+        crate::source_scan::strip_test_modules(src).lines().count()
     }
 
     #[test]

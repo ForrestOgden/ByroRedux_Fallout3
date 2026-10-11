@@ -1389,7 +1389,7 @@ mod tests {
 #[cfg(test)]
 mod lod_clamp_resolve_tests {
     fn production(src: &'static str) -> &'static str {
-        src.find("#[cfg(test)]").map_or(src, |cut| &src[..cut])
+        byroredux_core::source_scan::production_text(src)
     }
 
     #[test]

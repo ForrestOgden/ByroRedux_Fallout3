@@ -2003,10 +2003,7 @@ mod tests {
         // every definition asserted below is also spelled out in its literals,
         // so a deleted `invalidate_if_needed` would still be "found" in the
         // test's own text.
-        let src = include_str!("buffer.rs")
-            .split_once("\n#[cfg(test)]")
-            .expect("buffer.rs lost its test modules")
-            .0;
+        let src = crate::source_scan::production_text(include_str!("buffer.rs"));
         let start = src
             .find("pub fn create_host_readback(")
             .expect("create_host_readback must still exist (#2752)");
@@ -2170,9 +2167,7 @@ mod destroyed_handle_nulling_tests {
     /// Everything before the first test module, so this file's own
     /// assertion needles cannot match themselves.
     fn production_src(src: &'static str) -> &'static str {
-        src.split_once("\n#[cfg(test)]")
-            .expect("source lost its test modules")
-            .0
+        crate::source_scan::production_text(src)
     }
 
     /// Both teardown arms of each type: the explicit `destroy()` and the

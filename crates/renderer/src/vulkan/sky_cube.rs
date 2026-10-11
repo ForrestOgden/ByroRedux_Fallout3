@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn the_bake_binds_the_shared_cloud_volumes_rather_than_owning_them() {
         let src = include_str!("sky_cube.rs");
-        let production = src.split("#[cfg(test)]").next().expect("production half");
+        let production = crate::source_scan::production_text(src);
         assert!(
             !production.contains("cached_base_density_noise")
                 && !production.contains("initialize_noise"),

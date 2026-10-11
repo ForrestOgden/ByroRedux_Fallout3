@@ -746,11 +746,9 @@ mod taa_jitter_gate_tests {
     /// `draw.rs`'s `is_fsr_dispatch_active_tests`).
     #[test]
     fn taa_arm_feeds_the_raw_output_gate_into_taa_jitter() {
-        let full_src = include_str!("assemble_camera_and_lights.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!(
+            "assemble_camera_and_lights.rs"
+        ));
         let arm_start = src
             .find("UpscalerMode::Taa => {")
             .expect("the upscaler match must still have a Taa arm");

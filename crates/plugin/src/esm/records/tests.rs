@@ -8,6 +8,7 @@ use super::*;
 use super::parse::character_rules_profile;
 use crate::esm::reader::FormIdRemap;
 use byroredux_core::character::CharacterRulesProfile;
+use byroredux_core::source_scan::strip_test_modules;
 
 #[path = "spatial_units_tests.rs"]
 mod spatial_units;
@@ -2743,56 +2744,6 @@ fn sech_and_aopf_groups_dispatch_into_typed_audio_maps() {
 // #3715) and the class kept recurring, because a list of parsers someone
 // remembered to write down cannot see the parser nobody wrote down.
 
-/// Remove every `#[cfg(test)]` module from `src`, brace-matched, leaving
-/// production code that follows one intact.
-fn strip_test_modules(src: &str) -> String {
-    const MARK: &str = "#[cfg(test)]";
-    let mut out = String::with_capacity(src.len());
-    let mut rest = src;
-    while let Some(at) = rest.find(MARK) {
-        out.push_str(&rest[..at]);
-        let after = &rest[at..];
-        // Whichever delimiter comes FIRST decides the form. Several files
-        // here use the block-less `#[cfg(test)] #[path = "..."] mod tests;`
-        // (gras.rs, mod.rs, actor/mod.rs). Looking for `{` first and only
-        // falling back to `;` brace-matches from some *later* unrelated
-        // block and swallows everything between — which silently hid a
-        // probe parser appended below such a declaration, and would hide
-        // real production code the same way.
-        let open = after.find('{');
-        let semi = after.find(';');
-        let open = match (open, semi) {
-            (Some(o), Some(sc)) if sc < o => {
-                rest = &after[sc + 1..];
-                continue;
-            }
-            (None, Some(sc)) => {
-                rest = &after[sc + 1..];
-                continue;
-            }
-            (Some(o), _) => o,
-            (None, None) => return out,
-        };
-        let bytes = after.as_bytes();
-        let (mut depth, mut i) = (0usize, open);
-        while i < bytes.len() {
-            match bytes[i] {
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        rest = if i < bytes.len() { &after[i + 1..] } else { "" };
-    }
-    out.push_str(rest);
-    out
-}
 
 /// Every `pub fn parse_*` in `records/`, discovered by walking the
 /// directory at test time. Returns `(file, parser, signature, body)`.

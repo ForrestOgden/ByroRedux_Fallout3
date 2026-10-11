@@ -25,6 +25,19 @@ pub fn production_text(src: &str) -> &str {
         .0
 }
 
+/// [`production_text`] for a file that MAY have no test module — a scan
+/// over a list of files where some carry tests and some do not. With no
+/// `#[cfg(test)] mod` the whole file is production text, which is correct
+/// (there is nothing to cut), and with one the cut is the same strong
+/// needle, so a `#[cfg(test)] fn`/`use` earlier in the file cannot truncate
+/// the scan the way `find("#[cfg(test)]")` did (#5469). Prefer
+/// [`production_text`] when the file is known to carry a test module: it
+/// fails loudly if that stops being true, this does not.
+pub fn production_text_or_whole(src: &str) -> &str {
+    src.split_once("\n#[cfg(test)]\nmod ")
+        .map_or(src, |(production, _)| production)
+}
+
 /// Occurrences of `ident` in `src` as a whole identifier — not as part of a
 /// longer one (`temp_path` does not match `temp_path_2` or `my_temp_path`).
 pub fn count_identifier(src: &str, ident: &str) -> usize {
@@ -187,6 +200,20 @@ mod tests {
         let production = production_text(src);
         assert_eq!(production, "fn a() {}\n#[cfg(test)]\nuse x;\nfn b() {}");
         assert!(!production.contains("needle"));
+    }
+
+    #[test]
+    fn production_text_or_whole_cuts_at_a_test_module_or_keeps_everything() {
+        // A test module: same cut as `production_text`.
+        let with_mod = "fn a() {}\n#[cfg(test)]\nmod tests { fn t() {} }\n";
+        assert_eq!(production_text_or_whole(with_mod), "fn a() {}");
+        // An item-level gate before the module does NOT truncate (the weak
+        // `#[cfg(test)]` cut would have stopped at the `use`).
+        let item_gate = "#[cfg(test)]\nuse x::y;\nfn a() {}\n#[cfg(test)]\nmod tests {}\n";
+        assert!(production_text_or_whole(item_gate).contains("fn a()"));
+        // No test module at all: the whole file is production.
+        let none = "fn a() {}\nfn b() {}\n";
+        assert_eq!(production_text_or_whole(none), none);
     }
 
     #[test]

@@ -401,18 +401,9 @@ mod tests {
             ..Default::default()
         };
         let line = cpu_breakdown(&timings);
-        let frame = include_str!("../app_frame.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
-        let bench = include_str!("../app_events.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
-        let metrics = include_str!("metrics.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .unwrap();
+        let frame = byroredux_core::source_scan::production_text(include_str!("../app_frame.rs"));
+        let bench = byroredux_core::source_scan::production_text(include_str!("../app_events.rs"));
+        let metrics = byroredux_core::source_scan::production_text(include_str!("metrics.rs"));
         for (name, value) in [
             ("pipeline_compile", 11),
             ("parameter_upload", 12),

@@ -667,9 +667,10 @@ fn no_production_source_restates_the_parallax_default_literals() {
         if name.ends_with("_tests.rs") || in_test_dir {
             return;
         }
-        let production = contents
-            .find("#[cfg(test)]")
-            .map_or(contents, |cut| &contents[..cut]);
+        // Tolerant cut (most files have no test module) on the strong
+        // needle: a `#[cfg(test)] fn` / `use` must not truncate the scan
+        // (#5469).
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
         for (idx, line) in production.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             let compact: String = code.split_whitespace().collect();
@@ -684,6 +685,75 @@ fn no_production_source_restates_the_parallax_default_literals() {
         found.is_empty(),
         "restate the parallax defaults through DEFAULT_PARALLAX_HEIGHT_SCALE / \
          DEFAULT_PARALLAX_MAX_PASSES, not literals (#4444 / #4552):\n{}",
+        found.join("\n")
+    );
+}
+
+/// #5469 — #5100 centralised the source-scan cut in `core::source_scan`
+/// (`production_text` / `production_text_or_whole` / `strip_test_modules`),
+/// but 25+ inline copies survived it with the WEAK needle: a bare
+/// `find`/`split` on `#[cfg(test)]` also truncates at a `#[cfg(test)] fn` or
+/// `use` (the hazard the core doc warns about), and several kept the
+/// whole-file fallback #4842 removed. A guard that copies a neighbour
+/// inherits whichever needle it finds, so no source may spell the weak cut
+/// outside the helper itself; use the helper (strong needle
+/// `\n#[cfg(test)]\nmod `).
+///
+/// The allowlist is exactly the sites that cannot or should not use it:
+/// the helper's own home, `boot/mod.rs`'s module-name lister (not a cut),
+/// `texture_registry_tests.rs` + `dynamic_rgba.rs` (`mod.rs` declares its
+/// test modules block-less via `#[path]`, which the strong needle cannot
+/// see), and the `pex` / `facegen` crates, which do not depend on
+/// `byroredux-core` (a new dependency needs approval).
+#[test]
+fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest.join("..");
+    // Composed at run time so this file does not contain the needles it
+    // searches for.
+    let attr = ["#[cfg(", "test)]"].concat();
+    let weak: Vec<String> = [
+        format!("find(\"{attr}\")"),
+        format!("rfind(\"{attr}\")"),
+        format!("split(\"{attr}\")"),
+        format!("split_once(\"\\n{attr}\")"),
+    ]
+    .to_vec();
+    const ALLOWED: &[&str] = &[
+        "crates/core/src/source_scan.rs",
+        "byroredux/src/boot/mod.rs",
+        "crates/renderer/src/texture_registry_tests.rs",
+        "crates/renderer/src/texture_registry/dynamic_rgba.rs",
+        "crates/pex/src/decompile/boolean.rs",
+        "crates/facegen/src/lib.rs",
+    ];
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&workspace_root, &mut |path, contents| {
+        let relative = path
+            .strip_prefix(&workspace_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let relative = relative.trim_start_matches("./");
+        if ALLOWED.iter().any(|allowed| relative.ends_with(allowed)) {
+            return;
+        }
+        for (idx, line) in contents.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue; // prose mentioning the old cut
+            }
+            if weak.iter().any(|needle| line.contains(needle.as_str())) {
+                found.push(format!("{relative}:{}  {}", idx + 1, trimmed));
+            }
+        }
+    });
+    assert!(
+        found.is_empty(),
+        "weak `#[cfg(test)]` source cut outside core::source_scan — use \
+         `production_text` (file known to carry a test module),\
+         `production_text_or_whole` (may have none) or `strip_test_modules` \
+         (interleaved test modules) (#5469):\n{}",
         found.join("\n")
     );
 }

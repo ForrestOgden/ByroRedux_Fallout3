@@ -1807,11 +1807,7 @@ mod tests {
     /// search can self-match its own needle literal).
     #[test]
     fn record_volumetrics_pass_routes_skip_clears_through_the_shared_latch() {
-        let full_src = include_str!("post_passes.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
 
         let fn_start = src
             .find("fn record_volumetrics_pass(")
@@ -1857,11 +1853,7 @@ mod tests {
     /// "the code exists" and "the code runs" are both checked.
     #[test]
     fn a_taa_failure_signals_a_temporal_discontinuity() {
-        let full_src = include_str!("post_passes.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
         let body = taa_failure_body(src);
 
         assert!(
@@ -2019,11 +2011,7 @@ mod tests {
     /// descriptor rewrite back, and the retired symbols must not return.
     #[test]
     fn the_retired_taa_failure_descriptor_rebind_stays_retired() {
-        let full_src = include_str!("post_passes.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
         let body = taa_failure_body(src);
 
         assert!(
@@ -2101,11 +2089,7 @@ mod tests {
     /// upscale input switching to TAA's output only when the resolve ran.
     #[test]
     fn taa_resolves_the_post_bloom_scene_tap() {
-        let full_src = include_str!("post_passes.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
 
         let fn_start = src
             .find("pub(super) fn record_post_passes(")
@@ -2159,11 +2143,7 @@ mod tests {
     /// shader early returns cannot prevent the later in-place add.
     #[test]
     fn record_bloom_pass_skips_raw_correctness_views_before_dispatch() {
-        let full_src = include_str!("post_passes.rs");
-        let test_mod_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        let src = &full_src[..test_mod_start];
+        let src = crate::source_scan::production_text(include_str!("post_passes.rs"));
         let fn_start = src
             .find("fn record_bloom_pass(")
             .expect("record_bloom_pass must still exist");

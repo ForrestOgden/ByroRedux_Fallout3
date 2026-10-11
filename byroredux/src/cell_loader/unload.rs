@@ -1252,11 +1252,7 @@ mod retention_hoisting_tests {
     /// own tests reference `cinematic_retained_entities(` and
     /// `unload_cell_inner(` by name too.
     fn production_source() -> &'static str {
-        let full_src = include_str!("unload.rs");
-        let test_start = full_src
-            .find("#[cfg(test)]")
-            .expect("this file has at least one #[cfg(test)] module");
-        &full_src[..test_start]
+        byroredux_core::source_scan::production_text(include_str!("unload.rs"))
     }
 
     #[test]

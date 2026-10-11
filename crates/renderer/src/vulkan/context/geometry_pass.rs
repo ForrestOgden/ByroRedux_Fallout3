@@ -902,7 +902,7 @@ mod tests {
     #[test]
     fn draw_call_stats_count_only_recorded_direct_draws() {
         const SRC: &str = include_str!("geometry_pass.rs");
-        let production = SRC.split("#[cfg(test)]").next().unwrap_or(SRC);
+        let production = crate::source_scan::production_text(SRC);
 
         assert!(
             production

@@ -18,10 +18,7 @@
 /// file's own test literals (including its std `HashSet`) live.
 fn production_text() -> &'static str {
     const SOURCE: &str = include_str!("groundcover.rs");
-    SOURCE
-        .split_once("\n#[cfg(test)]\nmod ")
-        .expect("groundcover.rs lost its test module — the production cut has nothing to anchor on")
-        .0
+    byroredux_core::source_scan::production_text(SOURCE)
 }
 
 /// Lines whose *code* (with `//`-prefixed comment text stripped, so a doc

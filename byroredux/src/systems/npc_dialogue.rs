@@ -878,12 +878,9 @@ pub(crate) fn npc_dialogue_selection_system(world: &World) {
 #[cfg(test)]
 mod voice_lifetime_source_tests {
     /// The production half of this file (everything before its first
-    /// `#[cfg(test)]` item), so these tests' own text cannot satisfy them.
+    /// `#[cfg(test)] mod`), so these tests' own text cannot satisfy them.
     fn production_src() -> &'static str {
-        include_str!("npc_dialogue.rs")
-            .split("\n#[cfg(test)]\n")
-            .next()
-            .expect("split always yields a first segment")
+        byroredux_core::source_scan::production_text(include_str!("npc_dialogue.rs"))
     }
 
     fn body_of(src: &'static str, signature: &str) -> &'static str {

@@ -1863,8 +1863,9 @@ mod tests {
     /// composed at runtime so this test's own text cannot satisfy them.
     #[test]
     fn palette_dispatch_range_is_the_whole_buffer_not_the_frame_extent() {
-        let src = include_str!("context/dispatch_skin_and_cluster.rs");
-        let production = &src[..src.find("#[cfg(test)]").unwrap_or(src.len())];
+        let production = crate::source_scan::production_text(include_str!(
+            "context/dispatch_skin_and_cluster.rs"
+        ));
         let flat: String = production.chars().filter(|c| !c.is_whitespace()).collect();
 
         let extent_as_range = format!("bone_world_buffer_size:{}", "bone_dispatch_bytes");

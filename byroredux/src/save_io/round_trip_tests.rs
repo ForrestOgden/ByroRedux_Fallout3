@@ -248,7 +248,10 @@ fn delta_columns_removed_at_runtime_have_a_load_reconciler() {
         {
             continue;
         }
-        let production_src = src.split("#[cfg(test)]").next().unwrap_or(&src);
+        // Every test module stripped (not just the first cut): files with
+        // interleaved test modules must not hide the production code that
+        // follows one (#5469).
+        let production_src = byroredux_core::source_scan::strip_test_modules(&src);
         for column in MUTABLE_DELTA_COLUMNS {
             let direct = format!("remove::<{column}>(");
             let via_helper = format!("remove_component::<{column}>(");

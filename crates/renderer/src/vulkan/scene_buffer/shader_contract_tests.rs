@@ -2977,10 +2977,8 @@ fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
     // Production text only, and only `record_post_passes` itself: the file's
     // own test module spells out both call expressions, so a call deleted from
     // the function was still "found" further down and the order held.
-    let post_passes = include_str!("../context/post_passes.rs")
-        .split_once("\n#[cfg(test)]")
-        .expect("post_passes.rs lost its test module")
-        .0;
+    let post_passes =
+        crate::source_scan::production_text(include_str!("../context/post_passes.rs"));
     let record_post_passes_start = post_passes
         .find("pub(super) fn record_post_passes")
         .expect("record_post_passes must exist");
@@ -6762,7 +6760,9 @@ fn descriptors_hash_views_route_through_byte_view_except_the_ash_type() {
     let src = include_str!("descriptors.rs");
     // Production half only, in case a `#[cfg(test)]` module ever grows
     // here (there is none today).
-    let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+    // descriptors.rs has no test module today: the tolerant cut keeps the
+    // whole file as production until one appears.
+    let production = crate::source_scan::production_text_or_whole(src);
 
     assert_eq!(
         production.match_indices("from_raw_parts").count(),

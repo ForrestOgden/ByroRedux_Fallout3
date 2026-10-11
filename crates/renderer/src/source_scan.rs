@@ -7,6 +7,7 @@
 //! and the cut stays defined exactly once.
 
 pub(crate) use byroredux_core::source_scan::production_text;
+pub(crate) use byroredux_core::source_scan::production_text_or_whole;
 pub(crate) use byroredux_core::source_scan::rust_files;
 pub(crate) use byroredux_core::source_scan::strip_test_modules;
 
@@ -27,16 +28,17 @@ mod tests {
     const UNWRAPPED_SELF_INCLUDES: &[(&str, usize)] = &[
         ("texture_registry/mod.rs", 1),
         ("vulkan/bloom.rs", 3),
-        ("vulkan/buffer.rs", 3),
+        ("vulkan/buffer.rs", 2),
         ("vulkan/caustic.rs", 4),
-        ("vulkan/context/assemble_camera_and_lights.rs", 1),
+        // assemble_camera_and_lights.rs dropped off this list (#5469): its
+        // one inline cut now goes through `production_text`.
         // +1 (#4722): `ui_instance_idx_is_reclamped_to_the_post_grow_slot_
         // capacity` cuts at its own module start (`mod ui_instance_idx_
         // overflow_tests`), same as the sibling #3601 pin in that module —
         // the file's test modules are interleaved with production code, so
         // production_text's first-cut does not apply.
         ("vulkan/context/build_and_upload_instances.rs", 7),
-        ("vulkan/context/dispatch_skin_and_cluster.rs", 4),
+        ("vulkan/context/dispatch_skin_and_cluster.rs", 2),
         // +1 (#5087): the file-level LOC budget strips every test module
         // itself (`production_lines` in draw_frame_size_budget_tests), so
         // production_text's first-cut does not apply to this interleaved
@@ -46,10 +48,10 @@ mod tests {
         ("vulkan/context/mod.rs", 1),
         // +1 (#4958): `every_frame_recorder_is_documented` strips every test
         // module itself (`strip_test_modules`), so its self-read is cut.
-        ("vulkan/context/post_passes.rs", 7),
+        ("vulkan/context/post_passes.rs", 2),
         ("vulkan/context/resize.rs", 1),
         ("vulkan/context/resources.rs", 5),
-        ("vulkan/context/skinned_blas_refit.rs", 2),
+        ("vulkan/context/skinned_blas_refit.rs", 1),
         ("vulkan/context/teardown.rs", 1),
         ("vulkan/device.rs", 2),
         ("vulkan/egui_pass.rs", 1),

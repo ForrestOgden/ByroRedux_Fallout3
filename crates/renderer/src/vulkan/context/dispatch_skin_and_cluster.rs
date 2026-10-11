@@ -824,8 +824,9 @@ mod palette_dirty_plan_tests {
     /// geometry, and only on frames where the upload cap bit.
     #[test]
     fn palette_dispatch_uses_the_dirty_plan_and_rearms_late_bind_inverses() {
-        let src = include_str!("dispatch_skin_and_cluster.rs");
-        let production = &src[..src.find("#[cfg(test)]").expect("test modules")];
+        let production = crate::source_scan::production_text(include_str!(
+            "dispatch_skin_and_cluster.rs"
+        ));
         assert!(
             production.contains("plan_palette_dispatch("),
             "the palette dispatch must be planned from the dirty ranges (#4204)"
@@ -886,8 +887,9 @@ mod palette_publish_barrier_consumer_tests {
             "no fragment shader that includes the bone reader was discovered"
         );
 
-        let src = include_str!("dispatch_skin_and_cluster.rs");
-        let production = &src[..src.find("#[cfg(test)]").expect("test modules")];
+        let production = crate::source_scan::production_text(include_str!(
+            "dispatch_skin_and_cluster.rs"
+        ));
         let barrier_at = production
             .find("let palette_barrier =")
             .expect("palette publish barrier");

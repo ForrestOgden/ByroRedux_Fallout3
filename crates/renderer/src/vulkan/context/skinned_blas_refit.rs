@@ -1117,9 +1117,7 @@ mod skin_publish_barrier_consumer_tests {
         );
 
         let src = include_str!("skinned_blas_refit.rs");
-        let production = &src[..src
-            .find("#[cfg(test)]")
-            .expect("skinned_blas_refit.rs must retain its test modules")];
+        let production = crate::source_scan::production_text(src);
         let normalized: String = production.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(
             normalized.contains(EXPECTED_DST_MASK),
@@ -1424,11 +1422,7 @@ mod bind_inverse_upload_failure_blas_gate_tests {
     /// The production half of this file — everything before the first
     /// `#[cfg(test)]`. See the note in the first test.
     fn production_source() -> &'static str {
-        let src = include_str!("skinned_blas_refit.rs");
-        let cut = src
-            .find("#[cfg(test)]")
-            .expect("this file has test modules");
-        &src[..cut]
+        crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"))
     }
 
     #[test]
