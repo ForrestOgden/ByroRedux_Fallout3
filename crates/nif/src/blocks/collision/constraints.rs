@@ -376,10 +376,18 @@ impl LimitedHingeCInfo {
 
     /// Oblivion / Morrowind (`#NI_BS_LTE_16#`) layout from nif.xml:
     /// 7 × Vec4 + 3 × f32 = 124 bytes. No Perp Axis In B1 (an FO3+
-    /// addition) and a pivots-first order. The absent perp axis is zeroed;
-    /// the PHYSAL translate boundary DOES read it (#2448 / PHYS-02), but
-    /// the solver's `frame_rot` falls back to a synthesized perpendicular
-    /// for a degenerate (zero) input, so the zeroed value is still safe.
+    /// addition) and a pivots-first order. The absent perpendicular is
+    /// derived, not zeroed: nif.xml defines `Perp Axis In A2` as
+    /// `Axis A × Perp Axis In A1` and `Perp Axis In B2` as the same
+    /// vector in B's space, so `Perp B1 = Perp B2 × Axis B` exactly —
+    /// the B-space mirror of the `Axis A` derivation
+    /// [`Self::parse_hinge_oblivion`] above already uses. Measured on
+    /// FNV (which authors B1): the
+    /// derived value matches the authored one to ~1e-7. Zeroing it
+    /// instead left `frame_rot` to synthesize an arbitrary
+    /// zero-reference, putting Oblivion bind poses 1.5–1.8 rad outside
+    /// the limits and tearing the rig apart on its first solve
+    /// (#5537 — the #2448 defect, still live on that era).
     fn parse_oblivion(stream: &mut NifStream) -> io::Result<Self> {
         let pivot_a = super::read_vec4(stream)?;
         let axis_a = super::read_vec4(stream)?;
@@ -388,13 +396,21 @@ impl LimitedHingeCInfo {
         let pivot_b = super::read_vec4(stream)?;
         let axis_b = super::read_vec4(stream)?;
         let perp_axis_in_b2 = super::read_vec4(stream)?;
+        // Perp B1 = Perp B2 × Axis B (nif.xml's own stated identity,
+        // inverted — same shape as the hinge's Axis A derivation).
+        let perp_axis_in_b1 = [
+            perp_axis_in_b2[1] * axis_b[2] - perp_axis_in_b2[2] * axis_b[1],
+            perp_axis_in_b2[2] * axis_b[0] - perp_axis_in_b2[0] * axis_b[2],
+            perp_axis_in_b2[0] * axis_b[1] - perp_axis_in_b2[1] * axis_b[0],
+            0.0,
+        ];
         Ok(Self {
             axis_a,
             perp_axis_in_a1,
             perp_axis_in_a2,
             pivot_a,
             axis_b,
-            perp_axis_in_b1: [0.0; 4],
+            perp_axis_in_b1,
             perp_axis_in_b2,
             pivot_b,
             min_angle: stream.read_f32_le()?,

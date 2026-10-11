@@ -169,10 +169,14 @@ sliding/rotation/pivot + min/max distance for prismatic — so only genuinely
 era-only or unmodelled fields are decoded-and-discarded: the FO3+ **motors**, and
 the friction scalars (`LimitedHingeCInfo::max_friction`, `PrismaticCInfo::friction`)
 which are **captured but unused** by the importers today. `Perp Axis In B1` is
-zeroed by the parser on Oblivion/Morrowind content (not authored in that era's
-layout) rather than discarded by the importer — the solver boundary's `frame_rot`
-falls back to a synthesized perpendicular for that degenerate input, so behavior on
-that era is unchanged. `Axis A` is likewise **not serialized** for an Oblivion-era
+**not authored** in the Oblivion/Morrowind layout; the parser derives it as
+`Perp B2 × Axis B` — nif.xml's own stated identity (`Perp Axis In B2` = `Axis B ×
+Perp Axis In B1`, expressed in B's space), verified against FNV's authored B1
+values to ~1e-7 (#5537). The pre-#5537 claim that zeroing it "left behavior on
+that era unchanged" was false: the solver boundary's `frame_rot` fell back to a
+synthesized perpendicular, an arbitrary zero-reference that put Oblivion bind
+poses 1.5–1.8 rad outside the limits and tore the rig apart on its first solve.
+`Axis A` is likewise **not serialized** for an Oblivion-era
 hinge; the parser derives it as `Perp A1 × Perp A2`, nif.xml's own stated identity,
 rather than guessing. One `RagdollCInfo` / `LimitedHingeCInfo` / `PrismaticCInfo`
 therefore feeds every game:

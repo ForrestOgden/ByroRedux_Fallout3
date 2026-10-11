@@ -506,8 +506,75 @@ fn oblivion_limited_hinge_decodes_typed_cinfo() {
     assert_eq!(h.min_angle, -1.0);
     assert_eq!(h.max_angle, 1.0);
     assert_eq!(h.max_friction, 10.0);
-    assert_eq!(h.perp_axis_in_b1, [0.0; 4]); // FO3+ only
+    // #5537 — the absent FO3+ field is DERIVED, not zeroed: with
+    // AxisB = +X and PerpB2 = +Z, PerpB1 = PerpB2 × AxisB = +Y.
+    assert_eq!(h.perp_axis_in_b1, [0.0, 1.0, 0.0, 0.0]);
     assert_eq!(stream.position() as usize, 16 + 124);
+}
+
+/// #5537 — the Oblivion layout's `Perp Axis In B1` is recovered as
+/// `Perp B2 × Axis B`, nif.xml's own identity inverted (nif.xml defines
+/// `Perp Axis In B2` as `Axis B × Perp Axis In B1` expressed in B's
+/// space). The audit measured the identity against FNV's authored B1 to
+/// ~1e-7; zeroing the field instead left `frame_rot` to synthesize an
+/// arbitrary zero-reference, putting Oblivion bind poses 1.5–1.8 rad
+/// outside the limits and tearing the rig apart on its first solve.
+/// Non-axis-aligned axes: a unit-less (0.6, 0, 0.8) pair with an
+/// authored PerpB2 the identity must reproduce exactly.
+#[test]
+fn oblivion_limited_hinge_derives_perp_b1_from_perp_b2_cross_axis_b() {
+    let axis_b = [0.6f32, 0.0, 0.8, 0.0];
+    // Any unit vector orthogonal to axis_b: rotate axis_b 90° about Z-up.
+    let perp_b2 = [-0.8f32, 0.0, 0.6, 0.0];
+    let mut bytes = base();
+    bytes.extend(vec4(11.0, 22.0, 33.0, 1.0)); // pivot_a
+    bytes.extend(vec4(1.0, 0.0, 0.0, 0.0)); // axis_a
+    bytes.extend(vec4(0.0, 1.0, 0.0, 0.0)); // perp_axis_in_a1
+    bytes.extend(vec4(0.0, 0.0, 1.0, 0.0)); // perp_axis_in_a2
+    bytes.extend(vec4(44.0, 55.0, 66.0, 1.0)); // pivot_b
+    bytes.extend_from_slice(&axis_b[0].to_le_bytes());
+    bytes.extend_from_slice(&axis_b[1].to_le_bytes());
+    bytes.extend_from_slice(&axis_b[2].to_le_bytes());
+    bytes.extend_from_slice(&axis_b[3].to_le_bytes());
+    bytes.extend_from_slice(&perp_b2[0].to_le_bytes());
+    bytes.extend_from_slice(&perp_b2[1].to_le_bytes());
+    bytes.extend_from_slice(&perp_b2[2].to_le_bytes());
+    bytes.extend_from_slice(&perp_b2[3].to_le_bytes());
+    for v in [0.0f32, 1.9, 10.0] {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+
+    let header = oblivion_header();
+    let mut stream = NifStream::new(&bytes, &header);
+    let c = BhkConstraint::parse(&mut stream, "bhkLimitedHingeConstraint").unwrap();
+    let BhkConstraintData::LimitedHinge(h) = c.data else {
+        panic!("Oblivion LimitedHinge must decode, got {:?}", c.data);
+    };
+    // The identity: B1 = B2 × B, itself a unit vector orthogonal to both.
+    let expect = [
+        perp_b2[1] * axis_b[2] - perp_b2[2] * axis_b[1],
+        perp_b2[2] * axis_b[0] - perp_b2[0] * axis_b[2],
+        perp_b2[0] * axis_b[1] - perp_b2[1] * axis_b[0],
+        0.0,
+    ];
+    for i in 0..3 {
+        assert!(
+            (h.perp_axis_in_b1[i] - expect[i]).abs() < 1e-7,
+            "perp_b1[{i}] = {} must equal PerpB2 × AxisB = {}",
+            h.perp_axis_in_b1[i],
+            expect[i]
+        );
+    }
+    assert_eq!(h.perp_axis_in_b1[3], 0.0);
+    let dot = h.perp_axis_in_b1[0] * axis_b[0]
+        + h.perp_axis_in_b1[1] * axis_b[1]
+        + h.perp_axis_in_b1[2] * axis_b[2];
+    assert!(dot.abs() < 1e-7, "the derived perpendicular is orthogonal to the axle");
+    let norm = (h.perp_axis_in_b1[0].powi(2)
+        + h.perp_axis_in_b1[1].powi(2)
+        + h.perp_axis_in_b1[2].powi(2))
+    .sqrt();
+    assert!((norm - 1.0).abs() < 1e-6, "the derived perpendicular is unit");
 }
 
 /// Oblivion `bhkMalleableConstraint` wrapping a Ragdoll (Type 7) must
