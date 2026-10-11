@@ -210,7 +210,15 @@ vec3 gradeContrast(vec3 x, float contrast) {
     vec3 stretched = (x - vec3(GRADE_CONTRAST_PIVOT)) * contrast + vec3(GRADE_CONTRAST_PIVOT);
     vec3 toe = GRADE_CONTRAST_PIVOT
         * pow(max(x / GRADE_CONTRAST_PIVOT, vec3(1.0e-6)), vec3(contrast));
-    return mix(toe, stretched, clamp(toe / GRADE_CONTRAST_TOE, 0.0, 1.0));
+    // #5506 — weight the hand-over on the STRETCHED value, not the toe:
+    // weighting on the toe made the blend factor `1 - (toe - stretched) /
+    // TOE`, which goes negative once `pivot * (contrast - 1) > TOE`
+    // (contrast > ~1.556 — 31 vanilla image spaces) and re-crushed the
+    // deepest shades to black. With `stretched <= 0` the weight is 0 and
+    // the (strictly positive) toe is returned; the result always lies
+    // between two non-negative values and stays monotone through the
+    // censused contrast range (up to 2.0).
+    return mix(toe, stretched, clamp(stretched / GRADE_CONTRAST_TOE, 0.0, 1.0));
 }
 
 void main() {

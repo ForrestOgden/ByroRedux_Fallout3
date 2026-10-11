@@ -201,7 +201,8 @@ pub fn grade_contrast(x: [f32; 3], contrast: f32) -> [f32; 3] {
     x.map(|c| {
         let stretched = (c - GRADE_CONTRAST_PIVOT) * contrast + GRADE_CONTRAST_PIVOT;
         let toe = GRADE_CONTRAST_PIVOT * (c / GRADE_CONTRAST_PIVOT).max(1.0e-6).powf(contrast);
-        let w = (toe / GRADE_CONTRAST_TOE).clamp(0.0, 1.0);
+        // #5506 — weighted on the stretched value; see `gradeContrast`.
+        let w = (stretched / GRADE_CONTRAST_TOE).clamp(0.0, 1.0);
         toe + (stretched - toe) * w
     })
 }
@@ -241,6 +242,36 @@ mod tests {
         assert!((bright - ((1.0 - GRADE_CONTRAST_PIVOT) * contrast + GRADE_CONTRAST_PIVOT)).abs() < 1.0e-6);
     }
 
+    /// #5506 — the toe must hold for the whole censused contrast range, not
+    /// only Skyrim's 1.3. The first #5482 blend (weighted on the toe) went
+    /// negative once `pivot * (contrast - 1) > TOE`, i.e. contrast > ~1.556
+    /// — 31 vanilla image spaces (FNV `UltraLuxeCasino` 1.9, Skyrim
+    /// `FrostmereCryptImagespace` 2.0, FO3 DC Metro 1.6/1.7, …) — and both
+    /// tonemappers floored the dip to black. Every positive shade must stay
+    /// positive and the ramp non-decreasing up to contrast 2.0.
+    #[test]
+    fn contrast_keeps_shadows_positive_and_monotone_across_the_census_range() {
+        for contrast in [0.5f32, 1.0, 1.3, 1.556, 1.6, 1.65, 1.7, 1.8, 1.9, 2.0] {
+            let mut previous = 0.0f32;
+            for i in 1..=4000 {
+                let x = i as f32 * 0.00025;
+                let y = grade_contrast([x; 3], contrast)[0];
+                assert!(y > 0.0, "contrast {contrast}: shade {x} graded to {y}");
+                assert!(
+                    y >= previous - 1.0e-7,
+                    "contrast {contrast}: ramp dips at {x} ({previous} -> {y})"
+                );
+                previous = y;
+            }
+        }
+        // The Ultra-Luxe / Frostmere deepest shades keep a visible value —
+        // the 0.03-0.04 ambient-only band #5482 set out to rescue.
+        for contrast in [1.9f32, 2.0] {
+            assert!(grade_contrast([0.03; 3], contrast)[0] > 0.0);
+            assert!(grade_contrast([0.04; 3], contrast)[0] > 0.0);
+        }
+    }
+
     /// Unity contrast is the identity on the visible range, and zero
     /// contrast is the authored flat grey — the two ends the CK documents.
     #[test]
@@ -272,7 +303,7 @@ mod tests {
             .0;
         assert!(curve.contains("(x - vec3(GRADE_CONTRAST_PIVOT)) * contrast + vec3(GRADE_CONTRAST_PIVOT)"));
         assert!(curve.contains("pow(max(x / GRADE_CONTRAST_PIVOT, vec3(1.0e-6)), vec3(contrast))"));
-        assert!(curve.contains("clamp(toe / GRADE_CONTRAST_TOE, 0.0, 1.0)"));
+        assert!(curve.contains("clamp(stretched / GRADE_CONTRAST_TOE, 0.0, 1.0)"));
         let main = frag.split_once("void main()").expect("main").1;
         let exposed = main
             .find("vec3 exposed = scene.rgb * exposure;")
