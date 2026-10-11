@@ -211,10 +211,11 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
 - **CTDA OR-precedence** (`condition.rs::evaluate`): consecutive `or_next` conditions form a block that binds
   tighter than the AND chain (`A AND B OR C AND D` = `A AND (B OR C) AND D`); empty list → `true`; guards
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
-  table (indices verified against TES5Edit; `CATALOG` is 25 since #5380 `395d2d831` added 56 `GetQuestRunning`,
+  table (indices verified against TES5Edit; `CATALOG` is 24 since #5380 `395d2d831` added 56 `GetQuestRunning`,
   74 `GetGlobalValue`, 77 `GetRandomPercent` — the last rides `StoryManagerRng`, a documented 50.0 with none
-  installed; fn 0 `GetButtonPressed` is a constant −1, no MessageBox runtime, so `== N` is honestly false rather
-  than fail-open, `00f580e09`); `GetIsID` compares the Run-On's **base** object
+  installed; fn 0 is deliberately **unmapped** (xEdit: `GetWantBlocking` on TES5/FO4, no index 0 on
+  TES4/FO3/FNV — the short-lived `GetButtonPressed` mapping was removed by #5431; `GetButtonPressed` exists
+  only as an ObScript script function in `obscript_quests`)); `GetIsID` compares the Run-On's **base** object
   (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,
   `get_is_id_matches_run_on_base_object_not_placed_reference`); `GetActorValue` reads through
   `CharacterRuleset::actor_value` (the shared derived+modifier composer, #5042 — `/audit-character` Dim 4); unknown functions return the documented safe default — a

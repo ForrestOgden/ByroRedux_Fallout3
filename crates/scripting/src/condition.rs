@@ -80,12 +80,6 @@ pub enum ConditionFunction {
     /// no such value (#1663). `param_1` is the global-space AVIF FormID.
     /// FO3 / FNV / Skyrim function index **14**.
     GetActorValue,
-    /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
-    /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index **1**.
-    /// CTDA fn 0 — the pressed MessageBox button, `-1` until one is
-    /// chosen (the engine runs no MessageBoxes yet, so a constant -1;
-    /// see `from_index`'s arm for why mapping it matters).
-    GetButtonPressed,
     /// `GetQuestRunning(quest_form_id) → f32`. 1.0 while the quest is
     /// running or started in `QuestStageState`. FO3/FNV/Skyrim index
     /// **56**. One of the #5380 SM-vocabulary trio.
@@ -96,6 +90,8 @@ pub enum ConditionFunction {
     /// `GetRandomPercent() → f32`. [0, 100] — rides the SM's seeded RNG
     /// when installed. FO3/FNV/Skyrim index **77**.
     GetRandomPercent,
+    /// `GetDistance(target_form_id) → f32`. Squared-distance reduces
+    /// to a single sqrt at evaluation time. FO3 / FNV / Skyrim index **1**.
     GetDistance,
     /// `GetDead → f32`. Returns 1.0 while the Run-On actor carries the
     /// sparse `Dead` lifecycle marker, otherwise 0.0. FO3 / FNV / Skyrim
@@ -205,15 +201,10 @@ impl ConditionFunction {
         // (448 Skyrim, 449 FO3/FNV); both map to the same behaviour. Reputation
         // (573/575) is FNV-only.
         match index {
-            // 0 = GetButtonPressed: -1 until a MessageBox button is
-            // chosen. Mapping it keeps the common `GetButtonPressed == N`
-            // package/quest gate honestly FALSE pre-menu instead of the
-            // fail-open pass an Unknown function gets — the FNV corpus
-            // authors it on Sunny Smiles' quest-gated anytime packages
-            // (e.g. `SunnyMeetPlayerDialoguePackage`), where fail-open let
-            // the package win at every hour and starved the scheduled
-            // Sleep/Eat procedures below it (M42).
-            0 => Self::GetButtonPressed,
+            // #5431 — index 0 is deliberately unmapped: xEdit has it as
+            // `GetWantBlocking` on TES5/FO4 and has no index 0 on
+            // TES4/FO3/FNV, so it is not a MessageBox query. It stays
+            // `Unknown` (fail-open) like every other uncatalogued function.
             1 => Self::GetDistance,
             14 => Self::GetActorValue,
             // 56 = GetQuestRunning(quest). The cheap SM-vocabulary
@@ -251,8 +242,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 25] = [
-        Self::GetButtonPressed,
+    pub const CATALOG: [ConditionFunction; 24] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -282,7 +272,6 @@ impl ConditionFunction {
     /// The canonical xEdit function name (for console listing / parsing).
     pub fn name(self) -> &'static str {
         match self {
-            Self::GetButtonPressed => "GetButtonPressed",
             Self::GetQuestRunning => "GetQuestRunning",
             Self::GetGlobalValue => "GetGlobalValue",
             Self::GetRandomPercent => "GetRandomPercent",
@@ -347,8 +336,7 @@ impl ConditionFunction {
             | Self::HasLoaded3D
             | Self::GetReputation
             | Self::GetReputationThreshold => true,
-            Self::GetButtonPressed
-            | Self::GetQuestRunning
+            Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetRandomPercent
             | Self::GetStage
@@ -736,13 +724,6 @@ pub fn evaluate_function(
                 Some(rs) => rs.actor_value(condition.param_1, &avs, level),
                 None => avs.current(condition.param_1),
             }
-        }
-        ConditionFunction::GetButtonPressed => {
-            // -1 until a MessageBox button is chosen; the engine runs no
-            // MessageBoxes, so this is the constant pre-menu value (an
-            // authored `GetButtonPressed == N` gate evaluates FALSE,
-            // which is the vanilla pre-menu behaviour — see from_index).
-            -1.0
         }
         ConditionFunction::GetQuestRunning => {
             // GetQuestRunning(quest) → 1.0 while the quest is running.
@@ -1566,6 +1547,37 @@ mod tests {
         assert_eq!(
             ConditionFunction::from_name("GetReputationThreshold"),
             Some(ConditionFunction::from_index(575))
+        );
+    }
+
+    /// #5431 — CTDA fn 0 is not a catalogued function. It was briefly mapped
+    /// to a constant-`-1` `GetButtonPressed`, but xEdit has index 0 as
+    /// `GetWantBlocking` on TES5/FO4 and no index 0 on TES4/FO3/FNV, so that
+    /// mapping relabelled Skyrim's IDLE combat predicates. It must stay
+    /// `Unknown` (fail-open) until it is mapped from xEdit's table.
+    #[test]
+    fn function_index_zero_is_not_catalogued() {
+        assert_eq!(ConditionFunction::from_index(0), ConditionFunction::Unknown(0));
+        assert_eq!(ConditionFunction::from_name("GetButtonPressed"), None);
+    }
+
+    /// #5431 — rustdoc attaches a doc comment to the next item, so a variant
+    /// inserted between a doc comment and its variant silently re-homes the
+    /// doc (the same defect class as #5269). Pin `GetDistance`'s doc to it.
+    #[test]
+    fn get_distance_variant_keeps_its_doc_comment() {
+        let src = include_str!("condition.rs");
+        let at = src
+            .find("    GetDistance,\n")
+            .expect("the GetDistance variant declaration");
+        let doc_line = src[..at]
+            .lines()
+            .last()
+            .expect("a line precedes the variant");
+        assert!(
+            doc_line.contains("FO3 / FNV / Skyrim index **1**"),
+            "GetDistance's doc comment must sit directly above the variant, \
+             found {doc_line:?}"
         );
     }
 
