@@ -333,18 +333,27 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
     // The outgoing line ends before the new one begins (vanilla's OnEnd
     // ordering). One live selection (#5038) means every existing stamp IS
     // the outgoing line.
-    let outgoing: Vec<NpcDialogueTopic> = world
+    let (outgoing, speakers): (Vec<NpcDialogueTopic>, Vec<EntityId>) = world
         .query::<NpcDialogueTopic>()
         .map(|topics| {
-            topics
+            let outgoing = topics
                 .iter()
                 .map(|(_, topic)| topic.clone())
                 .filter(|existing| existing.info_form_id != topic.info_form_id)
-                .collect()
+                .collect();
+            let speakers = topics.iter().map(|(entity, _)| entity).collect();
+            (outgoing, speakers)
         })
         .unwrap_or_default();
     for existing in &outgoing {
         speak_info_end_fragment(world, existing);
+    }
+    // #5432 — the outgoing line stops being spoken: cut every stamped
+    // speaker's still-playing/queued segments (a stale partner's, and
+    // this NPC's own previous line) BEFORE `play_line_voice` queues the
+    // new line's, which `stop_sounds_for` would otherwise dequeue too.
+    for speaker in speakers.iter().copied().chain(std::iter::once(npc)) {
+        crate::systems::dialogue_voice::stop_line_voice(world, speaker);
     }
     // #5367 Phase V — resolve the voice while the record is still
     // owned (insert_topic takes it below). The file name is composed
@@ -548,6 +557,8 @@ pub(crate) fn end_open_conversation(world: &World) {
     if let Some(outgoing) = world.get::<NpcDialogueTopic>(npc).map(|topic| topic.clone()) {
         speak_info_end_fragment(world, &outgoing);
     }
+    // #5432 — closing the conversation cuts the line it was speaking.
+    crate::systems::dialogue_voice::stop_line_voice(world, npc);
     if let Some(mut topics) = world.query_mut::<NpcDialogueTopic>() {
         topics.remove(npc);
     }
@@ -859,6 +870,55 @@ pub(crate) fn make_npc_dialogue_selection_system() -> impl FnMut(&World, f32) + 
 #[cfg(test)]
 pub(crate) fn npc_dialogue_selection_system(world: &World) {
     npc_dialogue_selection_system_inner(world, &mut NpcDialogueScratch::default());
+}
+
+/// #5432 — the voice line's lifetime is source-pinned: a headless test
+/// world has no audio manager, so nothing is ever queued to observe being
+/// stopped. These pin the two points where a line stops being current.
+#[cfg(test)]
+mod voice_lifetime_source_tests {
+    /// The production half of this file (everything before its first
+    /// `#[cfg(test)]` item), so these tests' own text cannot satisfy them.
+    fn production_src() -> &'static str {
+        include_str!("npc_dialogue.rs")
+            .split("\n#[cfg(test)]\n")
+            .next()
+            .expect("split always yields a first segment")
+    }
+
+    fn body_of(src: &'static str, signature: &str) -> &'static str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature} is gone from npc_dialogue.rs"));
+        let rest = &src[start..];
+        &rest[..rest.find("\n}\n").expect("function closes at column 0")]
+    }
+
+    #[test]
+    fn replacing_a_line_stops_the_old_voice_before_queueing_the_new_one() {
+        let body = body_of(production_src(), "fn apply_selection(");
+        let stop = body
+            .find("dialogue_voice::stop_line_voice(")
+            .expect("apply_selection must cut the outgoing line's voice (#5432)");
+        let play = body
+            .find("dialogue_voice::play_line_voice(")
+            .expect("apply_selection plays the new line's voice");
+        assert!(
+            stop < play,
+            "the stop must precede play_line_voice — stop_sounds_for also \
+             dequeues the speaker's pending segments, which would cut the \
+             new line"
+        );
+    }
+
+    #[test]
+    fn closing_the_conversation_stops_the_voice() {
+        let body = body_of(production_src(), "pub(crate) fn end_open_conversation(");
+        assert!(
+            body.contains("dialogue_voice::stop_line_voice(world, npc)"),
+            "end_open_conversation must cut the open line's voice (#5432)"
+        );
+    }
 }
 
 #[cfg(test)]

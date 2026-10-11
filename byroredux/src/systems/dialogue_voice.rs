@@ -309,6 +309,24 @@ pub(crate) fn play_line_voice(
     Some(total)
 }
 
+/// Fade applied to a cut line: short enough to read as "the line
+/// stopped", long enough that the cut does not click.
+const LINE_STOP_FADE_MS: f32 = 150.0;
+
+/// #5432 — cut `npc`'s voice line: fade the segments already playing and
+/// drop the not-yet-dispatched ones. [`play_line_voice`] schedules every
+/// segment entity-anchored (#5410), so the line's lifetime is owned by
+/// the speaker entity and no per-line handle needs keeping on the
+/// dialogue state. Called where a line stops being current — a
+/// replacement selection (before the new line's segments are queued, or
+/// the stop would cut them too) and the conversation closing. Returns how
+/// many sounds were stopped or dequeued; 0 without an `AudioWorld`.
+pub(crate) fn stop_line_voice(world: &World, npc: EntityId) -> usize {
+    world
+        .try_resource_mut::<byroredux_audio::AudioWorld>()
+        .map_or(0, |mut audio| audio.stop_sounds_for(npc, LINE_STOP_FADE_MS))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +539,16 @@ mod tests {
         assert_eq!(cache.len(), 0, "no decode may be retained");
         assert_eq!(cache.negative_len(), 0, "no miss may be cached either");
     }
-}
 
+    /// #5432 — `stop_line_voice` is safe on every audio configuration a
+    /// session can have: no `AudioWorld` at all, and a headless one
+    /// (nothing is ever queued or playing, so nothing is stopped).
+    #[test]
+    fn stop_line_voice_is_a_noop_without_a_live_audio_device() {
+        let mut world = World::new();
+        let npc = world.spawn();
+        assert_eq!(stop_line_voice(&world, npc), 0, "no AudioWorld resource");
+        world.insert_resource(byroredux_audio::AudioWorld::headless());
+        assert_eq!(stop_line_voice(&world, npc), 0, "headless AudioWorld");
+    }
+}
