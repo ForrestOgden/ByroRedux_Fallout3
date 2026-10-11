@@ -153,6 +153,41 @@ fn material_index_resolves_a_vanilla_material() {
     assert_slot(byroredux_sfmaterial::SLOT_AMBIENT_OCCLUSION, "bipeda_nightmare_ao.dds");
 }
 
+/// #5502 — `ObjectInfo.Parent` inheritance on real data. Both materials
+/// author neither field themselves; pre-fix the lookup read them as absent
+/// (`IsGlass`/emissive `Enabled` came back `None` on all but 4 of the
+/// 10,152 NIF-referenced materials), so the #5277 / #5283 translations
+/// fired on nothing. Census over the 10,152 hits after the fix (paths from
+/// `sf_matpath_dump` over Meshes01): glass 4 -> 217, emissive Enabled
+/// 0 -> 619 (337 with an emissive map).
+#[test]
+#[ignore = "needs Starfield game data on disk"]
+fn material_index_resolves_inherited_glass_and_emissive_settings() {
+    let Some(data) = data_dir() else {
+        return;
+    };
+    let ba2 = Ba2Archive::open(data.join("Starfield - Materials.ba2")).expect("open materials BA2");
+    let bytes = ba2
+        .extract("materials\\materialsbeta.cdb")
+        .expect("extract cdb");
+    let index = MaterialIndex::build(&bytes).expect("index the vanilla CDB");
+
+    let glass = index
+        .lookup("Materials\\Architecture\\Catwalks\\GlassCleanFrosted02_Catwalks.mat")
+        .expect("probe-verified material");
+    assert_eq!(glass.is_glass, Some(true), "IsGlass is inherited down the Parent chain");
+
+    let emissive = index
+        .lookup("Materials\\Actors\\MantaA\\MantaA_Sentinel\\MantaA_Sentinel.mat")
+        .expect("probe-verified material");
+    assert_eq!(emissive.emissive_enabled, Some(true), "Enabled is inherited");
+    assert_eq!(emissive.luminous_emittance, Some(120.0));
+    assert!(
+        emissive.textures.iter().any(|(slot, _)| *slot == byroredux_sfmaterial::SLOT_EMISSIVE),
+        "the emissive map binds"
+    );
+}
+
 /// The DLC CDBs are full near-copies (SFBGS007 measured 2026-09-30:
 /// 500,385 keys vs the base's 500,403, resolving the same corpus), so a
 /// last-wins overlay across discovered CDBs in load order is the correct

@@ -141,6 +141,13 @@ pub struct MaterialIndex {
     /// `Components[j]` → (ObjectID, Index) — the alignment table that
     /// attributes stream instance `j + 2` to its owning object.
     rows: Vec<Row>,
+    /// #5502 — object DBID → its `ObjectInfo.Parent` DBID, non-zero parents
+    /// only. The CDB stores a derived object as a diff: a component field it
+    /// does not author comes from its parent chain (the loose-material form
+    /// of the same data states the rule, `loose_mat.rs`: "a property it
+    /// does not author is inherited"). Measured on the base CDB: 500,397 of
+    /// 500,403 objects have a parent, including every NIF-referenced root.
+    parents: std::collections::HashMap<u32, u32>,
     /// Object → ID-shaped child references.
     child_refs: std::collections::HashMap<u32, Vec<(RefKind, u32, u8)>>,
     /// Object → `MRTextureFile`/`TextureFile` slots (slot, path).
@@ -165,6 +172,11 @@ struct Row {
     object: u32,
     index: u8,
 }
+
+/// Longest `Parent` chain [`MaterialIndex::collect_settings`] follows. A
+/// bound, not a measured depth: it only has to stop a corrupt cyclic
+/// `Parent` graph, and real chains are far shorter.
+const MAX_PARENT_DEPTH: usize = 64;
 
 /// Reflected CRC-32, poly `0xEDB88320`, init 0, xorout 0 — the variant
 /// the 2026-08-29 key probe identified (98.3% of real NIF-named paths
@@ -358,9 +370,25 @@ impl MaterialIndex {
         }
     }
 
+    /// Scalars and settings of one object as inherited down its `Parent`
+    /// chain (#5502): the object's own authored values first, then each
+    /// ancestor's, nearest wins per field (a field is only filled while the
+    /// result still has it unset). The chain is bounded and cycle-safe — a
+    /// corrupt `Parent` loop ends the walk instead of hanging it.
+    fn collect_settings(&self, obj: u32, out: &mut CdbMaterial) {
+        let mut current = obj;
+        for _ in 0..=MAX_PARENT_DEPTH {
+            self.collect_own_settings(current, out);
+            match self.parents.get(&current) {
+                Some(&parent) if parent != obj => current = parent,
+                _ => break,
+            }
+        }
+    }
+
     /// Scalars and settings carried directly on one object (params,
     /// alpha, effect/glass, translucency) - first-wins.
-    fn collect_settings(&self, obj: u32, out: &mut CdbMaterial) {
+    fn collect_own_settings(&self, obj: u32, out: &mut CdbMaterial) {
         if let Some(params) = self.param_floats.get(&obj) {
             for (i, v) in params {
                 if !out.param_floats.iter().any(|(s, _)| s == i) {
@@ -658,6 +686,10 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
             "Objects" => stream_list(state, |v| {
                 let Value::Object(o) = v else { return };
                 let Some(dbid) = id_named(o, "DBID") else { return };
+                // #5502 — record the inheritance edge (0 = no parent).
+                if let Some(parent) = id_named(o, "Parent").filter(|&p| p != 0) {
+                    idx.parents.insert(dbid, parent);
+                }
                 let pid = match o.fields.get("PersistentID") {
                     Some(Value::Object(pid)) => {
                         let mut cols = [0u32; 3];
@@ -1244,6 +1276,49 @@ mod tests {
         synthetic_material_cdb_with_effect_settings, SyntheticCdbChunks,
     };
     use super::*;
+
+    /// A hand-built index: root `10` (parent `20`, parent `30`), no layers.
+    fn inheritance_index() -> (MaterialIndex, u32) {
+        let mut idx = MaterialIndex::default();
+        let key = material_key("materials\\x\\child.mat");
+        idx.objects_by_key.insert(key, 10);
+        idx.parents.insert(10, 20);
+        idx.parents.insert(20, 30);
+        (idx, 10)
+    }
+
+    /// #5502 — a field the object does not author comes from its parent
+    /// chain, nearest ancestor first: the grandparent supplies `IsGlass`
+    /// and the emissive `Enabled`, the parent overrides `BlendingMode` and
+    /// the luminance, and the object's own value beats both.
+    #[test]
+    fn lookup_inherits_settings_down_the_parent_chain_nearest_wins() {
+        let (mut idx, root) = inheritance_index();
+        idx.effect.insert(30, Some(true));
+        idx.effect_blend.insert(30, Some("None".to_string()));
+        idx.effect_blend.insert(20, Some("AlphaBlend".to_string()));
+        idx.emissive.insert(30, (Some(true), Some([1.0, 0.5, 0.25]), Some(139.0)));
+        idx.emissive.insert(20, (None, None, Some(150.0)));
+        idx.emissive.insert(root, (None, Some([0.1, 0.2, 0.3]), None));
+
+        let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
+        assert_eq!(m.is_glass, Some(true), "inherited from the grandparent");
+        assert_eq!(m.blending_mode.as_deref(), Some("AlphaBlend"), "parent beats grandparent");
+        assert_eq!(m.emissive_enabled, Some(true), "inherited Enabled");
+        assert_eq!(m.luminous_emittance, Some(150.0), "parent beats grandparent");
+        assert_eq!(m.emissive_tint, Some([0.1, 0.2, 0.3]), "own value beats ancestors");
+    }
+
+    /// #5502 — a corrupt `Parent` cycle (including one that never returns
+    /// to the looked-up object) terminates instead of hanging the lookup.
+    #[test]
+    fn lookup_terminates_on_a_parent_cycle() {
+        let (mut idx, _) = inheritance_index();
+        idx.parents.insert(30, 20); // 10 -> 20 -> 30 -> 20 -> …
+        idx.effect.insert(20, Some(true));
+        let m = idx.lookup("materials\\x\\child.mat").expect("keyed root");
+        assert_eq!(m.is_glass, Some(true));
+    }
 
     /// The chunk list of the unmutated synthetic CDB, with the position
     /// of the DBFileIndex instance (the first OBJT) handy.

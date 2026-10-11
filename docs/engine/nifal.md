@@ -720,7 +720,23 @@ first forwarded it raw into `emissive_mult`; #5503 parked it — Starfield's
 physical luminance has no measured mapping, see §4's Starfield note, so a
 Starfield emissive map stays bound to a zero-weight role); `UseSSS` stays parked until a
 subsurface-colour source exists — the gate alone bought visibility rays
-for a zero term (#5196). The contract for the
+for a zero term (#5196). **`ObjectInfo.Parent` inheritance (#5502):**
+`MaterialIndex` records each object's `Parent` and `lookup` resolves the
+*settings* (alpha / effect / emissive / translucency / params) nearest-wins
+along the parent chain (bounded at 64, cycle-safe) — the CDB stores a
+derived object as a diff, and before this every inherited `IsGlass` /
+emissive `Enabled` read as absent. Census over the 10,152 NIF-referenced
+materials that resolve (Meshes01): `IsGlass` 4 → 217, emissive `Enabled`
+0 → 619 (337 binding an emissive map), authored `AlphaTestThreshold`
+1,847 → 7,917 (most `0.0`, which the `> 0.0` gate in `apply_cdb_material`
+ignores). Texture slots and `LayerID`/`TextureSetID` child edges are
+**not** inherited yet — that is unmeasured and would shift the 98 % texture
+resolution, so it stays a separate step. **Open decision (not guessed):**
+none of the 217 inherited-glass materials authors a coverage signal
+(`BlendingMode = AlphaBlend`, `HasOpacity`, or a threshold), so
+`classify_glass_into_material`'s no-transparent-coverage early return still
+fires and they render opaque; which signal carries Starfield glass coverage
+is undecided and needs a capture from the game. The contract for the
 parked kinds: each lands as a **named** `MaterialTextureSet`
 role with documented channel semantics, a `GpuMaterial` lane (lockstep
 `bindings.glsl` change against the 428 B pin) and a `triangle.frag` consumer —
