@@ -108,22 +108,33 @@ fn material_index_resolves_a_vanilla_material() {
 
     let started = std::time::Instant::now();
     let index = MaterialIndex::build(&bytes).expect("index the vanilla CDB");
-    let hwm_kb = || -> u64 {
+    let status_kb = |field: &str| -> u64 {
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|s| {
                 s.lines()
-                    .find(|l| l.starts_with("VmHWM:"))
+                    .find(|l| l.starts_with(field))
                     .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
             })
             .unwrap_or(0)
     };
+    let build_secs = started.elapsed().as_secs_f32();
+    let hwm_kb = status_kb("VmHWM:");
+    let with_blob_kb = status_kb("VmRSS:");
+    // #5291 — what the retained index costs once the inflated blob is gone
+    // (the production shape: `cdb_material_index` drops the bytes after the
+    // build). RSS is what the allocator still holds, so this is an upper
+    // bound on the index itself.
+    drop(bytes);
+    let resident_kb = status_kb("VmRSS:");
     eprintln!(
-        "[sfmaterial] indexed {} keyed materials in {:.1}s, HWM {} MB \
-         (full parse measures 9.19 GB)",
+        "[sfmaterial] indexed {} keyed materials in {:.1}s, HWM {} MB, RSS {} MB with the \
+         inflated blob / {} MB after dropping it (full parse measures 9.19 GB)",
         index.material_count(),
-        started.elapsed().as_secs_f32(),
-        hwm_kb() / 1024,
+        build_secs,
+        hwm_kb / 1024,
+        with_blob_kb / 1024,
+        resident_kb / 1024,
     );
     // Measured 2026-09-30: the full Objects table keys 500,403 rows
     // (material roots + layers + texture sets). ~250-470 MB HWM / 1.6-2.2 s (re-measured 2026-10-05: 244 MB / 1.6 s) on

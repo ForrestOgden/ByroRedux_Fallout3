@@ -17,6 +17,24 @@ that need the full tree must call `parse_with_limits` with an explicit
 instance budget; the default `parse` remains the compatibility/unbounded path
 for offline tooling while Phase 2 develops an indexed material lookup.
 
+**Material index (#3398 Phase 2, #5291).** `.mat` lookups go through a
+`MaterialIndex` per discovered CDB (`asset_provider/material/cdb.rs`), cached
+for the process (`sf_cdb_index_cache`, 128-slot cap, single-flight per CDB).
+Measured with `crates/sfmaterial/tests/real_cdb.rs`
+(`material_index_resolves_a_vanilla_material`, release, 2026-10-11): building
+the vanilla base CDB takes **1.6 s** and peaks at **247 MB** RSS (HWM, with
+the 105 MB inflated blob alive); the retained index is **~115 MB** resident
+once the blob is dropped (an upper bound — it is what the allocator still
+holds). The "~470 MB" the Phase 2 commit recorded is stale. Every discovered
+CDB ends up built, not just the base: lookups walk sources
+last-registered-first, so a base-only material misses each DLC/Creation
+index before it hits the base, and DLC CDBs are near-copies (SFBGS007 keys
+500,385 vs 500,403). Budget one ~115 MB index per CDB in the session.
+Builds run on a background thread started at discovery (so they overlap the
+ESM parse instead of stalling the first `.mat` merge) and are serialised
+process-wide so concurrent builds never stack their ~247 MB peaks; a lookup
+that arrives mid-build parks on that build rather than starting a second.
+
 ---
 
 ## ESM Index (CPU-side)

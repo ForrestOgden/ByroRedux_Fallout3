@@ -67,112 +67,159 @@ pub(crate) fn sf_cdb_cache_insert(key: String, valid: bool) {
     cache.insert(key, valid);
 }
 
+/// One CDB's index slot: single-flight (#5291). `OnceLock::get_or_init`
+/// runs the build exactly once per slot and parks every other caller on the
+/// same slot until it finishes, so a background prefetch and a main-thread
+/// lookup racing for one CDB share one ~2 s / ~250 MB-peak build instead of
+/// running two. `Some(None)` memoises a failed build.
+pub(crate) type CdbIndexSlot = Arc<OnceLock<Option<Arc<MaterialIndex>>>>;
+
 /// #3398 Phase 2 — process-lifetime cache of BUILT material indexes,
 /// keyed by the same `"<archive source>|<in-archive path>"` as
 /// [`sf_cdb_cache`] so it survives the `build_material_provider`
 /// rebuilds on every cell transition / save-load / debug-load (the
-/// #2705 rationale). `None` memoises a failed build, so a corrupt CDB
-/// is re-attempted at most once per process rather than once per mesh.
+/// #2705 rationale). A slot holding `None` memoises a failed build, so
+/// a corrupt CDB is re-attempted at most once per process rather than
+/// once per mesh.
 ///
-/// Memory: one index measures ~470 MB on the vanilla base CDB (2.0 s
-/// build, 2026-09-30) versus 9.19 GB for the full generic parse. DLC
-/// CDBs are near-copies of the base, so a Creation-heavy session that
-/// touches only base-game materials builds exactly one.
-pub(crate) fn sf_cdb_index_cache(
-) -> &'static Mutex<HashMap<String, Option<Arc<MaterialIndex>>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<MaterialIndex>>>>> = OnceLock::new();
+/// Memory (re-measured 2026-10-11, #5291, `real_cdb` gate, release):
+/// building the vanilla base CDB peaks at ~247 MB RSS (HWM, inflated blob
+/// included) in 1.6 s, and the retained index is ~115 MB resident once the
+/// blob is dropped — versus 9.19 GB for the full generic parse (the
+/// "~470 MB" 224a19372 recorded is stale). DLC CDBs are near-copies of the
+/// base. Every discovered CDB ends up built: lookups walk sources
+/// last-registered-first, so a base-only material misses each DLC index
+/// before it hits the base. See `docs/engine/memory-budget.md`.
+pub(crate) fn sf_cdb_index_cache() -> &'static Mutex<HashMap<String, CdbIndexSlot>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CdbIndexSlot>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The slot for `key`, creating (and, at the cap, evicting to make room for)
+/// it when absent. The returned `Arc` is the caller's own handle: an eviction
+/// racing a build cannot lose the build's result for that caller.
+fn cdb_index_slot(key: &str) -> CdbIndexSlot {
+    let mut cache = sf_cdb_index_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(slot) = cache.get(key) {
+        return Arc::clone(slot);
+    }
+    if cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
+        if let Some(evicted) = cache.keys().next().cloned() {
+            cache.remove(&evicted);
+        }
+    }
+    let slot = CdbIndexSlot::default();
+    cache.insert(key.to_owned(), Arc::clone(&slot));
+    slot
 }
 
 /// Test-only direct injection of a prebuilt index under a cache key —
 /// the merge-arm tests exercise the production lookup path without an
-/// on-disk archive.
+/// on-disk archive. Replaces any slot already there (a parallel test's
+/// failed-build memoisation must not shadow the injected index).
 #[cfg(test)]
 pub(crate) fn sf_cdb_index_cache_insert_for_test(key: &str, index: Arc<MaterialIndex>) {
+    let slot = CdbIndexSlot::default();
+    let _ = slot.set(Some(index));
     sf_cdb_index_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(key.to_owned(), Some(index));
+        .insert(key.to_owned(), slot);
 }
 
 /// Build (or fetch) the index for one CDB, memoising failures. The
 /// source archive is re-opened and the payload re-extracted here —
 /// discovery deliberately retains nothing but the header verdict
-/// (#4386), and the lazy build is paid once per CDB per process.
+/// (#4386), and the build is paid once per CDB per process: by the
+/// background prefetch [`discover_starfield_cdbs`] starts (#5291) when it
+/// gets there first, otherwise by the first lookup that reaches this CDB.
 fn cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
     let key = format!("{source}|{inner}");
-    if let Some(cached) = sf_cdb_index_cache()
+    cdb_index_slot(&key)
+        .get_or_init(|| build_cdb_material_index(source, inner))
+        .clone()
+}
+
+/// The un-memoised build behind [`cdb_material_index`]'s slot.
+fn build_cdb_material_index(source: &str, inner: &str) -> Option<Arc<MaterialIndex>> {
+    // #5319 (PAR-D2-2026-10-05-01) — this was the raw `.ok()?` shape
+    // #4658 removed from the providers: open/extract failures hit
+    // neither warn arm, so a CDB whose archive could not be
+    // re-opened (or whose entry failed to re-extract) memoized None
+    // for the process with no log line — indistinguishable from
+    // "this material is not in any CDB". Match, warn with the
+    // source/path/error, then memoize.
+    let archive = match Archive::open(source) {
+        Ok(archive) => archive,
+        Err(e) => {
+            log::warn!(
+                "Starfield CDB '{inner}' in '{source}': archive open \
+                 failed ({e}) — .mat lookups fall back to PBR routing only"
+            );
+            return None;
+        }
+    };
+    let bytes = match archive.extract(inner) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::warn!(
+                "Starfield CDB '{inner}' in '{source}': extract \
+                 failed ({e}) — .mat lookups fall back to PBR routing only"
+            );
+            return None;
+        }
+    };
+    match MaterialIndex::build(&bytes) {
+        Ok(index) => {
+            log::info!(
+                "Starfield CDB '{inner}' in '{source}': material index built \
+                 ({} keyed objects)",
+                index.material_count()
+            );
+            Some(Arc::new(index))
+        }
+        Err(e) => {
+            log::warn!(
+                "Starfield CDB '{inner}' in '{source}': material index build \
+                 failed ({e}) — .mat lookups fall back to PBR routing only"
+            );
+            None
+        }
+    }
+}
+
+/// #5291 — start building one discovered CDB's index off the main thread, so
+/// the ~2 s build overlaps the ESM parse / archive opens that follow
+/// discovery instead of landing inside the first `.mat` merge (or, worse, a
+/// streamed apply slice that `FrameTimeBudget` cannot preempt).
+///
+/// The result is published through the same slot [`cdb_material_index`]
+/// reads, so a lookup that arrives mid-build parks on that build rather than
+/// starting a second one. Prefetch builds are serialised process-wide by
+/// `PREFETCH_GATE`: each holds the ~105 MB inflated blob plus the index, so
+/// N discovered CDBs must not peak at N× that at once. A slot that already
+/// exists (built, building, or memoised failed) is left alone.
+fn prefetch_cdb_material_index(source: &str, inner: &str) {
+    static PREFETCH_GATE: Mutex<()> = Mutex::new(());
+    let key = format!("{source}|{inner}");
+    if sf_cdb_index_cache()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&key)
+        .contains_key(&key)
     {
-        return cached.clone();
+        return;
     }
-    let built = (|| {
-        // #5319 (PAR-D2-2026-10-05-01) — this was the raw `.ok()?` shape
-        // #4658 removed from the providers: open/extract failures hit
-        // neither warn arm, so a CDB whose archive could not be
-        // re-opened (or whose entry failed to re-extract) memoized None
-        // for the process with no log line — indistinguishable from
-        // "this material is not in any CDB". Match, warn with the
-        // source/path/error, then memoize.
-        let archive = match Archive::open(source) {
-            Ok(archive) => archive,
-            Err(e) => {
-                log::warn!(
-                    "Starfield CDB '{inner}' in '{source}': archive open \
-                     failed ({e}) — .mat lookups fall back to PBR routing only"
-                );
-                return None;
-            }
-        };
-        let bytes = match archive.extract(inner) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                log::warn!(
-                    "Starfield CDB '{inner}' in '{source}': extract \
-                     failed ({e}) — .mat lookups fall back to PBR routing only"
-                );
-                return None;
-            }
-        };
-        match MaterialIndex::build(&bytes) {
-            Ok(index) => {
-                log::info!(
-                    "Starfield CDB '{inner}' in '{source}': material index built \
-                     ({} keyed objects)",
-                    index.material_count()
-                );
-                Some(Arc::new(index))
-            }
-            Err(e) => {
-                log::warn!(
-                    "Starfield CDB '{inner}' in '{source}': material index build \
-                     failed ({e}) — .mat lookups fall back to PBR routing only"
-                );
-                None
-            }
-        }
-    })();
-    let mut cache = sf_cdb_index_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if !cache.contains_key(&key) && cache.len() >= SF_CDB_CACHE_MAX_ENTRIES {
-        if let Some(evicted) = cache.keys().next().cloned() {
-            cache.remove(&evicted);
-        }
+    let (source, inner) = (source.to_owned(), inner.to_owned());
+    let spawned = std::thread::Builder::new()
+        .name("sf-cdb-index".to_owned())
+        .spawn(move || {
+            let _gate = PREFETCH_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = cdb_material_index(&source, &inner);
+        });
+    if let Err(e) = spawned {
+        // The lookup path still builds lazily; prefetch is only an overlap.
+        log::warn!("Starfield CDB index prefetch thread not started ({e}); will build lazily");
     }
-    // The build ran outside the lock, so two threads can race the same CDB:
-    // the loser (a failed build) must not clobber the winner's Some. A
-    // memoized failure therefore fills only a VACANT slot; a success always
-    // wins — over a poison and over a stale entry alike. (Diagnosed through
-    // `bgsm_named_starfield_path_merges_from_cdb_on_sidecar_miss`, whose
-    // injected index lost to a parallel probe-only test's failed-build
-    // memoization ~1 run in 3.)
-    if built.is_some() {
-        cache.insert(key, built.clone());
-    } else {
-        cache.entry(key).or_insert(built.clone());
-    }
-    built
 }
 
 /// #3398 Phase 2 — resolve a material path against every discovered
@@ -244,6 +291,7 @@ pub(crate) fn discover_starfield_cdbs(
         };
         if valid {
             provider.register_starfield_cdb_probe(source.to_owned(), path.clone());
+            prefetch_cdb_material_index(source, &path);
         }
     }
 }
@@ -422,7 +470,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
-            .cloned();
+            .and_then(|slot| slot.get().cloned());
         assert!(
             matches!(cached, Some(None)),
             "the failed build must be memoized as None, got {cached:?}"
@@ -437,5 +485,118 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&key);
+    }
+
+    /// #5291 — discovery starts the index build off the calling thread and
+    /// publishes it through the slot the lookup path reads: the slot fills
+    /// without any lookup having asked (an unopenable archive is the
+    /// cheapest build that still runs the whole open → memoise path), and
+    /// the later lookup answers from it.
+    #[test]
+    fn prefetch_fills_the_lookup_slot_without_a_lookup() {
+        let source = "byroredux-cdb-test:prefetch-not-on-disk.ba2";
+        let inner = "materials\\materialsbeta.cdb";
+        let key = format!("{source}|{inner}");
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        prefetch_cdb_material_index(source, inner);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let filled = loop {
+            let slot = sf_cdb_index_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key)
+                .cloned();
+            if let Some(result) = slot.and_then(|slot| slot.get().cloned()) {
+                break Some(result);
+            }
+            if std::time::Instant::now() > deadline {
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(
+            matches!(filled, Some(None)),
+            "the background build must publish its (here failed) result, got {filled:?}"
+        );
+        assert!(cdb_material_index(source, inner).is_none());
+
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+
+    /// #5291 — a slot that already exists (built, building, or injected) is
+    /// left alone by the prefetch: it must not start a second ~2 s build, and
+    /// a failed one must never clobber a good index.
+    #[test]
+    fn prefetch_leaves_an_existing_slot_alone() {
+        let source = "byroredux-cdb-test:prefetch-existing.ba2";
+        let inner = "materials\\materialsbeta.cdb";
+        let key = format!("{source}|{inner}");
+        let slot = cdb_index_slot(&key);
+        assert!(slot.get().is_none(), "fixture: a fresh, unbuilt slot");
+
+        prefetch_cdb_material_index(source, inner);
+        // The unopenable archive would memoise None within milliseconds if a
+        // build had been started; give it ample time to show.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            slot.get().is_none(),
+            "prefetch started a build for a slot that already existed"
+        );
+
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+
+    /// #5291 real-data gate: the background prefetch builds the vanilla
+    /// base CDB's index and a later lookup resolves the probe-verified
+    /// material from it. Run with `-- --ignored`.
+    #[test]
+    #[ignore = "needs Starfield game data on disk"]
+    fn prefetch_builds_the_vanilla_index_for_a_later_lookup() {
+        let data = std::env::var("BYROREDUX_STARFIELD_DATA").unwrap_or_else(|_| {
+            "/mnt/data/SteamLibrary/steamapps/common/Starfield/Data".into()
+        });
+        let source = std::path::Path::new(&data)
+            .join("Starfield - Materials.ba2")
+            .to_string_lossy()
+            .into_owned();
+        let inner = "materials\\materialsbeta.cdb";
+        let key = format!("{source}|{inner}");
+        sf_cdb_index_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+
+        let started = std::time::Instant::now();
+        prefetch_cdb_material_index(&source, inner);
+        // The prefetch returns immediately; the build is on its own thread.
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "prefetch must not build on the calling thread"
+        );
+        let found = lookup_cdb_material(
+            &[(source.clone(), inner.to_owned())],
+            "Materials\\Actors\\BipedA\\BipedA_Nightmare\\BipedA_Nightmare.mat",
+        );
+        assert!(found.is_some(), "the prefetched index must resolve the probe material");
+        assert!(
+            sf_cdb_index_cache()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&key)
+                .and_then(|slot| slot.get().cloned())
+                .is_some_and(|built| built.is_some()),
+            "the slot holds the built index"
+        );
     }
 }
