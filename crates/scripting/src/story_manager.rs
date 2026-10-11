@@ -22,8 +22,8 @@
 //!
 //! Node policies (Phase 3): traversal order and continuation follow the
 //! authored `DNAM` bits — random parents shuffle their child chain, a
-//! processed quest node without `Shares Event` consumes the event once
-//! it finishes, quest pools honor do-all-before-repeating round-robin
+//! quest node without `Shares Event` that fires a quest consumes the
+//! event once it finishes (#5404), quest pools honor do-all-before-repeating round-robin
 //! and per-quest `RNAM` reset windows. (The Phase-1 "continue past a
 //! firing node" default was this rule's placeholder until the bits
 //! decoded.)
@@ -369,12 +369,21 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
             children_by_parent.entry(record.parent).or_default().push(index);
         }
     }
-    for (parent, members) in children_by_parent {
+    // Deterministic parent order: the chain placement below logs, and
+    // `HashMap` iteration would make that log order run-dependent.
+    let mut parents: Vec<(u32, Vec<usize>)> = children_by_parent.into_iter().collect();
+    parents.sort_unstable_by_key(|(parent, _)| *parent);
+    for (parent, members) in parents {
         // #5385 — SNAM names the PREVIOUS sibling, so the chain HEAD is
         // the member with no previous (SNAM == 0 or dangling): the TOP
-        // of the CK list. The pre-fix head ("the member no in-group
-        // sibling points at") is the BOTTOM under this reading, and
-        // following SNAM from it walked every stacked group bottom-up.
+        // of the CK list.
+        //
+        // #5405 — a group is NOT always one linked list: vanilla Skyrim
+        // has groups with several `SNAM == 0` members and several
+        // un-targeted ones (`DungeonNode` 19/50 reached). Following one
+        // head's chain silently dropped every other segment (58 members,
+        // 41 of them quest nodes, never evaluated). Every member is now
+        // placed: [`order_sibling_group`].
         let previous: HashMap<usize, Option<usize>> = members
             .iter()
             .map(|&member| {
@@ -382,30 +391,80 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
                     member,
                     by_form_id
                         .get(&records[&tree.nodes[member].form_id].previous_sibling)
-                        .copied(),
+                        .copied()
+                        .filter(|prev| members.contains(prev)),
                 )
             })
             .collect();
-        let head = members
-            .iter()
-            .find(|&&member| previous[&member].is_none())
-            .copied()
-            .unwrap_or(members[0]); // malformed: cycle / headless group
-        tree.nodes[by_form_id[&parent]].first_child = Some(head);
-        // Evaluation-order next = the inverse edge. Iterated in arena
-        // order so a malformed double-point (two members claiming the
-        // same previous) resolves deterministically (highest FormID
-        // wins), never by HashMap iteration.
-        for &member in &members {
-            if let Some(prev) = previous[&member] {
-                if members.contains(&prev) {
-                    tree.nodes[prev].next_sibling = Some(member);
-                }
-            }
+        let order = order_sibling_group(&members, &previous, &tree.nodes);
+        let single_chain = {
+            let heads = members.iter().filter(|m| previous[m].is_none()).count();
+            let mut claimed = std::collections::HashSet::new();
+            let unique = members
+                .iter()
+                .filter_map(|m| previous[m])
+                .all(|prev| claimed.insert(prev));
+            heads == 1 && unique
+        };
+        if !single_chain {
+            log::warn!(
+                "#5405: Story Manager children of {:#010X} do not form a single SNAM chain \
+                 ({} members) — placed deterministically, none dropped",
+                parent,
+                members.len()
+            );
+        }
+        tree.nodes[by_form_id[&parent]].first_child = order.first().copied();
+        for pair in order.windows(2) {
+            tree.nodes[pair[0]].next_sibling = Some(pair[1]);
         }
     }
 
     tree
+}
+
+/// Evaluation order for one parent's children, placing EVERY member (#5405).
+///
+/// `previous[m]` is `m`'s in-group `SNAM` predecessor (`None` = the top of
+/// the CK list: `SNAM == 0` or a dangling / out-of-group target). xEdit
+/// names the field "Previous Node", i.e. the node a member was inserted
+/// after, so members are replayed in FormID (creation) order and each is
+/// inserted directly after its predecessor — a later insert after the same
+/// predecessor lands above an earlier one — while a member with no
+/// predecessor goes to the top. A member whose predecessor has not been
+/// placed yet waits for it. For a well-formed single chain this reproduces
+/// the chain exactly; for the multi-segment groups real masters ship it
+/// keeps every segment instead of only the head's. A cycle (no member is
+/// placeable) is broken by appending its lowest-FormID member. `members`
+/// are arena indices in FormID order, so the result is deterministic.
+fn order_sibling_group(
+    members: &[usize],
+    previous: &HashMap<usize, Option<usize>>,
+    nodes: &[SmTreeNode],
+) -> Vec<usize> {
+    let mut order: Vec<usize> = Vec::with_capacity(members.len());
+    let mut waiting: Vec<usize> = members.to_vec();
+    waiting.sort_unstable_by_key(|&member| nodes[member].form_id);
+    while !waiting.is_empty() {
+        let placeable = waiting
+            .iter()
+            .position(|member| previous[member].is_none_or(|prev| order.contains(&prev)));
+        match placeable {
+            Some(at) => {
+                let member = waiting.remove(at);
+                let slot = match previous[&member] {
+                    None => 0,
+                    Some(prev) => {
+                        order.iter().position(|&placed| placed == prev).map_or(0, |i| i + 1)
+                    }
+                };
+                order.insert(slot, member);
+            }
+            // Cycle: no waiting member's predecessor can ever be placed.
+            None => order.push(waiting.remove(0)),
+        }
+    }
+    order
 }
 
 /// Build and install the [`SmTree`] (and the CLOC cursor) on the world.
@@ -673,8 +732,8 @@ struct WalkState<'a> {
     rng: Option<&'a mut StoryManagerRng>,
     /// Total game hours for `RNAM` reset windows (`StoryClock`).
     hours: f64,
-    /// `true` once a processed non-sharing quest node consumed the
-    /// event — every remaining sibling walk stops.
+    /// `true` once a non-sharing quest node that fired a quest consumed
+    /// the event (#5404) — every remaining sibling walk stops.
     consumed: bool,
     /// Nodes whose do-all fired set wraps this event (every eligible
     /// entry had run); phase B clears them when applying the new mark.
@@ -714,14 +773,21 @@ fn dispatch_story_event(
 ///   Event Node — local CK wiki).
 /// - **Descend** — a node whose conditions pass is processed (quest
 ///   pool picked, children walked); one that fails skips its subtree.
-/// - **Consume** — a PROCESSED quest node without `Shares Event`
-///   (`DNAM & 0x20000`) consumes the event once it finishes: every
-///   remaining sibling walk stops. Per the CK rule text ("the event
-///   will be consumed and the Story Manager will stop as soon as it
-///   finishes with that node") this keys on the node being processed,
-///   not on a quest actually starting — the wiki's own compatibility
-///   warning ("higher on the list than any quest node that doesn't
-///   [share]") is about placement, not firing.
+/// - **Consume** — a quest node without `Shares Event` (`DNAM & 0x20000`)
+///   that FIRES A QUEST consumes the event once it finishes: every
+///   remaining sibling walk stops. #5404 — Bethesda's own tutorial
+///   (*Bethesda Tutorial Story Manager*, local CK wiki) states the
+///   trigger: "without this box, if a node actually manages to fire a
+///   quest, the event will not go through the rest of the tree". The
+///   earlier reading keyed on the node merely being processed
+///   (from the *SM Event Node* page's "as soon as it finishes with that
+///   node"), which made an always-passing node whose pool is exhausted
+///   (`CWChangeLocationScenes` once its four scenes run) swallow every
+///   CLOC. "Fires" here is the node's own pool queueing a start
+///   candidate in the read-only phase (eligible = not running, past its
+///   `RNAM` window); phase B re-checks `is_started` under the write
+///   guard, so a same-event duplicate pick of one quest is the only way
+///   a queued candidate fails to start.
 fn walk_siblings(
     world: &World,
     tree: &SmTree,
@@ -786,10 +852,17 @@ fn walk_siblings(
             if node.kind == SmNodeKind::Quest {
                 process_quest_node(tree, state, index);
             }
+            // #5404 — did THIS node's own pool put a quest up for start?
+            // Taken before the subtree walk so a child's candidate does
+            // not count for the parent.
+            let node_fired = state.candidates.len() > queued_before;
             walk_siblings(world, tree, state, node.first_child, node.policies.random, visited);
-            // A processed non-sharing quest node consumes the event —
-            // after its own subtree finishes.
-            if node.kind == SmNodeKind::Quest && !node.policies.shares_event {
+            // A non-sharing quest node that actually fires a quest
+            // consumes the event — after its own subtree finishes. A
+            // processed node whose pool is exhausted (every entry
+            // already running, or inside its reset window) fires
+            // nothing and lets the event through (#5404).
+            if node.kind == SmNodeKind::Quest && !node.policies.shares_event && node_fired {
                 state.consumed = true;
                 return;
             }
@@ -1055,6 +1128,111 @@ mod tests {
         assert!(tree.nodes[third].next_sibling.is_none());
     }
 
+    /// #5405 — a group that is NOT a single SNAM chain keeps every member.
+    /// Two `SNAM == 0` heads (1, 2), a follower of each (3 after 1, 4 after
+    /// 2) and an un-targeted, dangling-predecessor member (5): the old
+    /// builder walked one head's chain only and dropped the rest. Replayed
+    /// in FormID order (insert after the predecessor, no-predecessor on
+    /// top): 1 → [1]; 2 → [2,1]; 3 after 1 → [2,1,3]; 4 after 2 →
+    /// [2,4,1,3]; 5 → [5,2,4,1,3].
+    #[test]
+    fn multi_segment_groups_place_every_member() {
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node(1, 10, 0, &[0x111]),
+            quest_node(2, 10, 0, &[0x222]),
+            quest_node(3, 10, 1, &[0x333]),
+            quest_node(4, 10, 2, &[0x444]),
+            quest_node(5, 10, 0x9999, &[0x555]), // dangling predecessor
+        ]));
+        let root = tree.roots_by_mnemonic[b"KILL"];
+        let mut order = Vec::new();
+        let mut at = tree.nodes[root].first_child;
+        while let Some(index) = at {
+            order.push(tree.nodes[index].form_id);
+            at = tree.nodes[index].next_sibling;
+        }
+        assert_eq!(order, vec![5, 2, 4, 1, 3], "every member placed, deterministically");
+    }
+
+    /// #5405 — a well-formed chain authored out of FormID order still
+    /// reproduces the chain exactly (the replay defers a member until its
+    /// predecessor is placed).
+    #[test]
+    fn single_chain_survives_reverse_formid_order() {
+        // 9 → 7 → 5 (top to bottom): 9.prev=0, 7.prev=9, 5.prev=7.
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node(5, 10, 7, &[0x1]),
+            quest_node(7, 10, 9, &[0x2]),
+            quest_node(9, 10, 0, &[0x3]),
+        ]));
+        let root = tree.roots_by_mnemonic[b"KILL"];
+        let mut order = Vec::new();
+        let mut at = tree.nodes[root].first_child;
+        while let Some(index) = at {
+            order.push(tree.nodes[index].form_id);
+            at = tree.nodes[index].next_sibling;
+        }
+        assert_eq!(order, vec![9, 7, 5]);
+    }
+
+    /// #5405 real-data floor: on `Skyrim.esm` every SM node whose parent
+    /// resolves is reachable from its event root by the dispatch walk's
+    /// `first_child` / `next_sibling` links. The pre-fix builder reached
+    /// 19/50 of `DungeonNode`'s children and dropped 58 members overall
+    /// (41 quest nodes).
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn every_skyrim_story_manager_node_is_reachable_from_its_event_root() {
+        let data = byroredux_plugin::esm::test_paths::skyrim_se_data_dir();
+        let esm = data.join("Skyrim.esm");
+        if !esm.is_file() {
+            eprintln!("[SM reachability] skipping: no Skyrim.esm at {esm:?}");
+            return;
+        }
+        let bytes = std::fs::read(&esm).expect("read Skyrim.esm");
+        let index = byroredux_plugin::esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+        let tree = build_story_manager_tree(&index.story_manager_nodes);
+
+        let mut reached = vec![false; tree.nodes.len()];
+        let mut stack: Vec<usize> = tree.roots_by_mnemonic.values().copied().collect();
+        while let Some(node) = stack.pop() {
+            if std::mem::replace(&mut reached[node], true) {
+                continue;
+            }
+            let mut child = tree.nodes[node].first_child;
+            while let Some(c) = child {
+                if reached[c] {
+                    break;
+                }
+                stack.push(c);
+                child = tree.nodes[c].next_sibling;
+            }
+        }
+        let known: std::collections::HashSet<u32> =
+            tree.nodes.iter().map(|node| node.form_id).collect();
+        let unreached: Vec<String> = tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, node)| {
+                !reached[*i]
+                    && index
+                        .story_manager_nodes
+                        .get(&node.form_id)
+                        .is_some_and(|r| r.parent != 0 && known.contains(&r.parent))
+                    && node.event_mnemonic.is_none()
+            })
+            .map(|(_, node)| format!("{:08X} {}", node.form_id, node.editor_id))
+            .collect();
+        assert!(
+            unreached.is_empty(),
+            "{} Story Manager nodes unreachable from their event root: {unreached:#?}",
+            unreached.len()
+        );
+    }
+
     /// A sibling cycle (2 ⇄ 3, no head) still builds: the lowest-index
     /// member becomes head and the visited bitmap keeps dispatch
     /// terminating.
@@ -1108,7 +1286,7 @@ mod tests {
         world.insert_resource(QuestStageState::default());
         let killer = world.spawn();
         let victim = world.spawn();
-        for _ in 0..2 {
+        let fire = |world: &World| {
             if let Some(mut events) = world.query_mut::<StoryEvent>() {
                 events.insert(
                     victim,
@@ -1121,15 +1299,26 @@ mod tests {
                     },
                 );
             }
-            story_manager_dispatch_system(&world);
-        }
+            story_manager_dispatch_system(world);
+        };
+        fire(&world);
         {
             // Phase 3: node 30 processed (no conditions) and carries no
-            // Shares Event bit — it consumes the event after starting
-            // its quest, so sibling 31 never evaluates.
+            // Shares Event bit — it fires its quest and consumes the
+            // event, so sibling 31 never evaluates.
             let stages = world.try_resource::<QuestStageState>().unwrap();
             assert!(stages.is_started(QuestFormId(0x000F_0A10)));
             assert!(!stages.is_started(QuestFormId(0x000F_0A11)));
+        }
+        // Second identical event: node 30's pool is exhausted (its quest
+        // is running), so it fires nothing and — #5404 — no longer
+        // consumes; the sibling below gets its turn. Node 30's quest is
+        // not restarted.
+        fire(&world);
+        {
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            assert!(stages.is_started(QuestFormId(0x000F_0A10)));
+            assert!(stages.is_started(QuestFormId(0x000F_0A11)));
         }
         // The marker drained: nothing left for a second pass.
         let remaining = world
@@ -1772,11 +1961,13 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         assert!(stages.is_started(QuestFormId(0x222)));
     }
 
-    /// Phase 3 — a processed non-sharing node consumes the event even
-    /// when its pool starts nothing (every entry already running): the
-    /// CK rule keys on processing, not on starting.
+    /// #5404 — a non-sharing node that fires nothing (every pool entry
+    /// already running) does NOT consume the event: the sibling below it
+    /// still fires. Bethesda's tutorial keys consumption on a node
+    /// "actually manag[ing] to fire a quest". Pre-fix `CWChangeLocationScenes`
+    /// swallowed every CLOC once its four scenes were running.
     #[test]
-    fn processed_non_sharing_node_consumes_even_without_a_start() {
+    fn non_sharing_node_with_an_exhausted_pool_lets_the_event_through() {
         let tree = build_story_manager_tree(&records(vec![
             event_node(10, b"KILL"),
             quest_node(30, 10, 0, &[0x111]),
@@ -1805,8 +1996,8 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         story_manager_dispatch_system(&world);
         let stages = world.try_resource::<QuestStageState>().unwrap();
         assert!(
-            !stages.is_started(QuestFormId(0x222)),
-            "node 30 processed without sharing — the event died there"
+            stages.is_started(QuestFormId(0x222)),
+            "node 30 fired nothing, so it must not consume — node 31 fires"
         );
     }
 

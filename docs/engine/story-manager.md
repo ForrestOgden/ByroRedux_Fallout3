@@ -300,7 +300,7 @@ R1/R2 tags (L-tags fail pending a location runtime). A passing SMQN
 starts its quest via the existing quest lifecycle, records its slots in
 `StoryEventAliasFill`, and the P4 alias refresh fills `FromEvent`
 aliases from them. Traversal honors the decoded `DNAM` bits (§3.3): shares-event →
-continue past a processed quest node (else consume the event), random →
+continue past a quest node (else a node that fires a quest consumes the event), random →
 shuffled child order stopping at the first fire / uniform pool pick,
 do-all-before-repeating → the persisted round-robin marks, `RNAM`
 windows → the persisted last-fire timestamps (Phase 3, landed).
@@ -354,9 +354,12 @@ tree itself (rederived from the load order every boot).
    `DNAM`/`XNAM`/`QNAM` semantics yet.
 2. **Phase 1 — first event end-to-end. Landed 2026-10-07 (#5366).**
    `crates/scripting/src/story_manager.rs`: `build_story_manager_tree`
-   (children ordered by the authored `SNAM` chains from each group's
-   chain head; cycle/headless fallback + a visited bitmap so malformed
-   mods cannot loop dispatch), the `StoryEvent` Pattern-B marker
+   (children ordered by the authored `SNAM` chains; since #5405 every
+   member of a group is placed — vanilla groups are not always one linked
+   list (`DungeonNode` 50 members, several `SNAM == 0` heads), so members
+   are replayed in FormID order, inserted after their predecessor, with
+   no-predecessor members on top; cycles break at the lowest FormID, and
+   a visited bitmap keeps malformed mods from looping dispatch), the `StoryEvent` Pattern-B marker
    (#2672-registered in `cleanup.rs`'s two-pattern contract),
    `story_manager_dispatch_system` (mnemonic root → sibling-order walk,
    CTDA evaluation through the shared M47.1 evaluator with
@@ -424,14 +427,16 @@ tree itself (rederived from the load order every boot).
    its child nodes randomly"), random quest nodes pick uniformly from
    the eligible pool, do-all-before-repeating round-robins the pool
    (fired marks persisted, wrapping when every eligible entry has run),
-   and a PROCESSED quest node without Shares Event consumes the event
-   ("the Story Manager will stop as soon as it finishes with that
-   node" — keyed on processing per the CK rule text and its
-   compatibility warning, not on a quest actually starting). The
+   and a quest node without Shares Event that FIRES A QUEST consumes
+   the event (#5404: the CK tutorial's "if a node actually manages to
+   fire a quest, the event will not go through the rest of the tree";
+   the earlier processing-keyed reading let an always-passing node with
+   an exhausted pool swallow every event). The
    Phase-1 continue-always placeholder is gone. The live boot set is
    the authored one minus #5380's declines: `CWChangeLocationScenes`
    starts through its cataloged fn-56 gate and then consumes
-   (`CRHoldExpansion` below it correctly stays stopped — pinned as
+   (`CRHoldExpansion` below it correctly stays stopped while
+   `CWChangeLocationScenes` still has a startable scene — pinned as
    the sm1 negative); `WIGreetingNodeSHARES`'s uncatalogued fn-145
    gate declines (the sm1 decline negative).
    `RNAM` windows gate re-fires through `StoryClock` (synced from
