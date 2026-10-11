@@ -7,12 +7,17 @@
 //! 0x00107222, quest `VCG01`, topic `GREETING`) lives at
 //! `sound\voice\falloutnv.esm\maleuniquedocmitchell\vcg01_greeting_00107222_1.ogg`.
 //!
-//! - **Truncated EDIDs (#5395).** The quest EDID is cut to 10 characters
-//!   and the topic EDID so the two total 25 (`VDoctors` +
-//!   `DoctorMedical99YES` → `vdoctors_doctormedical99ye`). Radio quests
-//!   (RadioNewVegas, GNR) keep their full EDIDs, so the untruncated shape
-//!   stays second in the try-order. Measured (LC-D3-01): the full shape
-//!   alone resolved 28% of FNV's 52,876 joinable lines.
+//! - **Truncated EDIDs (#5395, #5521).** The rule is a length test, not a
+//!   per-quest exception: when `len(quest) + len(topic) > 25` the quest
+//!   EDID is cut to 10 characters and the topic EDID so the two total 25
+//!   (`VDoctors` + `DoctorMedical99YES` → `vdoctors_doctormedical99ye`);
+//!   otherwise both keep their full EDIDs (`DialogueRivetCity` +
+//!   `Greeting`). Measured against FO3's `Fallout - Voices.bsa`: all 5,442
+//!   cut-shape files sit at 26..61 combined characters and all 3,592
+//!   full-shape files (55 quests, none of the top twelve a radio quest) at
+//!   14..25; FNV's `Voices1.bsa` partitions the same way (16,876 cut /
+//!   3,961 full). Measured (LC-D3-01): the full shape alone resolved 28%
+//!   of FNV's 52,876 joinable lines.
 //! - **Plugin-local id (#5395).** The FormID is written with the
 //!   load-order byte stripped (top byte `00`), DLC archives included —
 //!   the id [`GlobalFormIdResolver`] decomposes, not the global FormID.
@@ -62,10 +67,12 @@ const VOICE_QUEST_CHARS: usize = 10;
 /// Combined quest + topic length of a voice file name (#5395).
 const VOICE_NAME_CHARS: usize = 25;
 
-/// Candidate archive paths for one response segment, authored try-order:
-/// the truncated `<quest>_<topic>` shape, then the full-EDID shape radio
-/// quests use (only when it differs). Empty for a quest-less line — it
-/// has no authored shape. `local_id` is the plugin-local INFO id (load
+/// Candidate archive paths for one response segment. The authored name is
+/// decided by length (#5521): a combined quest + topic EDID over
+/// [`VOICE_NAME_CHARS`] takes the truncated shape, anything else the full
+/// EDIDs, so there is at most one candidate (a `Vec` stays for the
+/// caller's probe loop). Empty for a quest-less line — it has no
+/// authored shape. `local_id` is the plugin-local INFO id (load
 /// order byte stripped). Everything lowercased and backslash-separated —
 /// the archive path convention.
 pub(crate) fn voice_path_candidates(
@@ -81,22 +88,20 @@ pub(crate) fn voice_path_candidates(
     }
     let quest = quest_edid.to_ascii_lowercase();
     let topic = topic_edid.to_ascii_lowercase();
-    let quest_cut: String = quest.chars().take(VOICE_QUEST_CHARS).collect();
-    let topic_cut: String = topic
-        .chars()
-        .take(VOICE_NAME_CHARS.saturating_sub(quest_cut.len()))
-        .collect();
-    let path = |q: &str, t: &str| {
-        format!(
-            "sound\\voice\\{plugin}\\{voice_type}\\{q}_{t}_{:08x}_{response}.ogg",
-            local_id & 0x00FF_FFFF
-        )
+    let (quest, topic) = if quest.chars().count() + topic.chars().count() > VOICE_NAME_CHARS {
+        let quest_cut: String = quest.chars().take(VOICE_QUEST_CHARS).collect();
+        let topic_cut: String = topic
+            .chars()
+            .take(VOICE_NAME_CHARS.saturating_sub(quest_cut.len()))
+            .collect();
+        (quest_cut, topic_cut)
+    } else {
+        (quest, topic)
     };
-    let mut out = vec![path(&quest_cut, &topic_cut)];
-    if quest_cut != quest || topic_cut != topic {
-        out.push(path(&quest, &topic));
-    }
-    out
+    vec![format!(
+        "sound\\voice\\{plugin}\\{voice_type}\\{quest}_{topic}_{:08x}_{response}.ogg",
+        local_id & 0x00FF_FFFF
+    )]
 }
 
 /// The owning plugin's lowercase basename and the plugin-local id of an
@@ -352,18 +357,19 @@ mod tests {
         assert!(voice_path_candidates("fallout3.esm", "v", "", "someTopic", 0x1AB, 3).is_empty());
     }
 
-    /// #5395 (LC-D3-01) — long EDIDs truncate: quest to 10 characters,
-    /// topic so the two total 25; the full-EDID (radio) shape follows.
-    /// Real names from `Fallout - Voices1.bsa` / `Fallout - Voices.bsa`.
+    /// #5395 (LC-D3-01) / #5521 — the cut is a length test: EDIDs truncate
+    /// (quest to 10, topic so the two total 25) only when their combined
+    /// length exceeds 25; at or under 25 both keep their full EDIDs. A
+    /// single candidate either way. Real names from `Fallout - Voices1.bsa`
+    /// / `Fallout - Voices.bsa`.
     #[test]
-    fn voice_path_candidates_truncate_long_edids() {
+    fn voice_path_candidates_truncate_only_over_the_length_limit() {
         let paths =
             voice_path_candidates("falloutnv.esm", "vt", "VDoctors", "DoctorMedical99YES", 0x1234, 1);
-        assert_eq!(paths[0], "sound\\voice\\falloutnv.esm\\vt\\vdoctors_doctormedical99ye_00001234_1.ogg");
         assert_eq!(
-            paths[1],
-            "sound\\voice\\falloutnv.esm\\vt\\vdoctors_doctormedical99yes_00001234_1.ogg",
-            "the full-EDID radio shape stays as the fallback"
+            paths,
+            vec!["sound\\voice\\falloutnv.esm\\vt\\vdoctors_doctormedical99ye_00001234_1.ogg"],
+            "26 combined characters: cut shape only, no full-EDID probe"
         );
         let sunny = voice_path_candidates(
             "falloutnv.esm",
@@ -373,9 +379,26 @@ mod tests {
             0x1,
             2,
         );
-        assert!(sunny[0].ends_with("\\vcg02_vcg02gssunnysmilesto_00000001_2.ogg"));
-        let fo3 = voice_path_candidates("fallout3.esm", "vt", "DialogueLincoln", "GOODBYE", 0x38825, 1);
-        assert!(fo3[0].ends_with("\\dialogueli_goodbye_00038825_1.ogg"));
+        assert_eq!(
+            sunny,
+            vec!["sound\\voice\\falloutnv.esm\\vt\\vcg02_vcg02gssunnysmilesto_00000001_2.ogg"]
+        );
+        // FO3 `DialogueRivetCity` + `Greeting` = 25: authored in full, and a
+        // quest longer than 10 characters is NOT cut when the total fits.
+        let rivet = voice_path_candidates("fallout3.esm", "vt", "DialogueRivetCity", "Greeting", 0x38825, 1);
+        assert_eq!(
+            rivet,
+            vec!["sound\\voice\\fallout3.esm\\vt\\dialoguerivetcity_greeting_00038825_1.ogg"]
+        );
+        // One character over the limit flips to the cut shape.
+        let over = voice_path_candidates("fallout3.esm", "vt", "DialogueRivetCity", "Greetings", 0x38825, 1);
+        assert_eq!(
+            over,
+            vec!["sound\\voice\\fallout3.esm\\vt\\dialogueri_greetings_00038825_1.ogg"]
+        );
+        // Radio quests carry no special case: `RadioNewVegas` + `Hello` fits.
+        let radio = voice_path_candidates("falloutnv.esm", "vt", "RadioNewVegas", "Hello", 0x2, 1);
+        assert!(radio[0].ends_with("\\radionewvegas_hello_00000002_1.ogg"));
     }
 
     /// #5395 (FNV-D5-01) — the file name carries the plugin-local id:

@@ -196,10 +196,12 @@ see §5 phase 5.
    id 8-hex>_<n>.ogg` — composed from the owning quest's and topic's
    EDIDs because INFO records routinely carry none of their own (the
    live-gated greeting 0x107222 has no EDID; its file is
-   `vcg01_greeting_00107222_1.ogg`). #5395: the quest EDID is cut to 10
-   characters and the topic so the two total 25
-   (`vdoctors_doctormedical99ye`), with the full-EDID shape kept as the
-   radio fallback; the id is plugin-local (top byte `00`, DLC archives
+   `vcg01_greeting_00107222_1.ogg`). #5395/#5521: the cut is a length test —
+   only when quest + topic EDIDs exceed 25 characters is the quest cut to
+   10 and the topic so the two total 25 (`vdoctors_doctormedical99ye`);
+   at or under 25 both keep their full EDIDs
+   (`dialoguerivetcity_greeting`), radio quests included — one candidate,
+   no fallback probe; the id is plugin-local (top byte `00`, DLC archives
    included); `<n>` is each segment's authored response number. The
    voice type resolves NPC → `VTCK` → indexed `VTYP` EDID; the plugin
    segment is the INFO's owning plugin through `GlobalFormIdResolver`
