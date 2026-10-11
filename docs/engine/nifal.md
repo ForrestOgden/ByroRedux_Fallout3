@@ -572,6 +572,28 @@ ECS sink every frame (confirmed by `sink_lifecycle_end_to_end_tests`); they
 only lack a downstream GPU/mesh-vertex-blend consumer, tracked separately by
 #2221.
 
+**`NiPathInterpolator` (#605, #5571).** The `NiPosData` path keys are a parametric
+curve (key time = ratio 0..1 along the path); the `NiFloatData` percent keys map
+animation time onto that ratio (Gamebryo 3.2 `NiPathInterpolator` reference:
+"uses the input time to interpolate a percentage value from the percentage keys.
+It then uses this percentage to determine a position along the spline"). The
+importer composes them — `position(t) = path(percent(t))`, both curves evaluated
+with their authored interpolation type through
+`byroredux_core::animation::interpolation` — and resamples to linear
+translation keys over the percent curve's span under the B-spline resampler's
+span / ceiling / budget bounds (`extract_transform_channel_path`). Census
+(vanilla BSAs, #5571): all 205 path interpolators carry percent data (Oblivion
+82, FO3 15, FNV 52, Skyrim SE 71) and have path keys at exactly t=[0,1]. A path
+without percent data is skipped: there is no sourced time→path mapping.
+Rotation and scale are left empty (the node keeps its bind values) rather than
+stamped identity. **Parked, not translated (no canonical consumer):**
+follow-axis tangent alignment (`follow_axis`, flag `0x20`), banking
+(`bank_dir`, `max_bank_angle`, `smoothing`), constant-velocity arc-length
+reparameterisation (flag `0x10`) and closed-curve wrap — a percentage outside
+the path's key range holds the nearest end, because the `Update` body that
+defines the closed-curve behaviour is not in the available reference headers
+(`gamebryo-v26` / `gamebryo-v32` ship `NiPathInterpolator.h/.inl` only).
+
 `anim_convert::convert_nif_clip` is the single NIF→core boundary, but not the
 only production boundary for the canonical `AnimationClip`: Skyrim's cart/
 furniture idles ship as Havok 2010 packfiles (`.hkx`), not NIF, so

@@ -529,86 +529,158 @@ fn extract_transform_channel_keeps_authored_axes_when_translation_is_flt_max() {
     assert!((channel.scale_keys[0].value - 1.0).abs() < 1e-6);
 }
 
-/// #605 — NiPathInterpolator must emit translation keys sampled
-/// from its referenced NiPosData (Z-up → Y-up converted, interpolation
-/// type preserved). Rotation/scale stay identity matching legacy
-/// Gamebryo path-interpolator behavior. Pre-fix the dispatch had no
-/// fourth branch and embedded path animations (door swings, moving
-/// platforms, dragon flight curves) silently static-posed.
-#[test]
-fn extract_transform_channel_emits_path_keys_for_path_interpolator() {
-    use crate::blocks::interpolator::Vec3Key;
+/// Build the scene for a path interpolator: block 0 = NiPosData (a three-point
+/// Z-up arch over path-time 0..1), block 1 = NiFloatData percent curve,
+/// block 2 = the interpolator. `pct` is `(time, percent)` pairs.
+fn path_scene(pct: Option<&[(f32, f32)]>) -> NifScene {
+    use crate::blocks::interpolator::{NiFloatData, Vec3Key};
     use crate::types::BlockRef;
 
-    // Three-point path in Z-up: start (0,0,0), midpoint (10,0,5),
-    // end (20,0,0) — a simple arch. Times 0, 1, 2 seconds.
+    let pt = |time: f32, value: [f32; 3]| Vec3Key {
+        time,
+        value,
+        tangent_forward: [0.0; 3],
+        tangent_backward: [0.0; 3],
+        tbc: None,
+    };
     let pos_data = NiPosData {
         keys: KeyGroup::<Vec3Key> {
             key_type: KeyType::Linear,
             keys: vec![
-                Vec3Key {
-                    time: 0.0,
-                    value: [0.0, 0.0, 0.0],
-                    tangent_forward: [0.0; 3],
-                    tangent_backward: [0.0; 3],
-                    tbc: None,
-                },
-                Vec3Key {
-                    time: 1.0,
-                    value: [10.0, 0.0, 5.0],
-                    tangent_forward: [0.0; 3],
-                    tangent_backward: [0.0; 3],
-                    tbc: None,
-                },
-                Vec3Key {
-                    time: 2.0,
-                    value: [20.0, 0.0, 0.0],
-                    tangent_forward: [0.0; 3],
-                    tangent_backward: [0.0; 3],
-                    tbc: None,
-                },
+                pt(0.0, [0.0, 0.0, 0.0]),
+                pt(0.5, [10.0, 0.0, 5.0]),
+                pt(1.0, [20.0, 0.0, 0.0]),
             ],
         },
     };
+    let pct_data = NiFloatData {
+        keys: KeyGroup::<FloatKey> {
+            key_type: KeyType::Linear,
+            keys: pct
+                .unwrap_or(&[])
+                .iter()
+                .map(|&(time, value)| FloatKey {
+                    time,
+                    value,
+                    tangent_forward: 0.0,
+                    tangent_backward: 0.0,
+                    tbc: None,
+                })
+                .collect(),
+        },
+    };
     let path_interp = NiPathInterpolator {
-        flags: 0,
-        bank_dir: 0,
+        flags: 3,
+        bank_dir: 1,
         max_bank_angle: 0.0,
         smoothing: 0.0,
         follow_axis: 0,
         path_data_ref: BlockRef(0),
-        percent_data_ref: BlockRef::NULL,
+        percent_data_ref: if pct.is_some() { BlockRef(1) } else { BlockRef::NULL },
     };
-    let scene = NifScene {
-        blocks: vec![Box::new(pos_data), Box::new(path_interp)],
+    NifScene {
+        blocks: vec![Box::new(pos_data), Box::new(pct_data), Box::new(path_interp)],
         ..NifScene::default()
-    };
+    }
+}
 
+fn path_channel(
+    scene: &NifScene,
+    sampling: &mut super::super::bspline::BsplineSampling,
+) -> Option<TransformChannel> {
     let mut cb = dummy_controlled_block();
-    cb.interpolator_ref = BlockRef(1);
+    cb.interpolator_ref = crate::types::BlockRef(2);
+    extract_transform_channel(scene, &cb, sampling)
+}
 
-    let channel = extract_transform_channel(&scene, &cb, &mut super::super::bspline::BsplineSampling::new())
-        .expect("NiPathInterpolator must emit a translation channel from its NiPosData");
+fn value_at(ch: &TransformChannel, t: f32) -> [f32; 3] {
+    ch.translation_keys
+        .iter()
+        .min_by(|a, b| (a.time - t).abs().total_cmp(&(b.time - t).abs()))
+        .map(|k| k.value)
+        .unwrap()
+}
 
-    // Three keys round-tripped from path data, Z-up → Y-up:
-    // (x, y, z) → (x, z, -y).  (10, 0, 5) → (10, 5, 0).
-    assert_eq!(channel.translation_keys.len(), 3);
-    assert_eq!(channel.translation_keys[0].value, [0.0, 0.0, 0.0]);
-    assert_eq!(channel.translation_keys[1].value, [10.0, 5.0, 0.0]);
-    assert_eq!(channel.translation_keys[2].value, [20.0, 0.0, 0.0]);
-    assert_eq!(channel.translation_keys[0].time, 0.0);
-    assert_eq!(channel.translation_keys[1].time, 1.0);
-    assert_eq!(channel.translation_keys[2].time, 2.0);
-    assert_eq!(channel.translation_type, KeyType::Linear);
+/// #605 / #5571 — NiPathInterpolator composes its percent curve with its
+/// path spline: position(t) = path(percent(t)). Path keys are a parametric
+/// curve over 0..1, NOT animation time; the percent keys carry the timing.
+/// Pre-#5571 the path keys were emitted verbatim as translation-over-time,
+/// so a percent curve spanning 33 s played in 1 s and the percent data was
+/// ignored. Output is Z-up → Y-up converted ((x, y, z) → (x, z, -y)), with
+/// rotation / scale left empty so the node keeps its bind values.
+#[test]
+fn extract_transform_channel_composes_percent_curve_with_path() {
+    // Percent 0→1 over 4 seconds.
+    let scene = path_scene(Some(&[(0.0, 0.0), (4.0, 1.0)]));
+    let ch = path_channel(&scene, &mut super::super::bspline::BsplineSampling::new())
+        .expect("path + percent data must emit a translation channel");
 
-    // Rotation is identity, single key — Gamebryo's documented
-    // path-interp default.
-    assert_eq!(channel.rotation_keys.len(), 1);
-    assert_eq!(channel.rotation_keys[0].value, [0.0, 0.0, 0.0, 1.0]);
+    let first = ch.translation_keys.first().unwrap();
+    let last = ch.translation_keys.last().unwrap();
+    assert_eq!((first.time, first.value), (0.0, [0.0, 0.0, 0.0]));
+    assert_eq!(last.time, 4.0, "key times are animation time (percent keys), not path time");
+    assert_eq!(last.value, [20.0, 0.0, 0.0]);
+    // Every key is path(percent(t)): percent = t / 4, and the arch is
+    // x = 20·p, y(Y-up, = Z-up z) = 5·(1 − |2p − 1|), z(Y-up) = 0.
+    assert!(ch.translation_keys.len() > 30, "resampled, not the 3 path keys");
+    for k in &ch.translation_keys {
+        let p = k.time / 4.0;
+        let expect = [20.0 * p, 5.0 * (1.0 - (2.0 * p - 1.0).abs()), 0.0];
+        for axis in 0..3 {
+            assert!(
+                (k.value[axis] - expect[axis]).abs() < 1e-3,
+                "t={} axis {axis}: got {:?}, expected {expect:?}",
+                k.time,
+                k.value
+            );
+        }
+    }
+    assert_eq!(ch.translation_type, KeyType::Linear);
+    assert!(ch.rotation_keys.is_empty(), "no invented identity rotation (#5571)");
+    assert!(ch.scale_keys.is_empty(), "no invented identity scale (#5571)");
+}
 
-    // Scale identity, single key.
-    assert_eq!(channel.scale_keys.len(), 1);
-    assert_eq!(channel.scale_keys[0].value, 1.0);
+/// The salmon-effect shape from the audit: a percent curve spanning 33.3 s
+/// must keep its 33.3 s timeline instead of being squeezed into the path's
+/// 0..1 key range.
+#[test]
+fn path_timeline_follows_the_percent_keys_not_the_path_keys() {
+    let scene = path_scene(Some(&[(0.0, 0.0), (33.3, 1.0)]));
+    let ch = path_channel(&scene, &mut super::super::bspline::BsplineSampling::new()).unwrap();
+    assert!((ch.translation_keys.last().unwrap().time - 33.3).abs() < 1e-4);
+    let half = value_at(&ch, 33.3 / 2.0);
+    assert!((half[0] - 10.0).abs() < 0.5, "half way through the timeline, got {half:?}");
+}
+
+/// A percentage outside the path's 0..1 key range holds the nearest end of
+/// the path (the close-curve behaviour is unsourced, so nothing is invented).
+#[test]
+fn out_of_range_percent_holds_the_path_end() {
+    let scene = path_scene(Some(&[(0.0, 1.5), (2.0, 3.0)]));
+    let ch = path_channel(&scene, &mut super::super::bspline::BsplineSampling::new()).unwrap();
+    for k in &ch.translation_keys {
+        assert_eq!(k.value, [20.0, 0.0, 0.0]);
+    }
+}
+
+/// Without percent data there is no time→path mapping; emit nothing rather
+/// than treating the 0..1 path-parameter keys as animation time.
+#[test]
+fn path_without_percent_data_is_skipped() {
+    let scene = path_scene(None);
+    assert!(path_channel(&scene, &mut super::super::bspline::BsplineSampling::new()).is_none());
+}
+
+/// The resample obeys the owning sequence's span, like B-spline channels.
+#[test]
+fn path_resample_is_clamped_to_the_owning_sequence() {
+    let scene = path_scene(Some(&[(0.0, 0.0), (4.0, 1.0)]));
+    let mut sampling = super::super::bspline::BsplineSampling::new();
+    sampling.seq_span = Some((0.0, 2.0));
+    let ch = path_channel(&scene, &mut sampling).unwrap();
+    let last = ch.translation_keys.last().unwrap();
+    assert_eq!(last.time, 2.0);
+    assert!((last.value[0] - 10.0).abs() < 1e-3, "value at 2 s is still percent 0.5");
 }
 
 /// Edge case: NiPathInterpolator with a null path_data_ref or with
