@@ -782,6 +782,14 @@ fn select_active_package<'a>(
     })
 }
 
+/// `BYRO_M42_DEBUG` diagnostics switch, read from the environment once. The
+/// `[m42-tick]` probe runs every frame, and `std::env::var_os` is a global
+/// environ read lock plus a linear scan (#5448).
+fn m42_debug_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("BYRO_M42_DEBUG").is_some())
+}
+
 fn game_minute(game_hour: f32) -> u16 {
     if !game_hour.is_finite() {
         return 0;
@@ -898,22 +906,13 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
     // `Dead` / `EvaluatePackageRequest` lock. At the default `time_scale`
     // an in-game minute is 2 real seconds, so ~119 of every 120 frames must
     // fall straight through this pass.
-    let last_evaluated: Vec<(EntityId, Option<u16>)> = world
-        .query::<AmbientPackageRuntime>()
-        .map(|query| {
-            query
-                .iter()
-                .map(|(actor, runtime)| (actor, runtime.last_evaluated_game_minute))
-                .collect()
-        })
-        .unwrap_or_default();
-    if last_evaluated.is_empty() {
-        return;
-    }
-
-    // One query pass for the explicit-request marker instead of one
-    // `world.has` per actor per frame. The marker is transient and rare, so
-    // the collected set is nearly always empty.
+    //
+    // The explicit-request marker is one query pass instead of one
+    // `world.has` per actor per frame. It is transient and rare, so the
+    // collected set is nearly always empty; it is read first (and its
+    // guard dropped) so the runtime scan below can build `due` directly —
+    // no per-frame O(NPCs) intermediate Vec. The two query scopes never
+    // overlap, preserving the TypeId-sorted lock-order invariant.
     let requested: Vec<EntityId> = world
         .query::<EvaluatePackageRequest>()
         .map(|query| query.iter().map(|(actor, _)| actor).collect())
@@ -921,12 +920,20 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
 
     // Pass 2 — the gate. Only the survivors (usually none) go on to pay for a
     // `package_candidates` clone and a `Dead` lookup.
-    let mut due: Vec<EntityId> = last_evaluated
-        .into_iter()
-        .filter(|(actor, last)| requested.contains(actor) || *last != Some(minute))
-        .map(|(actor, _)| actor)
-        .collect();
-    if std::env::var_os("BYRO_M42_DEBUG").is_some() {
+    let mut any_runtime = false;
+    let mut due: Vec<EntityId> = Vec::new();
+    if let Some(query) = world.query::<AmbientPackageRuntime>() {
+        for (actor, runtime) in query.iter() {
+            any_runtime = true;
+            if requested.contains(&actor) || runtime.last_evaluated_game_minute != Some(minute) {
+                due.push(actor);
+            }
+        }
+    }
+    if !any_runtime {
+        return;
+    }
+    if m42_debug_enabled() {
         log::warn!("[m42-tick] minute={minute} due={}", due.len());
     }
     if due.is_empty() {
@@ -1004,7 +1011,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
                 .unwrap_or(package);
             AmbientBehavior::from_package(package, template, runtime.actor_form_id)
         });
-        if std::env::var_os("BYRO_M42_DEBUG").is_some() {
+        if m42_debug_enabled() {
             log::warn!(
                 "[m42-eval] actor {actor} -> {:?}",
                 active_package_form_id.map(|id| format!("{id:08X}"))
@@ -1506,6 +1513,25 @@ mod tests {
             world.has::<EvaluatePackageRequest>(actor),
             "ambient evaluation must leave the request for the SCEN consumer"
         );
+    }
+
+    /// #5448 — the `BYRO_M42_DEBUG` probe sits ahead of the due-set early-out,
+    /// so it runs every frame; an environ scan per frame is the cost. The
+    /// variable may be read from exactly one place — the `OnceLock` helper.
+    #[test]
+    fn m42_debug_env_is_read_once_not_per_frame() {
+        let prod = byroredux_core::source_scan::production_text(include_str!("ai_package.rs"));
+        assert_eq!(
+            prod.matches("var_os(\"BYRO_M42_DEBUG\")").count(),
+            1,
+            "the env var must be read only inside `m42_debug_enabled` (#5448)"
+        );
+        let helper = prod
+            .split("fn m42_debug_enabled")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("m42_debug_enabled helper");
+        assert!(helper.contains("OnceLock"), "the read must be cached");
     }
 
     /// #3353 — the minute gate must be reached before any per-actor work.
