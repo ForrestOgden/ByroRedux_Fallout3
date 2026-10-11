@@ -392,13 +392,14 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
             continue;
         }
         // The impacted side's material wins: collider 1's authored byte,
-        // else collider 2's. Both STONE (0) falls through to the default
-        // via the selection below.
-        let Some(material) = (pw
-            .collider_surface_material(event.collider1)
-            .filter(|m| *m != 0))
-        .or_else(|| pw.collider_surface_material(event.collider2).filter(|m| *m != 0))
-        else {
+        // else collider 2's. Both 0 (STONE, or a body with no NIF material:
+        // terrain, the player capsule, ragdoll bones) is still an impact —
+        // it reaches the selection below as material 0 and takes that
+        // entry or the default (#5549).
+        let Some(material) = resolve_impact_material(
+            pw.collider_surface_material(event.collider1),
+            pw.collider_surface_material(event.collider2),
+        ) else {
             continue;
         };
         let Some(position) = pw.contact_event_position(event) else {
@@ -429,6 +430,23 @@ pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
         );
     }
     drop(audio_world);
+}
+
+/// The surface material of a contact pair: collider 1's non-zero material,
+/// else collider 2's, else `0` when at least one collider is alive. `None`
+/// only when BOTH handles are dead (nothing to play at).
+///
+/// `0` is STONE on Oblivion and FO3/FNV and the value of every body with no
+/// NIF-authored material (terrain, synthesized architecture, the player
+/// capsule, ragdoll bones), so a both-0 pair is the most common impact
+/// class — it must reach `select_impact_sound` and fall back to the
+/// default sound, not be dropped (#5549; the pre-fix filter discarded it
+/// against its own comment).
+fn resolve_impact_material(first: Option<u32>, second: Option<u32>) -> Option<u32> {
+    let authored = |m: Option<u32>| m.filter(|m| *m != 0);
+    authored(first)
+        .or_else(|| authored(second))
+        .or_else(|| (first.is_some() || second.is_some()).then_some(0))
 }
 
 /// The sound one clutter impact plays: the authored per-material entry
@@ -655,6 +673,35 @@ mod footstep_tests {
             Arc::ptr_eq(&select_footstep_sound(&table, None, &default), &default),
             "no ground in probe range falls back to the default"
         );
+    }
+
+    /// #5549 — a pair whose colliders both carry material 0 (STONE, or no
+    /// NIF material at all) must still resolve to a material so the default
+    /// sound plays; only a pair of dead handles has nothing to play.
+    #[test]
+    fn impact_material_resolution_keeps_both_zero_pairs() {
+        assert_eq!(resolve_impact_material(Some(4), Some(5)), Some(4), "collider 1 wins");
+        assert_eq!(resolve_impact_material(Some(0), Some(5)), Some(5), "else collider 2");
+        assert_eq!(resolve_impact_material(Some(7), Some(0)), Some(7));
+        assert_eq!(
+            resolve_impact_material(Some(0), Some(0)),
+            Some(0),
+            "both STONE/unauthored is an impact, resolved to 0 for the default"
+        );
+        assert_eq!(resolve_impact_material(None, Some(0)), Some(0));
+        assert_eq!(resolve_impact_material(Some(0), None), Some(0));
+        assert_eq!(resolve_impact_material(None, None), None, "two dead handles: nothing to play");
+        // And the resolved 0 really reaches the default sound.
+        let table = std::collections::BTreeMap::new();
+        let default = Arc::new(Sound {
+            sample_rate: 22_050,
+            frames: Arc::from(vec![Frame { left: 0.0, right: 0.0 }].into_boxed_slice()),
+            settings: SoundSettings::default(),
+            slice: None,
+        });
+        let material = resolve_impact_material(Some(0), Some(0)).unwrap();
+        let picked = select_impact_sound(&table, Some(&default), material).expect("default plays");
+        assert!(Arc::ptr_eq(&picked, &default));
     }
 
     /// Wave 4 clutter-impact selection: the authored per-material entry
