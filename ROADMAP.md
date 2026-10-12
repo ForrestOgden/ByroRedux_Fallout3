@@ -140,11 +140,10 @@ The bench-of-record table below deliberately keeps the bare-name + `cd` form for
 **Standing methodology.** Every refresh includes a same-machine control:
 rebuild the outgoing record's commit in a worktree and bench it in the same
 session, on the same harness. That control is what proved
-PERF-REGRESSION-6c56e311 was code. It also produced R6a-regress-22, which a
-pinned-pose control later showed was the bench camera's origin moving, not
-code (#5128): a control compares like with like only when both builds start
-from the same pose, so pin it with `--camera-pos` / `--camera-forward` across
-any spawn-placement change. `fsr-bench-matrix.sh` now records each run's
+PERF-REGRESSION-6c56e311 was code. It also produced R6a-regress-22 — later
+shown to be the bench camera's origin moving, not code (#5128) — so pin
+`--camera-pos` / `--camera-forward` across any spawn-placement change.
+`fsr-bench-matrix.sh` now records each run's
 `camera_pos` / `camera_forward`, and the report prints them per scene. Also
 isolate `BYROREDUX_SETTINGS_PATH` so persisted menu settings cannot leak into
 runs (#4947). A genuinely idle-machine run has never been done. FSR Quality
@@ -474,47 +473,37 @@ product instead of the work.
 
 ## Completed Milestones
 
-One-liners grouped by area. Full rows for milestones closed before
-2026-09-29 are in
-[`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows);
-per-milestone scope is in `git log`; session context is in
-[HISTORY.md](HISTORY.md).
+One-liners grouped by area. Full rows for milestones closed before 2026-09-29
+are in [`roadmap-history.md` §5](docs/archive/roadmap-history.md#5-tier-17-milestone-tables-with-full-rows);
+per-milestone scope is in `git log`; session context is [HISTORY.md](HISTORY.md).
 
-**Graphics foundation**
-M1 Vulkan init chain · M2 GPU geometry · M4 ECS-driven rendering ·
-M7 depth buffer · M8 texturing · M13 directional lighting.
+**Graphics foundation** — M1 Vulkan init chain · M2 GPU geometry ·
+M4 ECS-driven rendering · M7 depth buffer · M8 texturing · M13 directional lighting.
 
-**ECS, plugins, coordinates**
-M3 ECS foundation (World, Component, Storage, Query, Scheduler,
-Resources, string interning) · M5 plugin system (stable Form IDs,
-DAG resolver) · M6 legacy bridge (per-game parser stubs) ·
-M17 coordinate system fix (CW rotation, SVD degenerate repair) ·
-R7 scheduler access declarations (`Access` builder, `sys.accesses`) ·
-M27 parallel system dispatch (2026-05-23) ·
+**ECS, plugins, coordinates** — M3 ECS foundation (World, Component, Storage,
+Query, Scheduler, Resources, string interning) · M5 plugin system (stable Form
+IDs, DAG resolver) · M6 legacy bridge (per-game parser stubs) · M17 coordinate
+fix (CW rotation, SVD degenerate repair) · R7 scheduler access declarations
+(`Access` builder, `sys.accesses`) · M27 parallel system dispatch (2026-05-23) ·
 M46.0 multi-plugin CLI (repeatable `--master`, #561).
 
-**NIF parser overhaul (N23 series)**
-N23.1 trait hierarchy · N23.2 shader completeness ·
-N23.3 Oblivion block types · N23.4 FO3/FNV validation ·
-N23.5 skinning · N23.6 Havok collision skip + compressed mesh ·
-N23.7 Fallout 4 · N23.8 particles · N23.9 FO76/Starfield ·
-N23.10 test infrastructure · R3 per-block-type parse histogram
-(`nif_stats --tsv`, checked-in seven-game baselines). The block dispatcher's
-live arm count is in `crates/nif/src/blocks/mod.rs` — not frozen here.
+**NIF parser overhaul (N23 series)** — N23.1 trait hierarchy · N23.2 shader
+completeness · N23.3 Oblivion block types · N23.4 FO3/FNV validation · N23.5
+skinning · N23.6 Havok collision skip + compressed mesh · N23.7 Fallout 4 ·
+N23.8 particles · N23.9 FO76/Starfield · N23.10 test infrastructure · R3
+per-block-type parse histogram (`nif_stats --tsv`, seven-game baselines). The
+block dispatcher's live arm count is in `crates/nif/src/blocks/mod.rs`.
 
-**Asset pipeline**
-M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
-M14 DDS texture loading · M16 ESM parser & cell loading ·
-M18 Skyrim SE NIF · M19 full cell loading · M26 BA2 archive
-support (v1/v2/v3/v7/v8, zlib + LZ4) · NIFAL (NIF Abstraction Layer,
-2026-05-28) — the canonical parse-time translation boundary ·
-M49 FO4 precombined geometry (CSG reader, 2026-06-02, #1351).
+**Asset pipeline** — M9 NIF parser · M10 NIF→ECS import · M11 BSA reader ·
+M14 DDS texture loading · M16 ESM parser & cell loading · M18 Skyrim SE NIF ·
+M19 full cell loading · M26 BA2 archive support (v1/v2/v3/v7/v8, zlib + LZ4) ·
+NIFAL (2026-05-28) — the canonical parse-time translation boundary · M49 FO4
+precombined geometry (CSG reader, 2026-06-02, #1351).
 
-**ESM records (M24 Phase 1)**
-Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/BOOK/NOTE), containers,
-leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT, GLOB, GMST.
-SCPT pre-Papyrus bytecode records parsed (#443). CREA + LVLC dispatched
-(#442/#448). PACK / QUST / DIAL / MESG / PERK / SPEL / MGEF fully parsed
+**ESM records (M24 Phase 1)** — Items (WEAP/ARMO/AMMO/MISC/KEYM/ALCH/INGR/
+BOOK/NOTE), containers, leveled lists (LVLI/LVLN), NPC_, RACE, CLAS, FACT,
+GLOB, GMST; SCPT pre-Papyrus bytecode parsed (#443); CREA + LVLC dispatched
+(#442/#448); PACK / QUST / DIAL / MESG / PERK / SPEL / MGEF fully parsed
 (#446/#447; decode detail under M24.2 / M43).
 
 **Animation and actors**
@@ -596,13 +585,10 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   same-machine control; no HEAD frame-time claim is current until then.
   The harness pair has moved twice since the record
   (`scripts/check-bench-harness-provenance.sh a37fcba3c` reports DIVERGED);
-  both edits now carry a recorded disposition (#5451): `8fdd9ae56` only
-  appends the camera-pose columns, and `a4ede5fa0` (`Update.bsa` mounted in
-  the Prospector scene) was controlled on 2026-10-11 — one binary, one
-  session, 5 interleaved runs each — with identical state_hash / entities /
-  draws / lights / TLAS and a 12.03 vs 12.06 ms median
-  (`docs/audits/CONTROL_prospector_update-bsa_a4ede5fa0.tsv`). Neither
-  changes the Prospector row; the 616-commit staleness above is what remains.
+  both edits carry a recorded disposition (#5451, incl. the 2026-10-11
+  one-binary interleaved control — identical state_hash/entities/draws/
+  lights/TLAS, 12.03 vs 12.06 ms — so neither changes the Prospector row).
+  The 616-commit staleness above is what remains.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -726,7 +712,7 @@ figure in this table was measured at that HEAD, not carried forward.
 | Rust source lines (`src/` dirs)         | ~714 182                      |
 | Rust total lines (all `.rs`, excl. `target/`) | ~765 573                 |
 | Source files (`.rs`, excl. `target/`)   | 1237 total · 1146 outside `tests/` dirs (+2 / +2 since the 2026-10-09 close) |
-| Workspace members                       | 34 (count the `[workspace] members` block only — an unscoped `grep -c '^\s*"' Cargo.toml` returns 39, picking up quoted lines elsewhere in the file; 29 crates (incl. `menuxml`, added in Session 88) + `byroredux` binary + 4 tools: `byro-detect`, `byro-launcher`, `byro-dbg`, `texture-upscale`; `tools/nifskope` exists on disk but is not a workspace member) |
+| Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
 | Tests                                   | **9522 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-10; 289 ignored; the lock-order detector is off in this count — see the ABBA Known Issue). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 5487 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 057** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-09-29 re-measure swept 102 968 over 4 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 968 · Starfield 120 543. |
@@ -735,22 +721,14 @@ figure in this table was measured at that HEAD, not carried forward.
 
 ### Repro commands for every bench claim
 
-> **CWD matters.** Bare `--bsa` / `--textures-bsa` / `--materials-ba2` names
-> resolve against the current working directory, not the `--esm` folder. Run
-> each command with CWD set to that game's `Data/` directory (e.g.
-> `cd "/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data"`) — and
-> drop the `Game/Data/` prefix from `--esm` accordingly. Run from elsewhere and
-> the archives silently fail to open; the scene loads near-empty (Prospector
-> falls to 36 entities / 3 meshes and reports a spurious ~1792 FPS).
->
-> **Retired rows.** The single-scene R6a-stale-15 rows (Prospector, Whiterun,
-> MedTek at `8a668eff`) and the sweetroll single-mesh figure left this table on
-> 2026-09-29; they are in
+> **CWD matters** — see the repro-command CWD note under §How to run a bench
+> (and the `--game` CWD-immune alternative there). **Retired rows** (the
+> single-scene R6a-stale-15 set, the sweetrow single-mesh figure) are in
 > [`roadmap-history.md` §8](docs/archive/roadmap-history.md#8-retired-repro-table-rows).
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Bench-of-record (LIVE)** — full FSR matrix, all five scenes × TAA-native vs four FSR presets (stepped-camera refresh, HEAD `a37fcba3c`, 2026-09-28, 75 runs = 5×5×3 of 300 frames, median with range, 1280×720 output). Source of every FPS/ms figure in the live bench table above, including the FO4 Dugout Inn and Cornell rows. Per-scene CWD still applies. Scene subset via `FSR_BENCH_SCENES`, output dir via `FSR_BENCH_OUT`. **Refreshed 2026-09-28 at HEAD `a37fcba3c` (harness `88c23887b`); all 75 state-gated runs accepted and R6a-stale-22 resolved. Its same-machine control is the source of R6a-regress-22.** Note the default scene set is four interiors plus Cornell — it does not exercise ground cover (R6a-groundcover-1). The uncontrolled `cb44d99f6` matrix quoted under R6a-stale-22 (2026-09-22, `docs/audits/BENCH_stepped-camera_cb44d99f6.tsv`) came from this same command and is **not** the record. | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `a37fcba3c`, 2026-09-28). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
 | **Same-machine control** (the method that makes a refresh interpretable — see **Standing methodology** under How to run a bench; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |
 | **Upscaler SSIM quality matrix** — the SSIM / outlier-percentage figures quoted for every preset (Cornell Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout higher SSIM, worse outliers). Scores each preset against the native TAA render over five deterministic `--bench-camera` paths. Append `game` to score real game content instead of the redistributable Cornell scene. | `cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture` |
 | Megaton interior parse-side 929 REFRs (2026-04-19; test lives in the plugin **lib**, so a `--test parse_real_esm` filter runs 0 tests — #5070) | `cargo test -p byroredux-plugin --release --lib -- --ignored --exact esm::cell::tests::integration::parse_real_fo3_megaton_cell_baseline`                                                      |

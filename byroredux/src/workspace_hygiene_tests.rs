@@ -757,3 +757,29 @@ fn no_source_scan_cuts_with_the_weak_cfg_test_needle() {
         found.join("\n")
     );
 }
+
+/// #5332 — README ≤ 600 and ROADMAP ≤ 800 are measured ceilings (#5111),
+/// but the `wc -l` check lived only in session-close Step 6: a `Fix #N`
+/// commit that edits the docs between closes could breach the cap
+/// silently (ROADMAP hit 818 through `1dc538108`), and the next close
+/// inherited the trim. `include_str!` files are cargo-fingerprinted, so
+/// this runs on every `cargo test -p byroredux` — the cap now holds per
+/// commit. When a legitimate addition crosses a ceiling, trim before the
+/// commit lands rather than deferring to the next close.
+#[test]
+fn readme_and_roadmap_hold_their_line_ceilings() {
+    let readme = include_str!("../../README.md");
+    let roadmap = include_str!("../../ROADMAP.md");
+    let readme_lines = readme.lines().count();
+    let roadmap_lines = roadmap.lines().count();
+    assert!(
+        readme_lines <= 600,
+        "README.md is {readme_lines} lines against its 600-line ceiling (#5111) — \
+         trim before committing (#5332)"
+    );
+    assert!(
+        roadmap_lines <= 800,
+        "ROADMAP.md is {roadmap_lines} lines against its 800-line ceiling (#5111) — \
+         trim before committing (#5332)"
+    );
+}
