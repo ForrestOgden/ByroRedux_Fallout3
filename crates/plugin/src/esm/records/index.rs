@@ -110,7 +110,110 @@ macro_rules! cell_category {
 /// internal order is observable in authored data. `last_from_plugin` is
 /// per-override state keyed by FormID, not position, so interleaved
 /// inserts cannot skew it.
-fn fold_info_into_topic(
+fn fold_infos_into_topic(infos: &mut Vec<InfoRecord>, incoming: Vec<InfoRecord>) {
+    // #5644 — one pass over the whole contribution. Folding the INFOs one
+    // at a time re-scanned the composed list for every lookup (`position`
+    // for the replace check, again for the predecessor), O(N×M) per
+    // overridden topic, and `Vec::insert` shifted the tail on top of that.
+    // Here a FormID → node map answers every lookup in O(1), replacements
+    // write in place, and insertions are recorded against their anchor and
+    // flattened once at the end. The placement rule is the one-at-a-time
+    // fold's, unchanged: see `fold_info_into_topic_reference`.
+    //
+    // Node ids: `0..master_len` are the composed list's own entries (they
+    // never move while folding), `master_len + k` the k-th added INFO.
+    const HEAD: usize = usize::MAX;
+    let master_len = infos.len();
+    let mut node_of: HashMap<u32, usize> = HashMap::with_capacity(master_len + incoming.len());
+    for (position, existing) in infos.iter().enumerate() {
+        // The first occurrence wins, as `position` did.
+        node_of.entry(existing.form_id).or_insert(position);
+    }
+    let mut added: Vec<InfoRecord> = Vec::new();
+    // Added nodes anchored directly after a node, in insertion order. A
+    // later insert after the same anchor lands nearer to it, so the final
+    // order walks each anchor's list newest-first.
+    let mut after: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Added nodes appended to the end, in order.
+    let mut tail: Vec<usize> = Vec::new();
+    // #5494 — the latest INFO this override contributed.
+    let mut last_from_plugin: Option<u32> = None;
+
+    for info in incoming {
+        if let Some(&node) = node_of.get(&info.form_id) {
+            // A re-authored INFO keeps its position but still counts as
+            // this plugin's latest contribution, so the next new head
+            // composes after it in authored order.
+            last_from_plugin = Some(info.form_id);
+            if node < master_len {
+                infos[node] = info;
+            } else {
+                added[node - master_len] = info;
+            }
+            continue;
+        }
+        let anchor = if info.previous_info == 0 {
+            match last_from_plugin {
+                Some(prev) => node_of.get(&prev).copied(),
+                None => Some(HEAD),
+            }
+        } else {
+            node_of.get(&info.previous_info).copied()
+        };
+        let form_id = info.form_id;
+        let node = master_len + added.len();
+        added.push(info);
+        node_of.insert(form_id, node);
+        match anchor {
+            Some(anchor) => {
+                last_from_plugin = Some(form_id);
+                after.entry(anchor).or_default().push(node);
+            }
+            None => tail.push(node),
+        }
+    }
+    if added.is_empty() {
+        return;
+    }
+
+    // Flatten: HEAD's inserts, then each master entry followed by its
+    // inserts, then the appended run — every node followed by its own
+    // anchored inserts, newest first.
+    let mut master: Vec<Option<InfoRecord>> = std::mem::take(infos).into_iter().map(Some).collect();
+    let mut added: Vec<Option<InfoRecord>> = added.into_iter().map(Some).collect();
+    let mut composed = Vec::with_capacity(master_len + added.len());
+    let mut stack: Vec<usize> = Vec::new();
+    let roots = std::iter::once(HEAD)
+        .chain(0..master_len)
+        .chain(tail.iter().copied());
+    for root in roots {
+        if root == HEAD {
+            // HEAD is not an INFO: only its anchored inserts are emitted.
+            if let Some(children) = after.get(&HEAD) {
+                stack.extend(children.iter().copied());
+            }
+        } else {
+            stack.push(root);
+        }
+        while let Some(node) = stack.pop() {
+            let record = if node < master_len {
+                master[node].take()
+            } else {
+                added[node - master_len].take()
+            };
+            composed.extend(record);
+            if let Some(children) = after.get(&node) {
+                stack.extend(children.iter().copied());
+            }
+        }
+    }
+    *infos = composed;
+}
+
+/// The pre-#5644 one-INFO-at-a-time fold, kept verbatim as the oracle the
+/// batched [`fold_infos_into_topic`] is checked against.
+#[cfg(test)]
+fn fold_info_into_topic_reference(
     infos: &mut Vec<InfoRecord>,
     info: InfoRecord,
     last_from_plugin: &mut Option<u32>,
@@ -119,9 +222,6 @@ fn fold_info_into_topic(
         .iter()
         .position(|existing| existing.form_id == info.form_id)
     {
-        // A re-authored INFO keeps its master position but still counts
-        // as this plugin's latest contribution, so the next new head
-        // composes after it in authored order.
         *last_from_plugin = Some(info.form_id);
         infos[position] = info;
         return;
@@ -749,7 +849,7 @@ impl EsmIndex {
             // `GREETING` from 5,300 lines to 11-129; Skyrim's Update.esm
             // emptied whole Skyrim.esm topics the same way. The override's
             // header fields still replace the master's; its INFOs fold
-            // into the master's list via [`fold_info_into_topic`], and
+            // into the master's list via [`fold_infos_into_topic`], and
             // the prune arm removes Deleted-INFO tombstones from every
             // topic (a DIAL tombstone still removes the topic itself).
             (
@@ -766,14 +866,10 @@ impl EsmIndex {
                                 // #5494 — one contribution cursor per
                                 // override, so its PNAM-less head run
                                 // composes in file order.
-                                let mut last_from_plugin = None;
-                                for info in std::mem::take(&mut override_dial.infos) {
-                                    fold_info_into_topic(
-                                        &mut master.infos,
-                                        info,
-                                        &mut last_from_plugin,
-                                    );
-                                }
+                                fold_infos_into_topic(
+                                    &mut master.infos,
+                                    std::mem::take(&mut override_dial.infos),
+                                );
                                 master.editor_id = override_dial.editor_id;
                                 master.full_name = override_dial.full_name;
                                 master.quest_refs = override_dial.quest_refs;
@@ -1348,6 +1444,89 @@ impl EsmIndex {
 mod tests {
     use super::*;
     use crate::esm::records::{ActiRecord, ScenePhase, SettingValue};
+
+    fn info(form_id: u32, previous_info: u32, text: &str) -> InfoRecord {
+        InfoRecord {
+            form_id,
+            previous_info,
+            response_text: text.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// #5644 — the batched fold composes exactly what folding the INFOs one
+    /// at a time did: replacements in place, PNAM followers directly after
+    /// their predecessor (newest nearest), `PNAM == 0` head runs in file
+    /// order, dangling predecessors appended — over seeded random master
+    /// lists and contributions, including repeated and interleaved ids.
+    #[test]
+    fn batched_info_fold_matches_the_one_at_a_time_fold() {
+        let mut seed = 0xD1B5_4A32_D192_ED03u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..4000 {
+            let master_len = (next() % 12) as u32;
+            let master: Vec<InfoRecord> = (0..master_len)
+                .map(|i| info(0x100 + i, 0, "master"))
+                .collect();
+            // Ids drawn from a pool overlapping the master and each other,
+            // so replacements, chained followers and danglers all occur.
+            let incoming: Vec<InfoRecord> = (0..(next() % 16))
+                .map(|k| {
+                    let form_id = 0x100 + (next() % 24) as u32;
+                    let previous = match next() % 3 {
+                        0 => 0,
+                        _ => 0x100 + (next() % 28) as u32,
+                    };
+                    info(form_id, previous, &format!("override {k}"))
+                })
+                .collect();
+
+            let mut expected = master.clone();
+            let mut last_from_plugin = None;
+            for record in incoming.clone() {
+                fold_info_into_topic_reference(&mut expected, record, &mut last_from_plugin);
+            }
+            let mut actual = master;
+            fold_infos_into_topic(&mut actual, incoming);
+
+            let key = |infos: &[InfoRecord]| {
+                infos
+                    .iter()
+                    .map(|i| (i.form_id, i.previous_info, i.response_text.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(key(&actual), key(&expected), "round {round}");
+        }
+    }
+
+    /// #5644 — a 30,000-INFO override folded into a 30,000-INFO master (the
+    /// per-INFO fold scanned the list twice per contribution: ~10⁹ compares).
+    #[test]
+    fn a_large_override_folds_into_a_large_topic() {
+        const COUNT: u32 = 30_000;
+        let mut master: Vec<InfoRecord> =
+            (0..COUNT).map(|i| info(0x10_0000 + i, 0, "master")).collect();
+        let incoming: Vec<InfoRecord> = (0..COUNT)
+            .map(|i| {
+                // Even: re-author a master INFO. Odd: a new INFO following it.
+                if i % 2 == 0 {
+                    info(0x10_0000 + i, 0, "override")
+                } else {
+                    info(0x20_0000 + i, 0x10_0000 + i - 1, "new")
+                }
+            })
+            .collect();
+        fold_infos_into_topic(&mut master, incoming);
+        assert_eq!(master.len() as u32, COUNT + COUNT / 2);
+        assert_eq!(master[0].response_text, "override");
+        assert_eq!(master[1].form_id, 0x20_0001, "the follower sits right after its PNAM");
+        assert_eq!(master[2].response_text, "master");
+    }
 
     #[test]
     fn merge_from_preserves_scene_timelines() {
