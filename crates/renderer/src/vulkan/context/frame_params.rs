@@ -676,8 +676,9 @@ pub(super) fn dof_effective_view_proj(
     let fwd = Vec3::from_array(dof.cam_forward);
 
     // #4002 — rebase FIRST, then compose. Both offsets below used to be added
-    // to the raw absolute `camera_pos` and only rebased inside the
-    // `look_at_rh` call, which threw the aperture term away before it could
+    // to the raw absolute `camera_pos` and only rebased inside the view
+    // call (then `Mat4::look_at_rh`, now `look_at_mat4`), which threw the
+    // aperture term away before it could
     // matter: at Markarth's X ~ -176 000 an f32 ULP is 0.015625, so a sub-unit
     // lens offset is quantised (and below ~0.008 u discarded outright) by that
     // addition. The subtraction itself was never the lossy step — `render_origin`
@@ -2297,7 +2298,8 @@ mod dof_view_proj_tests {
     ///
     /// The function returns a render-origin-relative matrix, but it used to
     /// compose `jittered_eye` and `focal_pt` from the raw *absolute*
-    /// `camera_pos` and only rebase inside the `look_at_rh` call. At
+    /// `camera_pos` and only rebase inside the view call (then
+    /// `Mat4::look_at_rh`, now `look_at_mat4`). At
     /// Markarth's X ~ -176 000 an f32 ULP is 0.015625, so a sub-unit lens
     /// offset was quantised — and below ~0.008 u discarded outright — by that
     /// addition, before the rebase that was supposed to protect it.

@@ -121,22 +121,42 @@ Tracing with Dynamic Direct Lighting" (SIGGRAPH 2020) plus errata.
 
 ## 4. 24-bit masked frame counter as RT noise seed
 
-**Where:** [`crates/renderer/src/vulkan/context/draw.rs:497-513`](../../crates/renderer/src/vulkan/context/draw.rs#L497-L513)
+**Where:** the `GpuCamera.position` assembly in
+[`crates/renderer/src/vulkan/context/assemble_camera_and_lights.rs`](../../crates/renderer/src/vulkan/context/assemble_camera_and_lights.rs)
 
 **What:** `GpuCamera.position.w` is loaded with
-`(frame_counter & 0xFFFFFF) as f32`. The shader reads this as
-`cameraPos.w` and uses it as the seed for `interleavedGradientNoise`
-in shadow ray jitter, reflection rays, GI hemisphere sampling, and
-reservoir streaming offsets.
+`(frame_counter & 0xFFFFFF) as f32`. The shaders read it as
+`cameraPos.w` — the *temporal index* of every RT sampler, not a noise
+seed in its own right:
+
+- **Shadow-ray disk samples** (the ReSTIR finalize and the non-ReSTIR
+  direct arm) take `ditheredSequence2(pixel, n, light)` with
+  `n = frame × K + ray` (`include/math_common.glsl`, #5369 /
+  `4d991bad7`): an R2 low-discrepancy recurrence *in time*, evaluated
+  in exact 32-bit integer arithmetic, Cranley–Patterson-rotated per
+  pixel by the frame-free `ignMask` blue-noise mask. The rotation never
+  moves with the frame — IGN's per-frame offset crawled — so the frame
+  counter only advances the sequence.
+- **Reservoir streaming and the temporal / spatial reuse picks, the GI
+  hemisphere and the path-event samples** draw from
+  `hash2_pixel_frame(pixel, uint(cameraPos.w) …)` (PCG2D, decorrelated
+  per pixel and per frame).
+- `interleavedGradientNoise` (frame term wrapped mod 64, #4951) survives
+  only for the glass-refraction scatter pair and the compile-time-gated
+  legacy WRS path.
+- `caustic_splat.comp` reads the same field as its per-frame seed.
 
 **Justifying condition (today):** f32 mantissa stops resolving ±1
 increments above 2^24. Without the mask, consecutive frames beyond 2^24
-would map to the same `cameraPos.w` and the RT noise pattern would
-freeze, causing fireflies and banding to reappear after ~3.2 days of
-continuous uptime at 60 FPS. Issue #1161 documents the bug; the mask
-wraps the counter to the bottom 24 bits, accepting that the noise
-pattern repeats every ~3.2 days (TAA accumulation is expected to absorb
-the wraparound discontinuity, but this has not been exercised).
+would map to the same `cameraPos.w`: the R2 index and every
+`hash2_pixel_frame` key would stop advancing, each pixel would re-draw
+the same shadow / reservoir / GI sample every frame, and the penumbra
+EMA and SVGF would stop converging (fireflies and banding reappear)
+after ~3.2 days of continuous uptime at 60 FPS. Issue #1161 documents
+the bug; the mask wraps the counter to the bottom 24 bits, accepting
+that every sequence restarts every ~3.2 days (TAA accumulation is
+expected to absorb the wraparound discontinuity, but this has not been
+exercised).
 
 **Invalidated by:** Nothing structural — this is a permanent f32-
 precision workaround. The concern is operational: long QA sessions,

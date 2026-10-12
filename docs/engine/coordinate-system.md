@@ -296,11 +296,17 @@ vec4 currClip = viewProj * worldPos;   // gl_Position is jittered from this for 
 
 The camera builds its projection in
 [`crates/core/src/ecs/components/camera.rs`](../../crates/core/src/ecs/components/camera.rs)
-(`Camera::projection_matrix`), using `Mat4::perspective_rh` (Z in [0, 1],
-Vulkan convention) with a Y-flip for Vulkan's inverted Y axis:
+(`Camera::projection_matrix`), using glam's
+`camera::rh::proj::directx::perspective` (right-handed, Z in [0, 1], Vulkan
+convention; glam 0.33 deprecated the old `Mat4::perspective_rh` spelling)
+with a Y-flip for Vulkan's inverted Y axis. The view side is
+`camera::rh::view::look_at_mat4` / `look_to_mat4` (formerly
+`Mat4::look_at_rh`):
 
 ```rust
-let mut proj = Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far);
+// z_near / z_far are swapped under DepthMapping::Reversed (shipped:
+// Conventional — see `ACTIVE_DEPTH_MAPPING`).
+let mut proj = perspective(self.fov_y, self.aspect, z_near, z_far);
 proj.col_mut(1).y *= -1.0;
 ```
 

@@ -152,7 +152,7 @@ pub const NEAR_PLANE_BU_SCALE: f32 = 5.0;
 /// It ships [`DepthMapping::Conventional`], which is bit-for-bit what the
 /// engine rendered before the conversion: [`DepthMapping::map_z_function`]
 /// is the identity there, `clear_value` is `1.0`, and the projection takes
-/// the unmodified `perspective_rh` path. The conversion is therefore
+/// the unmodified `camera::rh::proj::directx::perspective` path. The conversion is therefore
 /// *present but not enabled* — deliberately, because reversed-Z's failure
 /// modes are invisible to `cargo test` and this project does not ship
 /// render-state changes it cannot see (see the depth-precision policy on
@@ -245,10 +245,11 @@ impl Camera {
 
     /// [`Self::projection_matrix`] against an explicit depth mapping.
     ///
-    /// Under [`DepthMapping::Conventional`] this is the plain
-    /// `perspective_rh` the engine has always used. Under
-    /// [`DepthMapping::Reversed`] it hands the *same* frustum to
-    /// `perspective_rh` with the two Z planes exchanged, which produces
+    /// Under [`DepthMapping::Conventional`] this is the plain right-handed,
+    /// Z 0..1 `camera::rh::proj::directx::perspective` (glam's
+    /// `Mat4::perspective_rh` until glam 0.33 deprecated it) the engine has
+    /// always used. Under [`DepthMapping::Reversed`] it hands the *same*
+    /// frustum to `perspective` with the two Z planes exchanged, which produces
     /// `z_ndc(d) = (n/d − n/f) / (1 − n/f)` — exactly the encoding
     /// [`Self::depth_resolution_at_reversed`] and
     /// [`Self::linear_distance_from_depth_reversed`] already model, and
@@ -267,7 +268,8 @@ impl Camera {
     /// at long range. Swapping the planes forms the same coefficient as
     /// `n/(f−n)` directly, with no cancellation at all.
     pub fn projection_matrix_with(&self, mapping: DepthMapping) -> Mat4 {
-        // glam's perspective_rh already maps Z to [0, 1] (Vulkan/D3D convention).
+        // glam's `rh::proj::directx::perspective` already maps Z to [0, 1]
+        // (Vulkan/D3D convention).
         // Only the Y-flip is needed for Vulkan's inverted Y axis.
         // Note: the Y-flip reverses apparent triangle winding in clip space —
         // CW triangles (NIF/D3D) appear CCW after this, matching our front face setting.
