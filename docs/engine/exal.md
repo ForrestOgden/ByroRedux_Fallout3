@@ -591,6 +591,22 @@ distant water from the full-detail pair alone (#5335).
 
 ---
 
+### 5.4.1 The inherited-LOD key (#5496) and the authored descriptor
+
+The LOD ring a child worldspace draws is not necessarily its own: a WRLD with
+`PNAM` bit `0x02` ("Use LOD Data", the GECK checkbox) owns **no** quads of its
+own — every distant-terrain/object ring key resolves on
+`lod_source_worldspace`, the nearest ancestor up the `WNAM` chain that does
+author LOD. Children that inherit ship bit-inheriting `NAM3`/`NAM4` silence
+for exactly this reason; treating a child's own (empty) LOD tables as
+authoritative is what #5496 removed.
+
+The authored `lodsettings\<worldspace>.lod` descriptor files are the other
+half of the distant-world story (per-ring distances and object densities the
+INI's `fLODFadeOutMult*` band ladder only approximates); they are tracked with
+the lattice-origin work in EXT-D6-2026-10-12-01 and get their paragraph here
+once that lands.
+
 ## 5.5 Ground cover (procedural grass) — see [`exal-groundcover.md`](exal-groundcover.md)
 
 The vegetation stratum on the terrain surface — grass, ferns, moss, low scrub —

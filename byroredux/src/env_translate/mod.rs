@@ -17,12 +17,9 @@
 //! `CellLightingRes`, …); this module is the `translate()` step, not a new
 //! type.
 //!
-//! Step 1 (this slice) establishes the module and gathers the two
-//! already-single-site **water** translates here verbatim:
-//! [`default_water_for_worldspace`] (worldspace-default water height +
-//! type) and [`resolve_water_material`] (WATR → [`WaterMaterial`]). Later
-//! steps fold in the scattered sky / sun / weather producers (see the
-//! `docs/engine/exal.md` §7 rollout).
+//! The rollout slices are complete: every scattered sky / sun / weather /
+//! water / LOD producer has been folded in through `docs/engine/exal.md`'s
+//! §7 plan (#5731 — this header used to describe Step 1 as current).
 //!
 //! ## Layout (#5584)
 //!
