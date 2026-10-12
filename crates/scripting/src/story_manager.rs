@@ -558,6 +558,10 @@ pub fn emit_change_location_on_key_change(
 /// candidates; phase B takes the write guard and starts them,
 /// re-checking `is_started` under it.
 ///
+/// The same rule covers [`StoryManagerRng`]: `GetRandomPercent` draws from it
+/// inside `evaluate`, so the walk never holds its write guard — only the
+/// shuffle and pool-pick sites take it, for the draw alone (#5628).
+///
 /// Pattern B: the drain at the head is unconditional — no early return
 /// sits between the top of the system and it.
 pub fn story_manager_dispatch_system(world: &World) {
@@ -579,7 +583,6 @@ pub fn story_manager_dispatch_system(world: &World) {
         let registry = world.try_resource::<QuestDefinitionRegistry>();
         let stages = world.try_resource::<QuestStageState>();
         let node_state = world.try_resource::<StoryManagerNodeState>();
-        let mut rng = world.try_resource_mut::<StoryManagerRng>();
         let mut candidates = Vec::new();
         let mut wraps = Vec::new();
         for event in &events {
@@ -590,7 +593,6 @@ pub fn story_manager_dispatch_system(world: &World) {
                 stages: stages.as_deref(),
                 candidates: &mut candidates,
                 node_state: node_state.as_deref(),
-                rng: rng.as_deref_mut(),
                 hours,
                 consumed: false,
                 pending_wraps: Vec::new(),
@@ -729,7 +731,6 @@ struct WalkState<'a> {
     /// read during the walk; writes go through `pending_marks` and are
     /// applied by phase B only for quests it actually starts.
     node_state: Option<&'a StoryManagerNodeState>,
-    rng: Option<&'a mut StoryManagerRng>,
     /// Total game hours for `RNAM` reset windows (`StoryClock`).
     hours: f64,
     /// `true` once a non-sharing quest node that fired a quest consumed
@@ -810,7 +811,11 @@ fn walk_siblings(
     // Random parent policy: same chain, seeded shuffle. A world without
     // the RNG resource keeps authored order (conservative stacked).
     if parent_random {
-        if let Some(rng) = state.rng.as_deref_mut() {
+        // The write guard lives for the shuffle alone: `evaluate` (run
+        // for each node below) takes `StoryManagerRng` too, through
+        // `GetRandomPercent`, so holding it across the walk is a
+        // same-thread re-entry the lock tracker panics on (#5628).
+        if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
             for i in (1..chain.len()).rev() {
                 let j = rng.pick(i + 1);
                 chain.swap(i, j);
@@ -850,7 +855,7 @@ fn walk_siblings(
         if modeled && evaluate(&node.conditions, world, &context) {
             let queued_before = state.candidates.len();
             if node.kind == SmNodeKind::Quest {
-                process_quest_node(tree, state, index);
+                process_quest_node(world, tree, state, index);
             }
             // #5404 — did THIS node's own pool put a quest up for start?
             // Taken before the subtree walk so a child's candidate does
@@ -892,7 +897,7 @@ fn walk_siblings(
 ///   cleared when phase B applies the new mark.
 /// - Random (`DNAM & 0x1`): uniform pick among the preferred entries;
 ///   stacked: first in authored order.
-fn process_quest_node(tree: &SmTree, state: &mut WalkState<'_>, index: usize) {
+fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, index: usize) {
     let node = &tree.nodes[index];
     let runtime = state
         .node_state
@@ -940,8 +945,10 @@ fn process_quest_node(tree: &SmTree, state: &mut WalkState<'_>, index: usize) {
     };
 
     let pick = if node.policies.random {
-        match state.rng.as_deref_mut() {
-            Some(rng) => preferred[rng.pick(preferred.len())],
+        // Scoped to the draw, for the same reason as the shuffle in
+        // `walk_siblings` (#5628).
+        match world.try_resource_mut::<StoryManagerRng>() {
+            Some(mut rng) => preferred[rng.pick(preferred.len())],
             None => preferred[0],
         }
     } else {
@@ -1463,6 +1470,83 @@ mod tests {
             !gate(true),
             "CWFinale running → the gate declines the node"
         );
+    }
+
+    /// #5628: `GetRandomPercent` (CTDA fn 77) draws from `StoryManagerRng`,
+    /// which the dispatcher used to hold WRITE across the whole walk — the
+    /// first fn-77 evaluation re-entered it and the lock tracker panicked
+    /// (vanilla `DA09ChangeLocationSharesEvent` shape: `[56, 77]`). Every
+    /// other test world omits the RNG, so the evaluator took its no-RNG
+    /// `50.0` branch and never exercised the re-entry.
+    #[test]
+    fn get_random_percent_gate_dispatches_with_the_rng_installed() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+        let dispatch = |conditions: Vec<Condition>, da09_running: bool| {
+            let node = SmNodeRecord {
+                form_id: 20,
+                parent: 10,
+                previous_sibling: 0,
+                kind: SmNodeKind::Quest,
+                quests: vec![SmQuestLink { form_id: 0x888, reset_hours: 0.0, ..Default::default() }],
+                conditions,
+                ..Default::default()
+            };
+            let tree = build_story_manager_tree(&records(vec![event_node(10, b"CLOC"), node]));
+            let mut world = setup_world();
+            world.insert_resource(tree);
+            world.insert_resource(StoryManagerRng { state: 0x1234_5678 });
+            let mut stages = QuestStageState::default();
+            if da09_running {
+                stages.start_quest(QuestFormId(0x0004_E4E1), None);
+            }
+            world.insert_resource(stages);
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"CLOC",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(&world);
+            let started = world
+                .try_resource::<QuestStageState>()
+                .unwrap()
+                .is_started(QuestFormId(0x888));
+            started
+        };
+        let random_percent = |op, comparand| Condition {
+            function_index: 77, // GetRandomPercent
+            comparator: op,
+            comparand: ConditionValue::Literal(comparand),
+            ..Default::default()
+        };
+        // A lone chance gate, the most common radiant shape: any draw in
+        // 0..=100 passes `<= 100`, none passes `> 100`.
+        assert!(dispatch(vec![random_percent(ComparisonOp::Le, 100.0)], false));
+        assert!(!dispatch(vec![random_percent(ComparisonOp::Gt, 100.0)], false));
+        // `DA09ChangeLocationSharesEvent`: `GetQuestRunning(DA09) == 1`
+        // then the chance gate — the second term only runs once DA09 is up.
+        let da09_running = Condition {
+            function_index: 56,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: 0x0004_E4E1,
+            ..Default::default()
+        };
+        assert!(dispatch(
+            vec![da09_running.clone(), random_percent(ComparisonOp::Le, 100.0)],
+            true
+        ));
+        assert!(!dispatch(
+            vec![da09_running, random_percent(ComparisonOp::Le, 100.0)],
+            false
+        ));
     }
 
     /// A branch node whose conditions fail gates its whole subtree off.
