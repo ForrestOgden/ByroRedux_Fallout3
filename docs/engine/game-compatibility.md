@@ -123,7 +123,7 @@ gap is its exterior worldspace wiring, not its parser or archive.
 
 #### Fallout: New Vegas
 
-- **NIF parser**: 14,881 / 14,881 (100% clean)
+- **NIF parser**: 20,746 / 20,746 across 11 archives (100% clean; ROADMAP's matrix is the single home for the live figure)
 - **Archive**: BSA v104 ✓ (zlib compression)
 - **ESM parser**: cell walker + the full M24 records pass (items, NPCs,
   factions, leveled lists, globals, game settings); M47.0/M47.1 event +
@@ -153,7 +153,7 @@ cargo run -- --esm FalloutNV.esm \
 
 #### Fallout 3
 
-- **NIF parser**: 10,989 / 10,989 (100% clean)
+- **NIF parser**: 17,172 / 17,172 across 6 archives (100% clean; ROADMAP's matrix is the single home for the live figure)
 - **Archive**: BSA v104 ✓ (same reader as FNV)
 - **ESM parser**: same record set as FNV (FO3 and FNV share the engine).
   Oblivion-shared CLAS/RACE arms were extended for FO3-era layouts (#967/#968).
@@ -167,7 +167,7 @@ cargo run -- --esm FalloutNV.esm \
 
 #### Skyrim SE
 
-- **NIF parser**: 18,862 / 18,862 (100% clean)
+- **NIF parser**: 33,468 / 33,468 across 8 archives (100% clean; ROADMAP's matrix is the single home for the live figure)
 - **Archive**: BSA v105 ✓ (LZ4 frame compression)
 - **NIF support**: BSTriShape (packed vertex format),
   BSLightingShaderProperty (8 shader-type variants; `BSLightingShaderProperty::parse`
@@ -204,9 +204,10 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
 
 #### Fallout 4
 
-- **NIF parser**: 34,995 / 34,995 + 124,871 / 124,871 MeshesExtra (100%
-  clean, 100% recoverable, #1457) — across both BA2 v1 (original release)
-  and v7/v8 (Next Gen update) archives
+- **NIF parser**: 235,082 / 235,082 across 8 archives (100% clean, 100%
+  recoverable, #1457; ROADMAP's matrix is the single home for the live
+  figure) — across both BA2 v1 (original release) and v7/v8 (Next Gen
+  update) archives
 - **Archive**: BA2 BTDX v1/v7/v8 GNRL + DX10 ✓ — verified across the
   vanilla archive set, see [Archives](archives.md)
 - **NIF support**: BSTriShape FO4 packed vertex format with
