@@ -194,11 +194,15 @@ fn strings_xml_feeds_selectors() {
     let _ = Scalar::Num(0.0);
 }
 
-/// #5400 — header census of every DDS under `textures\menus\`: the menu
-/// decoder must accept every header the vanilla Oblivion texture archive
-/// ships (the 48 A4R4G4B4 + 1 R5G6B5 files that motivated 16-bpp support
-/// live here). Any undecodable header lists the path and pixel-format
-/// fields so the failure names the layout that needs an arm.
+/// #5400 — header census of every DDS under the menu texture sets:
+/// the menu decoder must accept every header the vanilla Oblivion
+/// texture archive ships (the 48 A4R4G4B4 + 1 R5G6B5 files that
+/// motivated 16-bpp support live here). #5669 widened the filter from
+/// `textures\menus\` to all three resolution sets the loader serves
+/// (`menus`, `menus80`, `menus50`) and pins the vanilla counts, so the
+/// census can neither pass vacuously nor silently shrink. Any
+/// undecodable header lists the path and pixel-format fields so the
+/// failure names the layout that needs an arm.
 #[test]
 #[ignore = "needs Oblivion game data on disk"]
 fn menu_texture_header_census_decodes() {
@@ -209,10 +213,52 @@ fn menu_texture_header_census_decodes() {
         .textures
         .list_files()
         .into_iter()
-        .filter(|p| p.to_lowercase().starts_with("textures\\menus\\") && p.to_lowercase().ends_with(".dds"))
+        .filter(|p| {
+            let p = p.to_lowercase();
+            // `menus80`/`menus50` also start with `textures\menus`.
+            p.starts_with("textures\\menus") && p.ends_with(".dds")
+        })
         .map(str::to_string)
         .collect();
-    assert!(paths.len() > 100, "expected the vanilla menus texture set, got {}", paths.len());
+    let count_in = |prefix: &str| {
+        paths
+            .iter()
+            .filter(|p| match prefix {
+                "menus" => {
+                    p.starts_with("textures\\menus\\") && !p.starts_with("textures\\menus8") && !p.starts_with("textures\\menus5")
+                }
+                other => p.starts_with(&format!("textures\\{other}\\")),
+            })
+            .count()
+    };
+    let sets = [
+        ("menus", count_in("menus")),
+        ("menus80", count_in("menus80")),
+        ("menus50", count_in("menus50")),
+    ];
+    eprintln!("menu texture census: {sets:?} (total {})", paths.len());
+    // The vanilla base-game archive's exact per-set counts (#5669):
+    // without them the census can pass vacuously or shrink silently.
+    assert_eq!(
+        sets,
+        [
+            ("menus", 1_975),
+            ("menus80", 1_712),
+            ("menus50", 1_789)
+        ],
+        "the vanilla menu texture set counts moved — the census must be \
+         re-measured, not silently re-scoped"
+    );
+    assert_eq!(
+        sets.iter().map(|(_, n)| n).sum::<usize>(),
+        paths.len(),
+        "every census path belongs to exactly one resolution set: {sets:?}"
+    );
+    assert!(
+        paths.len() > 100,
+        "expected the vanilla menus texture sets, got {}",
+        paths.len()
+    );
 
     let mut decoded = 0usize;
     let mut failures: Vec<String> = Vec::new();

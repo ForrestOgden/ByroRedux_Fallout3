@@ -125,3 +125,75 @@ fn fnv_corpus_facts() {
         Font::parse(&fnt, &atlas).unwrap_or_else(|e| panic!("font {index} parses: {e}"));
     }
 }
+
+/// #5669 — header census of every DDS under `textures\interface\`: the
+/// HUD driver's art (24-bpp `hud_comp_direction_vertical`, 32-bpp
+/// `target_*` and `shared\line\*`) must all decode. The vanilla counts
+/// are pinned so the census can neither pass vacuously nor shrink.
+#[test]
+#[ignore = "needs FNV game data on disk"]
+fn interface_texture_header_census_decodes() {
+    let Some(assets) = open_assets() else {
+        return;
+    };
+    // FNV's interface art sits in either texture archive (Textures2
+    // carries the base set here); walk both listings, dedupe, and
+    // extract through the same textures→textures2 fallback
+    // `NvAssets::texture` serves.
+    let paths: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        assets
+            .textures
+            .list_files()
+            .into_iter()
+            .chain(assets.textures2.list_files())
+            .filter(|p| {
+                let p = p.to_lowercase();
+                p.starts_with("textures\\interface\\") && p.ends_with(".dds")
+            })
+            .filter(|p| seen.insert(p.to_string()))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        paths.len(),
+        1767,
+        "the vanilla interface texture count moved — re-measure, don't re-scope"
+    );
+
+    let mut failures: Vec<String> = Vec::new();
+    for path in &paths {
+        let bytes = assets
+            .textures
+            .extract(path)
+            .or_else(|_| assets.textures2.extract(path))
+            .expect("extract dds");
+        if byroredux_menuxml::Rgba8::decode_dds(&bytes).is_none() {
+            let detail = if bytes.len() >= 128 {
+                let h = |off: usize| {
+                    u32::from_le_bytes(bytes[4 + off..4 + off + 4].try_into().unwrap())
+                };
+                format!(
+                    "fourcc={:?} flags={:#x} bpp={} masks={:#x}/{:#x}/{:#x}/{:#x}",
+                    &bytes[84..88],
+                    h(76),
+                    h(84),
+                    h(88),
+                    h(92),
+                    h(96),
+                    h(100),
+                )
+            } else {
+                format!("truncated header ({} B)", bytes.len())
+            };
+            failures.push(format!("{path}: {detail}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} interface DDS headers undecodable:\n{}",
+        failures.len(),
+        paths.len(),
+        failures.join("\n")
+    );
+}
