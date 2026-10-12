@@ -158,6 +158,15 @@ fn serde_attribute_body(line: &str) -> Option<&str> {
 /// attributes. Bracket matching ignores strings so serde expressions such as
 /// `default = "Vec::new"` cannot terminate a span early.
 fn attribute_spans(source: &str) -> Vec<&str> {
+    attribute_spans_with_offsets(source)
+        .into_iter()
+        .map(|(start, end)| &source[start..end])
+        .collect()
+}
+
+/// [`attribute_spans`] with byte offsets, so a caller can chain spans
+/// contiguously (#5403's declaration-block walk).
+fn attribute_spans_with_offsets(source: &str) -> Vec<(usize, usize)> {
     let bytes = source.as_bytes();
     let mut out = Vec::new();
     let mut cursor = 0;
@@ -196,9 +205,13 @@ fn attribute_spans(source: &str) -> Vec<&str> {
                 _ => {}
             }
         }
-        let Some(end) = end else { break };
-        out.push(&source[start..end]);
-        cursor = end;
+        match end {
+            Some(end) => {
+                out.push((start, end));
+                cursor = end;
+            }
+            None => break,
+        }
     }
     out
 }
@@ -238,11 +251,29 @@ fn normalized_serialized_shapes() -> Vec<String> {
             if !matches!(prefix, "" | "pub" | "pub(crate)" | "pub(super)") {
                 continue;
             }
-            let prior = &source[..line_start];
-            let Some(attr_start) = prior.rfind("#[") else {
-                continue;
-            };
-            let between = &source[attr_start..line_start];
+            // #5403 — the WHOLE contiguous attribute block above the
+            // declaration belongs to it, not just the nearest `#[`. The
+            // save derive can sit above a plain `#[derive(Debug, …)]`
+            // (StoryManagerNodeState / SmNodeRuntime landed in that
+            // order), and the nearest-`#[` read skipped them: a shape
+            // change then passed every guard without a bump. Walk the
+            // block through bracket-matched spans — contiguity (only
+            // whitespace between an attribute's end and the block above)
+            // is what proves an attribute belongs to this declaration.
+            let spans: Vec<(usize, usize)> = attribute_spans_with_offsets(&source);
+            let mut block_start = line_start;
+            loop {
+                let text_end = source[..block_start]
+                    .trim_end_matches(['\n', '\r', ' ', '\t'])
+                    .len();
+                let Some(&(span_start, _)) =
+                    spans.iter().rev().find(|&&(_, end)| end == text_end)
+                else {
+                    break;
+                };
+                block_start = span_start;
+            }
+            let between = &source[block_start..line_start];
             if !between.contains("derive")
                 || !(between.contains("serde::Serialize")
                     || between.contains("Serialize, Deserialize")
@@ -306,6 +337,73 @@ fn normalized_serialized_shapes() -> Vec<String> {
     shapes.sort();
     shapes.dedup();
     shapes
+}
+
+/// #5403 — the shape scan must read the WHOLE contiguous attribute block
+/// above a declaration. `StoryManagerNodeState` and `SmNodeRuntime` put
+/// the save `cfg_attr` above a plain `#[derive(Debug, …)]`; the old
+/// nearest-`#[` read was blind to exactly that ordering (26b6a779c
+/// added both without a baseline refresh and the guard stayed green).
+#[test]
+fn the_shape_scan_sees_the_whole_attribute_block() {
+    let shapes = normalized_serialized_shapes();
+    // Shapes are whitespace-stripped declaration spans, hence the
+    // unspelled markers.
+    for marker in ["structStoryManagerNodeState", "structSmNodeRuntime"] {
+        assert!(
+            shapes.iter().any(|shape| shape.contains(marker)),
+            "{marker} must contribute a serialized shape — the attribute-block \
+             walk regressed to the nearest-#[ read"
+        );
+    }
+}
+
+/// #5403 — the block walk's two edges on one synthetic source: a save
+/// derive placed ABOVE a plain derive is recognized (the blind
+/// ordering), and an attribute belonging to the PREVIOUS item — with a
+/// `;`-terminated body between — is never absorbed into the block (a
+/// plain-derive neighbour must not inherit a save derive).
+#[test]
+fn attribute_block_walk_pins_the_blind_ordering_and_the_boundary() {
+    let source = concat!(
+        "#[derive(serde::Serialize, serde::Deserialize)]\n",
+        "#[derive(Debug, Clone, Default, PartialEq)]\n",
+        "pub struct BlindOrdering {\n",
+        "    pub a: u32,\n",
+        "}\n",
+        "\n",
+        "#[derive(Debug)]\n",
+        "pub struct NotSerialized {\n",
+        "    pub b: u32,\n",
+        "}\n",
+    );
+    let spans = attribute_spans_with_offsets(source);
+    let block_for = |decl: &str| {
+        let line_start = source.find(decl).expect("decl present");
+        let mut block_start = line_start;
+        loop {
+            let text_end = source[..block_start]
+                .trim_end_matches(['\n', '\r', ' ', '\t'])
+                .len();
+            let Some(&(span_start, _)) =
+                spans.iter().rev().find(|&&(_, end)| end == text_end)
+            else {
+                break;
+            };
+            block_start = span_start;
+        }
+        &source[block_start..line_start]
+    };
+    let blind = block_for("pub struct BlindOrdering");
+    assert!(
+        blind.contains("serde::Serialize") && blind.contains("derive(Debug"),
+        "the block spans both attributes: {blind:?}"
+    );
+    let neighbour = block_for("pub struct NotSerialized");
+    assert!(
+        !neighbour.contains("serde::Serialize"),
+        "the previous item's body terminates the walk: {neighbour:?}"
+    );
 }
 
 fn save_shape_fingerprint() -> u64 {
@@ -729,7 +827,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // live-overlay preserve-hook note (registration switched to
     // `register_component_preserving`). Comment-only, same file-scope
     // rule as #3332/#3762 — no on-disk shape changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2d5d_d81d_898b_1b3a;
+    // 2026-10-12 (#5403) — refreshed WITHOUT a bump: the scan now reads
+    // the whole contiguous attribute block, so `StoryManagerNodeState`
+    // and `SmNodeRuntime` (save derive above a plain `#[derive(Debug…)]`)
+    // contribute their shapes for the first time. Both were registered
+    // unchanged since 26b6a779c — no on-disk shape moved, the scan just
+    // stopped being blind to them.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0a2c_75cb_fd40_fc57;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
