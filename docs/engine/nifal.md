@@ -791,6 +791,33 @@ first role lands, `starfield_single_channel_kinds_are_parked_by_name_or_canonica
 (the XOR guard beside the lookup-miss pin in `asset_provider/tests/starfield_mat.rs`)
 forces this table and the struct to move together.
 
+**Starfield additive-family blend modes — parked by name (SF-2026-10-09-D6-01,
+#5509, recorded 2026-10-11).** `apply_cdb_material` forwards only
+`EffectSettingsComponent.BlendingMode == "AlphaBlend"` (#5277). Every other
+authored mode leaves `has_alpha == false`, so the shape takes the opaque,
+depth-writing, lit path and an additive glow sprite draws as a solid card.
+Audit probe over all 344,355 `BSGeometry` shapes in `Meshes01/02/Patch`
+(base CDB lookup crossed with `NiAlphaProperty`; all 491 hits sit on
+`BSLightingShaderProperty` stubs, none carries a `NiAlphaProperty`):
+
+| `BlendingMode` | shapes | samples |
+|---|---|---|
+| `Additive` | 182 | `shipwep_*_projectile_*`, `starborntempleintpedestal_b02` |
+| `SourceSoftAdditive` | 277 | `smod_fx_enginemain_*`, `spacemine.nif` |
+| `DestinationInvertedSoftAdditive` | 29 | `nathemast_topwaterfall.nif` |
+| `DestinationSoftAdditive` / `Multiply` / `TakeSmaller` | 1 / 1 / 1 | `effects\debugfiles\testblendingmodes_*` |
+| `AlphaBlend` | **0** | — (the one arm that is forwarded matches no vanilla shape) |
+
+Raw CDB: `BlendingMode` is authored on 526 `EffectSettingsComponent`s
+(`Additive` 234, `SourceSoftAdditive` 283, `AlphaBlend` 2). **Not guessed:**
+`Additive` / `Multiply` have a same-studio local vocabulary (the FO4 BGSM
+preset table: Additive = `(SRC_ALPHA, ONE)`, Multiplicative = `(DEST_COLOR,
+ZERO)`, `MaterialLib/BaseMaterialFile.cs:363-427`, and the renderer already
+keys those pipelines), but the Starfield carry-over needs a capture before it
+lands; the soft variants and `TakeSmaller` have no local source at all.
+Visible effect until then: ship engine flames, weapon projectile glows,
+space-mine glows and the New Atlantis MAST waterfall.
+
 ### Passthroughs — parked / dropped inventory (surveyed 2026-06-02)
 
 The 2026-06-02 coverage sweep traced every `ImportedScene`/`ImportedNode`/`ImportedMesh`
