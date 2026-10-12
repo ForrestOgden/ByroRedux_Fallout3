@@ -2004,7 +2004,7 @@ mod skip_clear_mask_pin_tests {
     /// in. The light array is sorted by an intensity-derived score while a
     /// flicker writes colour, so two identical fluorescents swap places
     /// whenever their flicker crosses; a sequential fold re-keyed on every
-    /// swap (mode 3 -> 1, parked tail 256 -> 16), reintroducing the
+    /// swap (mode 3 -> 1, parked tail 1024 -> 16), reintroducing the
     /// speckle #5369 removed for exactly these scenes.
     #[test]
     fn light_rig_geometry_key_is_independent_of_light_order() {

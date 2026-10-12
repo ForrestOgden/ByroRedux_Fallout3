@@ -3223,8 +3223,10 @@ void main() {
         // where a visible light animates beside an occluded one, the true
         // ratio moves with their relative intensity and the EMA lags it
         // (~48 % of a 12 Hz flicker's amplitude when parked), and a light
-        // switched off beside an occluded one fades over the EMA window.
-        // Per-light history would not fit the 32-byte reservoir.
+        // switched off beside an occluded one leaves a phantom share that
+        // fades with the parked floor's ~346-frame half-life (~6 s at 60 fps,
+        // ~1.2 s at 300; mode 3 keeps the deep tail through an intensity
+        // change). Per-light history would not fit the 32-byte reservoir.
         vec3  restirUnshadowedSum = vec3(0.0);
         ClusterEntry cluster = clusters[clusterIdx];
         for (uint ci = 0; ci < cluster.count; ci++) {

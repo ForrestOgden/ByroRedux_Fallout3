@@ -458,9 +458,10 @@ mod tests {
         );
 
         // Mirror: a 12 Hz flicker at 60 fps under a constant 50 % shadow,
-        // parked (α = 0.025). The shaded result must track intensity × 0.5
-        // every frame; the retired colour EMA reached ~2 % of the amplitude.
-        let alpha = 0.025f32;
+        // parked at the live deep tail. The shaded result must track
+        // intensity × 0.5 every frame; the retired colour EMA flattened the
+        // flicker to a few % of its amplitude.
+        let alpha = parked_steady_state_alpha();
         let visibility = 0.5f32;
         let (mut ratio, mut colour) = (visibility, visibility);
         let mut colour_swing = (f32::MAX, f32::MIN);
@@ -497,8 +498,10 @@ mod tests {
         );
 
         // Mirror of the finalize, on the estimator's expectation
-        // (E[rad·W·V] = Σ rad_i·V_i): 12 Hz at 60 fps, parked (α = 0.025).
-        let alpha = 0.025f32;
+        // (E[rad·W·V] = Σ rad_i·V_i): 12 Hz at 60 fps, parked at the live
+        // deep tail (#5567: the fixture used to hard-code the retired
+        // α = 0.025, 13× faster than the shader's α).
+        let alpha = parked_steady_state_alpha();
         let shade = |lights: &[(f32, f32)], ratio: &mut f32| {
             let unshadowed: f32 = lights.iter().map(|(rad, _)| rad).sum();
             let frame: f32 = lights.iter().map(|(rad, vis)| rad * vis).sum();
@@ -532,15 +535,45 @@ mod tests {
             "mixed-visibility flicker passes ~48 % of its amplitude, got {passed}"
         );
 
-        // A switched off beside occluded B: truth is 0, the ratio fades.
+        // A switched off beside occluded B: truth is 0, the ratio fades
+        // geometrically from 0.5 — a phantom 50 % contribution from the
+        // occluded neighbour. Mode 3 keeps the deep tail through the switch
+        // (the rig key is intensity-blind), so the half-life is set by the
+        // parked floor: ln ½ / ln(1 − 0.002) ≈ 346 frames (~6 s at 60 fps).
+        // The shader comment at `restirUnshadowedSum` states the same.
         let mut ratio = 0.5;
-        let mut lit = Vec::new();
-        for _ in 0..20 {
+        let mut half_life = None;
+        for frame in 1..=2000u32 {
             let (out, truth) = shade(&[(0.0, 1.0), (1.0, 0.0)], &mut ratio);
             assert_eq!(truth, 0.0);
-            lit.push(out);
+            if out <= 0.25 {
+                half_life = Some(frame);
+                break;
+            }
         }
-        assert!(lit[19] > 0.25, "the off light still leaves a lit ratio after 20 frames");
+        let half_life = half_life.expect("the phantom contribution never halved");
+        let analytic = (0.5f32.ln() / (1.0 - alpha).ln()).ceil() as u32;
+        assert!(
+            half_life.abs_diff(analytic) <= 1,
+            "fade half-life {half_life} frames vs analytic {analytic}"
+        );
+        assert!(
+            (330..=360).contains(&half_life),
+            "the shader documents a ~346-frame half-life; got {half_life} — \
+             a parked-floor retune must update the `restirUnshadowedSum` comment"
+        );
+        assert!(
+            src.contains("~346-frame half-life"),
+            "the shader comment must state the switched-off fade half-life"
+        );
+    }
+
+    /// The parked direct-light EMA's steady-state blend weight, mirroring
+    /// the finalize's `max(1.0 / histLen, alphaFloor)` at `histLen` = the
+    /// parked cap. Read from the generated-header constants, never retyped.
+    fn parked_steady_state_alpha() -> f32 {
+        use crate::shader_constants::{RESTIR_ALPHA_FLOOR_PARKED, RESTIR_HISTORY_CAP_PARKED};
+        (1.0 / RESTIR_HISTORY_CAP_PARKED).max(RESTIR_ALPHA_FLOOR_PARKED)
     }
 
     #[test]
