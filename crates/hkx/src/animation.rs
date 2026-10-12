@@ -1404,25 +1404,27 @@ mod tests {
         // extract regression used to count every file as "skipped" and
         // leave `max_mfpb = 0`. Measured on the shipped SE archive
         // (2026-10-05): 6,126 clips, 1,573 non-clip / non-spline files.
+        // #5671 — every count below is EXACT, not an upper bound: a
+        // one-sided `<=` stays green through a regression that changes
+        // WHICH clips decode, which is the drift this census exists to
+        // catch.
         assert_eq!(clips, 6_126, "vanilla SE spline-clip count (a parse regression shows here)");
-        assert!(
-            skipped <= 1_700,
-            "{skipped} files skipped — a parse/extract regression turns clips into skips"
+        assert_eq!(
+            skipped, 1_573,
+            "files skipped — a parse/extract regression turns clips into skips"
         );
         // The real decoder rejected 288 of the 6,126 vanilla clips on
         // 2026-10-11: 229 on the unpadded `mask_size` equality (#5659 —
         // Havok pads the mask table to 4 bytes) and 59 on NaN translation/
         // scale bounds on one prop-attachment bone (#5662 — that track is
         // now dropped, the clip kept). Every vanilla clip decodes since
-        // (measured 2026-10-12). The baseline is still an upper bound —
-        // making it exact and naming the clips is #5671.
-        const KNOWN_VANILLA_REJECTS: usize = 0;
+        // (measured 2026-10-12) — the empty set, listed in full on any
+        // failure (#5671: a count could hide a swap of which clips fail).
         assert!(
-            rejects.len() == KNOWN_VANILLA_REJECTS,
-            "{} vanilla clips rejected by decode_spline_animation (baseline \
-             {KNOWN_VANILLA_REJECTS}): {:#?}",
+            rejects.is_empty(),
+            "{} vanilla clips rejected by decode_spline_animation: {:#?}",
             rejects.len(),
-            &rejects[..rejects.len().min(20)]
+            rejects
         );
         eprintln!(
             "census: {} clips rejected by the real decoder, {partial} decoded with a \
@@ -1431,18 +1433,27 @@ mod tests {
         );
         // #5662 — measured 2026-10-12: the 59 clips that used to be rejected
         // (one `AnimObjectR`/`AnimObjectL` track each, or its paired-rig
-        // slot). More means a decoder change started flagging valid tracks.
-        assert!(
-            partial <= 59,
-            "{partial} vanilla clips decode with a dropped track (baseline 59)"
+        // slot). More means a decoder change started flagging valid tracks;
+        // fewer means the NaN-bounds detection stopped firing on them (#5671
+        // made this two-sided for the same reason).
+        assert_eq!(
+            partial, 59,
+            "vanilla clips decoding with a dropped track (baseline 59)"
         );
-        // The dimension maxima, asserted against the gate constants the
-        // decoder enforces (measured: frames 1,471, blocks 15).
+        // The dimension maxima, pinned exactly against the measured
+        // vanilla shape (frames 1,471, blocks 15). #5671 — this replaces
+        // the old `div_ceil(frames) >= blocks || blocks <= 64` clause,
+        // whose consistency half was false on vanilla (1,471/256 = 6 < 15)
+        // and whose `||` arm made it pass for any plausible value — an
+        // inert assert blessing exactly the regressions it described.
         assert!(max_frames > 0 && max_blocks > 0, "census read no dimensions");
-        assert!(
-            (max_frames as usize).div_ceil(MAX_FRAMES_PER_BLOCK) >= max_blocks as usize
-                || max_blocks <= 64,
-            "block count {max_blocks} is inconsistent with {max_frames} frames"
+        assert_eq!(
+            max_frames, 1_471,
+            "vanilla max frame count moved — re-measure the census"
+        );
+        assert_eq!(
+            max_blocks, 15,
+            "vanilla max block count moved — re-measure the census"
         );
         assert!(
             max_mfpb <= MAX_FRAMES_PER_BLOCK as u32,
