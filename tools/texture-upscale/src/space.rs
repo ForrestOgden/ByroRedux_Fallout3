@@ -33,18 +33,13 @@ pub(crate) fn ensure_single_path_space(
     )
 }
 
-pub(crate) fn ensure_output_and_scratch_space(
-    output_path: &Path,
-    output_estimate_bytes: u64,
-    scratch_path: &Path,
-    scratch_estimate_bytes: u64,
-) -> Result<SpacePreflight> {
-    let output = volume_for(output_path)?;
-    let scratch = volume_for(scratch_path)?;
-    // A read-only OUTPUT or scratch volume would fail later, after the
-    // (potentially hours-long) upscale pass — refuse up front. The input
-    // volume is deliberately not checked: reading it read-only is fine.
-    for (role, volume) in [("output", &output), ("scratch", &scratch)] {
+/// A read-only OUTPUT or scratch volume would fail later, after the
+/// (potentially hours-long) upscale pass — refuse up front, naming the role.
+/// The input volume is deliberately not an argument: reading it read-only is
+/// fine. Pure over the two `VolumeSpace`s so the decision is testable without
+/// real disks (#5695).
+fn refuse_read_only(output: &VolumeSpace, scratch: &VolumeSpace) -> Result<()> {
+    for (role, volume) in [("output", output), ("scratch", scratch)] {
         if volume.read_only {
             bail!(
                 "{} disk {} is read-only",
@@ -53,6 +48,18 @@ pub(crate) fn ensure_output_and_scratch_space(
             );
         }
     }
+    Ok(())
+}
+
+pub(crate) fn ensure_output_and_scratch_space(
+    output_path: &Path,
+    output_estimate_bytes: u64,
+    scratch_path: &Path,
+    scratch_estimate_bytes: u64,
+) -> Result<SpacePreflight> {
+    let output = volume_for(output_path)?;
+    let scratch = volume_for(scratch_path)?;
+    refuse_read_only(&output, &scratch)?;
     let shared_volume = output.mount_point == scratch.mount_point;
 
     if shared_volume {
@@ -161,6 +168,37 @@ mod tests {
     fn insufficient_space_is_rejected_before_writes() {
         let error = ensure_available(1024, 2048, "test volume").unwrap_err();
         assert!(error.to_string().contains("no files were changed"));
+    }
+
+    fn volume(mount: &str, read_only: bool) -> VolumeSpace {
+        VolumeSpace {
+            mount_point: PathBuf::from(mount),
+            available_bytes: u64::MAX,
+            read_only,
+        }
+    }
+
+    /// #5695 — the read-only refusal covers BOTH roles and names the one
+    /// that failed; writable volumes pass.
+    #[test]
+    fn read_only_output_or_scratch_is_refused_by_role() {
+        assert!(refuse_read_only(&volume("/out", false), &volume("/tmp", false)).is_ok());
+
+        let output = refuse_read_only(&volume("/out", true), &volume("/tmp", false))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(output, "output disk /out is read-only");
+
+        let scratch = refuse_read_only(&volume("/out", false), &volume("/tmp", true))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(scratch, "scratch disk /tmp is read-only");
+
+        // Both read-only: the output is reported first.
+        let both = refuse_read_only(&volume("/out", true), &volume("/tmp", true))
+            .unwrap_err()
+            .to_string();
+        assert!(both.starts_with("output disk"), "{both}");
     }
 
     #[test]
