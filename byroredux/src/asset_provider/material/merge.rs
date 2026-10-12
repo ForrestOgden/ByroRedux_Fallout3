@@ -304,12 +304,20 @@ fn apply_cdb_material(
     }
 
     if let Some(threshold) = cdb_mat.alpha_test_threshold {
-        // #5196 — an explicit `HasOpacity = false` authors NO opacity
-        // channel. The threshold here samples base-colour alpha, and
-        // Starfield's real opacity source (slot 2) is parked, so such a
-        // material has nothing alpha-testable by construction — don't push
-        // it into the alpha-test path on the threshold alone.
-        if threshold > 0.0 && cdb_mat.has_opacity != Some(false) {
+        // #5196 / #5661 — the threshold applies only where an opacity
+        // channel is authored: `HasOpacity = true` somewhere on the
+        // material's `Parent` chain. The lookup walks that chain to its
+        // root (#5502), so `None` means no object authors the field and
+        // the class default applies, which the vanilla CDB's diff census
+        // puts at `false`: `true` is authored 1,449 times, always over an
+        // inherited `None`; `false` 28 times, 27 of them overriding an
+        // inherited `true`; the one CK-written loose `.mat` with alpha
+        // settings spells `"HasOpacity": "true"` too. That default is
+        // measured, not sourced (no schema or CK documentation names it).
+        // Treating `None` as present alpha-tested 1,265 of the 10,152
+        // NIF-referenced materials against base-colour alpha, which is not
+        // their opacity channel (that is slot 2, parked).
+        if threshold > 0.0 && cdb_mat.has_opacity == Some(true) {
             material.alpha_test = true;
             material.alpha_threshold = threshold;
             *touched = true;
@@ -2129,11 +2137,12 @@ mod cdb_flat_color_tests {
         );
     }
 
-    /// #5196 — an explicit `HasOpacity = false` keeps the material out of
-    /// the alpha-test path even with a positive threshold; without that
-    /// authoring (absent or true) the threshold still enables it.
+    /// #5196 / #5661 — a positive threshold enables the alpha test only
+    /// with `HasOpacity = true` authored on the chain; an explicit `false`
+    /// and an absent field (the class default, `false` per the CDB census)
+    /// both keep the material out of the alpha-test path.
     #[test]
-    fn alpha_test_gates_on_an_explicit_has_opacity_false() {
+    fn alpha_test_requires_an_authored_has_opacity_true() {
         let mut pool = byroredux_core::string::StringPool::new();
 
         let mut material = bare_material();
@@ -2183,8 +2192,8 @@ mod cdb_flat_color_tests {
             &|_| true,
         );
         assert!(
-            material.alpha_test,
-            "absent HasOpacity cannot gate (matches the pre-fix behaviour)"
+            !material.alpha_test,
+            "absent HasOpacity is the class default (false), not an opacity channel (#5661)"
         );
     }
 }

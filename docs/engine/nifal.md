@@ -743,8 +743,11 @@ not parallax), so the recorded vocabulary below remains the contract the next
 phase must honour. The Phase-2 **scalar** translations that did land, all in
 `apply_cdb_material`: the `SLOT_COLOR` flat-colour replacement →
 `diffuse_color` (#5190 — replacement-only, never a tint beside a bound
-colour texture), `AlphaTestThreshold` → `alpha_test`/`alpha_threshold` with
-the `HasOpacity = false` guard (#5196), `IsGlass` → the `bgem_glass`
+colour texture), `AlphaTestThreshold` → `alpha_test`/`alpha_threshold` only when
+`HasOpacity = true` is authored on the `Parent` chain (#5196, #5661: an
+absent field is the class default, `false` by the CDB diff census — `true`
+authored 1,449 times always over an inherited `None`, `false` 28 times, 27
+overriding an inherited `true`; measured, not sourced), `IsGlass` → the `bgem_glass`
 classifier input with `thin_glass` deliberately NOT implied (#5196),
 `EffectSettingsComponent.BlendingMode` = "AlphaBlend" → `has_alpha` (#5277 —
 the Starfield twin of the BGSM `alpha_blend_mode` forward; without it the
