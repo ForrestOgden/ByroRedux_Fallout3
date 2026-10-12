@@ -29,7 +29,7 @@
 use anyhow::{anyhow, bail, Result};
 use ash::vk;
 use rspirv::binary;
-use rspirv::dr::{Instruction, Loader};
+use rspirv::dr::{Instruction, Loader, Module};
 use rspirv::spirv::{Decoration, Op, StorageClass};
 use std::collections::HashMap;
 
@@ -58,10 +58,12 @@ struct DecoInfo {
     is_buffer_block: bool,
 }
 
-/// Parse the SPIR-V module and return every `(set, binding, type, count)` it
-/// declares. Non-descriptor `OpVariable`s (inputs, outputs, push constants,
-/// private workgroup data) are skipped.
-pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
+/// #5736 — the shared parse prologue every public reflect entry opens
+/// with: a word-length check (SPIR-V is a stream of u32s) then the module
+/// parse. The error messages live here so a reword lands in one place —
+/// the newest function was a paste of an older one (`a5a0b2598`), which is
+/// exactly how the copies drift.
+fn parse_module(spirv_bytes: &[u8]) -> Result<Module> {
     if !spirv_bytes.len().is_multiple_of(4) {
         bail!(
             "SPIR-V byte length {} is not a multiple of 4",
@@ -71,7 +73,62 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
     let mut loader = Loader::new();
     binary::parse_bytes(spirv_bytes, &mut loader)
         .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
+    Ok(loader.module())
+}
+
+/// The id/type-instruction table every lookup pass rebuilds: every
+/// `types_global_values` instruction that carries a result id.
+fn type_table(module: &Module) -> HashMap<u32, Instruction> {
+    let mut types: HashMap<u32, Instruction> = HashMap::new();
+    for inst in &module.types_global_values {
+        if let Some(id) = inst.result_id {
+            types.insert(id, inst.clone());
+        }
+    }
+    types
+}
+
+/// #5736 — the byte-for-byte named-struct lookup
+/// `uniform_block_size_by_name` and
+/// `uniform_block_member_offsets_by_name` shared: the `OpName` scan for
+/// the GLSL block-type name, the type table, and the `OpTypeStruct`
+/// check. `Ok(None)` = no such name (the caller's "block absent"
+/// contract); `Err` = a name that resolves to something that is not a
+/// struct, or a dangling id.
+fn named_struct(
+    module: &Module,
+    name: &str,
+) -> Result<Option<(u32, Instruction, HashMap<u32, Instruction>)>> {
+    let mut struct_id = None;
+    for inst in &module.debug_names {
+        if inst.class.opcode != Op::Name {
+            continue;
+        }
+        if inst.operands[1].unwrap_literal_string() == name {
+            struct_id = Some(inst.operands[0].unwrap_id_ref());
+            break;
+        }
+    }
+    let Some(struct_id) = struct_id else {
+        return Ok(None);
+    };
+
+    let types = type_table(&module);
+    let struct_inst = types
+        .get(&struct_id)
+        .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?
+        .clone();
+    if struct_inst.class.opcode != Op::TypeStruct {
+        bail!("id={struct_id} named {name} is not an OpTypeStruct");
+    }
+    Ok(Some((struct_id, struct_inst, types)))
+}
+
+/// Parse the SPIR-V module and return every `(set, binding, type, count)` it
+/// declares. Non-descriptor `OpVariable`s (inputs, outputs, push constants,
+/// private workgroup data) are skipped.
+pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
+    let module = parse_module(spirv_bytes)?;
 
     // Pass 1: collect DescriptorSet/Binding/Block/BufferBlock decorations.
     let mut decos: HashMap<u32, DecoInfo> = HashMap::new();
@@ -103,12 +160,7 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
     }
 
     // Pass 2: index every type / constant / global variable by id.
-    let mut types: HashMap<u32, Instruction> = HashMap::new();
-    for inst in &module.types_global_values {
-        if let Some(id) = inst.result_id {
-            types.insert(id, inst.clone());
-        }
-    }
+    let types = type_table(&module);
 
     // Pass 3: resolve each decorated OpVariable to a ReflectedBinding.
     let mut out = Vec::new();
@@ -163,16 +215,7 @@ pub fn reflect_bindings(spirv_bytes: &[u8]) -> Result<Vec<ReflectedBinding>> {
 /// removal of the dead ReSTIR reservoir output (location 6) from silently
 /// drifting back out of sync with the G-buffer (cross-link #1564).
 pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
+    let module = parse_module(spirv_bytes)?;
 
     // `Location` decorations keyed by target variable id.
     let mut locations: HashMap<u32, u32> = HashMap::new();
@@ -216,17 +259,7 @@ pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
 /// 1.5) without changing anything a byte-diff of I/O semantics would catch.
 /// See #1929 / REN-D11-01.
 pub fn spirv_version(spirv_bytes: &[u8]) -> Result<(u8, u8)> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let header = loader
-        .module()
+    let header = parse_module(spirv_bytes)?
         .header
         .ok_or_else(|| anyhow!("SPIR-V module has no header"))?;
     // Version word layout: 0x00MMmmpp (MM = major, mm = minor, pp = 0).
@@ -249,45 +282,10 @@ pub fn spirv_version(spirv_bytes: &[u8]) -> Result<(u8, u8)> {
 /// per-frame corruption with no validation-layer coverage. Asserting the
 /// block size against `size_of::<GpuStruct>()` catches exactly that drift.
 pub fn uniform_block_size_by_name(spirv_bytes: &[u8], name: &str) -> Result<Option<u32>> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
-
-    // OpName carries the GLSL block-type name on its `OpTypeStruct` id.
-    let mut struct_id = None;
-    for inst in &module.debug_names {
-        if inst.class.opcode != Op::Name {
-            continue;
-        }
-        if inst.operands[1].unwrap_literal_string() == name {
-            struct_id = Some(inst.operands[0].unwrap_id_ref());
-            break;
-        }
-    }
-    let Some(struct_id) = struct_id else {
+    let module = parse_module(spirv_bytes)?;
+    let Some((struct_id, struct_inst, types)) = named_struct(&module, name)? else {
         return Ok(None);
     };
-
-    let mut types: HashMap<u32, Instruction> = HashMap::new();
-    for inst in &module.types_global_values {
-        if let Some(id) = inst.result_id {
-            types.insert(id, inst.clone());
-        }
-    }
-
-    let struct_inst = types
-        .get(&struct_id)
-        .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?;
-    if struct_inst.class.opcode != Op::TypeStruct {
-        bail!("id={struct_id} named {name} is not an OpTypeStruct");
-    }
     let member_count = struct_inst.operands.len();
     if member_count == 0 {
         return Ok(Some(0));
@@ -331,44 +329,11 @@ pub fn uniform_block_member_offsets_by_name(
     spirv_bytes: &[u8],
     name: &str,
 ) -> Result<Option<Vec<(String, u32)>>> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
+    let module = parse_module(spirv_bytes)?;
 
-    // OpName carries the GLSL block-type name on its `OpTypeStruct` id.
-    let mut struct_id = None;
-    for inst in &module.debug_names {
-        if inst.class.opcode != Op::Name {
-            continue;
-        }
-        if inst.operands[1].unwrap_literal_string() == name {
-            struct_id = Some(inst.operands[0].unwrap_id_ref());
-            break;
-        }
-    }
-    let Some(struct_id) = struct_id else {
+    let Some((struct_id, struct_inst, types)) = named_struct(&module, name)? else {
         return Ok(None);
     };
-
-    let mut types: HashMap<u32, Instruction> = HashMap::new();
-    for inst in &module.types_global_values {
-        if let Some(id) = inst.result_id {
-            types.insert(id, inst.clone());
-        }
-    }
-    let struct_inst = types
-        .get(&struct_id)
-        .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?;
-    if struct_inst.class.opcode != Op::TypeStruct {
-        bail!("id={struct_id} named {name} is not an OpTypeStruct");
-    }
     let member_count = struct_inst.operands.len();
     if member_count == 0 {
         return Ok(Some(Vec::new()));
@@ -428,16 +393,7 @@ pub fn uniform_block_member_offsets_by_name(
 /// no descriptor binding — the failure mode `uniform_block_size_by_name`
 /// and `reflect_bindings` can't catch. See #1917.
 pub fn count_branch_conditionals(spirv_bytes: &[u8]) -> Result<usize> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
+    let module = parse_module(spirv_bytes)?;
     Ok(module
         .all_inst_iter()
         .filter(|inst| inst.class.opcode == Op::BranchConditional)
@@ -458,16 +414,7 @@ pub fn count_branch_conditionals(spirv_bytes: &[u8]) -> Result<usize> {
 /// #3120: `triangle.frag.spv` shipped stale against a `RENDER_DEBUG_MODE_MAX`
 /// bump (7 → 8) with no test noticing — this guard closes that gap.
 pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>> {
-    if !spirv_bytes.len().is_multiple_of(4) {
-        bail!(
-            "SPIR-V byte length {} is not a multiple of 4",
-            spirv_bytes.len()
-        );
-    }
-    let mut loader = Loader::new();
-    binary::parse_bytes(spirv_bytes, &mut loader)
-        .map_err(|e| anyhow!("SPIR-V parse failed: {e:?}"))?;
-    let module = loader.module();
+    let module = parse_module(spirv_bytes)?;
 
     // Only trust the literal as a plain 32-bit value when the constant's own
     // type is a 32-bit `OpTypeInt` — `OpConstant`'s literal operand encoding
