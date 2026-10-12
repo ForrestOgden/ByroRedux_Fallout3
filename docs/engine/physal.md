@@ -233,8 +233,12 @@ reads — so the mesh crumples with no renderer change.
 
 Havok's cone + two-plane angular limit model does not map 1:1 onto Rapier's
 per-axis angular limits. Slice 1 applies twist→twist-axis and cone→both swing
-axes — good enough to switch an actor from bind-pose to a plausible ragdoll;
-limit-fidelity refinement (and motors, captured but unused) are follow-ups.
+axes — good enough to switch an actor from bind-pose to a plausible ragdoll.
+Limit fidelity has since been refined (#5536: the authored range applies to
+the Havok twist convention — negate+swap on the non-flip edge, pass-through on
+the flip edge — instead of the mirrored pre-fix branches), and the limits are
+soft springs rather than hard clamps (#5538, below). Motors stay captured but
+unused.
 
 ---
 
@@ -248,9 +252,16 @@ Centralised in `crates/physics/src/config.rs::ContactConfig`, so the
 - `ragdoll_extra_angular_damping` — extra per-body angular damping on top of the
   authored value (inert at the `0.0` default); the biggest "less floppy than
   Havok" dial.
-- Solver iteration count (ragdolls want more than clutter for limit stability) and
-  joint-limit stiffness/damping (soft limits vs Havok's hard clamp) — staged as
-  the limits get refined.
+- **Soft joint limits** (#5538, done): `RAGDOLL_JOINT_SOFTNESS` is a 30 Hz,
+  ζ = 1 spring on the locked DOF and the limits (rapier's 1e6 Hz default
+  corrects a bind pose that sits a fraction of a radian outside its range in a
+  single substep — 617 BU/s at tick 0 on FO3 — and tore the rig apart).
+- **Solver iteration count** (#5546, deliberately *not* raised):
+  `RAGDOLL_EXTRA_SOLVER_ITERATIONS = 0`. "Ragdolls want more than clutter" was
+  the old premise; with soft limits +0 / +4 / +12 all stay bounded on the FO3
+  gate, and any nonzero value is a whole-world cost (≈ 2× step cost with 500
+  unrelated awake boxes, `a_ragdoll_does_not_change_an_unrelated_bodys_solve`).
+  Do not re-raise it to chase limit stability.
 - Motors stay **off** for the ragdoll slice (the `Motor A/B` + `bhkConstraintMotor`
   data is captured at parse for a future active-ragdoll slice).
 

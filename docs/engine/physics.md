@@ -110,7 +110,14 @@ the `PhysicsWorld` + `RapierHandles` write locks are taken). For each:
   KinematicPositionBased`, `Dynamic → Dynamic`, `CharacterKinematic →
   KinematicPositionBased`.
 - Set initial position from `GlobalTransform` via `pose_from_trs`, and
-  apply `linear_damping` / `angular_damping` from `RigidBodyData`.
+  apply `linear_damping` / `angular_damping` from `RigidBodyData`. Rapier
+  applies stored damping only on the rigid-body writeback path, which skips
+  multibody links, so for ragdoll links `step` re-applies it every stepping
+  frame as an explicit force/torque through `apply_multibody_link_damping`
+  (#5540). That pass resets, then rewrites, the user force of every awake dry
+  link, so the water pass registers any link it puts a force on through
+  `note_water_force_target` (surface drag/buoyancy and a placed current's
+  force, #5698) to keep the two from fighting.
   `CharacterKinematic` bodies additionally lock rotations (so the player
   stays upright); everything else follows the body data verbatim.
 - Flatten the engine shape into a `Vec<(Isometry3, SharedShape)>` via
