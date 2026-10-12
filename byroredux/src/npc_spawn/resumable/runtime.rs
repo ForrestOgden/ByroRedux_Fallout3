@@ -1338,32 +1338,48 @@ pub(super) fn bind_transform_relative_to(
 /// subtree authors, or `None` when there is no shape below the root or the
 /// shapes disagree.
 fn common_shape_rotation(world: &World, part_root: EntityId) -> Option<Quat> {
-    let meshes = world.query::<byroredux_core::ecs::MeshHandle>()?;
-    let children = world.query::<byroredux_core::ecs::Children>()?;
-    let mut guard =
-        byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
-    let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![part_root];
-    let mut common: Option<Quat> = None;
-    while let Some(entity) = stack.pop() {
-        if !seen.insert(entity) {
-            continue;
-        }
-        if !guard.step() {
-            return None;
-        }
-        if meshes.get(entity).is_some() {
-            let rotation = bind_transform_relative_to(world, entity, part_root)?.rotation;
-            match common {
-                Some(first) if first.angle_between(rotation) > SHAPE_ROTATION_EPSILON => {
-                    return None;
-                }
-                Some(_) => {}
-                None => common = Some(rotation),
+    // #5535 — gather the subtree's shapes first and drop the hierarchy
+    // guards before composing bind transforms. `bind_transform_relative_to`
+    // takes `Transform` → `Parent`; composing inside the walk held
+    // `MeshHandle` + `Children` across it, recording `MeshHandle` →
+    // `Children` (the reverse of `tag_descendants_as_actor`'s `Children` →
+    // `MeshHandle`) and `Children` → `Parent` (the reverse of the
+    // ragdoll / bounds / cinematic `Parent` → `Children` walks): two
+    // lock-order cycles under `BYRO_LOCK_ORDER_CHECK=1`. The walk order and
+    // the first-disagreement early-out are unchanged.
+    let shapes = {
+        let children = world.query::<byroredux_core::ecs::Children>()?;
+        let meshes = world.query::<byroredux_core::ecs::MeshHandle>()?;
+        let mut guard =
+            byroredux_core::ecs::HierarchyTraversalGuard::new(world.next_entity_id() as usize, 0);
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![part_root];
+        let mut shapes = Vec::new();
+        while let Some(entity) = stack.pop() {
+            if !seen.insert(entity) {
+                continue;
+            }
+            if !guard.step() {
+                return None;
+            }
+            if meshes.get(entity).is_some() {
+                shapes.push(entity);
+            }
+            if let Some(kids) = children.get(entity) {
+                stack.extend(kids.0.iter().copied());
             }
         }
-        if let Some(kids) = children.get(entity) {
-            stack.extend(kids.0.iter().copied());
+        shapes
+    };
+    let mut common: Option<Quat> = None;
+    for entity in shapes {
+        let rotation = bind_transform_relative_to(world, entity, part_root)?.rotation;
+        match common {
+            Some(first) if first.angle_between(rotation) > SHAPE_ROTATION_EPSILON => {
+                return None;
+            }
+            Some(_) => {}
+            None => common = Some(rotation),
         }
     }
     common

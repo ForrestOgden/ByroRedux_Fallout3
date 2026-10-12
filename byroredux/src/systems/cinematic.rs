@@ -2137,10 +2137,19 @@ mod tests {
         vehicle_attachment_system(&world, 0.0);
 
         // The heading `ExitCart` derives while the rider is still attached.
+        // #5535 — each read copies its field out and drops its guard before
+        // the next: holding the `ActorCinematicState` guard across the
+        // `Transform` read recorded `ActorCinematicState` → `Transform`, the
+        // reverse of the #4546 production order (`Transform` first), and
+        // closed a lock-order cycle under `BYRO_LOCK_ORDER_CHECK=1`.
         let attached = {
-            let state = world.get::<ActorCinematicState>(rider).unwrap();
             let cart_rotation = world.get::<Transform>(cart).unwrap().rotation;
-            cart_rotation * state.vehicle_local_rotation.expect("attached rider")
+            let seat_rotation = world
+                .get::<ActorCinematicState>(rider)
+                .unwrap()
+                .vehicle_local_rotation
+                .expect("attached rider");
+            cart_rotation * seat_rotation
         };
         assert!(
             attached.angle_between(Quat::IDENTITY) > 0.3,

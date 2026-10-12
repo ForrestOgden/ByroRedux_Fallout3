@@ -432,6 +432,13 @@ pub(crate) fn restore_actor_snapshot(
                     .seated_marker_idx
                     .unwrap_or_default();
                 let seat = {
+                    // #5535 — `GlobalTransform` before `Furniture`, the
+                    // order `sandbox_seat_system`'s seat-table gather takes
+                    // them in; holding `Furniture` across the
+                    // `GlobalTransform` read closed a lock-order cycle.
+                    let Some(gq) = world.query::<GlobalTransform>() else {
+                        return restored;
+                    };
                     let Some(furn_q) = world.query::<Furniture>() else {
                         return restored;
                     };
@@ -439,9 +446,6 @@ pub(crate) fn restore_actor_snapshot(
                         return restored;
                     };
                     let Some(marker) = furn.markers.get(marker_idx as usize) else {
-                        return restored;
-                    };
-                    let Some(gq) = world.query::<GlobalTransform>() else {
                         return restored;
                     };
                     let Some(furn_g) = gq.get(furniture) else {
@@ -727,11 +731,20 @@ mod tests {
         // marker: the sit pose is parked at its final frame and the exact
         // marker is re-reserved under the respawned furniture id, so a
         // second actor cannot be snapped onto the same seat.
-        let player = world
-            .get::<AnimationPlayer>(respawned_actor)
-            .expect("player present");
-        assert_eq!(player.clip_handle, 5, "parked on the per-cell sit clip");
-        assert!(!player.playing, "the sit pose is parked, not playing");
+        // #5535 — copy the fields out so the `AnimationPlayer` read guard
+        // drops here: held across the `Transform` read below it recorded an
+        // `AnimationPlayer` → `Transform` lock-order edge, the reverse of
+        // `npc_walk_animation_system`'s production `Transform` →
+        // `AnimationPlayer` gather, and closed a cycle under
+        // `BYRO_LOCK_ORDER_CHECK=1` (the #5032 shape).
+        let (clip_handle, playing) = {
+            let player = world
+                .get::<AnimationPlayer>(respawned_actor)
+                .expect("player present");
+            (player.clip_handle, player.playing)
+        };
+        assert_eq!(clip_handle, 5, "parked on the per-cell sit clip");
+        assert!(!playing, "the sit pose is parked, not playing");
         assert_eq!(
             world
                 .resource::<crate::components::SeatReservations>()

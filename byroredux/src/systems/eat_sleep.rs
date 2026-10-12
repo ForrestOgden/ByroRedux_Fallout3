@@ -253,11 +253,18 @@ fn eat_sleep_system_inner(world: &World, dt: f32, scratch: &mut EatSleepScratch)
     // `GlobalTransform`, `WalkSpeed` or recorded destination, and its own
     // `Transform` write happens after its own read, so the snapshot is exact.
     // Every guard drops with this block, before the writes below.
+    //
+    // #5535 — `Transform` is taken before `GlobalTransform` and `WalkSpeed`,
+    // the process-wide order every other mover (ragdoll, follow, escort,
+    // forcegreet, the wander/patrol gather) acquires them in. #5527 first
+    // gathered `GlobalTransform` → `WalkSpeed` → `Transform`, closing both a
+    // `Transform`/`GlobalTransform` and a `Transform`/`WalkSpeed` lock-order
+    // cycle (`BYRO_LOCK_ORDER_CHECK=1`).
     {
         let state_q = world.query::<EatSleepState>();
+        let transform_q = world.query::<Transform>();
         let global_q = world.query::<GlobalTransform>();
         let speed_q = world.query::<crate::components::WalkSpeed>();
-        let transform_q = world.query::<Transform>();
         for actor in &mut actors {
             actor.destination = state_q
                 .as_ref()
