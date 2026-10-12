@@ -133,7 +133,8 @@ impl Component for DoorTeleport {
 /// re-spawn, so the root stays invisible and non-solid until its cell next
 /// loads; without the marker it became an invisible Open/Take prompt and a
 /// door that still teleported. Stamped at spawn, never saved: the reload
-/// re-derives it from the same inputs.
+/// re-derives it from the same inputs. The live re-spawn is the #5065
+/// tracker (ROADMAP M47 known issues).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PlacementContentWithheld;
 impl Component for PlacementContentWithheld {

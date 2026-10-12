@@ -1386,7 +1386,8 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
     // `DoorTeleport`, `Locked`, container `Inventory`) but spawns nothing
     // visible or solid, so it must not be a candidate either. Read live,
     // so a `Disable()` on a resident reference stops interaction at once
-    // even though its meshes only go on the next load.
+    // even though its meshes only go on the next load (the live
+    // strip/re-spawn itself is the #5065 tracker).
     if world
         .try_resource::<byroredux_scripting::ReferenceEnableState>()
         .is_some()
