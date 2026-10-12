@@ -445,12 +445,24 @@ pub(crate) fn select_lod_quads(
 /// `(rx, ry)` (FO3's `x12.y-25`-style name tables). Quads from
 /// leftover runs of a DIFFERENT generation sit on other residues and
 /// overlap the dominant tiling. Per level, keep the residue class with
-/// the most members (ties break on the smallest `(rx, ry)` for
-/// determinism); members of one class are pairwise disjoint by
+/// the most members; members of one class are pairwise disjoint by
 /// construction, so the kept set cannot overlap. A clean single-
 /// generation table (FNV, both games' terrain diffuse — census: 0
 /// overlaps) has one class and passes through unchanged.
-fn prune_same_level_overlaps(authored: &[(i32, i32, i32)]) -> Vec<(i32, i32, i32)> {
+///
+/// #5520 — a count tie (FO3 dcworld06 3/3, dlc02baileyscrossroads 7/7,
+/// dcworld12 4/4) is decided by DATA, not an arbitrary residue order: the
+/// class whose footprints cover more of the worldspace's authored exterior
+/// cells (`cell_exists`) wins, since the generation that tiles the ground
+/// the worldspace actually has is the one whose distant objects belong
+/// there (dcworld06's dropped class covered 2 authored cells the kept one
+/// missed). Only when coverage ties too does the smallest `(rx, ry)`
+/// decide, for determinism. Which lattice the shipped game itself loads
+/// is still open (exal.md).
+fn prune_same_level_overlaps(
+    authored: &[(i32, i32, i32)],
+    cell_exists: &dyn Fn(i32, i32) -> bool,
+) -> Vec<(i32, i32, i32)> {
     let mut levels: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
     levels.sort_unstable();
     levels.dedup();
@@ -465,13 +477,31 @@ fn prune_same_level_overlaps(authored: &[(i32, i32, i32)]) -> Vec<(i32, i32, i32
                     .or_insert(0) += 1;
             }
         }
-        let Some(winner) = classes
-            .iter()
-            .max_by_key(|(residue, count)| (**count, std::cmp::Reverse(**residue)))
-            .map(|(residue, _)| *residue)
-        else {
+        let Some(&top) = classes.values().max() else {
             continue;
         };
+        // Authored cells one residue class's quads cover. Computed only
+        // for the classes tied at the top count.
+        let coverage = |residue: (i32, i32)| -> usize {
+            authored
+                .iter()
+                .filter(|&&(l, qx, qy)| {
+                    l == level && (qx.rem_euclid(level), qy.rem_euclid(level)) == residue
+                })
+                .map(|&(_, qx, qy)| {
+                    (0..level)
+                        .flat_map(|dy| (0..level).map(move |dx| (qx + dx, qy + dy)))
+                        .filter(|&(cx, cy)| cell_exists(cx, cy))
+                        .count()
+                })
+                .sum()
+        };
+        let winner = classes
+            .iter()
+            .filter(|&(_, &count)| count == top)
+            .map(|(&residue, _)| residue)
+            .max_by_key(|&residue| (coverage(residue), std::cmp::Reverse(residue)))
+            .expect("a non-empty level has at least one top-count class");
         out.extend(
             authored
                 .iter()
@@ -493,6 +523,10 @@ fn prune_same_level_overlaps(authored: &[(i32, i32, i32)]) -> Vec<(i32, i32, i32
 /// majority lattice-residue class; see its doc. FNV and the terrain
 /// diffuse tables census 0 overlaps and pass through untouched.
 ///
+/// `cell_exists` answers whether the LOD source worldspace authors an
+/// exterior cell at `(x, y)`; it breaks the prune's count ties (#5520).
+/// Pass `&|_, _| false` when no cell set is known.
+///
 /// Order is deterministic `(level, qy, qx)`; callers re-sort by their own
 /// streaming priorities.
 pub(crate) fn select_authored_lod_quads(
@@ -500,8 +534,9 @@ pub(crate) fn select_authored_lod_quads(
     ladder: &LodBandLadder,
     player: (i32, i32),
     world_bounds: Option<((i32, i32), (i32, i32))>,
+    cell_exists: &dyn Fn(i32, i32) -> bool,
 ) -> Vec<(i32, i32, i32)> {
-    let authored = prune_same_level_overlaps(authored);
+    let authored = prune_same_level_overlaps(authored, cell_exists);
     let levels: Vec<i32> = {
         let mut ls: Vec<i32> = authored.iter().map(|&(l, _, _)| l).collect();
         ls.sort_unstable();
@@ -623,7 +658,7 @@ mod tests {
         authored.push((8, 4, 4));
         authored.push((8, 12, -6));
 
-        let selected = select_authored_lod_quads(&authored, &ladder, (4, 0), None);
+        let selected = select_authored_lod_quads(&authored, &ladder, (4, 0), None, &|_, _| false);
         assert_eq!(
             selected,
             vec![(8, 0, 0), (8, 8, 0)],
@@ -632,8 +667,43 @@ mod tests {
 
         // A clean table (one lattice) is untouched.
         let clean = vec![(8, 0, 0), (8, 8, 0), (8, 0, 8)];
-        let selected = select_authored_lod_quads(&clean, &ladder, (4, 4), None);
+        let selected = select_authored_lod_quads(&clean, &ladder, (4, 4), None, &|_, _| false);
         assert_eq!(selected, vec![(8, 0, 0), (8, 0, 8), (8, 8, 0)]);
+    }
+
+    /// #5520 — a count tie between two residue classes is decided by how
+    /// many authored exterior cells each class's footprints cover, not by
+    /// the smallest residue. The dcworld06 shape: residue (1,5) and (1,6)
+    /// hold 2 quads each; the smaller-residue class used to win blind even
+    /// though only the other one covers the worldspace's edge cells.
+    #[test]
+    fn residue_count_tie_breaks_on_authored_cell_coverage() {
+        let ladder = LodBandLadder::for_object_game(GameKind::Fallout3NV)
+            .expect("FO3 object ladder");
+        // Level 8. Class A = residue (0,0): quads at (0,0), (8,0).
+        // Class B = residue (0,4): quads at (0,4), (8,4). Both 2/2.
+        // They overlap each other's footprints, as leftover generations do.
+        let authored = vec![(8, 0, 0), (8, 8, 0), (8, 0, 4), (8, 8, 4)];
+        let player = (4, 4);
+
+        // No cell data: coverage ties at 0, the smallest residue (0,0) wins.
+        let blind = select_authored_lod_quads(&authored, &ladder, player, None, &|_, _| false);
+        assert_eq!(blind, vec![(8, 0, 0), (8, 8, 0)]);
+
+        // The worldspace authors cells only in y ∈ [8, 12): reachable by
+        // class B's footprints (y 4..12) and not class A's (y 0..8).
+        let edge = |_x: i32, y: i32| (8..12).contains(&y);
+        let covered = select_authored_lod_quads(&authored, &ladder, player, None, &edge);
+        assert_eq!(
+            covered,
+            vec![(8, 0, 4), (8, 8, 4)],
+            "the class covering more authored cells wins the tie"
+        );
+
+        // Equal coverage falls back to the residue order.
+        let both = |_x: i32, y: i32| (4..8).contains(&y);
+        let tied = select_authored_lod_quads(&authored, &ladder, player, None, &both);
+        assert_eq!(tied, vec![(8, 0, 0), (8, 8, 0)]);
     }
 
     fn skyrim() -> LodBandLadder {
@@ -1353,7 +1423,7 @@ mod tests {
                 authored.push((8, qx * 8, qy * 8 + 6));
             }
         }
-        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None, &|_, _| false);
         assert!(
             selected
                 .iter()
@@ -1387,7 +1457,7 @@ mod tests {
                 authored.push((8, qx * 8 + 4, qy * 8 + 2));
             }
         }
-        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None, &|_, _| false);
         assert!(
             selected
                 .iter()
@@ -1417,7 +1487,7 @@ mod tests {
                 authored.push((8, qx * 8, qy * 8));
             }
         }
-        let selected = select_authored_lod_quads(&authored, &ladder, player, None);
+        let selected = select_authored_lod_quads(&authored, &ladder, player, None, &|_, _| false);
         let mut covered: HashSet<(i32, i32)> = HashSet::new();
         for &(level, qx, qy) in &selected {
             for y in qy..qy + level {

@@ -178,6 +178,19 @@ pub(crate) fn worldspace_cell_bounds(
         })
 }
 
+/// Whether the LOD source worldspace authors an exterior cell at `(x, y)`.
+/// The coverage oracle that breaks `prune_same_level_overlaps`' count ties
+/// (#5520); on the same worldspace as [`worldspace_cell_bounds`], so an
+/// inheriting child reads its "Use LOD Data" ancestor's cells.
+pub(crate) fn lod_source_cell_exists(wctx: &ExteriorWorldContext) -> impl Fn(i32, i32) -> bool + '_ {
+    let cells = wctx
+        .record_index
+        .cells
+        .exterior_cells
+        .get(wctx.lod_worldspace_key());
+    move |x, y| cells.is_some_and(|c| c.contains_key(&(x, y)))
+}
+
 /// SW corner of the level-sized quad containing `(gx, gy)`, aligned to the
 /// active worldspace's own `grid_origin` rather than global zero (#2586).
 pub(crate) fn quad_origin(gx: i32, gy: i32, level: i32, grid_origin: (i32, i32)) -> (i32, i32) {

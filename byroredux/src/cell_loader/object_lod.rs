@@ -69,7 +69,7 @@ use crate::components::IsLodTerrain;
 use super::exterior::ExteriorWorldContext;
 use super::lod_bands::{self, quad_min_chebyshev, LodBandLadder, LodBandSelection};
 use super::lod_support::{
-    release_lod_gpu_resources, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
+    lod_source_cell_exists, release_lod_gpu_resources, worldspace_cell_bounds, LodReconcileInput, LodWorkBudget,
 };
 
 /// One streamed object-LOD quad: the `.bto` macro-mesh imports to several
@@ -226,6 +226,7 @@ pub(crate) fn stream_object_lod_blocks(
             &ladder,
             player_grid,
             selection.world_bounds,
+            &lod_source_cell_exists(wctx),
         )
     } else {
         lod_bands::select_lod_quads(

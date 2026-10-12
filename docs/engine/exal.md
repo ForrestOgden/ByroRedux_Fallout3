@@ -521,11 +521,13 @@ Per-game impls (the runtime source per the Q3 finding):
   from different LOD generations sit on other lattice residues and overlap
   the dominant tiling (six FO3 worldspaces, `washmontop` worst at 65
   overlapping pairs of 37 level-8 quads); the residue class with the most
-  members wins, ties breaking on the smallest `(rx, ry)` — an arbitrary
-  stand-in for data that is available (audit D6-01: 3 of the 7 multi-residue
-  sets are decided by that tie-break, and in two of them the losing
-  generation covers 2 authored cells the winner does not, so those cells
-  draw no distant objects). FNV and the terrain diffuse tables census 0
+  members wins. A count tie (FO3 `dcworld06` 3/3, `dcworld12` 4/4,
+  `dlc02baileyscrossroads` 7/7) is decided by authored-cell coverage (#5520):
+  the class whose footprints cover more of the LOD source worldspace's
+  exterior cells wins (`lod_source_cell_exists`); only a coverage tie falls
+  back to the smallest `(rx, ry)`. Which lattice the shipped game itself
+  loads is still **open** — coverage is a data-anchored choice, not a
+  verified reproduction of the engine's. FNV and the terrain diffuse tables census 0
   overlaps and pass through untouched.
 
 The renderer's draw path reads `WorldLodRes` only — it never knows which provider

@@ -67,7 +67,7 @@ fn dcworld03_level8_quads_select_near_the_worldspace_centre() {
         .fold((0i64, 0i64), |(ax, ay), &(l, qx, qy)| (ax + qx as i64 + l as i64 / 2, ay + qy as i64 + l as i64 / 2));
     let player = ((sx / n) as i32, (sy / n) as i32);
     let ladder = LodBandLadder::for_object_game(GameKind::Fallout3NV).expect("FO3 object ladder");
-    let selected = select_authored_lod_quads(&quads, &ladder, player, None);
+    let selected = select_authored_lod_quads(&quads, &ladder, player, None, &|_, _| false);
     assert!(
         !selected.is_empty(),
         "the authored selection must draw something at the worldspace centre"
@@ -174,7 +174,7 @@ fn washmontop_level8_spans_multiple_residues_and_all_select() {
 
     for &(l, qx, qy) in majority_quads.iter().take(3) {
         let player = (qx + l / 2, qy + l / 2);
-        let selected = select_authored_lod_quads(&quads, &ladder, player, None);
+        let selected = select_authored_lod_quads(&quads, &ladder, player, None, &|_, _| false);
         assert!(
             selected.contains(&(l, qx, qy)),
             "standing in majority-generation quad ({qx}, {qy}), that quad must be selected"
