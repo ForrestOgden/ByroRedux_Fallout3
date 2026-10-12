@@ -249,7 +249,41 @@ fn decompile_body(
     // so compound conditions surface as one expression, not nested ifs.
     rebuild_boolean_operators(&mut cfg, &mut scopes, &func.name)?;
     let nodes = reconstruct(cfg, scopes, &func.name)?;
-    Ok(lower_body(&nodes))
+    let mut body = lower_local_decls(func);
+    body.extend(lower_body(&nodes));
+    Ok(body)
+}
+
+/// One bare `VarDecl` per user-declared local of `func`, ahead of its body.
+///
+/// A `.pex` function carries its locals in a table, not as statements, so
+/// the reconstructed body only ever *assigns* them — while the `.psc`
+/// frontend the AST consumers were written against declares each local
+/// where it is introduced (`Quest k = ...`). Without the declarations every
+/// fragment prologue Champollion emits (`__temp = self as Quest`,
+/// `akSpeaker = akSpeakerRef as Actor`) read as an assignment to an
+/// undeclared name, i.e. a script variable or property, and the fragment
+/// lowerer — correctly, #5638 — declined it: 10,021 of the 12,817 declined
+/// Skyrim fragments stopped on exactly that statement.
+///
+/// Compiler temporaries (`::temp0`) are skipped: the lift folds them into
+/// the expressions that consume them, and a name no source could spell is
+/// not a declaration anyone wrote.
+fn lower_local_decls(func: &PexFunction) -> Vec<Spanned<Stmt>> {
+    func.locals
+        .iter()
+        .filter(|local| !local.name.starts_with("::"))
+        .map(|local| {
+            sp(Stmt::VarDecl(past::Variable {
+                ty: sp(lower_type(&local.type_name)),
+                name: ident(&local.name),
+                initial_value: None,
+                is_conditional: false,
+                is_const: false,
+                is_hidden: false,
+            }))
+        })
+        .collect()
 }
 
 fn lower_params(func: &PexFunction) -> Vec<Param> {
@@ -1058,6 +1092,62 @@ mod tests {
             panic!("a non-event name must lower to a Function, not an Event");
         };
         assert_eq!(f.name.node.0, bad_name);
+    }
+
+    /// The locals table surfaces as bare declarations ahead of the body
+    /// (compiler temporaries excluded), so the Champollion fragment
+    /// prologue `__temp = self as Quest` is an assignment to a *declared*
+    /// local — the contract the fragment lowerer's #5638 guard relies on.
+    #[test]
+    fn user_locals_are_declared_ahead_of_the_body_and_temporaries_are_not() {
+        let func = PexFunction {
+            name: "Fragment_0".into(),
+            return_type_name: "None".into(),
+            locals: vec![
+                TypedName {
+                    name: "::temp0".into(),
+                    type_name: "Bool".into(),
+                },
+                TypedName {
+                    name: "__temp".into(),
+                    type_name: "Quest".into(),
+                },
+                TypedName {
+                    name: "count".into(),
+                    type_name: "Int".into(),
+                },
+            ],
+            instructions: vec![
+                ins(OpCode::Cast, vec![id("__temp"), id("self")]),
+                ins(OpCode::Return, vec![id("::NoneVar")]),
+            ],
+            ..PexFunction::default()
+        };
+        let script = decompile_script(&pex_with_function(func)).unwrap();
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!()
+        };
+        let declared: Vec<(&str, bool)> = f
+            .body
+            .iter()
+            .filter_map(|stmt| match &stmt.node {
+                Stmt::VarDecl(var) => Some((
+                    var.name.node.0.as_str(),
+                    var.initial_value.is_none(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(declared, vec![("__temp", true), ("count", true)]);
+        assert!(
+            f.body[..2].iter().all(|s| matches!(s.node, Stmt::VarDecl(_))),
+            "declarations lead the body"
+        );
+        assert!(
+            f.body.iter().any(|s| matches!(&s.node,
+                Stmt::Assign { target, .. } if matches!(&target.node, Expr::Ident(id) if id.0 == "__temp"))),
+            "the cast still reads as an assignment to the declared local"
+        );
     }
 
     #[test]

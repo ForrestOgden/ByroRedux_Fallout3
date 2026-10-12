@@ -2260,6 +2260,39 @@ mod tests {
         );
     }
 
+    /// The shape the `.pex` decompiler emits for a locals-table fragment:
+    /// a bare declaration, then the Champollion autocast as an assignment.
+    /// Both locals are declared, so the fragment lowers (#5638 only refuses
+    /// assignment to a name nothing declared).
+    #[test]
+    fn lowers_the_decompiled_autocast_prologue() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Quest __temp\n\
+             Quest kmyQuest\n\
+             __temp = Self as Quest\n\
+             kmyQuest = __temp\n\
+             kmyQuest.SetStage(30)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::SetStage {
+                quest: QuestRef::SelfRef,
+                stage: 30
+            }])
+        );
+        // Without the declarations the same assignments are writes to
+        // script state the lowerer cannot model, so the fragment declines.
+        let undeclared = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             kmyQuest = Self as Quest\n\
+             kmyQuest.SetStage(30)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&undeclared), None);
+    }
+
     /// #5634: `OwningQuest` is the quest owning THIS script's alias, so only
     /// `Self.GetOwningQuest()` may map to it. `OtherAlias.GetOwningQuest()`
     /// names another alias's quest and used to stage / gate on the context
