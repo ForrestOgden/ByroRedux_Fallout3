@@ -365,6 +365,7 @@ fn build_named_function(
 }
 
 fn lower_property(
+    pex: &Pex,
     object: &Object,
     prop: &crate::model::Property,
 ) -> Result<Property, DecompileError> {
@@ -387,6 +388,22 @@ fn lower_property(
         };
         (getter, setter)
     };
+    // #5685 — the property half of #5398: the same user-flag table the
+    // object and variables already consult names a property's `Const` /
+    // `Mandatory` / `Hidden` / `Conditional` bits, and the `.psc`
+    // frontend parses all four — lowering without them made the two
+    // frontends disagree on any flagged property (`Const Auto Hidden`
+    // lowered as plain `Auto`).
+    for (name, flag) in [
+        ("const", PropertyFlags::CONST),
+        ("mandatory", PropertyFlags::MANDATORY),
+        ("hidden", PropertyFlags::HIDDEN),
+        ("conditional", PropertyFlags::CONDITIONAL),
+    ] {
+        if has_user_flag(pex, prop.user_flags, name) {
+            flags |= flag;
+        }
+    }
     Ok(Property {
         ty: sp(lower_type(&prop.type_name)),
         name: ident(&prop.name),
@@ -457,7 +474,7 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
 
     for p in &object.properties {
         body.push(sp(ScriptItem::Property(Box::new(lower_property(
-            object, p,
+            pex, object, p,
         )?))));
     }
 
@@ -611,6 +628,51 @@ mod tests {
             matches!(&item.node, ScriptItem::Variable(v) if v.is_conditional)
         });
         assert!(conditional_var, "the variable's conditional user flag lowers");
+    }
+
+    /// #5685 — the property half of #5398: a property's `Const` /
+    /// `Mandatory` / `Hidden` / `Conditional` user flags lower into the
+    /// same `PropertyFlags` the `.psc` frontend parses, alongside the
+    /// auto-var-derived `Auto` bit. Pre-fix, `Int Property P Auto
+    /// Conditional Hidden Mandatory` lowered from `.pex` as bare `Auto`.
+    #[test]
+    fn property_user_flags_lower_into_property_flags() {
+        use crate::model::{Property as PexProperty, UserFlag};
+        let mut pex = pex_with_function(PexFunction {
+            name: "F".into(),
+            return_type_name: "None".into(),
+            ..PexFunction::default()
+        });
+        pex.user_flags = vec![
+            UserFlag { name: "conditional".into(), flag_index: 1 },
+            UserFlag { name: "hidden".into(), flag_index: 2 },
+            UserFlag { name: "mandatory".into(), flag_index: 3 },
+            UserFlag { name: "const".into(), flag_index: 4 },
+        ];
+        pex.objects[0].properties = vec![PexProperty {
+            name: "P".into(),
+            type_name: "Int".into(),
+            user_flags: 0b11100, // hidden | mandatory | const
+            flags: crate::model::property_flag::AUTOVAR
+                | crate::model::property_flag::READ
+                | crate::model::property_flag::WRITE,
+            ..PexProperty::default()
+        }];
+        let script = decompile_script(&pex).expect("decompiles");
+        let prop = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Property(p) => Some(&**p),
+                _ => None,
+            })
+            .expect("the property lowers");
+        assert_eq!(
+            prop.flags,
+            PropertyFlags::AUTO | PropertyFlags::HIDDEN | PropertyFlags::MANDATORY
+                | PropertyFlags::CONST,
+            "every mapped user flag rides along with the auto bit"
+        );
     }
 
     /// #4477 — the opcode-36 (`Is`) lowering pin: `a is T` arrives as
