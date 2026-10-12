@@ -384,6 +384,9 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
         // head's chain silently dropped every other segment (58 members,
         // 41 of them quest nodes, never evaluated). Every member is now
         // placed: [`order_sibling_group`].
+        // #5643 — index the group once: a `Vec::contains` per member made
+        // this O(g²) before the ordering even started.
+        let in_group: std::collections::HashSet<usize> = members.iter().copied().collect();
         let previous: HashMap<usize, Option<usize>> = members
             .iter()
             .map(|&member| {
@@ -392,7 +395,7 @@ pub fn build_story_manager_tree(records: &HashMap<u32, SmNodeRecord>) -> SmTree 
                     by_form_id
                         .get(&records[&tree.nodes[member].form_id].previous_sibling)
                         .copied()
-                        .filter(|prev| members.contains(prev)),
+                        .filter(|prev| in_group.contains(prev)),
                 )
             })
             .collect();
@@ -442,27 +445,105 @@ fn order_sibling_group(
     previous: &HashMap<usize, Option<usize>>,
     nodes: &[SmTreeNode],
 ) -> Vec<usize> {
-    let mut order: Vec<usize> = Vec::with_capacity(members.len());
-    let mut waiting: Vec<usize> = members.to_vec();
-    waiting.sort_unstable_by_key(|&member| nodes[member].form_id);
-    while !waiting.is_empty() {
-        let placeable = waiting
-            .iter()
-            .position(|member| previous[member].is_none_or(|prev| order.contains(&prev)));
-        match placeable {
-            Some(at) => {
-                let member = waiting.remove(at);
-                let slot = match previous[&member] {
-                    None => 0,
-                    Some(prev) => {
-                        order.iter().position(|&placed| placed == prev).map_or(0, |i| i + 1)
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    // #5643 — work in FormID-rank space with a ready heap and a linked
+    // list. The earlier "scan `waiting` for the first placeable member,
+    // `order.contains` per candidate, `order.iter().position` per insert"
+    // shape was O(g³) in the group size; a hostile plugin can author a
+    // group of any size. Same placement rule, same result: the next member
+    // placed is the lowest-FormID one whose predecessor is already placed.
+    let mut ranked: Vec<usize> = members.to_vec();
+    ranked.sort_unstable_by_key(|&member| nodes[member].form_id);
+    let rank: HashMap<usize, usize> = ranked
+        .iter()
+        .enumerate()
+        .map(|(rank, &member)| (member, rank))
+        .collect();
+    let count = ranked.len();
+    let prev_rank: Vec<Option<usize>> = ranked
+        .iter()
+        .map(|member| previous[member].map(|prev| rank[&prev]))
+        .collect();
+    // Members waiting on each predecessor, released when it is placed.
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); count];
+    let mut ready: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
+    for (member, prev) in prev_rank.iter().enumerate() {
+        match prev {
+            None => ready.push(Reverse(member)),
+            Some(prev) => dependents[*prev].push(member),
+        }
+    }
+
+    // The placed order as a singly linked list over ranks.
+    let mut next: Vec<Option<usize>> = vec![None; count];
+    let mut head: Option<usize> = None;
+    let mut tail: Option<usize> = None;
+    let mut placed = vec![false; count];
+    let mut placed_count = 0;
+    // Lowest rank that might still be unplaced (the cycle fallback).
+    let mut lowest_unplaced = 0;
+    while placed_count < count {
+        let member = loop {
+            match ready.pop() {
+                Some(Reverse(member)) if !placed[member] => break Some(member),
+                Some(_) => continue,
+                None => break None,
+            }
+        };
+        let member = match member {
+            Some(member) => {
+                match prev_rank[member] {
+                    // No predecessor: goes to the top.
+                    None => {
+                        next[member] = head;
+                        head = Some(member);
+                        if tail.is_none() {
+                            tail = Some(member);
+                        }
                     }
-                };
-                order.insert(slot, member);
+                    // Directly after its predecessor — a later insert after
+                    // the same predecessor lands above an earlier one.
+                    Some(prev) => {
+                        next[member] = next[prev];
+                        next[prev] = Some(member);
+                        if tail == Some(prev) {
+                            tail = Some(member);
+                        }
+                    }
+                }
+                member
             }
             // Cycle: no waiting member's predecessor can ever be placed.
-            None => order.push(waiting.remove(0)),
+            // Break it by appending the lowest-FormID member that is left.
+            None => {
+                while placed[lowest_unplaced] {
+                    lowest_unplaced += 1;
+                }
+                let member = lowest_unplaced;
+                match tail {
+                    Some(tail) => next[tail] = Some(member),
+                    None => head = Some(member),
+                }
+                tail = Some(member);
+                member
+            }
+        };
+        placed[member] = true;
+        placed_count += 1;
+        for &dependent in &dependents[member] {
+            if !placed[dependent] {
+                ready.push(Reverse(dependent));
+            }
         }
+    }
+
+    let mut order = Vec::with_capacity(count);
+    let mut cursor = head;
+    while let Some(member) = cursor {
+        order.push(ranked[member]);
+        cursor = next[member];
     }
     order
 }
@@ -822,35 +903,100 @@ fn walk_siblings(
     parent_random: bool,
     visited: &mut [bool],
 ) {
-    let Some(head) = head else { return };
-    let mut chain = Vec::new();
-    let mut current = Some(head);
-    while let Some(index) = current {
-        if visited[index] {
-            break;
-        }
-        visited[index] = true;
-        chain.push(index);
-        current = tree.nodes[index].next_sibling;
+    // #5643 — an explicit stack, not recursion: the node tree's depth is
+    // bounded only by how many nodes a plugin authors, and every level of
+    // the old recursion was a native stack frame. Vanilla tops out at 6–7
+    // levels; `MAX_WALK_DEPTH` is far above that and far below anything that
+    // threatens the thread's stack. Visit order, RNG draw order (a group's
+    // chain is built — and shuffled — on entering it) and the consume /
+    // choose-one early exits are exactly the recursive walk's.
+    struct Frame {
+        chain: Vec<usize>,
+        next: usize,
+        parent_random: bool,
+        /// The node whose subtree was just walked, awaiting its post-subtree
+        /// consume / choose-one checks: `(index, queued_before, node_fired)`.
+        after_subtree: Option<(usize, usize, bool)>,
     }
-    // Random parent policy: same chain, seeded shuffle. A world without
-    // the RNG resource keeps authored order (conservative stacked).
-    if parent_random {
-        // The write guard lives for the shuffle alone: `evaluate` (run
-        // for each node below) takes `StoryManagerRng` too, through
-        // `GetRandomPercent`, so holding it across the walk is a
-        // same-thread re-entry the lock tracker panics on (#5628).
-        if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
-            for i in (1..chain.len()).rev() {
-                let j = rng.pick(i + 1);
-                chain.swap(i, j);
+
+    /// Build a group's chain from its head (marking it visited) and apply the
+    /// random-parent shuffle.
+    fn enter_group(
+        world: &World,
+        tree: &SmTree,
+        head: usize,
+        parent_random: bool,
+        visited: &mut [bool],
+    ) -> Frame {
+        let mut chain = Vec::new();
+        let mut current = Some(head);
+        while let Some(index) = current {
+            if visited[index] {
+                break;
+            }
+            visited[index] = true;
+            chain.push(index);
+            current = tree.nodes[index].next_sibling;
+        }
+        // Random parent policy: same chain, seeded shuffle. A world without
+        // the RNG resource keeps authored order (conservative stacked).
+        if parent_random {
+            // The write guard lives for the shuffle alone: `evaluate` (run
+            // for each node below) takes `StoryManagerRng` too, through
+            // `GetRandomPercent`, so holding it across the walk is a
+            // same-thread re-entry the lock tracker panics on (#5628).
+            if let Some(mut rng) = world.try_resource_mut::<StoryManagerRng>() {
+                for i in (1..chain.len()).rev() {
+                    let j = rng.pick(i + 1);
+                    chain.swap(i, j);
+                }
             }
         }
+        Frame {
+            chain,
+            next: 0,
+            parent_random,
+            after_subtree: None,
+        }
     }
-    for index in chain {
+
+    let Some(head) = head else { return };
+    let mut stack = vec![enter_group(world, tree, head, parent_random, visited)];
+    let mut depth_capped = false;
+    while let Some(frame) = stack.last_mut() {
+        if let Some((index, queued_before, node_fired)) = frame.after_subtree.take() {
+            let node = &tree.nodes[index];
+            // A non-sharing quest node that actually fires a quest
+            // consumes the event — after its own subtree finishes. A
+            // processed node whose pool is exhausted (every entry
+            // already running, or inside its reset window) fires
+            // nothing and lets the event through (#5404).
+            if node.kind == SmNodeKind::Quest && !node.policies.shares_event && node_fired {
+                state.consumed = true;
+                // Consumed: every enclosing group stops too.
+                return;
+            }
+            // Random parent, choose-one: the CK tutorial's "it will
+            // choose one of its child nodes randomly" — the chain stops
+            // at the first child that queued a start, so a random
+            // branch fires one quest per event even when every child
+            // shares.
+            if frame.parent_random
+                && node.kind == SmNodeKind::Quest
+                && state.candidates.len() > queued_before
+            {
+                stack.pop();
+                continue;
+            }
+        }
         if state.consumed {
             return;
         }
+        let Some(&index) = frame.chain.get(frame.next) else {
+            stack.pop();
+            continue;
+        };
+        frame.next += 1;
         let node = &tree.nodes[index];
         // Subject = the doer: R2 when the event carries one (KILL
         // killer), else R1 (CLOC actor). Target = R1 (KILL victim).
@@ -886,30 +1032,36 @@ fn walk_siblings(
             // Taken before the subtree walk so a child's candidate does
             // not count for the parent.
             let node_fired = state.candidates.len() > queued_before;
-            walk_siblings(world, tree, state, node.first_child, node.policies.random, visited);
-            // A non-sharing quest node that actually fires a quest
-            // consumes the event — after its own subtree finishes. A
-            // processed node whose pool is exhausted (every entry
-            // already running, or inside its reset window) fires
-            // nothing and lets the event through (#5404).
-            if node.kind == SmNodeKind::Quest && !node.policies.shares_event && node_fired {
-                state.consumed = true;
-                return;
-            }
-            // Random parent, choose-one: the CK tutorial's "it will
-            // choose one of its child nodes randomly" — the chain stops
-            // at the first child that queued a start, so a random
-            // branch fires one quest per event even when every child
-            // shares.
-            if parent_random
-                && node.kind == SmNodeKind::Quest
-                && state.candidates.len() > queued_before
-            {
-                return;
+            frame.after_subtree = Some((index, queued_before, node_fired));
+            if let Some(child) = node.first_child {
+                if stack.len() >= MAX_WALK_DEPTH {
+                    if !depth_capped {
+                        depth_capped = true;
+                        log::warn!(
+                            "#5643: Story Manager walk reached {MAX_WALK_DEPTH} nested \
+                             groups at node {:#010X} — deeper subtrees are skipped",
+                            node.form_id
+                        );
+                    }
+                } else {
+                    stack.push(enter_group(
+                        world,
+                        tree,
+                        child,
+                        node.policies.random,
+                        visited,
+                    ));
+                }
             }
         }
     }
 }
+
+/// Deepest nest of sibling groups the Story Manager walk will descend into
+/// (#5643). Vanilla's deepest tree is 6–7; a deeper authored chain is a
+/// malformed or hostile plugin, and its tail is skipped rather than walked
+/// onto the stack.
+const MAX_WALK_DEPTH: usize = 64;
 
 /// Pick and queue one quest from a passing quest node's pool, honoring
 /// the Phase-3 policies:
@@ -1115,6 +1267,167 @@ mod tests {
 
     fn records(nodes: Vec<SmNodeRecord>) -> HashMap<u32, SmNodeRecord> {
         nodes.into_iter().map(|node| (node.form_id, node)).collect()
+    }
+
+    /// The pre-#5643 placement loop, kept verbatim as the oracle for the
+    /// linear-time rewrite.
+    fn reference_order_sibling_group(
+        members: &[usize],
+        previous: &HashMap<usize, Option<usize>>,
+        nodes: &[SmTreeNode],
+    ) -> Vec<usize> {
+        let mut order: Vec<usize> = Vec::with_capacity(members.len());
+        let mut waiting: Vec<usize> = members.to_vec();
+        waiting.sort_unstable_by_key(|&member| nodes[member].form_id);
+        while !waiting.is_empty() {
+            let placeable = waiting
+                .iter()
+                .position(|member| previous[member].is_none_or(|prev| order.contains(&prev)));
+            match placeable {
+                Some(at) => {
+                    let member = waiting.remove(at);
+                    let slot = match previous[&member] {
+                        None => 0,
+                        Some(prev) => order
+                            .iter()
+                            .position(|&placed| placed == prev)
+                            .map_or(0, |i| i + 1),
+                    };
+                    order.insert(slot, member);
+                }
+                None => order.push(waiting.remove(0)),
+            }
+        }
+        order
+    }
+
+    fn bare_node(form_id: u32) -> SmTreeNode {
+        SmTreeNode {
+            form_id,
+            editor_id: String::new(),
+            kind: SmNodeKind::Branch,
+            event_mnemonic: None,
+            conditions: Default::default(),
+            next_sibling: None,
+            first_child: None,
+            quests: Vec::new(),
+            policies: Default::default(),
+        }
+    }
+
+    /// #5643 — the O(g) rewrite places every group exactly where the
+    /// O(g³) loop did: single chains, multi-segment groups, self-references
+    /// and cycles, over a few thousand seeded random predecessor maps.
+    #[test]
+    fn sibling_group_order_matches_the_reference_placement() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..3000 {
+            let size = 1 + (next() % 24) as usize;
+            // Non-contiguous, shuffled-by-id arena indices.
+            let nodes: Vec<SmTreeNode> = (0..size + 5).map(|i| bare_node(i as u32 * 3 + 1)).collect();
+            let members: Vec<usize> = (0..size).map(|i| i + 2).collect();
+            let previous: HashMap<usize, Option<usize>> = members
+                .iter()
+                .map(|&member| {
+                    let prev = match next() % 4 {
+                        0 => None,
+                        _ => Some(members[(next() as usize) % members.len()]),
+                    };
+                    (member, prev)
+                })
+                .collect();
+            assert_eq!(
+                order_sibling_group(&members, &previous, &nodes),
+                reference_order_sibling_group(&members, &previous, &nodes),
+                "round {round}: {previous:?}"
+            );
+        }
+    }
+
+    /// #5643 — a plugin-authored group of thousands of siblings builds in
+    /// one linear pass; the cubic loop needed ~10¹² steps for this one.
+    #[test]
+    fn a_huge_sibling_group_builds_and_keeps_every_member() {
+        const GROUP: u32 = 20_000;
+        let mut nodes = vec![event_node(1, b"KILL")];
+        // Child k follows child k+1: the chain runs against FormID order,
+        // the placement loop's worst case.
+        for k in 0..GROUP {
+            let form_id = 100 + k;
+            let previous = if k + 1 < GROUP { form_id + 1 } else { 0 };
+            nodes.push(branch(form_id, 1, previous));
+        }
+        let tree = build_story_manager_tree(&records(nodes));
+        let root = tree.roots_by_mnemonic[b"KILL"];
+        let mut cursor = tree.nodes[root].first_child;
+        let mut walked = 0u32;
+        let mut expected = 100 + GROUP - 1;
+        while let Some(index) = cursor {
+            assert_eq!(tree.nodes[index].form_id, expected);
+            expected = expected.wrapping_sub(1);
+            walked += 1;
+            cursor = tree.nodes[index].next_sibling;
+        }
+        assert_eq!(walked, GROUP);
+    }
+
+    /// #5643 — a plugin-authored chain of nested nodes tens of thousands
+    /// deep must not recurse the native stack away. The shallow quest still
+    /// starts; the walk stops descending at `MAX_WALK_DEPTH`, so a quest
+    /// authored beyond it never fires.
+    #[test]
+    fn a_hugely_nested_tree_walks_without_overflowing_the_stack() {
+        const DEPTH: u32 = 50_000;
+        let mut nodes = vec![event_node(1, b"KILL")];
+        nodes.push(quest_node_full(
+            2,
+            1,
+            0,
+            &[0x111],
+            SmNodePolicies {
+                shares_event: true,
+                ..Default::default()
+            },
+        ));
+        // A branch spine hanging off the root: 100 → 101 → … each the only
+        // child of the one before, a shallow quest at the top of the spine
+        // and a deep quest at its very bottom.
+        nodes.push(branch(100, 1, 2));
+        for k in 1..DEPTH {
+            nodes.push(branch(100 + k, 99 + k, 0));
+        }
+        nodes.push(quest_node(100 + DEPTH, 99 + DEPTH, 0, &[0xDEE9]));
+        let tree = build_story_manager_tree(&records(nodes));
+
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        let actor = world.spawn();
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                actor,
+                StoryEvent {
+                    mnemonic: *b"KILL",
+                    reference_1: actor,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                },
+            );
+        }
+        story_manager_dispatch_system(&world);
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert!(stages.is_started(QuestFormId(0x111)), "the shallow quest fires");
+        assert!(
+            !stages.is_started(QuestFormId(0xDEE9)),
+            "a quest nested past MAX_WALK_DEPTH is skipped, not walked"
+        );
     }
 
     /// Arena order is FormID-sorted and children follow the authored
