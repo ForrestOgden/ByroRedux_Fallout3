@@ -864,9 +864,12 @@ fn dedup_vmad_scripts<'a>(
 /// spells), so the per-frame `animate_lights_system` iterates only
 /// the candle / torch / chandelier slice via sparse-set membership.
 ///
-/// `base_translation` is captured from `ref_pos` so the animator can
-/// restore the un-jittered position each frame and the movement
-/// amplitude doesn't accumulate. Seeds `phase_offset_secs` from the
+/// `base_translation` is the entity's **local** translation — captured
+/// from `ref_pos` only where the flickered entity is an unparented root
+/// (the `synth_child.rs` callers); `mesh_instance.rs` passes the light
+/// child's own `Transform` (c1a99c25e). The animator restores this
+/// un-jittered local position each frame and the movement amplitude
+/// doesn't accumulate. Seeds `phase_offset_secs` from the
 /// entity id so a room full of identical candles doesn't flicker in
 /// lockstep — deterministic per session, scene-stable across cell
 /// reloads since EntityIds reset on cell unload.
