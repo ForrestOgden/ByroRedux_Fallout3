@@ -592,17 +592,6 @@ pub fn extract_skin_bs_geometry(
     })
 }
 
-/// Packed BSTriShape / SSE global-buffer indices already address the
-/// NiSkinInstance bone list. Widen without applying a partition palette.
-/// NiSkinPartition's *separate* bone_indices array is partition-local.
-///
-/// nifly NifFile::OptimizeFor converts local partition indices into global
-/// vertex.weightBones; UpdateSkinPartitions copies that packed channel to
-/// skinPart->vertData unchanged while building local indices separately.
-/// https://github.com/ousnius/nifly/blob/master/src/NifFile.cpp
-/// Installed SSE Draugr/body/hand data independently confirms agreement
-/// between raw packed indices and expanded partition indices. The former
-/// #613/#2577 remap changed 4,893 of 11,669 weighted lanes in that sample.
 /// #5389 — #4268's decline rule applied to the BSTriShape packed
 /// channel: any per-vertex bone index at or above the mesh's own bone
 /// count empties BOTH arrays (the mesh falls back to bind pose) instead
@@ -616,7 +605,7 @@ fn decline_unbounded_packed_indices(
 ) {
     if indices.iter().flatten().any(|&index| index as usize >= bone_count) {
         log::warn!(
-            "BSTriShape skin: per-vertex bone index >= bone count ({bone_count}) — \
+            "skin: per-vertex bone index >= bone count ({bone_count}) — \
              declining skin weights (bind pose) rather than guessing a bone (#4268 rule)"
         );
         indices.clear();
@@ -624,6 +613,17 @@ fn decline_unbounded_packed_indices(
     }
 }
 
+/// Packed BSTriShape / SSE global-buffer indices already address the
+/// NiSkinInstance bone list. Widen without applying a partition palette.
+/// NiSkinPartition's *separate* bone_indices array is partition-local.
+///
+/// nifly NifFile::OptimizeFor converts local partition indices into global
+/// vertex.weightBones; UpdateSkinPartitions copies that packed channel to
+/// skinPart->vertData unchanged while building local indices separately.
+/// https://github.com/ousnius/nifly/blob/master/src/NifFile.cpp
+/// Installed SSE Draugr/body/hand data independently confirms agreement
+/// between raw packed indices and expanded partition indices. The former
+/// #613/#2577 remap changed 4,893 of 11,669 weighted lanes in that sample.
 pub fn widen_packed_bone_indices(bone_indices: &[[u8; 4]]) -> Vec<[u16; 4]> {
     bone_indices
         .iter()

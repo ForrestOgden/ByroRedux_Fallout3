@@ -558,3 +558,104 @@ fn bs_tri_shape_skin_last_bone_index_is_in_range() {
     assert_eq!(skin.vertex_bone_indices[0], [3, 0, 0, 0]);
     assert_eq!(skin.vertex_bone_weights[0], [1.0, 0.0, 0.0, 0.0]);
 }
+
+/// Four-bone FO4/SSE `BsSkinInstance` + `BsSkinBoneData` scene around a
+/// one-vertex `BSTriShape` whose single packed lane group is `lanes`
+/// (#5524 — the arm every FO4 skinned actor takes had no decline test).
+fn bs_skin_instance_scene(lanes: [u8; 4], weights: [f32; 4]) -> NifScene {
+    use crate::blocks::skin::{BsSkinBoneData, BsSkinBoneTrans, BsSkinInstance};
+    let bone_node = || -> Box<dyn crate::blocks::NiObject> {
+        Box::new(NiNode {
+            av: NiAVObjectData {
+                net: empty_net(),
+                flags: 0,
+                transform: NiTransform::default(),
+                properties: Vec::new(),
+                collision_ref: BlockRef::NULL,
+            },
+            children: Vec::new(),
+            effects: Vec::new(),
+        })
+    };
+    let shape = BsTriShape {
+        av: NiAVObjectData {
+            net: empty_net(),
+            flags: 0,
+            transform: NiTransform::default(),
+            properties: Vec::new(),
+            collision_ref: BlockRef::NULL,
+        },
+        center: NiPoint3::default(),
+        radius: 0.0,
+        skin_ref: BlockRef(1),
+        shader_property_ref: BlockRef::NULL,
+        alpha_property_ref: BlockRef::NULL,
+        vertex_desc: 0,
+        num_triangles: 0,
+        num_vertices: 1,
+        vertices: vec![NiPoint3::default()],
+        uvs: Vec::new(),
+        normals: Vec::new(),
+        vertex_colors: Vec::new(),
+        triangles: Vec::new(),
+        bone_weights: vec![weights],
+        bone_indices: vec![lanes],
+        tangents: Vec::new(),
+        kind: BsTriShapeKind::Plain,
+        data_size: 0,
+    };
+    let bone = || BsSkinBoneTrans {
+        bounding_sphere: [0.0; 4],
+        rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        translation: [0.0; 3],
+        scale: 1.0,
+    };
+    let mut scene = NifScene::default();
+    scene.blocks.push(Box::new(shape)); // 0
+    scene.blocks.push(Box::new(BsSkinInstance {
+        skeleton_root_ref: BlockRef::NULL,
+        bone_data_ref: BlockRef(2),
+        bone_refs: vec![BlockRef(3), BlockRef(4), BlockRef(5), BlockRef(6)],
+        scales: Vec::new(),
+    })); // 1
+    scene.blocks.push(Box::new(BsSkinBoneData {
+        bones: vec![bone(), bone(), bone(), bone()],
+    })); // 2
+    for _ in 0..4 {
+        scene.blocks.push(bone_node()); // 3..=6
+    }
+    scene
+}
+
+/// #5524 — #5389's decline on the `BsSkinInstance` arm: an index at or
+/// above the instance's bone count empties both arrays, and a zero-weight
+/// lane counts too (the palette slot is reached regardless of weight).
+#[test]
+fn bs_skin_instance_out_of_range_bone_index_declines() {
+    // Weighted lane out of range.
+    let scene = bs_skin_instance_scene([0, 4, 0, 0], [0.5, 0.5, 0.0, 0.0]);
+    let shape = scene.get_as::<BsTriShape>(0).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape, &[])
+        .expect("bone resolution must still succeed");
+    assert!(skin.vertex_bone_indices.is_empty(), "never a clamp");
+    assert!(skin.vertex_bone_weights.is_empty());
+    assert_eq!(skin.bones.len(), 4, "the bone list itself is unaffected");
+
+    // Zero-weight lane out of range.
+    let scene = bs_skin_instance_scene([0, 0, 0, 200], [1.0, 0.0, 0.0, 0.0]);
+    let shape = scene.get_as::<BsTriShape>(0).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape, &[]).unwrap();
+    assert!(skin.vertex_bone_indices.is_empty());
+    assert!(skin.vertex_bone_weights.is_empty());
+}
+
+/// #5524 boundary — `bone_count - 1` on the `BsSkinInstance` arm passes
+/// through untouched.
+#[test]
+fn bs_skin_instance_last_bone_index_is_in_range() {
+    let scene = bs_skin_instance_scene([3, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+    let shape = scene.get_as::<BsTriShape>(0).unwrap();
+    let skin = extract_skin_bs_tri_shape(&scene, shape, &[]).unwrap();
+    assert_eq!(skin.vertex_bone_indices[0], [3, 0, 0, 0]);
+    assert_eq!(skin.vertex_bone_weights[0], [1.0, 0.0, 0.0, 0.0]);
+}
