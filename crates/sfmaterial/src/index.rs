@@ -374,16 +374,32 @@ impl MaterialIndex {
     /// Scalars and settings of one object as inherited down its `Parent`
     /// chain (#5502): the object's own authored values first, then each
     /// ancestor's, nearest wins per field (a field is only filled while the
-    /// result still has it unset). The chain is bounded and cycle-safe — a
-    /// corrupt `Parent` loop ends the walk instead of hanging it.
+    /// result still has it unset). The chain is bounded and cycle-safe; a
+    /// corrupt loop or an over-deep chain ends the walk with a warning
+    /// instead of silently truncating (#5672).
     fn collect_settings(&self, obj: u32, out: &mut CdbMaterial) {
         let mut current = obj;
-        for _ in 0..=MAX_PARENT_DEPTH {
+        let mut visited = std::collections::HashSet::from([obj]);
+        for depth in 0..=MAX_PARENT_DEPTH {
             self.collect_own_settings(current, out);
-            match self.parents.get(&current) {
-                Some(&parent) if parent != obj => current = parent,
-                _ => break,
+            let Some(&parent) = self.parents.get(&current).filter(|&&p| p != obj) else {
+                break;
+            };
+            if depth == MAX_PARENT_DEPTH {
+                log::warn!(
+                    "sfmaterial: object {obj}'s Parent chain still has a parent past \
+                     MAX_PARENT_DEPTH = {MAX_PARENT_DEPTH} — inheritance truncated at the cap"
+                );
+                break;
             }
+            if !visited.insert(parent) {
+                log::warn!(
+                    "sfmaterial: object {obj}'s Parent chain revisits {parent} — a cycle not \
+                     passing through the start; inheritance truncated at the revisit"
+                );
+                break;
+            }
+            current = parent;
         }
     }
 
@@ -695,37 +711,66 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                     index: index.min(u8::MAX as u16) as u8,
                 });
             })?,
-            "Objects" => stream_list(state, |v| {
-                let Value::Object(o) = v else { return };
-                let Some(dbid) = id_named(o, "DBID") else { return };
-                // #5502 — record the inheritance edge (0 = no parent).
-                if let Some(parent) = id_named(o, "Parent").filter(|&p| p != 0) {
-                    idx.parents.insert(dbid, parent);
-                }
-                let pid = match o.fields.get("PersistentID") {
-                    Some(Value::Object(pid)) => {
-                        let mut cols = [0u32; 3];
-                        let mut n = 0;
-                        for v in pid.fields.values() {
-                            if let Value::U32(x) = v {
-                                if n < 3 {
-                                    cols[n] = *x;
-                                }
-                                n += 1;
+            "Objects" => {
+                // #5672 — a DBID or Parent whose shape isn't
+                // `{ Value: u32 }` used to drop the row (or its
+                // inheritance edge) silently; schema drift in a mod
+                // CDB would wholesale-disable #5502 inheritance with
+                // no signal. Count and warn once. The Components
+                // table keeps its stricter typed error (#5320's
+                // RowInstanceMismatch): a misattributed row corrupts
+                // neighbouring materials, while an unkeyed object
+                // only loses its own lookup.
+                let mut dbid_misses = 0usize;
+                let mut parent_misses = 0usize;
+                stream_list(state, |v| {
+                    let Value::Object(o) = v else { return };
+                    let Some(dbid) = id_named(o, "DBID") else {
+                        dbid_misses += 1;
+                        return;
+                    };
+                    // #5502 — record the inheritance edge (0 = no parent).
+                    if o.fields.contains_key("Parent") {
+                        match id_named(o, "Parent") {
+                            Some(parent) if parent != 0 => {
+                                idx.parents.insert(dbid, parent);
                             }
-                        }
-                        if n == 3 {
-                            Some(cols)
-                        } else {
-                            None
+                            Some(_) => {}
+                            None => parent_misses += 1,
                         }
                     }
-                    _ => None,
-                };
-                if let Some([stem, dir, _ext]) = pid {
-                    idx.objects_by_key.insert((stem, dir), dbid);
+                    let pid = match o.fields.get("PersistentID") {
+                        Some(Value::Object(pid)) => {
+                            let mut cols = [0u32; 3];
+                            let mut n = 0;
+                            for v in pid.fields.values() {
+                                if let Value::U32(x) = v {
+                                    if n < 3 {
+                                        cols[n] = *x;
+                                    }
+                                    n += 1;
+                                }
+                            }
+                            if n == 3 {
+                                Some(cols)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some([stem, dir, _ext]) = pid {
+                        idx.objects_by_key.insert((stem, dir), dbid);
+                    }
+                })?;
+                if dbid_misses + parent_misses > 0 {
+                    log::warn!(
+                        "sfmaterial: Objects table decode degraded — {dbid_misses} row(s) \
+                         dropped (no keyable DBID), {parent_misses} Parent edge(s) dropped \
+                         (shape drift from {{ Value: u32 }}?)"
+                    );
                 }
-            })?,
+            }
             // Edges encode the blend graph; lookups follow ID refs
             // directly (measured), so count these past without keeping
             // them.
@@ -859,7 +904,7 @@ pub mod test_support {
     /// A Bool builtin type ref.
     const T_BOOL: i32 = 0xFFFF_FF10u32 as i32;
     /// A u32 builtin type ref.
-    const T_U32: i32 = 0xFFFF_FF0Du32 as i32;
+    pub const T_U32: i32 = 0xFFFF_FF0Du32 as i32;
     /// A u16 builtin type ref (`ComponentInfo::Type` / `::Index`).
     const T_U16: i32 = 0xFFFF_FF0Bu32 as i32;
     /// A Float builtin type ref (`XMFLOAT4` channels).
@@ -1315,7 +1360,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::{
         assemble_synthetic_cdb, synthetic_cdb_chunks, synthetic_cdb_chunks_with,
-        synthetic_material_cdb, synthetic_material_cdb_with_effect_settings,
+        synthetic_material_cdb, synthetic_material_cdb_with_effect_settings, T_U32,
         SyntheticCdbChunks,
     };
     use super::*;
@@ -1559,6 +1604,102 @@ mod tests {
         let index = MaterialIndex::build(&cdb).unwrap();
         assert!(index.lookup("materials\\test\\absent.mat").is_none());
         assert!(index.lookup("materials\\other\\widget.mat").is_none());
+    }
+
+    /// #5672 — the three formerly-silent degradations now warn while
+    /// keeping the decode `Ok`: an `Objects` row whose `Parent` shape
+    /// drifted off `{ Value: u32 }` (the fixture's `ObjectInfo.Parent`
+    /// is redeclared as a plain u32 by hand — the row still keys, the
+    /// edge drops), a `Parent` chain one link past `MAX_PARENT_DEPTH`,
+    /// and a cycle that does not pass through the start. The
+    /// depth/cycle legs also pin the walk's reach: the ancestor at the
+    /// cap contributes, the one past it does not.
+    #[test]
+    fn degraded_objects_rows_and_parent_walks_warn_instead_of_truncating_silently() {
+        // The binary's other tests warn too (`lookup_terminates_on_a_
+        // parent_cycle` deliberately builds the very cycle this warns
+        // about) and threads interleave, so assert on captured message
+        // CONTENT, never on a global count.
+        static MSGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        struct SfWarnCollector;
+        impl log::Log for SfWarnCollector {
+            fn enabled(&self, _metadata: &log::Metadata) -> bool {
+                true
+            }
+            fn log(&self, record: &log::Record) {
+                let message = format!("{}", record.args());
+                if message.starts_with("sfmaterial:") {
+                    MSGS.lock().unwrap().push(message);
+                }
+            }
+            fn flush(&self) {}
+        }
+        static LOGGER: SfWarnCollector = SfWarnCollector;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Warn);
+        let saw = |needle: &str| MSGS.lock().unwrap().iter().any(|m| m.contains(needle));
+
+        // 1) Parent shape drift: chunks[2..] are the CLAS chunks in
+        // class order and ObjectInfo is the fourth class; its field 2
+        // (Parent, at payload byte 12 + 2*12 + 4) is re-typed from the
+        // ID class to a plain u32 — same byte width, wrong shape.
+        let mut chunks = synthetic_cdb_chunks_with("Data\\Textures\\widget_color.DDS", true);
+        let objectinfo_clas = &mut chunks[5].1;
+        objectinfo_clas[40..44].copy_from_slice(&T_U32.to_le_bytes());
+        let drifted = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect("a drifted Parent shape degrades, it does not fail");
+        assert!(
+            saw("1 Parent edge(s) dropped"),
+            "the Parent shape drift warns: {:?}",
+            MSGS.lock().unwrap()
+        );
+        assert!(
+            drifted.parents.is_empty(),
+            "the drifted edge is dropped, not guessed at"
+        );
+
+        // 2) The walk: a hand-built index — obj 0 chained 65 ancestors
+        // deep (one past the cap), with the at-cap ancestor carrying
+        // param slot 7 and the one past it slot 8.
+        let mut index = MaterialIndex::default();
+        for i in 0..=65u32 {
+            index.parents.insert(i, i + 1);
+        }
+        index.param_floats.insert(64, vec![(7, 1.0)]);
+        index.param_floats.insert(65, vec![(8, 2.0)]);
+        let mut out = CdbMaterial::default();
+        index.collect_settings(0, &mut out);
+        assert!(
+            saw("object 0's Parent chain still has a parent past"),
+            "the over-deep chain warns"
+        );
+        assert!(
+            out.param_floats.iter().any(|(slot, _)| *slot == 7),
+            "the ancestor at the cap still contributes"
+        );
+        assert!(
+            !out.param_floats.iter().any(|(slot, _)| *slot == 8),
+            "the ancestor past the cap does not"
+        );
+
+        // 3) A cycle that never passes back through the start: the
+        // revisit ends the walk with a warning instead of looping to
+        // the cap.
+        let mut index = MaterialIndex::default();
+        index.parents.insert(100, 101);
+        index.parents.insert(101, 102);
+        index.parents.insert(102, 101);
+        index.param_floats.insert(102, vec![(9, 3.0)]);
+        let mut out = CdbMaterial::default();
+        index.collect_settings(100, &mut out);
+        assert!(
+            saw("object 100's Parent chain revisits 101"),
+            "the non-start cycle warns"
+        );
+        assert!(
+            out.param_floats.iter().any(|(slot, _)| *slot == 9),
+            "the pre-revisit ancestors still contribute"
+        );
     }
 
     #[test]
