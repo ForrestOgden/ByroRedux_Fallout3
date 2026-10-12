@@ -125,7 +125,7 @@ the full trace.
 | Inline transform controllers in embedded path | ✓ | All (#1440) |
 | Particle animation (birth rate, grow/fade size) | ✓ | All |
 | Runtime morph updates (FaceGen) | ✗ | — spawn-time only |
-| UV scrolling (animated UV offset) | ✗ | — parsed, not rendered |
+| UV scrolling (animated UV offset) | ✓ | `AnimatedUvTransform` written by `animation_system`, consumed in `render/static_meshes.rs` (#525) |
 | Havok `.hkx` skeleton + clip loader | ~ | Skyrim LE + SE — see note |
 
 The `.hkx` row is `~` because `crates/hkx` (shipped 2026-08-01) reads
@@ -144,7 +144,7 @@ layouts); see the gaps table below.
 
 | Feature | Status |
 |---|---|
-| 3D spatial audio (kira 0.10) | ✓ |
+| 3D spatial audio (kira 0.12) | ✓ |
 | BSA WAV decode | ✓ (combat one-shots use the engine-wide `SoundCache`, which caches decoded paths and misses) |
 | One-shot sounds + footstep system | ✓ |
 | Looping ambient (tweened stop on despawn) | ✓ |
@@ -164,7 +164,7 @@ layouts); see the gaps table below.
 |---|---|
 | Rapier3D bridge (NIF collision → ECS → stepper) | ✓ |
 | Kinematic character controller (gravity, collide-and-slide, jump, autostep) | ✓ |
-| NPC / creature physics | ✗ |
+| NPC / creature physics | ~ NPC locomotion through the Rapier KCC (M42.10/M42.11); no NPC dynamics |
 | Weapon / item physics | ✗ |
 | Ragdoll (Havok constraint mapping) | ~ Classic constraint chain (Oblivion/FO3/FNV/Skyrim) on Rapier; FO4+ blocked on BhkSystemBinary |
 
