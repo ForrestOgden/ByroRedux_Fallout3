@@ -1888,7 +1888,8 @@ mod intern_texture_path_tests {
 /// precombine path is safe only because `into_imported_mesh` reassigns
 /// `mesh.material` immediately afterwards). The next synthetic-geometry
 /// producer to bind a *tiling* texture — distant object LOD, terrain LOD, a
-/// `_precomb.nif` collision-visual path — would have got CLAMP/CLAMP on an
+/// FO4 precombine collision-visual path (the collision sibling files are
+/// `<cell>_physics.nif`, not `_precomb.nif`) — would have got CLAMP/CLAMP on an
 /// atlas, reading as one stretched edge texel per axis.
 #[cfg(test)]
 mod texture_clamp_mode_default_tests {

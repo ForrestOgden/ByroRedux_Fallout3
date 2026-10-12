@@ -60,9 +60,9 @@ extracts fine — that framing was a stale premise, closed by #699.)
 | `.csg` reader | ✓ Shipped |
 | Precombined mesh decode + Y-up convert | ✓ Shipped |
 | Cell-loader spawn from XCRI hash list | ✓ Shipped |
-| LOD tier selection (one tier, not all three) | ✓ Fixed |
-| Texture wiring from owning REFR | ✓ Shipped |
-| `_precomb.nif` collision | ✗ Deferred |
+| LOD tier selection | ✓ Shipped — every populated band decoded (#4234; the bands are disjoint sub-meshes, and picking one dropped 12.45 % of MeshesExtra's baked triangles) |
+| Texture wiring | ✓ Shipped — material from the owning shape + BGSM merge; no REFR overlay (deliberately empty, #4290) |
+| `<cell>_physics.nif` collision | ✗ Deferred (the collision sibling is `_physics.nif`, not `_precomb.nif` — 6,803 files across the 8 FO4 mesh archives; census in AUDIT_FO4_2026-10-05) |
 | `.uvd` occlusion volumes | ✗ Deferred |
 
 ---
