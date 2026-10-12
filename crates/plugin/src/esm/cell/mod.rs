@@ -1988,6 +1988,53 @@ mod plugin_loading_doc_pin_tests {
         }
     }
 
+    /// #5689 — the `CellData` block in esm-records.md is a *partial*
+    /// field list ("covers, among others"), so the exhaustive direction
+    /// the `EsmCellIndex` pin takes cannot apply. The drift that bit was
+    /// the reverse: the block named `absorbed_refs`, a field that no
+    /// longer exists (#5484 reshaped it into `absorbed_ref_bakes`), and a
+    /// reader following the doc re-derives the wrong bake gate. Pin that
+    /// every field the block names is a real `CellData` field.
+    #[test]
+    fn the_documented_cell_data_block_names_only_real_fields() {
+        const ESM_RECORDS_MD: &str = include_str!("../../../../../docs/engine/esm-records.md");
+
+        let scan = |source: &str, struct_name: &str| -> Vec<String> {
+            let start = source
+                .find(&format!("pub struct {struct_name} {{"))
+                .unwrap_or_else(|| panic!("{struct_name} must still be declared/carried"));
+            let body = &source[start..];
+            let body = &body[..body.find("\n}").expect("the block must close")];
+            body.lines()
+                .filter_map(|line| {
+                    let rest = line.trim_start().strip_prefix("pub ")?;
+                    let name = rest.split(':').next()?;
+                    name.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_')
+                        .then(|| name.to_string())
+                })
+                .collect()
+        };
+
+        let real = scan(CELL_MOD_RS, "CellData");
+        assert!(
+            real.len() >= 13,
+            "the CellData scan found only {real:?} — the extraction broke, not the doc",
+        );
+        let documented = scan(ESM_RECORDS_MD, "CellData");
+        assert!(
+            documented.len() >= 13,
+            "the doc scan found only {documented:?} — the extraction broke, not the doc",
+        );
+        for field in &documented {
+            assert!(
+                real.contains(field),
+                "`CellData::{field}` is documented in esm-records.md but no longer \
+                 exists — the doc block names a field a reader will look for (#5689).",
+            );
+        }
+    }
+
     /// The audio line said eight record types were unparsed when three of
     /// them had typed dispatch arms — half-right, which sends an
     /// audio-subsystem author to write parsers that already exist.

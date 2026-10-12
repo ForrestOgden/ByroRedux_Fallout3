@@ -226,8 +226,10 @@ cargo run -- --bsa "Skyrim - Meshes0.bsa" \
   GameKind (#1277 Task 3). `asset_provider` auto-detects BSA vs BA2 from
   file magic.
 - **PreCombined Mesh pipeline** (#1188 / #1220 / #1221 / #1222): the CELL
-  walker parses `XCRI` (precombined-mesh hash list) + `XPRI` (absorbed-REFR
-  form-IDs) on both interior and exterior cells;
+  walker parses `XCRI` — the precombined-mesh hash list plus its
+  `(absorbed REFR form id, bake hash)` pair tail (#5484) — on both
+  interior and exterior cells (`XPRI`, the disjoint previs-only absorbed
+  list, is validated but not stored);
   `byroredux::cell_loader::precombined::spawn_precombined_meshes` walks the
   hash list. Vanilla FO4 currently takes the fallback path — the `_oc.nif`
   precombine geometry lives in a `Fallout4 - Geometry.csg` companion blob

@@ -117,8 +117,8 @@ DLC case). The result is an `EsmCellIndex` containing:
   sub-record, keyed by form ID
 
 Each `CellData` carries its `Vec<PlacedRef>` plus FO4 extras (the
-`absorbed_refs` set for precombined-mesh REFRs, texture-set / material-
-swap overlays). For richer record extraction (items, NPCs, factions)
+`absorbed_ref_bakes` pairs for precombined-mesh REFRs, texture-set /
+material-swap overlays). For richer record extraction (items, NPCs, factions)
 the same code path can call
 [`byroredux_plugin::esm::records::parse_esm()`](../../crates/plugin/src/esm/records/mod.rs)
 and get an `EsmIndex` with those categories on top. See

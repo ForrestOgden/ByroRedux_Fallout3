@@ -98,7 +98,7 @@ crates/plugin/src/esm/
     ├── outfit.rs     OTFT (Skyrim+ default-equipped armor list)
     ├── tree.rs       TREE (SpeedTree .spt base records / Skyrim BSTreeNode)
     ├── scol.rs       SCOL static-collection body (ONAM + DATA[])
-    ├── pkin.rs       PKIN pack-ins (FO4) + FLTR workshop filter
+    ├── pkin.rs       PKIN pack-ins (FO4) + FLTR CK object-window filter path
     ├── movs.rs       MOVS movable statics (FO4) — sound / destruction / script flags
     ├── mswp.rs       MSWP material swaps (FO4)
     └── misc/         Themed stub-parser split (was a single records/misc.rs, #fa309d8d)
@@ -299,8 +299,8 @@ pub struct CellData {
     pub lighting_template_form: Option<u32>,   // LTMP → LGTM fallback (#566)
     pub ownership: Option<CellOwnership>,      // XOWN/XRNK/XGLB (#692)
     pub regional_color_override: Option<[u8; 3]>, // RCLR (Oblivion, #970)
-    pub precombined_mesh_hashes: Vec<u32>,     // XCRI (FO4 PreCombined, #1188)
-    pub absorbed_refs: HashSet<u32>,           // XCRI/XPRI absorbed REFRs (#1188/#1220)
+    pub precombined_mesh_hashes: Vec<u32>,     // XCRI mesh-hash head (FO4 PreCombined, #1188)
+    pub absorbed_ref_bakes: Vec<(u32, u32)>,   // XCRI (REFR, bake-hash) pairs (#1188/#5484); XPRI validated, not stored
     pub navmeshes: Vec<NavmRecord>,            // per-cell NAVM (#1272)
 }
 ```
@@ -677,7 +677,8 @@ that REFRs would then mis-resolve against.
   parser (#588) captures sound / destruction / script flags.
 - **`PKIN`** ([`pkin.rs`](../../crates/plugin/src/esm/records/pkin.rs))
   — pack-ins: pre-assembled reusable room modules. The parser also reads
-  the FLTR workshop build-mode filter (#815).
+  the FLTR CK object-window filter path (a zstring, never a FormID —
+  #5493).
 - **`MSWP`** ([`mswp.rs`](../../crates/plugin/src/esm/records/mswp.rs))
   — material swaps: per-REFR BGSM/BGEM substitution tables, resolved by
   the cell loader against `cells.material_swaps` when a REFR carries
@@ -696,11 +697,15 @@ The cell loader expands `SCOL` / `PKIN` inline when walking placements.
 ### FO4 PreCombined Meshes
 
 FO4 cells bake architecture REFRs into precombined `_oc.nif` meshes.
-The cell parser reads the cell's `XCRI` / `XPRI` sub-records into
-`precombined_mesh_hashes` + `absorbed_refs` (#1188 interior, #1220
-exterior). The cell loader skips absorbed REFRs during normal placement
-(their geometry is in the precombined mesh) and, when precombined spawn
-fails, falls back to rendering the absorbed REFRs individually. See the
+The cell parser reads the cell's `XCRI` sub-record into
+`precombined_mesh_hashes` (the mesh-hash head) + `absorbed_ref_bakes`
+(the `(REFR form id, bake hash)` pair tail; #1188 interior, #1220
+exterior, #5484's correct model). The cell loader skips an absorbed
+REFR's individual placement only when that ref's bake actually spawned
+(hash-keyed, not a blanket skip); `XPRI` — the disjoint previs-only
+absorbed list — is validated but not stored, so those placements always
+spawn individually. When precombined spawn fails, the loader falls back
+to rendering the absorbed REFRs individually. See the
 FO4 PreCombined Mesh feedback note
 (`~/.claude/projects/-mnt-data-src-gamebyro-redux/memory/feedback_fo4_precombined.md`)
 for the CSG companion gap.

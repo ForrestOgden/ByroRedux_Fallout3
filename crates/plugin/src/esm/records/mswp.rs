@@ -18,8 +18,10 @@
 //!   than once (later entry wins).
 //!     - `BNAM` = source material path (z-string)
 //!     - `SNAM` = target material path (z-string)
-//!     - `CNAM` = optional 4-byte f32 intensity / colour multiplier
-//!       attached to the most-recently-emitted (BNAM, SNAM) pair.
+//!     - `CNAM` = optional 4-byte f32 Color Remapping Index — the
+//!       greyscale-to-palette row the placement samples the remap LUT
+//!       at (#5497; see `MaterialSwapEntry::color_remap_index`), NOT an
+//!       intensity / colour multiplier.
 //!
 //! **Vanilla counts** (Fallout4.esm at audit time):
 //!   - 2,537 records

@@ -927,7 +927,8 @@ transitions, saves, and load-order changes.
    re-placing a REFR at the same FormID (a legitimate un-delete) still
    wins via the existing last-write-wins path, unaffected by the earlier
    deletion. Deliberately transient (not inherited forward via `extend`
-   like `absorbed_refs`): the signal only means something for the ONE
+   like `absorbed_ref_bakes` — #5484's name for the XCRI pair tail): the
+   signal only means something for the ONE
    override round that produced it. Both `parse_refr_group` call sites
    (interior `walkers.rs`, exterior/worldspace `wrld.rs`) updated
    identically (SIBLING check). 4 new unit tests in
