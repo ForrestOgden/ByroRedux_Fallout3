@@ -269,6 +269,43 @@ impl ConditionFunction {
         Self::GetRandomPercent,
     ];
 
+    /// Whether `param_1` of this function is a FormID — the slice of catalog
+    /// knowledge the plugin crate's load-order remap
+    /// (`byroredux_plugin::esm::records::condition::param1_is_form_id`)
+    /// mirrors by raw index. The match is exhaustive on purpose: adding a
+    /// variant forces this decision, and
+    /// `param1_form_id_table_matches_the_condition_catalog` then fails until
+    /// the plugin table agrees (#5637).
+    pub fn first_param_is_form_id(self) -> bool {
+        match self {
+            Self::GetActorValue
+            | Self::GetQuestRunning
+            | Self::GetGlobalValue
+            | Self::GetDistance
+            | Self::GetStage
+            | Self::GetStageDone
+            | Self::GetInCell
+            | Self::GetIsClass
+            | Self::GetIsRace
+            | Self::GetIsID
+            | Self::GetFactionRank
+            | Self::GetInFaction
+            | Self::GetEquipped
+            | Self::HasPerk
+            | Self::IsSceneActionComplete
+            | Self::GetReputation
+            | Self::GetReputationThreshold
+            | Self::GetVMScriptVariable => true,
+            Self::GetRandomPercent
+            | Self::GetDead
+            | Self::GetLevel
+            | Self::GetXPForNextLevel
+            | Self::HasLoaded3D
+            | Self::IsHardcore
+            | Self::Unknown(_) => false,
+        }
+    }
+
     /// The canonical xEdit function name (for console listing / parsing).
     pub fn name(self) -> &'static str {
         match self {
@@ -2141,6 +2178,37 @@ mod tests {
         let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
         eq.comparand = ConditionValue::Global(0x0100_0099);
         assert!(evaluate(&vec![eq], &world, &ctx(0)));
+    }
+
+    // ── CTDA remap table drift guard (#5637) ───────────────────────────
+
+    /// The plugin crate's `param1_is_form_id` mirrors this catalog by raw
+    /// index (it cannot depend on this crate). Walk every index the catalog
+    /// claims and require the two to agree, so a function catalogued
+    /// without its remap row — GetQuestRunning / GetInFaction /
+    /// GetGlobalValue were — fails here instead of silently reading the
+    /// "absent" default on every plugin whose masters are not a load-order
+    /// prefix.
+    #[test]
+    fn param1_form_id_table_matches_the_condition_catalog() {
+        use byroredux_plugin::esm::records::condition::param1_is_form_id;
+        let mut covered = 0usize;
+        for index in 0..2048u32 {
+            let function = ConditionFunction::from_index(index);
+            if matches!(function, ConditionFunction::Unknown(_)) {
+                continue;
+            }
+            covered += 1;
+            assert_eq!(
+                param1_is_form_id(index),
+                function.first_param_is_form_id(),
+                "fn {index} ({}): plugin remap table and catalog disagree on \
+                 whether param_1 is a FormID",
+                function.name()
+            );
+        }
+        // 24 catalog entries, HasPerk answering to two indices.
+        assert_eq!(covered, ConditionFunction::CATALOG.len() + 1);
     }
 
     // ── GetQuestRunning (#5636) ────────────────────────────────────────

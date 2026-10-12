@@ -521,20 +521,26 @@ pub fn push_ctda(sub: &SubRecord, remap: &Option<FormIdRemap>, out: &mut Conditi
 /// whose first parameter is a FormID (and so must be load-order remapped).
 /// `param_2` is a literal in every one of them (`GetStageDone`'s stage
 /// index), so only `param_1` is ever promoted. Indices mirror the
-/// `ConditionFunction` catalog in `byroredux_scripting::condition`.
-fn param1_is_form_id(function_index: u32) -> bool {
+/// `ConditionFunction` catalog in `byroredux_scripting::condition` — that
+/// crate sits above this one, so the mirror is held by a drift guard there
+/// (`param1_form_id_table_matches_the_condition_catalog`, #5637) that walks
+/// every catalogued function against this predicate.
+pub fn param1_is_form_id(function_index: u32) -> bool {
     // CTDA function indices per TES5Edit `wbDefinitions*.pas` (FO3 == FNV).
     matches!(
         function_index,
         1   // GetDistance    — target FormID
         | 14  // GetActorValue — AVIF FormID
+        | 56  // GetQuestRunning — quest FormID
         | 58  // GetStage      — quest FormID
         | 59  // GetStageDone  — quest FormID (param_2 = stage, a literal)
         | 67  // GetInCell     — CELL FormID
         | 68  // GetIsClass    — CLAS FormID
         | 69  // GetIsRace     — RACE FormID
         | 72  // GetIsID       — base FormID
+        | 71  // GetInFaction  — faction FormID
         | 73  // GetFactionRank — faction FormID
+        | 74  // GetGlobalValue — GLOB FormID
         | 182 // GetEquipped — inventory object FormID
         | 448 | 449 // HasPerk — perk FormID (448 Skyrim, 449 FO3/FNV)
         | 550 // IsSceneActionComplete — SCEN FormID (param_2 = action index)
@@ -921,6 +927,28 @@ mod tests {
     }
 
     // ── remap_condition_form_ids (#1666) ────────────────────────────────
+
+    /// #5637: GetQuestRunning (56), GetInFaction (71) and GetGlobalValue (74)
+    /// were catalogued without a row here, so their plugin-local `param_1`
+    /// stayed local while `QuestStageState` / `Globals` / `FactionRanks` are
+    /// keyed in global load-order space — any plugin whose master list is
+    /// not a prefix of the load order read the "absent" default.
+    #[test]
+    fn remap_promotes_param1_for_quest_running_in_faction_and_global_value() {
+        for function_index in [56u32, 71, 74] {
+            let remap = FormIdRemap::regular(2, vec![0]);
+            let mut cond = Condition {
+                function_index,
+                param_1: 0x0100_0ABC, // self-referenced → the plugin's own slot
+                ..Default::default()
+            };
+            remap_condition_form_ids(&mut cond, &Some(remap));
+            assert_eq!(
+                cond.param_1, 0x0200_0ABC,
+                "fn {function_index}: param_1 must be promoted to global space"
+            );
+        }
+    }
 
     #[test]
     fn remap_promotes_param1_for_form_id_functions() {
