@@ -960,8 +960,6 @@ fn reserved_engine_callbacks_are_exactly_the_adapter_lifecycle_names() {
 /// no unknown-method record behind.
 #[test]
 fn invoking_an_unregistered_callback_prunes_and_returns_none() {
-    use ruffle_core::external::ExternalInterfaceProvider as _;
-
     let bytes = decode_base64(AVM2_FIXTURE);
     if !crate::player::vulkan_adapter_available() {
         eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
@@ -990,7 +988,7 @@ fn invoking_an_unregistered_callback_prunes_and_returns_none() {
 
     // The unregistered shape: the bridge set knows a name ruffle's
     // registry does not hold.
-    let mut provider = bridge.provider();
+    let provider = bridge.provider();
     provider.on_callback_available("byroUnregistered");
     drop(provider);
     assert!(bridge.has_callback("byroUnregistered"));
