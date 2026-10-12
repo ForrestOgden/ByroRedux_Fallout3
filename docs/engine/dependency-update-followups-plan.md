@@ -563,7 +563,7 @@ These are larger. Each needs its own plan and has a prerequisite on our side.
 - **Sleep workarounds**: none exist to remove. rapier 0.35 honours `sleep()` right
   after a reposition, and we never worked around the old behaviour.
 - **Kinematic label in `phys.stats`**: *was* listed here as "still correct", on the
-  strength of `island_manager/sleep.rs:30` ("kinematic and fixed bodies don't
+  strength of rapier3d-0.36.1's *island_manager/sleep.rs:30* ("kinematic and fixed bodies don't
   sleep"). That line is the doc of `wake_up`, not the sleep decision. The decision is
   `rigid_body_components.rs` (rapier3d-0.36.1, ~L1488): "platforms only sleep if both
   velocities are exactly zero", and idle keyframed bodies meet it (`push_kinematic`

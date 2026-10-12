@@ -411,10 +411,10 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   root containing them — un-rooted entities are despawn-immune, so a non-draining list is residency leak. Only
   **parentless** members queue and a root's adoption stamps its whole `Children` subtree (a local `Transform` is
   not a world position, #5384 `faf8e5682`); the player's subtree is never queued or cell-owned, and
-  `purge_cinematic_retention_state` despawns the still-pending list at session replacement (#5379 `203be9ed4`).
+  `purge_cinematic_retention_state(world, ctx)` despawns the still-pending list at session replacement (#5379 `203be9ed4`).
   Pins: `systems/cinematic.rs` (the #3817 lifecycle pair plus `parented_subtree_rides_the_roots_adoption`,
   `player_rider_is_never_queued_or_cell_adopted`) and `cell_loader/unload.rs`
-  (`purge_despawns_pending_readoption_entities`); a release path
+  (`pending_readoption_victims_are_the_whole_subtree_closure`, `pending_readoption_victims_spare_the_player_rig`); a release path
   that strips `vehicle`/`cart_seat` would break the awaited-event exit.
 - Player `CinematicPresentationState`/`PlayerControlState` flags are saved; a flag a consumer never reads is
   a placeholder (Dim 1) — `disable_saving` is read by `SaveCommand`; `hud_cart_mode` had no reader at #4372.
