@@ -89,7 +89,13 @@ fn skyrim_model_transforms_and_conditions_are_not_legacy_images() {
 
 #[test]
 fn later_games_keep_transform_and_zoom_without_skyrim_scale() {
-    for game in [GameKind::Fallout4, GameKind::Starfield] {
+    // #5345 — FO76 rides the same modern arm: its wire shape is FO4's
+    // (`wbDefinitionsFO76.pas`), and the image path arrives as BNAM.
+    for game in [
+        GameKind::Fallout4,
+        GameKind::Fallout76,
+        GameKind::Starfield,
+    ] {
         let record = parse_lscr(
             1,
             0x8400,
@@ -104,6 +110,7 @@ fn later_games_keep_transform_and_zoom_without_skyrim_scale() {
                 ),
                 sub(b"SNAM", 3.0f32.to_le_bytes()),
                 sub(b"ICON", b"loadscreens\\test.dds\0"),
+                sub(b"BNAM", b"loadscreenfo76\\bg.dds\0"),
             ],
             game,
             &Some(FormIdRemap::regular(4, vec![0])),
@@ -112,7 +119,14 @@ fn later_games_keep_transform_and_zoom_without_skyrim_scale() {
         assert_eq!(record.transform, 0x0400_0011);
         assert_eq!(record.zoom_bounds, Some([-1.0, 1.0]));
         assert_eq!(record.initial_scale, None);
-        assert_eq!(!record.icon.is_empty(), game == GameKind::Starfield);
+        match game {
+            GameKind::Starfield => assert_eq!(record.icon, "loadscreens\\test.dds"),
+            GameKind::Fallout76 => assert_eq!(
+                record.icon, "loadscreenfo76\\bg.dds",
+                "FO76's BNAM background image decodes into icon (#5345)"
+            ),
+            _ => assert_eq!(record.icon, ""),
+        }
     }
 }
 
@@ -196,6 +210,9 @@ fn every_truncated_fixed_field_is_safe_and_visible() {
         (GameKind::Skyrim, *b"ONAM", 4),
         (GameKind::Skyrim, *b"XNAM", 12),
         (GameKind::Fallout4, *b"TNAM", 4),
+        (GameKind::Fallout76, *b"TNAM", 4),
+        (GameKind::Fallout76, *b"ZNAM", 8),
+        (GameKind::Fallout76, *b"NNAM", 4),
         (GameKind::Starfield, *b"ZNAM", 8),
     ] {
         for size in 0..len {

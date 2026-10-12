@@ -2,8 +2,15 @@
 //! are separate consumers; decoding a record does not make it eligible.
 //!
 //! Layout references: TES5Edit/TES5Edit Core/wbDefinitions{TES4,FO3,FNV,TES5,
-//! FO4,SF1}.pas, and wbDefinitionsCommon.pas::wbLoadScreenLocations
+//! FO4,FO76,SF1}.pas, and wbDefinitionsCommon.pas::wbLoadScreenLocations
 //! (dev-4.1.6). In particular LNAM stores grid **Y before X**.
+//!
+//! FO76 is the FO4 shape (#5345): `wbDefinitionsFO76.pas` `wbRecord(LSCR)`
+//! keeps NNAM/TNAM/ONAM/ZNAM/MOD2 and adds `BNAM` (Background Image, a
+//! string — decoded into `icon`) and `LSST`. The presentation verdict
+//! still rejects FO76 (`load_screen_verdict`: outside the engine's
+//! covered fixture set), but the parse decodes it so the data is recorded
+//! rather than silently dropped.
 
 use super::common::{read_lstring_or_zstring, read_zstring, remap_fid};
 use super::condition::{push_ctda, ConditionList};
@@ -56,9 +63,14 @@ pub fn parse_lscr(
     remap: &Option<FormIdRemap>,
 ) -> LoadScreenRecord {
     let legacy = matches!(game, GameKind::Oblivion | GameKind::Fallout3NV);
+    // #5345 — FO76 is the FO4 wire shape (`wbDefinitionsFO76.pas`), so it
+    // takes the modern arm; its *presentation* stays rejected downstream.
     let modern = matches!(
         game,
-        GameKind::Skyrim | GameKind::Fallout4 | GameKind::Starfield
+        GameKind::Skyrim
+            | GameKind::Fallout4
+            | GameKind::Fallout76
+            | GameKind::Starfield
     );
     let mut out = LoadScreenRecord {
         form_id,
@@ -73,7 +85,12 @@ pub fn parse_lscr(
             b"LNAM" if legacy => Some(12),
             b"WMI1" if game == GameKind::Fallout3NV => Some(4),
             b"NNAM" if modern => Some(4),
-            b"TNAM" | b"ZNAM" if matches!(game, GameKind::Fallout4 | GameKind::Starfield) => {
+            b"TNAM" | b"ZNAM"
+                if matches!(
+                    game,
+                    GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield
+                ) =>
+            {
                 Some(if sub.sub_type == *b"TNAM" { 4 } else { 8 })
             }
             b"SNAM" if game == GameKind::Skyrim => Some(4),
@@ -91,6 +108,9 @@ pub fn parse_lscr(
             b"FULL" => out.full_name = read_lstring_or_zstring(d),
             b"DESC" => out.description = read_lstring_or_zstring(d),
             b"ICON" if legacy || game == GameKind::Starfield => out.icon = read_zstring(d),
+            // #5345 — FO76's BNAM 'Background Image' is the image path this
+            // game ships instead of ICON; decode it into the same field.
+            b"BNAM" if game == GameKind::Fallout76 => out.icon = read_zstring(d),
             b"LNAM" if legacy => out.locations.push(LoadScreenLocation {
                 direct: remap_fid(u32::from_le_bytes(d[0..4].try_into().unwrap()), remap),
                 world: remap_fid(u32::from_le_bytes(d[4..8].try_into().unwrap()), remap),
@@ -103,7 +123,7 @@ pub fn parse_lscr(
             b"NNAM" if modern => {
                 out.model = remap_fid(u32::from_le_bytes(d.try_into().unwrap()), remap)
             }
-            b"TNAM" if matches!(game, GameKind::Fallout4 | GameKind::Starfield) => {
+            b"TNAM" if matches!(game, GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield) => {
                 out.transform = remap_fid(u32::from_le_bytes(d.try_into().unwrap()), remap)
             }
             b"SNAM" if game == GameKind::Skyrim => {
@@ -120,7 +140,7 @@ pub fn parse_lscr(
                     out.malformed_fields.push(sub.sub_type);
                 }
             }
-            b"ZNAM" if matches!(game, GameKind::Fallout4 | GameKind::Starfield) => {
+            b"ZNAM" if matches!(game, GameKind::Fallout4 | GameKind::Fallout76 | GameKind::Starfield) => {
                 out.zoom_bounds = finite_floats(d);
                 if out.zoom_bounds.is_none() {
                     out.malformed_fields.push(sub.sub_type);
