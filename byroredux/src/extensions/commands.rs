@@ -516,7 +516,7 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
 /// fact now and its structural consequences queued for the Late-stage
 /// sink. A `SetBase`/`ModifyPermanent` that lowers the ceiling kills
 /// exactly as a `Damage` does — the test is on the composed current value.
-fn commit_actor_value_deaths(world: &World, committed: &[EntityId]) {
+pub(crate) fn commit_actor_value_deaths(world: &World, committed: &[EntityId]) {
     use byroredux_core::ecs::components::{ActorVitals, Dead};
     let killed: Vec<EntityId> = {
         let (Some(vitals), Some(values)) =

@@ -160,7 +160,7 @@ macro_rules! delivery_commit_context {
 }
 
 mod capture;
-mod commands;
+pub(crate) mod commands;
 mod dispatch;
 mod install;
 mod legacy_compat;

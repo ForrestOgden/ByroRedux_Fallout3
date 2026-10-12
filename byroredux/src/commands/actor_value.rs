@@ -87,27 +87,41 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
             .try_resource::<byroredux_core::character::CharacterRuleset>()
             .is_some_and(|ruleset| ruleset.is_player_derived_pool(av));
 
-    let Some(mut q) = world.query_mut::<ActorValues>() else {
-        return CommandOutput::error(format!("{cmd}: no ActorValues storage in the world"));
-    };
-    let Some(avs) = q.get_mut(entity) else {
-        return CommandOutput::error(format!(
-            "{cmd}: entity {entity} has no ActorValues (not a populated actor?)"
-        ));
+    // The edit and the #5728 death commit are two critical sections: the
+    // commit re-reads `ActorValues` through the shared detector-guarded
+    // path, so the write query must be dropped before it runs.
+    let (before, after) = {
+        let Some(mut q) = world.query_mut::<ActorValues>() else {
+            return CommandOutput::error(format!("{cmd}: no ActorValues storage in the world"));
+        };
+        let Some(avs) = q.get_mut(entity) else {
+            return CommandOutput::error(format!(
+                "{cmd}: entity {entity} has no ActorValues (not a populated actor?)"
+            ));
+        };
+
+        let before = avs.current(av);
+        match edit {
+            AvEdit::SetBase => {
+                if player_pool {
+                    avs.set_override(av, value);
+                } else {
+                    avs.set_base(av, value);
+                }
+            }
+            AvEdit::ModPermanent => avs.mod_permanent(av, value),
+        }
+        (before, avs.current(av))
     };
 
-    let before = avs.current(av);
-    match edit {
-        AvEdit::SetBase => {
-            if player_pool {
-                avs.set_override(av, value);
-            } else {
-                avs.set_base(av, value);
-            }
-        }
-        AvEdit::ModPermanent => avs.mod_permanent(av, value),
-    }
-    let after = avs.current(av);
+    // #5728 — #4702's rule: every Health writer outside
+    // `combat_damage_system` owes the alive→dead transition. A console
+    // edit that drives composed Health ≤ 0 used to leave the actor alive
+    // at dead HP — AI running, `consume_item` refusing it (current ≤ 0),
+    // `restoration_system` clearing its heal timers — until a later hit
+    // killed it. The shared SDK commit raises `Dead` + reconciliation +
+    // the KILL story event.
+    crate::extensions::commands::commit_actor_value_deaths(world, &[entity]);
 
     CommandOutput::line(format!(
         "{cmd} 0x{av:X} on entity {entity}: {before} -> {after}"
@@ -125,6 +139,57 @@ mod tests {
             ModAvCommand.execute(world, args)
         };
         out.lines.join("\n")
+    }
+
+    /// #5728 — #4702's rule: every Health writer outside
+    /// `combat_damage_system` owes the alive→dead transition. A console
+    /// `setav <hp> 0` used to leave the actor alive at dead HP until a
+    /// later hit; the shared SDK death commit now raises `Dead`,
+    /// queues reconciliation, and fires the killer-less KILL story event.
+    #[test]
+    fn setav_health_to_zero_raises_the_death_transition() {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_scripting::story_manager::StoryEvent;
+
+        const HEALTH: u32 = 0x2D4;
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.register::<ActorVitals>();
+        world.register::<byroredux_core::ecs::components::Dead>();
+        world.register::<StoryEvent>();
+        let e = world.spawn();
+        world.insert(e, ActorValues::new());
+        world.insert(e, ActorVitals { health: HEALTH });
+        world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+
+        // Seed positive Health first: the actor is alive at a composed 50.
+        let out = run(&world, &format!("{e} 0x{HEALTH:X} 50"), true);
+        assert!(out.contains("0 -> 50"), "got: {out}");
+        assert!(
+            world.get::<byroredux_core::ecs::components::Dead>(e).is_none(),
+            "precondition: the actor is alive at positive composed health"
+        );
+
+        // The kill: Health composed ≤ 0 → Dead + reconciliation + KILL.
+        let out = run(&world, &format!("{e} 0x{HEALTH:X} -10"), true);
+        assert!(out.contains("50 -> -10"), "got: {out}");
+        assert!(
+            world
+                .get::<byroredux_core::ecs::components::Dead>(e)
+                .is_some(),
+            "setav Health to ≤ 0 must raise Dead (#4702's single-owner rule)"
+        );
+        assert!(
+            world
+                .resource::<crate::combat::PendingDeathReconciliations>()
+                .queued()
+                .contains(&e),
+            "the death is queued for the shared reconciliation"
+        );
+        assert!(
+            world.get::<StoryEvent>(e).is_some(),
+            "the killer-less KILL story event fires"
+        );
     }
 
     #[test]
