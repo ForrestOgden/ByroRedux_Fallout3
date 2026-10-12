@@ -745,6 +745,47 @@ fn rigid_body_part_materials_survive_live_delta_overlay() {
     );
 }
 
+/// Regression: #5688 — `DialogueSpokenInfoForms` was registered at v33
+/// (#5367) and reshaped to the `(speaker, INFO)` pair key at v38 (#5300)
+/// with no round-trip test: nothing pinned that a Say-Once pair survives
+/// the shipped encode/decode as a tuple-keyed set. The say-once
+/// *selection* semantics (spoken for A, still available to B) live in
+/// the scripting crate's `select_info` tests; this pins the save half —
+/// the restored set must keep exactly the spoken pairs, so A stays
+/// disqualified and B stays eligible after an F5/F9 cycle.
+#[test]
+fn dialogue_spoken_info_forms_survive_save_load() {
+    use byroredux_scripting::DialogueSpokenInfoForms;
+    use std::collections::HashSet;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.insert_resource(DialogueSpokenInfoForms(HashSet::from([
+        (0x0509_1AAA, 0x0509_1401), // speaker A × INFO 0x401
+        (0x0509_1BBB, 0x0509_1402), // speaker B × INFO 0x402
+    ])));
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+
+    let restored = &*dst.resource::<DialogueSpokenInfoForms>();
+    assert_eq!(
+        restored.0,
+        HashSet::from([(0x0509_1AAA, 0x0509_1401), (0x0509_1BBB, 0x0509_1402)]),
+        "both (speaker, INFO) pairs survive verbatim"
+    );
+    // The say-once predicate `select_info` consults: A's line stays
+    // disqualified for A, and B is untouched by A's line.
+    assert!(restored.0.contains(&(0x0509_1AAA, 0x0509_1401)));
+    assert!(!restored.0.contains(&(0x0509_1BBB, 0x0509_1401)));
+}
+
 /// Regression: #2382 (SAVE-D1-17) — a `defaultRumbleOnActivate` lever
 /// mid-wait (or already one-shot-fired) must survive a save/load round
 /// trip instead of silently resetting to `Active`.
