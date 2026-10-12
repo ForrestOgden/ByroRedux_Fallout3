@@ -237,10 +237,17 @@ impl Parser {
     }
 
     /// Parse `new Type[size]`
+    ///
+    /// #5331 — `New` is a prefix keyword with a mandatory operand, the
+    /// #5021 discipline: the type must share the keyword's line, and so
+    /// must the `[`. Both `New` ⏎ `Int[5]` and `New Int` ⏎ `[5]` used to
+    /// glue through the newline-skipping helpers with zero errors, where
+    /// the reference compiler rejects them.
     fn parse_new_expr(&mut self) -> Result<Spanned<Expr>, ParseError> {
         let (_, start) = self.advance().unwrap(); // consume 'New'
+        self.expect_same_line("type after 'New'")?;
         let ty = self.parse_base_type()?;
-        self.expect(&Token::LBracket, "'[' after new type")?;
+        self.expect_raw(&Token::LBracket, "'[' after new type")?;
         let size = self.parse_expr()?;
         let end = self.expect(&Token::RBracket, "']' in new expression")?;
         Ok(Spanned::new(

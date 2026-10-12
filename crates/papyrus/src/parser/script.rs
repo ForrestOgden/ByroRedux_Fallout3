@@ -1816,6 +1816,10 @@ EndProperty
             fn_body("If\ntrue\nEndIf"),
             fn_body("If false\nElseIf\ntrue\nEndIf"),
             fn_body("While\nfalse\nEndWhile"),
+            // #5331 — `New` is a prefix keyword with a mandatory operand
+            // and a mandatory `[`: neither may sit on the next line.
+            fn_body("Int[] a = New Int\n[5]"),
+            fn_body("Int[] a = New\nInt[5]"),
         ];
         for src in &probes {
             let (preprocessed, _map) = preprocess(src);
