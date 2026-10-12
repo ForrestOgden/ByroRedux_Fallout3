@@ -788,8 +788,9 @@ fn read_pack_u32_array(
 }
 
 /// Read one translation or scale curve. A non-finite stored scalar (a
-/// static value or a dynamic component's min/max) does not fail the read:
-/// it sets `non_finite`, the curve keeps a finite placeholder, and every
+/// static value or a dynamic component's min/max), or finite bounds whose
+/// span overflows f32 (#5691), does not fail the read: it sets
+/// `non_finite`, the curve keeps a finite placeholder, and every
 /// byte is still consumed so the tracks after it land correctly (#5662).
 /// Vanilla Skyrim stores NaN bounds on one prop-attachment bone
 /// (`AnimObjectR` / `AnimObjectL`) in 59 SE clips whose other tracks are
@@ -825,6 +826,13 @@ fn read_vector_curve(
                 *non_finite = true;
             } else if min > max {
                 return Err(HkxError::InvalidData("invalid spline scalar bounds"));
+            } else if !(max - min).is_finite() {
+                // #5691 — finite bounds whose span overflows f32 (±3.4e38
+                // each way) would push ±inf/NaN control points through
+                // `min + quantized * (max - min)`. Same policy as
+                // non-finite bounds: flag the track, keep the (0, 0)
+                // placeholder so every byte is still consumed.
+                *non_finite = true;
             } else {
                 bounds[component] = (min, max);
             }
@@ -2061,6 +2069,52 @@ mod tests {
         assert_eq!(
             inverted,
             HkxError::InvalidData("invalid spline scalar bounds")
+        );
+    }
+
+    /// #5691 — #5662's gate covered the stored min/max only. Finite bounds
+    /// whose *span* overflows f32 (`-3.0e38 .. 3.0e38` — both pass
+    /// `is_finite`, `min <= max`) made `min + quantized * (max - min)`
+    /// evaluate to NaN (quantized 0) and ±inf (quantized 1), so a hostile
+    /// or corrupt mod clip decoded `Ok` with non-finite samples. The span
+    /// check now flags the track — same drop-the-track policy as NaN
+    /// bounds — and the all-bad clip still has nothing to keep.
+    #[test]
+    fn overflowing_finite_span_drops_only_that_track() {
+        let finite = [1.0f32, 2.0, 3.0];
+        let mut curves = Vec::new();
+        curves.extend_from_slice(&dynamic_x_translation((-3.0e38, 3.0e38)));
+        for component in finite {
+            curves.extend_from_slice(&component.to_le_bytes());
+        }
+        let clip = decode_spline_animation(&synthetic_clip(
+            0,
+            8,
+            &[[0, 0x10, 0, 0], [0, 0x07, 0, 0]],
+            &curves,
+        ))
+        .expect("an overflowing span drops the track, not the clip");
+        assert_eq!(clip.dropped_bones, vec![0]);
+        assert_eq!(
+            clip.track_to_bone,
+            vec![1],
+            "the valid track keeps its binding"
+        );
+        assert_eq!(clip.tracks.len(), 1);
+        assert!(clip.tracks[0]
+            .iter()
+            .all(|pose| pose.translation.iter().all(|v| v.is_finite())));
+
+        let all_bad = decode_spline_animation(&synthetic_clip(
+            0,
+            4,
+            &[[0, 0x10, 0, 0]],
+            &dynamic_x_translation((-3.0e38, 3.0e38)),
+        ))
+        .expect_err("a clip whose every track overflows the span has nothing to keep");
+        assert_eq!(
+            all_bad,
+            HkxError::InvalidData("every transform track stores a non-finite spline scalar")
         );
     }
 
