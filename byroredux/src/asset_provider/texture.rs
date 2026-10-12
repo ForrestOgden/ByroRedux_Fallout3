@@ -292,10 +292,9 @@ impl MeshResolver for TextureProvider {
 /// single-sound fallback with FOOT-record-driven per-material lookup.
 ///
 /// #3776 — takes the already-built [`SoundArchiveProvider`]
-/// rather than re-parsing `args` itself. `--sounds-bsa` is documented
-/// (and the provider itself already implements) as repeatable —
-/// override/mod archives listed before the vanilla one, first hit wins
-/// — but this function used to stop at the *first* `--sounds-bsa`
+/// rather than re-parsing `args` itself. `--sounds-bsa` is repeatable
+/// and last-listed wins (#3917 — list override/mod archives after the
+/// vanilla one), but this function used to stop at the *first* `--sounds-bsa`
 /// occurrence, so a user who followed that documented ordering got a
 /// footstep sound that silently never loaded whenever the canonical path
 /// lived only in a later archive. Sharing the provider fixes that by
@@ -428,7 +427,9 @@ fn first_default_sound_hit(
 /// M44 water acoustics — load a physical splash one-shot from the
 /// `--sounds-bsa` archive(s) (if any were provided). The candidate keys in
 /// [`WATER_SPLASH_CANDIDATES`] are verified per game (#3913); the first
-/// archive/candidate hit wins, while missing audio remains a silent no-op.
+/// CANDIDATE whose path resolves wins, archives resolved by the shared
+/// provider's last-listed-wins order (#3917), and missing audio remains
+/// a silent no-op.
 ///
 /// #3776 — same fix and rationale as [`try_load_default_footstep`]: takes
 /// the shared, already-multi-archive [`SoundArchiveProvider`]

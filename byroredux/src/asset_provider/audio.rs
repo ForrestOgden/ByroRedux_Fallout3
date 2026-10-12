@@ -78,9 +78,10 @@ pub(crate) fn sound_archive_path(sound_path: &str) -> String {
     path
 }
 
-/// Searches game archives for sound files by archive-relative path. Mirrors
-/// `ScriptProvider`'s shape exactly: `--sounds-bsa` is repeatable (list
-/// override/mod archives before the vanilla one — first hit wins), and an
+/// Searches game archives for sound files by archive-relative path.
+/// `--sounds-bsa` is repeatable — LAST-listed wins (#3917 flipped the
+/// lookup from #3776's first-wins; list override/mod archives after the
+/// vanilla one), the opposite precedence of `ScriptProvider`. An
 /// empty provider (flag absent) makes every lookup a clean miss so callers
 /// fall through to "nothing to play" the same way an unregistered SOUN
 /// would.

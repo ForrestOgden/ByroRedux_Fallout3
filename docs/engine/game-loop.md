@@ -53,7 +53,7 @@ Selected modifier / diagnostic flags (all read from `effective_args()`):
 | `--render-debug-mode MODE` | Seed a named renderer correctness view before the first frame |
 | `--camera-pos x,y,z` / `--camera-forward x,y,z` | Override the auto-framed initial camera pose |
 | `--fly` / `--player` | Start in fly-camera vs kinematic-character mode (M28.5) |
-| `--sounds-bsa PATH` | Sound archive for footstep/splash defaults + REGN ambient dispatch (M44). Repeatable — override/mod archives listed before the vanilla one, first hit wins (#3776) |
+| `--sounds-bsa PATH` | Sound archive for footstep/splash defaults + REGN ambient dispatch (M44). Repeatable — later archives override earlier ones: last-listed wins, so list overrides AFTER the vanilla one (#3776 wording; #3917 flipped the lookup; `--scripts-bsa` is the first-wins exception) |
 | `--materials-ba2 PATH` | BGSM/BGEM material archive (FO4+; usually synthesized by `--game`) |
 | `--sf-smoke <CELL_EDID>` | Headless Starfield ESM resolve-rate smoke test (requires `--esm`) |
 | `--rotation-mode 0..=3` | Diagnostic switch for the REFR Euler→Y-up conversion |
