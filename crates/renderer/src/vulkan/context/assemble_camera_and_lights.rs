@@ -73,6 +73,39 @@ pub(super) struct CameraAssemblyOutput {
     pub(super) fsr_frame: Option<FsrFrameParameters>,
 }
 
+/// Absolute floor of [`view_proj_is_static`]: the old exact-compare
+/// tolerance, kept for entries near zero.
+const VIEW_PROJ_STATIC_ABS_EPS: f32 = 1.0e-6;
+/// Relative tolerance of [`view_proj_is_static`], per matrix entry.
+///
+/// Bound: a relative perturbation `ε` of every entry moves a clip-space
+/// point by at most `ε · Σ|term|` — for the translation column of an
+/// interior camera that is ~`ε · 4536` against `w ≈ 2120` (measured on the
+/// FO4 Institute, #5370), i.e. `2ε` NDC. At `ε = 1e-5` that is `2e-5` NDC,
+/// ≈ 0.013 px on a 1280-wide frame (NDC spans 2 units = 1280 px): well under
+/// the sub-pixel shift the temporal history already absorbs through
+/// reprojection, and ~40× below the ≈ 0.5 px at which a parked pixel
+/// would visibly slide.
+const VIEW_PROJ_STATIC_REL_EPS: f32 = 1.0e-5;
+
+/// Is the camera parked? True when every view-projection entry is unchanged
+/// from last frame to within sub-pixel tolerance.
+///
+/// #5370 — this used to be an ABSOLUTE `1e-6` compare. A matrix entry of
+/// magnitude ≥ 8 cannot even resolve that (f32 ULP at 879 is 6e-5), and a
+/// standing player capsule's camera wobbles by ~1.6e-3 units frame to frame
+/// (kinematic-controller grounding, period 3 on the Institute), so
+/// `camera_static` was false in every real interior session: the ReSTIR
+/// direct-light EMA stayed on the moving-camera cap (16) and 0.1 floor, the
+/// standing per-pixel speckle over every bright surface. The tolerance is
+/// relative so it scales with the entry, and sub-pixel by construction (see
+/// [`VIEW_PROJ_STATIC_REL_EPS`]).
+pub(super) fn view_proj_is_static(vp: &[f32; 16], prev: &[f32; 16]) -> bool {
+    vp.iter().zip(prev.iter()).all(|(a, b)| {
+        (a - b).abs() <= VIEW_PROJ_STATIC_ABS_EPS + VIEW_PROJ_STATIC_REL_EPS * a.abs().max(b.abs())
+    })
+}
+
 /// #4942/#5369 — `GpuCamera.dof_params.w`, read by `triangle.frag` as two
 /// thresholds only (`> 0.5` = parked: GI seed advances; `> 1.5` = deep
 /// direct-light history):
@@ -408,10 +441,7 @@ impl VulkanContext {
         // means a parked camera. Computed BEFORE the camera UBO is built so
         // the flag can ride `dof_params.w` into triangle.frag's GI-seed
         // decorrelation, and BEFORE `prev_view_proj` is overwritten below.
-        let camera_static = vp
-            .iter()
-            .zip(self.history.prev_view_proj.iter())
-            .all(|(a, b)| (a - b).abs() < 1.0e-6);
+        let camera_static = view_proj_is_static(vp, &self.history.prev_view_proj);
         let camera = scene_buffer::GpuCamera {
             view_proj: [
                 [vp[0], vp[1], vp[2], vp[3]],
@@ -814,5 +844,60 @@ mod restir_history_mode_tests {
         // outranks the rig signal (same deep tail either way).
         assert_eq!(restir_history_mode(true, true, true), 2.0);
         assert_eq!(restir_history_mode(true, false, false), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod view_proj_static_tests {
+    use super::view_proj_is_static;
+
+    /// The Institute's measured matrix (#5370): translation column
+    /// `[-4536.442, 879.368, 2114.9124, 2119.8857]`; the standing capsule's
+    /// camera Y flickered `364.24606 / .24765 / .24597`, moving `vp[13]`
+    /// between `879.368 / 879.37177 / 879.36774`.
+    fn institute_vp(y_entry: f32) -> [f32; 16] {
+        let mut vp = [0.0f32; 16];
+        vp[0] = 1.06;
+        vp[5] = 1.88;
+        vp[10] = -1.0;
+        vp[11] = -1.0;
+        vp[12] = -4536.442;
+        vp[13] = y_entry;
+        vp[14] = 2114.9124;
+        vp[15] = 2119.8857;
+        vp
+    }
+
+    #[test]
+    fn a_capsule_wobble_does_not_defeat_the_parked_camera_flag() {
+        for (a, b) in [
+            (879.368, 879.37177),
+            (879.37177, 879.36774),
+            (879.36774, 879.368),
+        ] {
+            assert!(
+                view_proj_is_static(&institute_vp(a), &institute_vp(b)),
+                "{a} -> {b} is a sub-pixel wobble"
+            );
+        }
+        assert!(view_proj_is_static(&institute_vp(879.368), &institute_vp(879.368)));
+    }
+
+    #[test]
+    fn real_motion_still_clears_it() {
+        // One pixel of vertical motion at this view is ~2119.9/640 ≈ 3.3 in
+        // vp[13]: a thousand times the wobble.
+        assert!(!view_proj_is_static(
+            &institute_vp(879.368),
+            &institute_vp(879.368 + 3.3)
+        ));
+        // A rotation-sized change in a unit-magnitude entry.
+        let mut turned = institute_vp(879.368);
+        turned[0] += 1.0e-3;
+        assert!(!view_proj_is_static(&turned, &institute_vp(879.368)));
+        // A sub-pixel shift of a ~1 entry (5e-6 < 1e-5 relative) stays parked.
+        let mut sub = institute_vp(879.368);
+        sub[0] += 5.0e-6;
+        assert!(view_proj_is_static(&sub, &institute_vp(879.368)));
     }
 }
