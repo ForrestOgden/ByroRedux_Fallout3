@@ -231,32 +231,10 @@ pub(super) fn reemit_water_planes(
         // doc). Calm water keeps the full weather scroll. The same damping
         // is applied by the CPU crest sampler (#3207 coherence).
         let weather_scroll = plane.kind.weather_scroll_for(weather_scroll);
-        // Starfield's flow-map tile scale is a visual UV-rate control, not a
-        // physics velocity. Keep the canonical `WaterFlow` speed bounded and
-        // scale only the authored wave scroll vectors here.
-        let flowmap_scale = if mat.flowmap_scale.is_finite() && mat.flowmap_scale > 0.0 {
-            mat.flowmap_scale.clamp(0.05, 8.0)
-        } else {
-            1.0
-        };
-        // Skyrim-family WATR.NAM1 supplies an angular velocity vector. Rotate
-        // only the authored surface scroll here; atmospheric weather wind is
-        // an external world-space field and must keep its direction shared
-        // with SpeedTree sway. A zero/invalid rate is the legacy no-op.
-        let angular_rate = if mat.angular_velocity.is_finite() {
-            mat.angular_velocity.clamp(-32.0, 32.0)
-        } else {
-            0.0
-        };
-        let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
-        let rotate_scroll = |scroll: [f32; 2], scale: f32| {
-            let x = scroll[0] * scale;
-            let y = scroll[1] * scale;
-            [x * cos_angle - y * sin_angle, x * sin_angle + y * cos_angle]
-        };
-        let authored_scroll_a = rotate_scroll(mat.scroll_a, flowmap_scale);
-        let authored_scroll_b = rotate_scroll(mat.scroll_b, flowmap_scale);
-        let authored_scroll_c = rotate_scroll(mat.scroll_c, flowmap_scale);
+        // Flow-map scale × NAM1 rotation × per-layer weather share — the one
+        // prep the CPU crest sampler also calls (#5582), so the uploaded
+        // scrolls and the buoyancy crest cannot drift apart.
+        let scrolls = mat.wave_scrolls(weather_scroll, time_secs);
         let noise_indices = effective_noise_indices(&mat);
         let params = GpuWaterParams {
             timing: [
@@ -278,15 +256,10 @@ pub(super) fn reemit_water_planes(
                 mat.deep_color[2],
                 mat.fog_far,
             ],
-            scroll: [
-                authored_scroll_a[0] + weather_scroll[0],
-                authored_scroll_a[1] + weather_scroll[1],
-                authored_scroll_b[0] + weather_scroll[0] * 0.65,
-                authored_scroll_b[1] + weather_scroll[1] * 0.65,
-            ],
+            scroll: [scrolls.a[0], scrolls.a[1], scrolls.b[0], scrolls.b[1]],
             scroll_c: [
-                authored_scroll_c[0] + weather_scroll[0] * 0.45,
-                authored_scroll_c[1] + weather_scroll[1] * 0.45,
+                scrolls.c[0],
+                scrolls.c[1],
                 mat.underwater_fog_near,
                 mat.underwater_fog_far,
             ],

@@ -1494,6 +1494,30 @@ pub const DEFAULT_GLASS_REFRACTION_SCALE: f32 =
     byroredux_core::ecs::components::material::DEFAULT_GLASS_REFRACTION_SCALE;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 =
     byroredux_core::ecs::components::water::DEFAULT_WATER_WAVE_FREQUENCY;
+// #5582 — `water.vert`'s low-frequency two-wave displacement. Owned by core
+// beside `WEATHER_SCROLL_PER_BU_PER_S`, where the CPU crest sampler
+// (`physics::water::authored_wave_height_with_weather`) reads the same
+// names; these were shader-local literals the physics mirror re-typed.
+pub const WATER_WAVE_DEFAULT_SCROLL_A: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_DEFAULT_SCROLL_A;
+pub const WATER_WAVE_DEFAULT_SCROLL_B: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_DEFAULT_SCROLL_B;
+pub const WATER_WAVE_RATE_MIN: f32 = byroredux_core::ecs::components::water::WATER_WAVE_RATE_MIN;
+pub const WATER_WAVE_RATE_MAX: f32 = byroredux_core::ecs::components::water::WATER_WAVE_RATE_MAX;
+pub const WATER_WAVE_MIX_A: f32 = byroredux_core::ecs::components::water::WATER_WAVE_MIX_A;
+pub const WATER_WAVE_MIX_B: f32 = byroredux_core::ecs::components::water::WATER_WAVE_MIX_B;
+pub const WATER_WAVE_PHASE_B_RATE: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_PHASE_B_RATE;
+pub const WATER_WAVE_AMPLITUDE_MAX: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_AMPLITUDE_MAX;
+pub const WATER_WAVE_SPATIAL_FLOOR_A: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_A;
+pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 =
+    byroredux_core::ecs::components::water::WATER_WAVE_SPATIAL_FLOOR_B;
+pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] =
+    byroredux_core::ecs::components::water::WATER_WAVE_FALLBACK_DIR_A;
+pub const WATER_WAVE_FALLBACK_DIR_B: [f32; 2] =
+    byroredux_core::ecs::components::water::WATER_WAVE_FALLBACK_DIR_B;
 // Exponent of `water.frag`'s `absorbWaterColumn` transmission curve,
 // normalised so the column reaches exactly the deep tint at the end of the
 // authored fog ramp. Empirical shape; the saturation is the contract.
@@ -2133,6 +2157,8 @@ pub enum ShaderValue {
     Float(f32),
     /// `vec3({NAME[0]:?}, {NAME[1]:?}, {NAME[2]:?})` — an `[f32; 3]` const.
     Vec3(&'static [f32; 3]),
+    /// `vec2({NAME[0]:?}, {NAME[1]:?})` — an `[f32; 2]` const.
+    Vec2(&'static [f32; 2]),
 }
 
 /// One line of the generated header, in emit order. The variants cover
@@ -2161,6 +2187,7 @@ fn push_define_line(out: &mut String, name: &str, value: &ShaderValue) {
         ShaderValue::UintPlain(v) => format!("{v}"),
         ShaderValue::Float(v) => format!("{v:?}"),
         ShaderValue::Vec3(v) => format!("vec3({:?}, {:?}, {:?})", v[0], v[1], v[2]),
+        ShaderValue::Vec2(v) => format!("vec2({:?}, {:?})", v[0], v[1]),
     };
     out.push_str("#define ");
     out.push_str(name);
@@ -2632,6 +2659,19 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Define("DEFAULT_WATER_WAVE_FREQUENCY", ShaderValue::Float(DEFAULT_WATER_WAVE_FREQUENCY)),
     HeaderLine::Define("WATER_COLUMN_ABSORPTION_SHAPE", ShaderValue::Float(WATER_COLUMN_ABSORPTION_SHAPE)),
     HeaderLine::Define("WATER_FLOW_MAP_CYCLE_SECONDS", ShaderValue::Float(WATER_FLOW_MAP_CYCLE_SECONDS)),
+    HeaderLine::Comment("`water.vert` two-wave displacement — shared with the CPU crest sampler (#5582)."),
+    HeaderLine::Define("WATER_WAVE_DEFAULT_SCROLL_A", ShaderValue::Float(WATER_WAVE_DEFAULT_SCROLL_A)),
+    HeaderLine::Define("WATER_WAVE_DEFAULT_SCROLL_B", ShaderValue::Float(WATER_WAVE_DEFAULT_SCROLL_B)),
+    HeaderLine::Define("WATER_WAVE_RATE_MIN", ShaderValue::Float(WATER_WAVE_RATE_MIN)),
+    HeaderLine::Define("WATER_WAVE_RATE_MAX", ShaderValue::Float(WATER_WAVE_RATE_MAX)),
+    HeaderLine::Define("WATER_WAVE_MIX_A", ShaderValue::Float(WATER_WAVE_MIX_A)),
+    HeaderLine::Define("WATER_WAVE_MIX_B", ShaderValue::Float(WATER_WAVE_MIX_B)),
+    HeaderLine::Define("WATER_WAVE_PHASE_B_RATE", ShaderValue::Float(WATER_WAVE_PHASE_B_RATE)),
+    HeaderLine::Define("WATER_WAVE_AMPLITUDE_MAX", ShaderValue::Float(WATER_WAVE_AMPLITUDE_MAX)),
+    HeaderLine::Define("WATER_WAVE_SPATIAL_FLOOR_A", ShaderValue::Float(WATER_WAVE_SPATIAL_FLOOR_A)),
+    HeaderLine::Define("WATER_WAVE_SPATIAL_FLOOR_B", ShaderValue::Float(WATER_WAVE_SPATIAL_FLOOR_B)),
+    HeaderLine::Define("WATER_WAVE_FALLBACK_DIR_A", ShaderValue::Vec2(&WATER_WAVE_FALLBACK_DIR_A)),
+    HeaderLine::Define("WATER_WAVE_FALLBACK_DIR_B", ShaderValue::Vec2(&WATER_WAVE_FALLBACK_DIR_B)),
     HeaderLine::Blank,
     HeaderLine::Comment("BGEM v21+ glass neutral pivots — `triangle.frag` divides the"),
     HeaderLine::Comment("authored scalars by these (#3459)."),

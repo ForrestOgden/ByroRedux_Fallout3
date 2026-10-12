@@ -296,8 +296,6 @@ mod tests {
         ("caustic_splat.comp", "OCCLUSION_EPS"),
         ("composite.frag", "CAUSTIC_FIREFLY_MAX"),
         ("water.frag", "NORMAL_PLANE_EPS"),
-        ("water.vert", "DEFAULT_SCROLL_A"),
-        ("water.vert", "DEFAULT_SCROLL_B"),
         // ── #4052, the EXAL ground-cover §11.1 sampling bench ────────
         // `BENCH_PATH` is a specialization constant, not a value: it exists
         // so one shader compiles into two pipelines (path A / path B), and

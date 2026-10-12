@@ -109,6 +109,6 @@ pub use travel::{TravelBehavior, TravelState, Traveled};
 pub use wander::{WanderBehavior, WanderPhase, WanderState};
 pub use water::{
     SubmersionState, WaterContact, WaterFlow, WaterKind, WaterMaterial, WaterPlane,
-    WaterSurfaceMesh, WaterVolume,
+    WaterSurfaceMesh, WaterVolume, WaterWaveScrolls,
 };
 pub use world_bound::WorldBound;

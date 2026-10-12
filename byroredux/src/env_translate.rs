@@ -1092,7 +1092,10 @@ fn resolve_water_noise_and_rain(
     } else {
         0.0
     }
-    .clamp(-32.0, 32.0);
+    .clamp(
+        -byroredux_core::ecs::components::water::WATER_SCROLL_ANGULAR_RATE_MAX,
+        byroredux_core::ecs::components::water::WATER_SCROLL_ANGULAR_RATE_MAX,
+    );
     mat.rain_response = if rec.params.rain_response.is_finite() {
         rec.params.rain_response.clamp(0.0, 4.0)
     } else {
@@ -1179,7 +1182,10 @@ fn resolve_water_noise_and_rain(
         }
     }
     if rec.params.flowmap_scale.is_finite() && rec.params.flowmap_scale > 0.0 {
-        mat.flowmap_scale = rec.params.flowmap_scale.clamp(0.05, 8.0);
+        mat.flowmap_scale = rec.params.flowmap_scale.clamp(
+            byroredux_core::ecs::components::water::WATER_FLOWMAP_SCALE_MIN,
+            byroredux_core::ecs::components::water::WATER_FLOWMAP_SCALE_MAX,
+        );
     }
     for (dst, src) in mat
         .absorption_coefficients

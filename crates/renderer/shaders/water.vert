@@ -188,12 +188,12 @@ void main() {
         vec3 absolutePos = worldPos.xyz + renderOrigin.xyz;
         vec2 dirA = water.scroll.xy;
         vec2 dirB = water.scroll.zw;
-        if (length(dirA) < 1e-5) dirA = vec2(1.0, 0.35);
-        if (length(dirB) < 1e-5) dirB = vec2(-0.4, 1.0);
+        if (length(dirA) < 1e-5) dirA = WATER_WAVE_FALLBACK_DIR_A;
+        if (length(dirB) < 1e-5) dirB = WATER_WAVE_FALLBACK_DIR_B;
         dirA = normalize(dirA);
         dirB = normalize(dirB);
-        float spatialA = max(abs(water.tune.x), 1.0 / 2048.0);
-        float spatialB = max(abs(water.tune.y), 1.0 / 4096.0);
+        float spatialA = max(abs(water.tune.x), WATER_WAVE_SPATIAL_FLOOR_A);
+        float spatialB = max(abs(water.tune.y), WATER_WAVE_SPATIAL_FLOOR_B);
         float frequency = max(abs(water.misc.y), 0.0);
         // The CPU adds the live Weather/WindField velocity to both scroll
         // vectors (the same field that bends SpeedTree objects). Feed that
@@ -201,11 +201,13 @@ void main() {
         // only moves the fragment normal map while the silhouette keeps a
         // fixed-time rhythm. The sentinel defaults reproduce a rate of one;
         // clamp the response so malformed or storm-strength records cannot
-        // turn a surface into a numerically unstable choppy sheet.
-        const float DEFAULT_SCROLL_A = 0.0228254;
-        const float DEFAULT_SCROLL_B = 0.0286531;
-        float waveRateA = clamp(length(water.scroll.xy) / DEFAULT_SCROLL_A, 0.25, 4.0);
-        float waveRateB = clamp(length(water.scroll.zw) / DEFAULT_SCROLL_B, 0.25, 4.0);
+        // turn a surface into a numerically unstable choppy sheet. Every
+        // WATER_WAVE_* tuning value comes from the generated header, owned by
+        // core beside the CPU crest sampler that mirrors this block (#5582).
+        float waveRateA = clamp(length(water.scroll.xy) / WATER_WAVE_DEFAULT_SCROLL_A,
+                                WATER_WAVE_RATE_MIN, WATER_WAVE_RATE_MAX);
+        float waveRateB = clamp(length(water.scroll.zw) / WATER_WAVE_DEFAULT_SCROLL_B,
+                                WATER_WAVE_RATE_MIN, WATER_WAVE_RATE_MAX);
         // #4728 — both dominant layers travel ALONG their scroll-derived
         // direction (sin(kx - wt) moves +x), matching the canonical
         // `WaterFlow` contract; wave A used the opposite time sign and ran
@@ -214,26 +216,27 @@ void main() {
         float phaseA = dot(absolutePos.xz, dirA) * spatialA * 6.2831853
                      - water.timing.x * frequency * waveRateA * 6.2831853;
         float phaseB = dot(absolutePos.xz, dirB) * spatialB * 6.2831853
-                     - water.timing.x * frequency * waveRateB * 4.7123890;
+                     - water.timing.x * frequency * waveRateB
+                       * (6.2831853 * WATER_WAVE_PHASE_B_RATE);
         // Author data can contain corrupt/extreme values; keep displacement
         // finite and below a conservative shoreline-safe bound.
-        float amplitude = clamp(water.tune.w, 0.0, 32.0);
+        float amplitude = clamp(water.tune.w, 0.0, WATER_WAVE_AMPLITUDE_MAX);
         float slopeA = spatialA * 6.2831853;
         float slopeB = spatialB * 6.2831853;
-        float waveA = sin(phaseA) * 0.60;
-        float waveB = sin(phaseB) * 0.40;
+        float waveA = sin(phaseA) * WATER_WAVE_MIX_A;
+        float waveB = sin(phaseB) * WATER_WAVE_MIX_B;
         worldPos.y += amplitude * (waveA + waveB);
         // Keep the geometric normal consistent with the displaced surface.
         // The fragment shader adds high-frequency tangent detail later; this
         // low-frequency gradient is what makes silhouettes, Fresnel, and the
         // direct-sun lobe agree with the vertex-wave shape.
         float dHeightDx = amplitude * (
-            cos(phaseA) * dirA.x * slopeA * 0.60
-            + cos(phaseB) * dirB.x * slopeB * 0.40
+            cos(phaseA) * dirA.x * slopeA * WATER_WAVE_MIX_A
+            + cos(phaseB) * dirB.x * slopeB * WATER_WAVE_MIX_B
         );
         float dHeightDz = amplitude * (
-            cos(phaseA) * dirA.y * slopeA * 0.60
-            + cos(phaseB) * dirB.y * slopeB * 0.40
+            cos(phaseA) * dirA.y * slopeA * WATER_WAVE_MIX_A
+            + cos(phaseB) * dirB.y * slopeB * WATER_WAVE_MIX_B
         );
         localNormal = normalize(vec3(-dHeightDx, 1.0, -dHeightDz));
     }

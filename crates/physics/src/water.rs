@@ -39,7 +39,10 @@ use std::collections::HashMap;
 use byroredux_core::ecs::components::groundcover::WindField;
 use byroredux_core::ecs::components::water::{
     WaterContact, WaterCurrentVolume, WaterFlow, WaterKind, WaterMaterial, WaterPlane, WaterSurfaceMesh,
-    WaterVolume, WATERLINE_HYSTERESIS,
+    WaterVolume, WATERLINE_HYSTERESIS, WATER_WAVE_AMPLITUDE_MAX, WATER_WAVE_DEFAULT_SCROLL_A,
+    WATER_WAVE_DEFAULT_SCROLL_B, WATER_WAVE_FALLBACK_DIR_A, WATER_WAVE_FALLBACK_DIR_B,
+    WATER_WAVE_MIX_A, WATER_WAVE_MIX_B, WATER_WAVE_PHASE_B_RATE, WATER_WAVE_RATE_MAX,
+    WATER_WAVE_RATE_MIN, WATER_WAVE_SPATIAL_FLOOR_A, WATER_WAVE_SPATIAL_FLOOR_B,
 };
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::resources::TotalTime;
@@ -427,15 +430,15 @@ pub fn nearest_surface_distance(surface_y: f32, reference_y: f32) -> f32 {
 /// CPU counterpart of the bounded low-frequency displacement in
 /// `renderer/shaders/water.vert`. Dynamic bodies use this only for their
 /// contact fraction; the authored volume remains the broadphase column.
-/// Add the same live-atmosphere contribution used by `water.vert` to the CPU
-/// contact surface. The renderer adds this scroll after applying the authored
-/// flow-map scale and boosts amplitude by at most 50% in the strongest wind;
-/// keeping the solver on that contract prevents a floating body from tracking
-/// a different crest than the one visible under it.
-/// CPU evaluation of the bounded low-frequency water displacement used by
-/// `water.vert`. `weather_scroll` and `wind_wave_scale` come from
-/// [`weather_wave_adjustment`] so gameplay, camera effects, and buoyancy all
-/// agree with the rendered crest.
+///
+/// `weather_scroll` (already kind-damped through
+/// [`WaterKind::weather_scroll_for`]) and `wind_wave_scale` come from
+/// [`weather_wave_adjustment`], the same pair the renderer uploads, so
+/// gameplay, camera effects, and buoyancy all agree with the rendered crest.
+/// The scroll prep is [`WaterMaterial::wave_scrolls`] — the function the
+/// renderer's upload calls — and every tuning value is a `WATER_WAVE_*`
+/// constant `water.vert` reads from the generated header (#5582), so no
+/// number here is a second copy of the shader's.
 pub fn authored_wave_height_with_weather(
     material: &WaterMaterial,
     position: Vec3,
@@ -443,8 +446,13 @@ pub fn authored_wave_height_with_weather(
     weather_scroll: [f32; 2],
     wind_wave_scale: f32,
 ) -> f32 {
-    let amplitude = material.wave_amplitude.clamp(0.0, 32.0) * wind_wave_scale;
-    let frequency = material.wave_frequency.max(0.0);
+    // The shader clamps the uploaded `tune.w` (amplitude × wind scale) and
+    // takes `abs` of the uploaded frequency; mirror both exactly. #5582 —
+    // the CPU used to clamp before the wind scale and floor a negative
+    // frequency at 0, two crests the visible water never showed.
+    let amplitude =
+        (material.wave_amplitude * wind_wave_scale).clamp(0.0, WATER_WAVE_AMPLITUDE_MAX);
+    let frequency = material.wave_frequency.abs();
     if !amplitude.is_finite() || !frequency.is_finite() || !time_secs.is_finite() {
         return 0.0;
     }
@@ -457,45 +465,22 @@ pub fn authored_wave_height_with_weather(
             fallback
         }
     };
-    let angular_rate = if material.angular_velocity.is_finite() {
-        material.angular_velocity.clamp(-32.0, 32.0)
-    } else {
-        0.0
-    };
-    let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
-    let rotate_scroll = |scroll: [f32; 2]| {
-        [
-            scroll[0] * cos_angle - scroll[1] * sin_angle,
-            scroll[0] * sin_angle + scroll[1] * cos_angle,
-        ]
-    };
-    let authored_a = rotate_scroll(material.scroll_a);
-    let authored_b = rotate_scroll(material.scroll_b);
-    let spatial_a = material.uv_scale_a.abs().max(1.0 / 2048.0);
-    let spatial_b = material.uv_scale_b.abs().max(1.0 / 4096.0);
-    let flowmap_scale = if material.flowmap_scale.is_finite() && material.flowmap_scale > 0.0 {
-        material.flowmap_scale.clamp(0.05, 8.0)
-    } else {
-        1.0
-    };
-    let scroll_a = [
-        authored_a[0] * flowmap_scale + weather_scroll[0],
-        authored_a[1] * flowmap_scale + weather_scroll[1],
-    ];
-    let scroll_b = [
-        authored_b[0] * flowmap_scale + weather_scroll[0] * 0.65,
-        authored_b[1] * flowmap_scale + weather_scroll[1] * 0.65,
-    ];
+    let scrolls = material.wave_scrolls(weather_scroll, time_secs);
+    let (scroll_a, scroll_b) = (scrolls.a, scrolls.b);
+    let spatial_a = material.uv_scale_a.abs().max(WATER_WAVE_SPATIAL_FLOOR_A);
+    let spatial_b = material.uv_scale_b.abs().max(WATER_WAVE_SPATIAL_FLOOR_B);
     // The renderer normalizes these same post-weather vectors in
     // `water.vert`. Deriving the CPU directions before adding weather would
     // make buoyancy/submersion sample a different crest orientation whenever
     // atmospheric wind is active.
-    let dir_a = direction(scroll_a, [1.0, 0.35]);
-    let dir_b = direction(scroll_b, [-0.4, 1.0]);
-    let rate_a = ((scroll_a[0] * scroll_a[0] + scroll_a[1] * scroll_a[1]).sqrt() / 0.0228254)
-        .clamp(0.25, 4.0);
-    let rate_b = ((scroll_b[0] * scroll_b[0] + scroll_b[1] * scroll_b[1]).sqrt() / 0.0286531)
-        .clamp(0.25, 4.0);
+    let dir_a = direction(scroll_a, WATER_WAVE_FALLBACK_DIR_A);
+    let dir_b = direction(scroll_b, WATER_WAVE_FALLBACK_DIR_B);
+    let rate = |scroll: [f32; 2], reference: f32| {
+        ((scroll[0] * scroll[0] + scroll[1] * scroll[1]).sqrt() / reference)
+            .clamp(WATER_WAVE_RATE_MIN, WATER_WAVE_RATE_MAX)
+    };
+    let rate_a = rate(scroll_a, WATER_WAVE_DEFAULT_SCROLL_A);
+    let rate_b = rate(scroll_b, WATER_WAVE_DEFAULT_SCROLL_B);
     // #4728 — wave A travels along +dir_a (the −t sign), in lockstep with
     // `water.vert`'s phaseA under the same convention flip.
     let phase_a =
@@ -503,8 +488,8 @@ pub fn authored_wave_height_with_weather(
             - time_secs * frequency * rate_a * std::f32::consts::TAU;
     let phase_b =
         (position.x * dir_b[0] + position.z * dir_b[1]) * spatial_b * std::f32::consts::TAU
-            - time_secs * frequency * rate_b * (std::f32::consts::TAU * 0.75);
-    amplitude * (phase_a.sin() * 0.60 + phase_b.sin() * 0.40)
+            - time_secs * frequency * rate_b * (std::f32::consts::TAU * WATER_WAVE_PHASE_B_RATE);
+    amplitude * (phase_a.sin() * WATER_WAVE_MIX_A + phase_b.sin() * WATER_WAVE_MIX_B)
 }
 
 /// Return the live weather contribution used by the water vertex shader:
@@ -1713,8 +1698,8 @@ mod tests {
         let material = WaterMaterial {
             wave_amplitude: 4.0,
             wave_frequency: 1.0,
-            scroll_a: [0.0228254, 0.0],
-            scroll_b: [0.0, 0.0286531],
+            scroll_a: [WATER_WAVE_DEFAULT_SCROLL_A, 0.0],
+            scroll_b: [0.0, WATER_WAVE_DEFAULT_SCROLL_B],
             ..WaterMaterial::default()
         };
         let position = Vec3::new(113.0, 0.0, -47.0);
@@ -1730,8 +1715,8 @@ mod tests {
         let material = WaterMaterial {
             wave_amplitude: 4.0,
             wave_frequency: 0.7,
-            scroll_a: [0.0228254, 0.0],
-            scroll_b: [0.0, 0.0286531],
+            scroll_a: [WATER_WAVE_DEFAULT_SCROLL_A, 0.0],
+            scroll_b: [0.0, WATER_WAVE_DEFAULT_SCROLL_B],
             ..WaterMaterial::default()
         };
         let position = Vec3::new(37.0, 0.0, 91.0);
@@ -1741,6 +1726,46 @@ mod tests {
             authored_wave_height_with_weather(&material, position, 2.3, [0.0, 0.0], 1.5);
         assert!((calm - wind_x).abs() > 1.0e-4);
         assert!((amplified - calm * 1.5).abs() < 1.0e-5);
+    }
+
+    /// #5582 — the shader clamps the uploaded amplitude AFTER the wind
+    /// scale (`clamp(tune.w, 0, MAX)` with `tune.w = amplitude × scale`)
+    /// and reads `abs` of the frequency. The CPU crest used to clamp before
+    /// scaling (an authored 30 BU wave under the 1.5× storm boost bobbed
+    /// bodies on a 45 BU crest the visible water capped at 32) and to floor
+    /// a negative frequency at 0 (a frozen crest under a moving one).
+    #[test]
+    fn authored_wave_height_mirrors_the_shader_amplitude_and_frequency_rules() {
+        let material = WaterMaterial {
+            wave_amplitude: 30.0,
+            wave_frequency: 0.8,
+            ..WaterMaterial::default()
+        };
+        let mut peak = 0.0f32;
+        for step in 0..400 {
+            let t = step as f32 * 0.05;
+            let position = Vec3::new(step as f32 * 7.0, 0.0, step as f32 * -3.0);
+            let height = authored_wave_height_with_weather(&material, position, t, [0.0; 2], 1.5);
+            peak = peak.max(height.abs());
+        }
+        assert!(
+            peak <= WATER_WAVE_AMPLITUDE_MAX + 1.0e-3,
+            "wind-scaled crest {peak} exceeds the shader's clamp"
+        );
+        assert!(peak > 30.0, "fixture sanity: the storm boost really pushed past 30 ({peak})");
+
+        let negative = WaterMaterial {
+            wave_frequency: -0.8,
+            ..material
+        };
+        let position = Vec3::new(13.0, 0.0, 29.0);
+        for t in [0.0, 0.37, 1.9] {
+            assert_eq!(
+                authored_wave_height_with_weather(&negative, position, t, [0.0; 2], 1.0),
+                authored_wave_height_with_weather(&material, position, t, [0.0; 2], 1.0),
+                "a negative frequency must move like its magnitude, as abs() does on the GPU"
+            );
+        }
     }
 
     #[test]
@@ -1784,8 +1809,8 @@ mod tests {
         let mut static_surface = WaterMaterial {
             wave_amplitude: 4.0,
             wave_frequency: 0.7,
-            scroll_a: [0.0228254, 0.0],
-            scroll_b: [0.0, 0.0286531],
+            scroll_a: [WATER_WAVE_DEFAULT_SCROLL_A, 0.0],
+            scroll_b: [0.0, WATER_WAVE_DEFAULT_SCROLL_B],
             ..WaterMaterial::default()
         };
         let position = Vec3::new(37.0, 0.0, 91.0);

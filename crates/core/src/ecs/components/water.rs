@@ -559,6 +559,121 @@ pub struct WaterFlow {
 /// coherent.
 pub const WEATHER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
 
+// ── Low-frequency wave + scroll-prep tuning (#5582) ─────────────────────
+//
+// One source for every number `water.vert`'s two-wave displacement, the
+// renderer's scroll upload (`byroredux::render::water`) and the CPU crest
+// sampler (`physics::water::authored_wave_height_with_weather`) apply. The
+// shader reads them from the generated `shader_constants.glsl`
+// (`shader_constants_data.rs` re-exports this block); the two Rust consumers
+// go through [`WaterMaterial::wave_scrolls`] and these names. Before #5582
+// each consumer re-typed its own copy, and #3207 / #4728 / #5354 were each a
+// hand-fix of one copy drifting from the others.
+
+/// Scroll magnitude (UV/s) of the default wave layer A — `|scroll_a|` of
+/// [`WaterMaterial::default`]. A layer scrolling exactly this fast
+/// oscillates at rate 1 × `wave_frequency`; faster or slower scrolls scale
+/// the rate (clamped to [`WATER_WAVE_RATE_MIN`]`..=`[`WATER_WAVE_RATE_MAX`]).
+pub const WATER_WAVE_DEFAULT_SCROLL_A: f32 = 0.0228254;
+/// Layer-B companion of [`WATER_WAVE_DEFAULT_SCROLL_A`] — `|scroll_b|` of
+/// [`WaterMaterial::default`].
+pub const WATER_WAVE_DEFAULT_SCROLL_B: f32 = 0.0286531;
+/// Lower clamp on each layer's scroll-derived rate multiplier.
+pub const WATER_WAVE_RATE_MIN: f32 = 0.25;
+/// Upper clamp on each layer's scroll-derived rate multiplier, so malformed
+/// or storm-strength scrolls cannot turn the surface into a numerically
+/// unstable choppy sheet.
+pub const WATER_WAVE_RATE_MAX: f32 = 4.0;
+/// Displacement weight of wave A. With [`WATER_WAVE_MIX_B`] it sums to one,
+/// so the amplitude is the crest's peak.
+pub const WATER_WAVE_MIX_A: f32 = 0.60;
+/// Displacement weight of wave B.
+pub const WATER_WAVE_MIX_B: f32 = 0.40;
+/// Wave B's temporal angular rate as a fraction of a full turn (wave A runs
+/// at one turn, `TAU`; B at `TAU × 0.75`).
+pub const WATER_WAVE_PHASE_B_RATE: f32 = 0.75;
+/// Ceiling (world units) on the wind-scaled displacement amplitude — a
+/// shoreline-safe bound for corrupt or extreme author data. Applied after
+/// the wind scale, as the shader clamps the uploaded `tune.w`.
+pub const WATER_WAVE_AMPLITUDE_MAX: f32 = 32.0;
+/// Floor on wave A's spatial frequency (`|uv_scale_a|`, cycles per unit).
+pub const WATER_WAVE_SPATIAL_FLOOR_A: f32 = 1.0 / 2048.0;
+/// Floor on wave B's spatial frequency (`|uv_scale_b|`, cycles per unit).
+pub const WATER_WAVE_SPATIAL_FLOOR_B: f32 = 1.0 / 4096.0;
+/// World-XZ travel direction of wave A when its post-weather scroll is ~0.
+pub const WATER_WAVE_FALLBACK_DIR_A: [f32; 2] = [1.0, 0.35];
+/// World-XZ travel direction of wave B when its post-weather scroll is ~0.
+pub const WATER_WAVE_FALLBACK_DIR_B: [f32; 2] = [-0.4, 1.0];
+/// Clamp (rad/s, either sign) on the NAM1 angular velocity that rotates the
+/// authored scroll vectors.
+pub const WATER_SCROLL_ANGULAR_RATE_MAX: f32 = 32.0;
+/// Lower clamp on the authored flow-map tile scale. A non-finite or
+/// non-positive scale is the legacy sentinel and reads as a neutral one.
+pub const WATER_FLOWMAP_SCALE_MIN: f32 = 0.05;
+/// Upper clamp on the authored flow-map tile scale.
+pub const WATER_FLOWMAP_SCALE_MAX: f32 = 8.0;
+/// Share of the (kind-damped) weather scroll layer B takes; layer A takes it
+/// whole.
+pub const WATER_WEATHER_SCROLL_WEIGHT_B: f32 = 0.65;
+/// Share of the (kind-damped) weather scroll layer C takes.
+pub const WATER_WEATHER_SCROLL_WEIGHT_C: f32 = 0.45;
+
+/// The three normal/wave layer scroll vectors exactly as the GPU receives
+/// them (`GpuWaterParams.scroll` / `scroll_c`): authored scroll × flow-map
+/// scale, rotated by the NAM1 angular velocity at `time_secs`, plus the
+/// layer's share of the weather scroll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterWaveScrolls {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    pub c: [f32; 2],
+}
+
+impl WaterMaterial {
+    /// Authored scroll prep shared by the renderer upload and the CPU crest
+    /// sampler (#5582), so a retune moves the visible crest and the
+    /// buoyancy/submersion crest together.
+    ///
+    /// `weather_scroll` is the live atmospheric scroll *after* the plane's
+    /// kind damping ([`WaterKind::weather_scroll_for`]). It is an external
+    /// world-space field shared with SpeedTree sway, so it is added after
+    /// the rotation and never rotated itself.
+    pub fn wave_scrolls(&self, weather_scroll: [f32; 2], time_secs: f32) -> WaterWaveScrolls {
+        // Starfield's flow-map tile scale is a visual UV-rate control, not a
+        // physics velocity: it scales only the authored scroll vectors.
+        let flowmap_scale = if self.flowmap_scale.is_finite() && self.flowmap_scale > 0.0 {
+            self.flowmap_scale
+                .clamp(WATER_FLOWMAP_SCALE_MIN, WATER_FLOWMAP_SCALE_MAX)
+        } else {
+            1.0
+        };
+        // Skyrim-family WATR.NAM1 angular velocity rotates the authored
+        // scroll; a zero/invalid rate is the legacy no-op.
+        let angular_rate = if self.angular_velocity.is_finite() {
+            self.angular_velocity.clamp(
+                -WATER_SCROLL_ANGULAR_RATE_MAX,
+                WATER_SCROLL_ANGULAR_RATE_MAX,
+            )
+        } else {
+            0.0
+        };
+        let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
+        let layer = |scroll: [f32; 2], weather_weight: f32| {
+            let x = scroll[0] * flowmap_scale;
+            let y = scroll[1] * flowmap_scale;
+            [
+                x * cos_angle - y * sin_angle + weather_scroll[0] * weather_weight,
+                x * sin_angle + y * cos_angle + weather_scroll[1] * weather_weight,
+            ]
+        };
+        WaterWaveScrolls {
+            a: layer(self.scroll_a, 1.0),
+            b: layer(self.scroll_b, WATER_WEATHER_SCROLL_WEIGHT_B),
+            c: layer(self.scroll_c, WATER_WEATHER_SCROLL_WEIGHT_C),
+        }
+    }
+}
+
 impl WaterFlow {
     /// Slowest current the physics sink will simulate — the "calm river"
     /// anchor of [`Self::speed`]'s documented band. BU/s.
@@ -1016,5 +1131,83 @@ mod weather_transport_tests {
             }
             assert_eq!(kind.weather_scroll_for(scroll), scroll, "{kind:?} keeps the full scroll");
         }
+    }
+}
+
+#[cfg(test)]
+mod wave_tuning_tests {
+    use super::*;
+
+    /// #5582 — the rate-1 reference scrolls are the default material's own
+    /// layer magnitudes, so the sentinel water oscillates at exactly
+    /// `wave_frequency` on both the GPU and the CPU crest.
+    #[test]
+    fn default_scroll_references_are_the_default_material_magnitudes() {
+        let m = WaterMaterial::default();
+        let len = |v: [f32; 2]| (v[0] * v[0] + v[1] * v[1]).sqrt();
+        assert!((len(m.scroll_a) - WATER_WAVE_DEFAULT_SCROLL_A).abs() < 1e-6);
+        assert!((len(m.scroll_b) - WATER_WAVE_DEFAULT_SCROLL_B).abs() < 1e-6);
+        assert!((WATER_WAVE_MIX_A + WATER_WAVE_MIX_B - 1.0).abs() < 1e-6);
+    }
+
+    /// The prep is flow-scale → rotate → add weighted weather, the weather
+    /// term never rotated (it is a shared world-space field).
+    #[test]
+    fn wave_scrolls_scale_and_rotate_only_the_authored_part() {
+        let m = WaterMaterial {
+            scroll_a: [1.0, 0.0],
+            scroll_b: [0.0, 1.0],
+            scroll_c: [1.0, 1.0],
+            flowmap_scale: 2.0,
+            angular_velocity: std::f32::consts::FRAC_PI_2,
+            ..WaterMaterial::default()
+        };
+        let weather = [0.1, -0.2];
+        let s = m.wave_scrolls(weather, 1.0);
+        let close =
+            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        // A quarter turn maps +X → +Y and +Y → −X.
+        assert!(close(s.a, [0.1, 2.0 - 0.2]), "{:?}", s.a);
+        assert!(
+            close(
+                s.b,
+                [
+                    -2.0 + 0.1 * WATER_WEATHER_SCROLL_WEIGHT_B,
+                    -0.2 * WATER_WEATHER_SCROLL_WEIGHT_B
+                ]
+            ),
+            "{:?}",
+            s.b
+        );
+        assert!(
+            close(
+                s.c,
+                [
+                    -2.0 + 0.1 * WATER_WEATHER_SCROLL_WEIGHT_C,
+                    2.0 - 0.2 * WATER_WEATHER_SCROLL_WEIGHT_C
+                ]
+            ),
+            "{:?}",
+            s.c
+        );
+
+        // Legacy sentinels: a zero flow-map scale is neutral, a non-finite
+        // angular velocity is no rotation, and out-of-band values clamp.
+        let legacy = WaterMaterial {
+            flowmap_scale: 0.0,
+            angular_velocity: f32::NAN,
+            ..m
+        };
+        let s = legacy.wave_scrolls([0.0; 2], 5.0);
+        assert!(close(s.a, [1.0, 0.0]) && close(s.b, [0.0, 1.0]));
+        let huge = WaterMaterial {
+            flowmap_scale: 1.0e6,
+            angular_velocity: 0.0,
+            ..m
+        };
+        assert!(close(
+            huge.wave_scrolls([0.0; 2], 0.0).a,
+            [WATER_FLOWMAP_SCALE_MAX, 0.0]
+        ));
     }
 }

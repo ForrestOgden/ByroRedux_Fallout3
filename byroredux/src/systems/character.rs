@@ -2588,8 +2588,14 @@ mod tests {
         let material = WaterMaterial {
             wave_amplitude: 4.0,
             wave_frequency: 1.0,
-            scroll_a: [0.0228254, 0.0],
-            scroll_b: [0.0, 0.0286531],
+            scroll_a: [
+                byroredux_core::ecs::components::water::WATER_WAVE_DEFAULT_SCROLL_A,
+                0.0,
+            ],
+            scroll_b: [
+                0.0,
+                byroredux_core::ecs::components::water::WATER_WAVE_DEFAULT_SCROLL_B,
+            ],
             ..WaterMaterial::default()
         };
         let position = Vec3::new(113.0, 0.0, -47.0);

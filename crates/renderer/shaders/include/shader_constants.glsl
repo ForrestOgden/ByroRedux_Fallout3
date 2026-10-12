@@ -393,6 +393,19 @@
 #define DEFAULT_WATER_WAVE_FREQUENCY 0.6
 #define WATER_COLUMN_ABSORPTION_SHAPE 2.0
 #define WATER_FLOW_MAP_CYCLE_SECONDS 4.0
+// `water.vert` two-wave displacement — shared with the CPU crest sampler (#5582).
+#define WATER_WAVE_DEFAULT_SCROLL_A 0.0228254
+#define WATER_WAVE_DEFAULT_SCROLL_B 0.0286531
+#define WATER_WAVE_RATE_MIN 0.25
+#define WATER_WAVE_RATE_MAX 4.0
+#define WATER_WAVE_MIX_A 0.6
+#define WATER_WAVE_MIX_B 0.4
+#define WATER_WAVE_PHASE_B_RATE 0.75
+#define WATER_WAVE_AMPLITUDE_MAX 32.0
+#define WATER_WAVE_SPATIAL_FLOOR_A 0.00048828125
+#define WATER_WAVE_SPATIAL_FLOOR_B 0.00024414063
+#define WATER_WAVE_FALLBACK_DIR_A vec2(1.0, 0.35)
+#define WATER_WAVE_FALLBACK_DIR_B vec2(-0.4, 1.0)
 
 // BGEM v21+ glass neutral pivots — `triangle.frag` divides the
 // authored scalars by these (#3459).

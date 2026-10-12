@@ -1133,6 +1133,50 @@ mod tests {
         );
     }
 
+    /// #5582 — `water.vert`'s two-wave tuning comes from the generated
+    /// header (owned by core beside the CPU crest sampler that mirrors it),
+    /// never from shader-local literals: before, the physics mirror re-typed
+    /// every one of these numbers and a retune of either copy split the
+    /// visible crest from the buoyancy/submersion crest.
+    #[test]
+    fn water_vertex_wave_tuning_comes_from_the_shared_header() {
+        let src = include_str!("../../shaders/water.vert");
+        for name in [
+            "WATER_WAVE_DEFAULT_SCROLL_A",
+            "WATER_WAVE_DEFAULT_SCROLL_B",
+            "WATER_WAVE_RATE_MIN",
+            "WATER_WAVE_RATE_MAX",
+            "WATER_WAVE_MIX_A",
+            "WATER_WAVE_MIX_B",
+            "WATER_WAVE_PHASE_B_RATE",
+            "WATER_WAVE_AMPLITUDE_MAX",
+            "WATER_WAVE_SPATIAL_FLOOR_A",
+            "WATER_WAVE_SPATIAL_FLOOR_B",
+            "WATER_WAVE_FALLBACK_DIR_A",
+            "WATER_WAVE_FALLBACK_DIR_B",
+        ] {
+            assert!(src.contains(name), "water.vert must read {name} from the header");
+        }
+        for literal in [
+            "0.0228254",
+            "0.0286531",
+            "4.7123890",
+            "* 0.60",
+            "* 0.40",
+            "1.0 / 2048.0",
+            "1.0 / 4096.0",
+            "vec2(1.0, 0.35)",
+            "vec2(-0.4, 1.0)",
+            "0.25, 4.0",
+            "0.0, 32.0",
+        ] {
+            assert!(
+                !src.contains(literal),
+                "water.vert re-typed a shared wave constant: {literal:?}"
+            );
+        }
+    }
+
     /// #4728 — the flat-water pattern must travel along +scroll, not
     /// −scroll: `sampleScrollingNormal` advances its sample point at
     /// `-scroll * time` in BOTH branches (textured and procedural), the
