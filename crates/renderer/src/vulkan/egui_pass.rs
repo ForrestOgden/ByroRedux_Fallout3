@@ -108,8 +108,9 @@ pub struct EguiPass {
 /// the implementation discard the image's contents, so every glyph already in
 /// the font atlas outside the patched rect is undefined afterwards. A full
 /// delta instead creates a fresh image (for which `UNDEFINED` is correct) and
-/// retires the old one the same way `free_texture` does — covered by the
-/// all-slots fence wait (rider 14 in `sync.rs`).
+/// destroys the old one inside the same `set_texture` call, as `free_texture`
+/// does — not through `pending_free`, and covered by the all-slots fence
+/// wait (rider 14 in `sync.rs`).
 ///
 /// Full deltas refresh the mirror and pass through; partial deltas are
 /// applied to the mirror and replaced by a full delta of it. Several deltas

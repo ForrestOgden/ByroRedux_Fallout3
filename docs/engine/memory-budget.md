@@ -1069,17 +1069,21 @@ this row is their only ledger.
 — egui-ash-renderer owns one GPU image per egui-managed texture, mainly the
 font atlas, which egui grows as glyph coverage grows. Since #4986 the pass
 also keeps a host-RAM `Color32` mirror of every such image
-(`EguiPass::image_mirrors`), because egui-ash-renderer 0.11's partial-delta
-path discards the texels outside the patch. `promote_partial_deltas` applies
-each partial delta to the mirror and uploads the whole image instead, so
-**every atlas growth or glyph addition is a full re-upload**: a fresh GPU
-image, with the old one retired through `pending_free` one frame later
-(covered by the all-slots fence wait).
+(`EguiPass::image_mirrors`), because egui-ash-renderer 0.11/0.13's
+partial-delta path discards the texels outside the patch.
+`promote_partial_deltas` applies each partial delta to the mirror and
+uploads the whole image instead, so **every atlas growth or glyph addition
+is a full re-upload**: inside that one `Renderer::set_texture` call
+egui-ash-renderer creates the replacement image and descriptor set, then
+destroys the previous image and frees its set before returning (the
+all-slots fence wait is what retires frame N-1's reads of it; `sync.rs`
+rider 14). `pending_free` carries only egui's own `TexturesDelta.free` ids,
+never a replaced image (#5569).
 
 | Allocation | Owner | Size |
 |---|---|---|
 | Atlas / egui texture `VkImage` | egui-ash-renderer | `width × height × 4 B` per texture |
-| Retired image awaiting `pending_free` | egui-ash-renderer | one more image of the pre-update size, for one frame after each upload |
+| Replaced image during a full re-upload | egui-ash-renderer | transient: the old image is destroyed inside `set_texture` once the replacement exists (peak = 2 images during the call, 1 in steady state) |
 | `image_mirrors` entry (`Arc<ColorImage>`, `Color32`) | host RAM, not VRAM | `width × height × 4 B` — equal to the GPU image, lives as long as it |
 
 Typically a few MiB each for the atlas. Entries leave with the texture's
