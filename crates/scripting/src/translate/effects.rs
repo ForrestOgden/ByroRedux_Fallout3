@@ -212,6 +212,8 @@ pub enum Effect {
     /// primitive existed nothing in the engine could remove a `Locked`
     /// component, and a fragment containing the call declined *wholesale* —
     /// taking its sibling `SetStage` / `SetObjectiveCompleted` with it.
+    /// The declared second parameter `abAsOwner` (cell public/private
+    /// flagging, #5653) is parsed as a literal and not applied.
     SetLocked { target: ObjectRef, locked: bool },
     /// `<target>.SetLockLevel(aiLockLevel)` — sets lock *difficulty*.
     ///
@@ -1046,7 +1048,7 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     // Optional 2nd arg `abDisplayed` defaults to true in Papyrus.
     let displayed = bool_arg(args, 1)?.unwrap_or(true);
     // #5652 — the optional 3rd arg `abForce` (redisplay an already-shown
-    // objective) must be a literal, the AddItem-abSilent discipline:
+    // objective) must be a literal, the `AddItem`-`abSilent` discipline:
     // accepting the arity bound while never reading the slot silently
     // dropped a non-literal or side-effecting 3rd expression. Not
     // applied — the stored objective state is the same either way.
@@ -1274,18 +1276,27 @@ fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
-/// `<object>.Lock()` / `.Lock(true)` / `.Lock(false)` (#3159).
+/// `<object>.Lock()` / `.Lock(true)` / `.Lock(false)` /
+/// `.Lock(abLock, abAsOwner)` (#3159, #5653).
 ///
-/// Same conservative shape as [`prim_set_open`]: a literal-only bool through
-/// `bool_arg`, declining on any extra argument, so a computed or
-/// variable-driven lock state is left to decline rather than guessed at.
-/// Papyrus's own default for `abLock` is `true`.
+/// `Lock` declares TWO parameters — `Lock(bool abLock = true, bool
+/// abAsOwner = false)` — and the compiler emits the declared arity, so
+/// the pre-#5653 bound of one argument never matched a compiled call:
+/// real content's `Lock(false, true)` was declined as over-arity and the
+/// primitive only ever fired on hand-written shapes. `abAsOwner` (flag
+/// the adjoining cell public/private as the owner opened or closed the
+/// door) has no model here, so it follows the `AddItem`-`abSilent`
+/// discipline: accepted only as a literal, parsed and not applied;
+/// anything non-literal declines the whole call. Papyrus's own default
+/// for `abLock` is `true`.
 fn prim_lock(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "Lock")?;
-    if args.len() > 1 {
+    if args.len() > 2 {
         return None;
     }
     let locked = bool_arg(args, 0)?.unwrap_or(true);
+    // 2nd arg `abAsOwner` — literal-only; see the primitive doc.
+    bool_arg(args, 1)?;
     Some(Effect::SetLocked {
         target: receiver_object(object, scope)?,
         locked,
@@ -2790,9 +2801,13 @@ mod tests {
         );
     }
 
-    /// #2289 — the decline half. A non-literal lock state and an extra
-    /// argument must both decline rather than be guessed at, matching
-    /// `prim_set_open`'s conservative shape.
+    /// #2289 — the decline half. A non-literal lock state, a non-literal
+    /// `abAsOwner`, and an argument past the declared two must all decline
+    /// rather than be guessed at, matching `prim_set_open`'s conservative
+    /// shape. (#5653 narrowed the over-long leg from two arguments to
+    /// three: `Lock` declares two parameters, and the compiler emits the
+    /// declared arity, so the old bound at one never matched a compiled
+    /// call.)
     #[test]
     fn lock_declines_on_a_non_literal_or_over_long_argument() {
         let computed = first_fn_body(
@@ -2807,15 +2822,61 @@ mod tests {
             "a variable-driven lock state must decline, not be assumed"
         );
 
+        let computed_owner = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Bool Property ShouldFlag Auto\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(true, ShouldFlag)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&computed_owner),
+            None,
+            "a variable-driven abAsOwner must decline, not be assumed"
+        );
+
         let extra = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_7()\n\
-             MyDoor.Lock(true, true)\n EndFunction\n",
+             MyDoor.Lock(true, false, true)\n EndFunction\n",
         );
         assert_eq!(
             lower_fragment(&extra),
             None,
-            "an unmodeled second argument must decline"
+            "an argument past the two Lock declares must decline"
+        );
+    }
+
+    /// #5653 — the compiled shape lowers: the CK compiler materializes the
+    /// declared arity, so real content's `Lock(abLock, abAsOwner)` carries
+    /// two arguments (the wiki's own example is `Lock(false, true)` —
+    /// unlock, flagging the adjoining cell public). `abAsOwner`'s
+    /// cell-privacy side effect is unmodeled and parsed-not-applied.
+    #[test]
+    fn lock_lowers_at_its_declared_two_parameter_arity() {
+        let wiki_example = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(false, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&wiki_example),
+            Some(vec![Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: false,
+            }])
+        );
+
+        let compiled_default = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(true, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&compiled_default),
+            Some(vec![Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: true,
+            }])
         );
     }
 
@@ -2960,14 +3021,14 @@ mod tests {
         );
     }
 
-    /// #5651 — the two Game.*PlayerControls calls fill absent arguments
-    /// from their OWN default tables (CK wiki): EnablePlayerControls
+    /// #5651 — the two `Game.*PlayerControls` calls fill absent arguments
+    /// from their OWN default tables (CK wiki): `EnablePlayerControls`
     /// defaults every domain — including camera/looking/sneaking and the
-    /// journal tabs — to true, while DisablePlayerControls defaults
+    /// journal tabs — to true, while `DisablePlayerControls` defaults
     /// camera/looking/sneaking/journal to false. The single shared
-    /// PAPYRUS_DEFAULT this replaced was a hybrid (Enable's
+    /// `PAPYRUS_DEFAULT` this replaced was a hybrid (Enable's
     /// camera/looking/sneaking, Disable's journal tabs) matching neither
-    /// signature; only .psc fragment bodies ever saw the fill-in, so
+    /// signature; only `.psc` fragment bodies ever saw the fill-in, so
     /// every partial call was mis-translated.
     #[test]
     fn partial_player_controls_calls_fill_from_their_own_default_tables() {
