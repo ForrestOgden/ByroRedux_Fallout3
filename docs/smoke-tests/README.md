@@ -69,7 +69,11 @@ still unmeasured. Calling an undeclared gate then fails with exit `2`, before
 checking data; it is neither a pass nor a missing-data skip. Fallout 3 currently
 declares `p0-door-interaction`, `p5-save-restart`, `p5-f5-f9-quicksave`, and
 `p2-melee-core`; Fallout 4
-declares the measured `p0-door-interaction` and `p2-melee-core` routes. The FO3
+declares the measured `p0-door-interaction` and `p2-melee-core` routes; Skyrim SE
+declares `p0-door-interaction`, `p1-character-traversal`, `p2-melee-core`, and
+`p6-loading-model` (#5674 — it is the DEFAULT game of every fixture-driven
+script, so an undeclared gate there ran an unmeasured route instead of failing
+fast; `p5-soak.sh` with no positional now exits `2` naming the missing route). The FO3
 combat gate now passes its combat, save, fresh-process reload, and 20-sample
 restored-ragdoll checks.
 FO4 P2 has the same gameplay and persistence coverage using an explicitly
