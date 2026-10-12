@@ -700,12 +700,51 @@ impl PhysicsWorld {
         Some(self.colliders.get(handle)?.user_data as u32)
     }
 
-    /// World-space midpoint of a contact pair's two colliders' parent
-    /// bodies — where a surface-driven impact sound plays. `None` when
-    /// either collider is a dead handle or has no parent body.
+    /// World-space position a contact-pair event happened at — where a
+    /// surface-driven impact sound plays. Resolved from the narrow-phase
+    /// pair's deepest solver contact (#5675): the two parent bodies'
+    /// *origin* midpoint is not the contact — a static kit piece's ghost
+    /// body sits at its placement origin and an exterior terrain tile's
+    /// at the world origin, so the old midpoint played a clutter impact
+    /// 300 m out at ~150 m, past any attenuation range. Falls back to
+    /// the dynamic side's body translation when the pair has no solver
+    /// contacts (a force threshold can cross while the shapes merely
+    /// overlap), then to the origin midpoint. `None` when either
+    /// collider is a dead handle or has no parent body.
     pub fn contact_event_position(&self, event: &ContactForceEvent) -> Option<Vec3> {
         let a = self.colliders.get(event.collider1)?.parent()?;
         let b = self.colliders.get(event.collider2)?.parent()?;
+        if let Some(pair) = self.narrow_phase.contact_pair(event.collider1, event.collider2) {
+            let mut deepest: Option<(f32, Vec3)> = None;
+            for manifold in pair.manifolds() {
+                for contact in &manifold.data.solver_contacts {
+                    let (p1, p2) =
+                        manifold
+                            .data
+                            .solver_contact_world_points(contact, &self.bodies);
+                    let mid = Vec3::new(
+                        (p1.x + p2.x) * 0.5,
+                        (p1.y + p2.y) * 0.5,
+                        (p1.z + p2.z) * 0.5,
+                    );
+                    match &deepest {
+                        Some((dist, _)) if *dist <= contact.dist => {}
+                        _ => deepest = Some((contact.dist, mid)),
+                    }
+                }
+            }
+            if let Some((_, position)) = deepest {
+                return Some(position);
+            }
+            for handle in [a, b] {
+                if let Some(body) = self.bodies.get(handle) {
+                    if body.is_dynamic() {
+                        let p = body.translation();
+                        return Some(Vec3::new(p.x, p.y, p.z));
+                    }
+                }
+            }
+        }
         let pa = self.bodies.get(a)?.translation();
         let pb = self.bodies.get(b)?.translation();
         Some(Vec3::new(
@@ -4155,6 +4194,73 @@ mod tests {
         assert!(
             saw_started,
             "dropping a ball onto a floor must produce a started force crossing"
+        );
+    }
+
+    /// #5675 — the impact position is the contact point, not the parent
+    /// bodies' origin midpoint. The exterior-terrain shape is the worst
+    /// case: a fixed body parked at the world origin with its collider
+    /// translated 300 m out, so the old midpoint put a clutter impact at
+    /// ~150 m — past any attenuation range. A ball dropped onto the
+    /// offset collider must resolve at the contact (within the ball's
+    /// radius of the surface, at the drop x/z), which is hundreds of
+    /// metres from the old midpoint.
+    #[test]
+    fn contact_event_position_is_the_contact_not_the_body_origins() {
+        let mut w = PhysicsWorld::new();
+        // Terrain-tile shape: body at the world origin…
+        let terrain = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        // …collider top surface at y = 0, centred at (300, -10, 200).
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(200.0, 10.0, 200.0)
+                .translation(Vector::new(300.0, -10.0, 200.0))
+                .user_data(3u128)
+                .build(),
+            terrain,
+            &mut w.bodies,
+        );
+        let ball = w.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(Vector::new(300.0, 8.0, 200.0))
+                .build(),
+        );
+        w.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.5)
+                .density(1.0)
+                .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                .user_data(9u128)
+                .build(),
+            ball,
+            &mut w.bodies,
+        );
+        w.dynamic_bodies.push(ball);
+        w.wake();
+
+        let mut resolved: Option<Vec3> = None;
+        for _ in 0..240 {
+            w.step(PHYSICS_DT);
+            if let Some(event) = w
+                .take_contact_force_events()
+                .into_iter()
+                .find(|event| event.started)
+            {
+                resolved = w.contact_event_position(&event);
+                break;
+            }
+        }
+        let position = resolved.expect("dropping a ball onto the tile must cross the threshold");
+        assert!(
+            (position.x - 300.0).abs() < 1.0 && (position.z - 200.0).abs() < 1.0,
+            "the impact plays at the drop x/z, not halfway to the body origin: {position:?}"
+        );
+        assert!(
+            (-0.5..=1.0).contains(&position.y),
+            "the impact plays within the ball's radius of the surface: {position:?}"
+        );
+        let old_midpoint = Vec3::new(150.0, 4.0, 100.0);
+        assert!(
+            (position - old_midpoint).length() > 100.0,
+            "the fix must move the sound hundreds of metres from the old origin midpoint"
         );
     }
 
