@@ -195,6 +195,28 @@ vec3 traceShadowTransmittance(
 // when the mask carries VISIBILITY_LAYER_GLASS, so handing it the
 // opaque-only mask made a window pane between a back-lit surface and its
 // light silently pass the transmission lobe untinted.
+//
+// #5565 — that handoff only runs when the walk finds a foreign OPAQUE hit,
+// and the walk cannot see a pane (glass is outside VISIBILITY_MASK_ALL_OPAQUE).
+// A segment holding the receiver's own body and a window pane but no other
+// opaque blocker therefore ended the walk on "no more hits" and reported the
+// segment lit, which is #5455's own repro. Every lit-returning exit now
+// finishes with the glass leg of the remaining segment instead of a bare
+// `vec3(1.0)`.
+vec3 traceShadowGlassLegRemaining(
+    vec3 at, vec3 direction, float remaining, float emitterRadius,
+    uint visibilityMask
+) {
+    uint glassOnly = visibilityMask & VISIBILITY_LAYER_GLASS;
+    if (glassOnly == 0u || remaining <= 0.0) return vec3(1.0);
+    // With ONLY the glass bit the shared transport's opaque loop sees an
+    // empty mask and exits at once, and its glass loop runs — the same
+    // interface-by-interface tint/absorption/Fresnel the reflection half and
+    // water.frag already apply.
+    return traceShadowTransmittance(
+        at, direction, remaining, emitterRadius, glassOnly);
+}
+
 vec3 traceShadowTransmittanceSkippingInstance(
     vec3 origin, vec3 direction, float maxDist,
     float emitterRadius, uint visibilityMask, int skipInstance
@@ -211,7 +233,8 @@ vec3 traceShadowTransmittanceSkippingInstance(
         while (rayQueryProceedEXT(skipRQ)) {}
         if (rayQueryGetIntersectionTypeEXT(skipRQ, true)
             == gl_RayQueryCommittedIntersectionNoneEXT) {
-            return vec3(1.0);
+            return traceShadowGlassLegRemaining(
+                at, direction, remaining, emitterRadius, visibilityMask);
         }
         int hitIdx = rayQueryGetIntersectionInstanceCustomIndexEXT(skipRQ, true);
         if (hitIdx != skipInstance) {
@@ -223,10 +246,12 @@ vec3 traceShadowTransmittanceSkippingInstance(
         }
         float hitT = rayQueryGetIntersectionTEXT(skipRQ, true);
         if (!advanceShadowRayPastHit(at, remaining, direction, hitT)) {
-            return vec3(1.0);
+            return traceShadowGlassLegRemaining(
+                at, direction, remaining, emitterRadius, visibilityMask);
         }
     }
-    return vec3(1.0);
+    return traceShadowGlassLegRemaining(
+        at, direction, remaining, emitterRadius, visibilityMask);
 }
 
 #endif

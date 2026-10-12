@@ -125,6 +125,60 @@ fn transmission_skip_walk_hands_the_full_mask_to_the_foreign_leg() {
     );
 }
 
+/// #5565 — the foreign-hit handoff above only runs when the skip walk finds
+/// a foreign OPAQUE hit, and the walk (`VISIBILITY_MASK_ALL_OPAQUE`) cannot
+/// see a glass pane. A segment holding the receiver's own body and a pane
+/// but no other opaque blocker ended the walk on "no more hits" and returned
+/// a bare `vec3(1.0)` — #5455's own repro, still unfixed after its pin
+/// (which checks the handoff's argument text only). Every lit-returning exit
+/// must finish with the glass leg of the remaining segment, and that leg
+/// must hand the shared transport ONLY the glass bit (so its opaque loop sees
+/// an empty mask and exits, and its glass loop runs).
+#[test]
+fn transmission_skip_walk_lit_exits_run_the_glass_leg() {
+    let shadow = include_str!("../../../shaders/include/shadow_transport.glsl");
+
+    let walk = shadow
+        .split_once("vec3 traceShadowTransmittanceSkippingInstance(")
+        .expect("the self-skip trace must exist")
+        .1;
+    let walk = &walk[..walk.find("\n}\n").expect("function closes at column 0")];
+    assert!(
+        !walk.contains("return vec3(1.0);"),
+        "a lit-returning exit of the skip walk is a bare `return vec3(1.0)`: it \
+         reports a segment lit without consulting the glass layer the opaque-only \
+         walk cannot see (#5565)"
+    );
+    // The three exits: the walk found nothing, the advance ran out of
+    // distance, and the skip budget was exhausted.
+    assert_eq!(
+        walk.matches("return traceShadowGlassLegRemaining(").count(),
+        3,
+        "all three lit-returning exits must run the glass leg"
+    );
+
+    let helper = shadow
+        .split_once("vec3 traceShadowGlassLegRemaining(")
+        .expect("the glass-leg helper must exist")
+        .1;
+    let helper = &helper[..helper.find("\n}\n").expect("helper closes at column 0")];
+    assert!(
+        helper.contains("uint glassOnly = visibilityMask & VISIBILITY_LAYER_GLASS;")
+            && helper.contains("if (glassOnly == 0u || remaining <= 0.0) return vec3(1.0);"),
+        "the glass leg is a no-op without the glass bit or without distance left"
+    );
+    let call = helper
+        .split_once("return traceShadowTransmittance(")
+        .expect("the glass leg delegates to the shared transport")
+        .1;
+    let call = &call[..call.find(");").expect("call closes")];
+    assert!(
+        call.trim_end().ends_with("glassOnly"),
+        "the glass leg must hand the shared transport ONLY the glass bit, so its \
+         opaque loop sees an empty mask and exits: {call}"
+    );
+}
+
 /// #5369 — shadow-ray disk samples are dithered, not white. The ReSTIR
 /// finalize rays draw from `ditheredSequence2` (R2 low-discrepancy in time,
 /// IGN-rotated per pixel) rather than a per-(pixel, frame) PCG hash, whose
