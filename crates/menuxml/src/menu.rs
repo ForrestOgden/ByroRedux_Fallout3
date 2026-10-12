@@ -128,7 +128,8 @@ pub struct MenuRenderer {
     /// same refusal. Consulted before the fetch, so a path is extracted
     /// for a budget decision at most once per renderer.
     refused_paths: HashSet<String>,
-    /// Filenames already logged as missing (once each).
+    /// Filenames already logged as missing (once each). Also dedupes the
+    /// #5670 substitution notices, under a `substituted:`-prefixed key.
     missing: HashSet<String>,
     frame: Framebuffer,
     texture_set: TextureSet,
@@ -554,6 +555,21 @@ impl MenuRenderer {
                     undecodable.join(", ")
                 );
             }
+        }
+        // #5670 — a lower-priority set's copy silently standing in for an
+        // undecodable preferred-set file: the substitution is the right
+        // call (the menu draws; #5400 kept the search going), but the
+        // degraded result deserves its one log line, once per spelling.
+        // Deduped through `missing` under a prefixed key.
+        if decoded.is_some()
+            && !undecodable.is_empty()
+            && self.missing.insert(format!("substituted:{cache_key}"))
+        {
+            log::warn!(
+                "menuxml: menu texture '{filename}' undecodable in the preferred set ({}); \
+                 serving another resolution set's copy",
+                undecodable.join(", ")
+            );
         }
         self.tex_cache.insert(cache_key, decoded.clone());
         decoded

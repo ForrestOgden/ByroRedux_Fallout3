@@ -437,17 +437,12 @@ fn tiny_post_cap_fragments_are_bounded_by_the_fetch_floor() {
     );
 }
 
-/// #5668 — the exhausted-budget warnings fire once per document, not
-/// once per refused path: the byte-cap refusals above name 600 distinct
-/// fragments, and pre-fix each logged its own line (200,000 lines on
-/// the audit's hostile menu). The collector asserts the FIRST refused
-/// path is named exactly once and the second never — unique marker
-/// paths keep this race-free against the binary's other budget tests.
-#[test]
-fn exhausted_budget_warnings_fire_once_per_document() {
+/// Shared warning collector for the log-asserting tests (`set_logger`
+/// installs once per process, so every such test must share one static).
+#[allow(dead_code)]
+mod warn_log {
     use std::sync::Mutex;
-
-    static MSGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    pub static MSGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
     struct MenuWarnCollector;
     impl log::Log for MenuWarnCollector {
         fn enabled(&self, _metadata: &log::Metadata) -> bool {
@@ -456,14 +451,33 @@ fn exhausted_budget_warnings_fire_once_per_document() {
         fn log(&self, record: &log::Record) {
             let message = format!("{}", record.args());
             if message.starts_with("menuxml:") {
-                MSGS.lock().unwrap().push(message);
+                // unwrap_or_else(into_inner): a test that panics while
+                // holding the lock for an assert must not poison the
+                // collector for every other test in the binary.
+                MSGS
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(message);
             }
         }
         fn flush(&self) {}
     }
     static LOGGER: MenuWarnCollector = MenuWarnCollector;
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Warn);
+    pub fn install() {
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Warn);
+    }
+}
+
+/// #5668 — the exhausted-budget warnings fire once per document, not
+/// once per refused path: the byte-cap refusals above name 600 distinct
+/// fragments, and pre-fix each logged its own line (200,000 lines on
+/// the audit's hostile menu). The collector asserts the FIRST refused
+/// path is named exactly once and the second never — unique marker
+/// paths keep this race-free against the binary's other budget tests.
+#[test]
+fn exhausted_budget_warnings_fire_once_per_document() {
+    warn_log::install();
 
     let mut files: HashMap<String, String> = HashMap::new();
     let mut host = String::from(r#"<menu name="A"><image name="x">"#);
@@ -478,7 +492,7 @@ fn exhausted_budget_warnings_fire_once_per_document() {
     host.push_str("</image></menu>");
     let mut s = CountingSource { files, probes: Default::default() };
     let _doc = parse_document(&host, &mut s);
-    let messages = MSGS.lock().unwrap();
+    let messages = warn_log::MSGS.lock().unwrap();
     assert_eq!(
         messages
             .iter()
@@ -492,6 +506,81 @@ fn exhausted_budget_warnings_fire_once_per_document() {
         "further refused paths stay silent: {} zzq warnings total",
         messages.iter().filter(|m| m.contains("zzq")).count()
     );
+}
+
+/// #5670 — a present-but-undecodable texture in the PREFERRED
+/// resolution set is served by another set's copy (#5400 keeps the
+/// search going, correctly), but the substitution must not be silent:
+/// pre-fix the menu drew the wrong-resolution art with no log line.
+/// Sibling check: the font-atlas path has no such substitution to
+/// signal — it takes the first PRESENT atlas and parses it once,
+/// logging a whole-font warning on failure; it never falls back to a
+/// further atlas after a decode failure.
+#[test]
+fn an_undecodable_preferred_set_copy_warns_when_substituted() {
+    warn_log::install();
+
+    // `Menus\hud\a.dds` → candidates textures\menus\hud\a.dds
+    // (garbage, present), textures\menus80\hud\a.dds (decodes), …
+    struct GarbagePreferred;
+    impl MenuAssets for GarbagePreferred {
+        fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+            (path.eq_ignore_ascii_case("menus\\main\\hud_main_menu.xml")).then(|| {
+                br#"<menu name="HUDMainMenu"><locus> &true; </locus>
+                    <image name="i0"><filename>Menus\hud\a.dds</filename>
+                    <width>8</width><height>8</height></image>
+                </menu>"#
+                .to_vec()
+            })
+        }
+        fn texture(&self, path: &str) -> Option<Vec<u8>> {
+            match path {
+                "textures\\menus\\hud\\a.dds" => Some(b"not a dds".to_vec()),
+                "textures\\menus80\\hud\\a.dds" => Some(dxt1_dds(64)),
+                _ => None,
+            }
+        }
+        fn font(&self, _index: u8) -> Option<Vec<u8>> {
+            None
+        }
+        fn font_texture(&self, _path: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+    let assets = GarbagePreferred;
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    r.render_frame(&assets);
+    assert!(
+        r.tex_cache
+            .get("menus\\hud\\a.dds")
+            .is_some_and(|t| t.is_some()),
+        "the sibling set's copy serves the tile"
+    );
+    assert!(
+        warn_log::MSGS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.contains("hud\\a.dds") && m.contains("another resolution set's copy")),
+        "the substitution warns, naming the undecodable preferred path"
+    );
+    // Once per spelling: a second frame adds no further notice (the
+    // count is over this test's unique path, so parallel tests' logs
+    // cannot perturb it; it also proves the cache serves without
+    // re-walking the candidates).
+    r.render_frame(&assets);
+    let notices = warn_log::MSGS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|m| m.contains("hud\\a.dds") && m.contains("another resolution set's copy"))
+        .count();
+    assert_eq!(notices, 1, "the substitution notice fires once per cache key");
 }
 
 /// #5007 — fetched fragment bytes are cached per document, so a repeated
