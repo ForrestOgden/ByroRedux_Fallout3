@@ -803,6 +803,18 @@ a new claim without one.
 | `byroredux-debug-server`      | TCP debug server (Late-stage exclusive system)                                                                   |
 | `byroredux-cxx-bridge`        | C++ interop via cxx                                                                                              |
 | `byroredux-audio`             | 3D spatial audio via kira 0.12 (spatial sub-tracks, reverb send, streaming music — M44)                          |
+| `byroredux-boot-request`      | The launcher → engine handoff contract (`BootRequest`: what to play, not which flags express it)               |
+| `byroredux-game-detect`       | Install detection and pre-launch validation                                                                    |
+| `byroredux-settings-io`       | Persistent user settings — `(id, value)` pairs overlaid on the universal registry                              |
+| `byroredux-save`              | M45 save/load — full-ECS-snapshot format, type-erased registry, atomic write + ring                            |
+| `byroredux-hkx`               | Minimal safe Havok packfile reader (Skyrim LE/SE rigs and clips)                                               |
+| `byroredux-fsr3-sys`          | Narrow Rust ABI for AMD FidelityFX FSR 3.1's Vulkan upscaler (no frame generation)                             |
+| `byroredux-mod-runtime`       | Sandboxed executable-mod runtime — WebAssembly Components behind semantic host services                        |
+| `byroredux-menuxml`           | Oblivion / FO3 / FNV legacy MenuXml UI — FOLD evaluator, layout, CPU raster (M48.4/M48.5)                      |
+| `byroredux-pex`               | Compiled Papyrus `.pex` reader + decompiler (Skyrim / FO4 / FO76 / Starfield)                                  |
+| `byroredux-sdk`               | Public tooling APIs — Studio document state, typed edit commands, actor-value snapshots                        |
 | `byroredux` (binary)          | Game loop, cell loader, fly camera, animation system, render data collection, NIFAL translation boundary         |
 | `tools/byro-dbg`              | Standalone debug CLI (TCP client, REPL)                                                                          |
+| `tools/byro-detect`           | Headless install discovery + validation (the launcher's detection path with no window, GPU or engine)          |
+| `tools/byro-launcher`         | Launcher UI (eframe/glow) — finds installed games, checks them, starts the engine                              |
 | `tools/texture-upscale`       | Offline BSA/BA2 texture-set discovery and reference-guided semantic-map upscaling                                |
