@@ -816,28 +816,26 @@ pub(crate) fn clear_cached_path(world: &World, npc: EntityId) {
 pub(crate) mod test_tiles {
     use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
 
-    /// A 2-triangle quad on the XZ plane spanning `[0,10] x [0,10]`
-    /// (Y-up), split along the diagonal: `(0,0)-(10,0)-(10,10)` and
-    /// `(0,0)-(10,10)-(0,10)`, sharing the `(0,0)-(10,10)` diagonal edge
+    use byroredux_core::math::coord::yup_to_zup_pos;
+
+    /// A 2-triangle quad on the XZ plane spanning `[0,size] x [0,size]`
+    /// (Y-up), split along the diagonal: `(0,0)-(s,0)-(s,s)` and
+    /// `(0,0)-(s,s)-(0,s)`, sharing the `(0,0)-(s,s)` diagonal edge
     /// (vertex indices 0 and 2). Vertices are stored pre-converted from
     /// the Z-up authoring space this fixture stands in for, so
     /// `vertex_yup`'s conversion round-trips back to these Y-up
-    /// coordinates exactly — built via `zup_to_yup_pos`'s own inverse
-    /// `(x, y, z) -> (x, -z, y)` so the fixture doesn't have to hardcode
-    /// the conversion twice.
-    pub(crate) fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
-        [p[0], -p[2], p[1]]
-    }
-
-    pub(crate) fn two_triangle_quad() -> NavmRecord {
+    /// coordinates exactly — built via core's `yup_to_zup_pos` so the
+    /// fixture doesn't have to hardcode the conversion. The one home for
+    /// the quad every behavior module's tests walk (#5597).
+    pub(crate) fn two_triangle_quad_scaled(size: f32) -> NavmRecord {
         let yup_verts = [
             [0.0, 0.0, 0.0],
-            [10.0, 0.0, 0.0],
-            [10.0, 0.0, 10.0],
-            [0.0, 0.0, 10.0],
+            [size, 0.0, 0.0],
+            [size, 0.0, size],
+            [0.0, 0.0, size],
         ];
         NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            vertices: yup_verts.iter().map(|v| yup_to_zup_pos(*v)).collect(),
             triangles: vec![
                 NavmTriangle {
                     vertices: [0, 1, 2],
@@ -852,6 +850,11 @@ pub(crate) mod test_tiles {
             ],
             ..NavmRecord::default()
         }
+    }
+
+    /// The 10-unit quad: `[0,10] x [0,10]`.
+    pub(crate) fn two_triangle_quad() -> NavmRecord {
+        two_triangle_quad_scaled(10.0)
     }
 
     /// Same shape as [`two_triangle_quad`], offset `x_offset` world units
@@ -870,7 +873,7 @@ pub(crate) mod test_tiles {
         ];
         NavmRecord {
             form_id,
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            vertices: yup_verts.iter().map(|v| yup_to_zup_pos(*v)).collect(),
             triangles: vec![
                 NavmTriangle {
                     vertices: [0, 1, 2],
@@ -890,7 +893,8 @@ pub(crate) mod test_tiles {
 
 #[cfg(test)]
 mod tests {
-    use super::test_tiles::{adjacent_quad, two_triangle_quad, zup_from_yup};
+    use super::test_tiles::{adjacent_quad, two_triangle_quad};
+    use byroredux_core::math::coord::yup_to_zup_pos;
     use super::*;
     use byroredux_plugin::esm::records::NavmTriangle;
 
@@ -1083,7 +1087,7 @@ mod tests {
             });
         }
         NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
+            vertices: yup_verts.iter().map(|v| yup_to_zup_pos(*v)).collect(),
             triangles,
             ..NavmRecord::default()
         }
@@ -1092,7 +1096,7 @@ mod tests {
     #[test]
     fn zup_yup_round_trip_matches_the_real_conversion() {
         let yup = [1.0, 2.0, 3.0];
-        let zup = zup_from_yup(yup);
+        let zup = yup_to_zup_pos(yup);
         assert_eq!(zup_to_yup_pos(zup), yup);
     }
 

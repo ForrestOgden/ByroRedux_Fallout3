@@ -404,6 +404,7 @@ pub(crate) fn travel_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
@@ -617,45 +618,6 @@ mod tests {
 
     // ── EX-16 item 3 Phase 3: single-tile NAVM pathing integration ──
 
-    /// The inverse of `zup_to_yup_pos` (`(x, y, z) -> (x, -z, y)`), so a
-    /// fixture's vertices can be authored in the Y-up coordinates the
-    /// test reasons about while still exercising `parse_navm`'s real
-    /// Z-up storage convention through `NavmRecord::vertices`.
-    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
-        [p[0], -p[2], p[1]]
-    }
-
-    /// A 2-triangle quad spanning `[0,1000] x [0,1000]` on the XZ plane
-    /// (Y-up), split along the `(0,0)-(1000,1000)` diagonal — the same
-    /// shape `navmesh_path::tests::two_triangle_quad` pins at 1/100th
-    /// scale, sized up here to match `LOCOMOTION_WALK_SPEED`'s real
-    /// magnitude so a single tick doesn't overshoot the whole tile.
-    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
-        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
-        let yup_verts = [
-            [0.0, 0.0, 0.0],
-            [1000.0, 0.0, 0.0],
-            [1000.0, 0.0, 1000.0],
-            [0.0, 0.0, 1000.0],
-        ];
-        NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
-            triangles: vec![
-                NavmTriangle {
-                    vertices: [0, 1, 2],
-                    edge_neighbours: [None, Some(1), None],
-                    flags: 0,
-                },
-                NavmTriangle {
-                    vertices: [0, 2, 3],
-                    edge_neighbours: [Some(0), None, None],
-                    flags: 0,
-                },
-            ],
-            ..NavmRecord::default()
-        }
-    }
-
     #[test]
     fn travel_system_routes_through_a_resident_navmesh_tile_instead_of_straight_line() {
         let mut world = World::new();
@@ -667,7 +629,7 @@ mod tests {
         world.register::<NavPath>();
 
         let tile = world.spawn();
-        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+        world.insert(tile, NavmeshTile(two_triangle_quad_scaled(1000.0)));
 
         // start = (900, 0, 100): z=100 <= x=900, triangle 0.
         // destination = (600, 0, 900): z=900 >= x=600, triangle 1.
@@ -770,7 +732,7 @@ mod tests {
         world.register::<NavPath>();
 
         let tile = world.spawn();
-        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+        world.insert(tile, NavmeshTile(two_triangle_quad_scaled(1000.0)));
 
         let start = Vec3::new(900.0, 0.0, 100.0);
         let destination = Vec3::new(600.0, 0.0, 900.0);

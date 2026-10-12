@@ -106,6 +106,15 @@ pub fn zup_to_yup_pos(p: [f32; 3]) -> [f32; 3] {
     [p[0], p[2], -p[1]]
 }
 
+/// The inverse of [`zup_to_yup_pos`]: engine Y-up `(x, y, z)` back to
+/// Gamebryo Z-up `(x, -z, y)`. For fixtures that author in engine space
+/// and need the on-disk Z-up form (navmesh vertices), so the Z-up knowledge
+/// stays in this module instead of being re-derived per test (#5597).
+#[inline]
+pub fn yup_to_zup_pos(p: [f32; 3]) -> [f32; 3] {
+    [p[0], -p[2], p[1]]
+}
+
 /// Convert a Gamebryo `(w, x, y, z)` Z-up quaternion to a glam-ordered
 /// `(x, y, z, w)` Y-up quaternion. Normalises before returning so
 /// drifted-unit-length inputs (`±1e-4` off unity) don't propagate
@@ -240,6 +249,15 @@ mod tests {
         assert_eq!(zup_to_yup_pos([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]);
         assert_eq!(zup_to_yup_pos([0.0, 1.0, 0.0]), [0.0, 0.0, -1.0]);
         assert_eq!(zup_to_yup_pos([1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn yup_to_zup_pos_is_the_inverse_of_zup_to_yup_pos() {
+        for p in [[1.0, 2.0, 3.0], [0.0, 0.0, 1.0], [-4.5, 0.25, 7.0]] {
+            assert_eq!(zup_to_yup_pos(yup_to_zup_pos(p)), p);
+            assert_eq!(yup_to_zup_pos(zup_to_yup_pos(p)), p);
+        }
+        assert_eq!(yup_to_zup_pos([0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
     }
 
     #[test]

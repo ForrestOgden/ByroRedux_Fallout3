@@ -297,6 +297,7 @@ pub(crate) fn patrol_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
 
     #[test]
     fn patrol_system_moves_actor_toward_target_with_no_physics_world() {
@@ -406,41 +407,6 @@ mod tests {
 
     // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
 
-    /// The inverse of `zup_to_yup_pos`, mirroring `wander::tests::
-    /// zup_from_yup` (Patrol's own copy, per this codebase's per-module
-    /// test-fixture convention).
-    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
-        [p[0], -p[2], p[1]]
-    }
-
-    /// The same 1000-unit two-triangle quad every other locomotion
-    /// module's test suite pins.
-    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
-        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
-        let yup_verts = [
-            [0.0, 0.0, 0.0],
-            [1000.0, 0.0, 0.0],
-            [1000.0, 0.0, 1000.0],
-            [0.0, 0.0, 1000.0],
-        ];
-        NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
-            triangles: vec![
-                NavmTriangle {
-                    vertices: [0, 1, 2],
-                    edge_neighbours: [None, Some(1), None],
-                    flags: 0,
-                },
-                NavmTriangle {
-                    vertices: [0, 2, 3],
-                    edge_neighbours: [Some(0), None, None],
-                    flags: 0,
-                },
-            ],
-            ..NavmRecord::default()
-        }
-    }
-
     #[test]
     fn patrol_system_routes_through_a_resident_navmesh_tile_instead_of_straight_line() {
         // Pins that PatrolBehavior/PatrolState get the exact same
@@ -457,7 +423,7 @@ mod tests {
         world.register::<NavPath>();
 
         let tile = world.spawn();
-        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+        world.insert(tile, NavmeshTile(two_triangle_quad_scaled(1000.0)));
 
         let current = Vec3::new(900.0, 0.0, 100.0);
         let target = Vec3::new(600.0, 0.0, 900.0);

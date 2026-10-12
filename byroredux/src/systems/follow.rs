@@ -357,6 +357,7 @@ pub(crate) fn follow_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
@@ -597,41 +598,6 @@ mod tests {
 
     // ── EX-16 item 3 Phase 4: single-tile NAVM pathing integration ──
 
-    /// The inverse of `zup_to_yup_pos`, mirroring `travel::tests::
-    /// zup_from_yup`/`guard::tests::zup_from_yup` — each module owns its
-    /// own test fixtures per this codebase's established convention.
-    fn zup_from_yup(p: [f32; 3]) -> [f32; 3] {
-        [p[0], -p[2], p[1]]
-    }
-
-    /// The same 1000-unit two-triangle quad `travel::tests::
-    /// two_triangle_quad_navm`/`guard::tests::two_triangle_quad_navm` pin.
-    fn two_triangle_quad_navm() -> byroredux_plugin::esm::records::NavmRecord {
-        use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
-        let yup_verts = [
-            [0.0, 0.0, 0.0],
-            [1000.0, 0.0, 0.0],
-            [1000.0, 0.0, 1000.0],
-            [0.0, 0.0, 1000.0],
-        ];
-        NavmRecord {
-            vertices: yup_verts.iter().map(|v| zup_from_yup(*v)).collect(),
-            triangles: vec![
-                NavmTriangle {
-                    vertices: [0, 1, 2],
-                    edge_neighbours: [None, Some(1), None],
-                    flags: 0,
-                },
-                NavmTriangle {
-                    vertices: [0, 2, 3],
-                    edge_neighbours: [Some(0), None, None],
-                    flags: 0,
-                },
-            ],
-            ..NavmRecord::default()
-        }
-    }
-
     #[test]
     fn follow_system_routes_through_a_resident_navmesh_tile_instead_of_straight_line() {
         let mut world = World::new();
@@ -644,7 +610,7 @@ mod tests {
         world.register::<NavPath>();
 
         let tile = world.spawn();
-        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+        world.insert(tile, NavmeshTile(two_triangle_quad_scaled(1000.0)));
 
         // Same non-mirror-symmetric pair travel_system's/guard_system's
         // equivalent tests use.
@@ -692,7 +658,7 @@ mod tests {
         world.register::<NavPath>();
 
         let tile = world.spawn();
-        world.insert(tile, NavmeshTile(two_triangle_quad_navm()));
+        world.insert(tile, NavmeshTile(two_triangle_quad_scaled(1000.0)));
 
         let target = spawn_target(&mut world, 0x000A_0001, Vec3::new(600.0, 0.0, 900.0));
 
