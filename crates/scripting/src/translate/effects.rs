@@ -1619,13 +1619,19 @@ fn motion_type_arg(value: &Expr, target: &ObjectRef, scope: &Scope) -> Option<Mo
         return motion_type_arg(&expr.node, target, scope);
     }
     if let Expr::IntLit(raw) = value {
+        // `ObjectReference.SetMotionType`'s argument is NOT the NIF
+        // `hkMotionType` enum (`crates/nif`'s collision importer: Keyframed
+        // 6, Static 7, Character 9) that #2286 copied here. The Papyrus
+        // constants differ per game — CK wiki, `SetMotionType -
+        // ObjectReference`: Skyrim Dynamic 1, SphereInertia 2, BoxInertia 3,
+        // Keyframed 4, Fixed 5, ThinBoxInertia 6, Character 7; Fallout 4
+        // Fixed 0, Dynamic 1, Keyframed 2 — and this lowerer does not know
+        // the game. Only `1` means the same in both (Dynamic); every other
+        // literal declines instead of guessing (#5633). Vanilla content is
+        // unaffected: MQ101's fragment keeps the named `Motion_Keyframed`
+        // property read (the arm below), it is not folded to a literal.
         return match *raw {
-            // Canonical hkpMotion::MotionType table. Keep this in lockstep
-            // with the NIF collision importer (#1652 / #2286).
-            1..=5 | 8 => Some(MotionType::Dynamic),
-            6 => Some(MotionType::Keyframed),
-            7 => Some(MotionType::Static),
-            9 => Some(MotionType::CharacterKinematic),
+            1 => Some(MotionType::Dynamic),
             _ => None,
         };
     }
@@ -3415,32 +3421,38 @@ mod tests {
         );
     }
 
-    /// #2286 — vanilla PEX commonly folds AutoReadOnly Motion_* constants
-    /// into raw integer literals. Pin the canonical Havok values through the
-    /// complete parser-to-lowering path rather than only testing named fields.
+    /// #5633 (premise error in #2286): the integer argument of Papyrus
+    /// `SetMotionType` uses per-game constants (Skyrim Keyframed 4 / Fixed 5
+    /// / Character 7; Fallout 4 Fixed 0 / Keyframed 2), not the NIF
+    /// `hkMotionType` table the literal arm used to copy (Keyframed 6, Static
+    /// 7). Only `1` (Dynamic) is the same in both games; every other literal
+    /// declines. The named `Motion_*` property read — what vanilla MQ101
+    /// actually carries — still lowers (see the MQ101 cart test).
     #[test]
-    fn lowers_literal_havok_motion_types() {
-        for (raw, expected) in [
-            (4, MotionType::Dynamic),
-            (5, MotionType::Dynamic),
-            (6, MotionType::Keyframed),
-            (7, MotionType::Static),
-            (9, MotionType::CharacterKinematic),
-        ] {
+    fn literal_motion_types_lower_only_where_every_game_agrees() {
+        let lower = |raw: i64| {
             let body = first_fn_body(&format!(
                 "ScriptName QF extends Quest\n\
                  Function Fragment_177()\n\
                  Cart.SetMotionType({raw}, true)\n\
                  EndFunction\n"
             ));
+            lower_fragment(&body)
+        };
+        assert_eq!(
+            lower(1),
+            Some(vec![Effect::SetMotionType {
+                target: ObjectRef::Property("Cart".into()),
+                motion_type: MotionType::Dynamic,
+                allow_activate: true,
+            }]),
+            "1 is Motion_Dynamic in Skyrim and Fallout 4"
+        );
+        for raw in [0, 2, 3, 4, 5, 6, 7, 8, 9] {
             assert_eq!(
-                lower_fragment(&body),
-                Some(vec![Effect::SetMotionType {
-                    target: ObjectRef::Property("Cart".into()),
-                    motion_type: expected,
-                    allow_activate: true,
-                }]),
-                "literal hkpMotion value {raw} must use the canonical mapping",
+                lower(raw),
+                None,
+                "literal {raw} means a different motion type per game — decline"
             );
         }
     }
