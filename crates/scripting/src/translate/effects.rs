@@ -1348,7 +1348,13 @@ fn prim_player_controls(e: &Expr, method: &str, enabled: bool) -> Option<Effect>
     if args.len() > SKYRIM_PLAYER_CONTROLS_ARGS {
         return None;
     }
-    let defaults = PlayerControlSelection::PAPYRUS_DEFAULT;
+    // #5651 — each function fills absent arguments from its own CK-wiki
+    // default table; the two calls do not share one.
+    let defaults = if enabled {
+        PlayerControlSelection::ENABLE_PLAYER_CONTROLS_DEFAULT
+    } else {
+        PlayerControlSelection::DISABLE_PLAYER_CONTROLS_DEFAULT
+    };
     let selection = PlayerControlSelection {
         movement: bool_arg(args, 0)?.unwrap_or(defaults.movement),
         fighting: bool_arg(args, 1)?.unwrap_or(defaults.fighting),
@@ -2938,6 +2944,64 @@ mod tests {
                     looking: false,
                     sneaking: false,
                     menu: false,
+                    activation: true,
+                    journal_tabs: true,
+                    pov_type: 0,
+                },
+            }])
+        );
+    }
+
+    /// #5651 — the two Game.*PlayerControls calls fill absent arguments
+    /// from their OWN default tables (CK wiki): EnablePlayerControls
+    /// defaults every domain — including camera/looking/sneaking and the
+    /// journal tabs — to true, while DisablePlayerControls defaults
+    /// camera/looking/sneaking/journal to false. The single shared
+    /// PAPYRUS_DEFAULT this replaced was a hybrid (Enable's
+    /// camera/looking/sneaking, Disable's journal tabs) matching neither
+    /// signature; only .psc fragment bodies ever saw the fill-in, so
+    /// every partial call was mis-translated.
+    #[test]
+    fn partial_player_controls_calls_fill_from_their_own_default_tables() {
+        let disable = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Game.DisablePlayerControls(true, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&disable),
+            Some(vec![Effect::SetPlayerControls {
+                enabled: false,
+                selection: PlayerControlSelection {
+                    movement: true,
+                    fighting: true,
+                    camera_switching: false,
+                    looking: false,
+                    sneaking: false,
+                    menu: true,
+                    activation: true,
+                    journal_tabs: false,
+                    pov_type: 0,
+                },
+            }])
+        );
+
+        let enable = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Game.EnablePlayerControls(true, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&enable),
+            Some(vec![Effect::SetPlayerControls {
+                enabled: true,
+                selection: PlayerControlSelection {
+                    movement: true,
+                    fighting: true,
+                    camera_switching: true,
+                    looking: true,
+                    sneaking: true,
+                    menu: true,
                     activation: true,
                     journal_tabs: true,
                     pov_type: 0,

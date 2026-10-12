@@ -3050,7 +3050,7 @@ fn dispatch_player_control_and_evaluate_package_effects() {
                         movement: true,
                         fighting: false,
                         looking: true,
-                        ..crate::PlayerControlSelection::PAPYRUS_DEFAULT
+                        ..crate::PlayerControlSelection::DISABLE_PLAYER_CONTROLS_DEFAULT
                     },
                 },
                 Effect::SetPlayerAiDriven { ai_driven: true },

@@ -28,13 +28,33 @@ pub struct PlayerControlSelection {
 }
 
 impl PlayerControlSelection {
-    /// Papyrus defaults shared by both global functions.
-    pub const PAPYRUS_DEFAULT: Self = Self {
+    /// `Game.EnablePlayerControls` defaults (CK wiki): every domain true.
+    /// The two global functions do NOT share a default table —
+    /// `DisablePlayerControls` defaults camera/looking/sneaking and the
+    /// journal tabs to false (#5651). Compiled calls fill absent
+    /// arguments from their own function's table, so the single shared
+    /// `PAPYRUS_DEFAULT` this replaced (camera/looking/sneaking from
+    /// Enable, journal tabs from Disable) matched neither signature.
+    pub const ENABLE_PLAYER_CONTROLS_DEFAULT: Self = Self {
         movement: true,
         fighting: true,
         camera_switching: true,
         looking: true,
         sneaking: true,
+        menu: true,
+        activation: true,
+        journal_tabs: true,
+        pov_type: 0,
+    };
+
+    /// `Game.DisablePlayerControls` defaults (CK wiki): camera switching,
+    /// looking, sneaking and the journal tabs false, everything else true.
+    pub const DISABLE_PLAYER_CONTROLS_DEFAULT: Self = Self {
+        movement: true,
+        fighting: true,
+        camera_switching: false,
+        looking: false,
+        sneaking: false,
         menu: true,
         activation: true,
         journal_tabs: false,
@@ -225,7 +245,7 @@ mod tests {
                 movement: true,
                 fighting: false,
                 looking: true,
-                ..PlayerControlSelection::PAPYRUS_DEFAULT
+                ..PlayerControlSelection::DISABLE_PLAYER_CONTROLS_DEFAULT
             },
         );
 
