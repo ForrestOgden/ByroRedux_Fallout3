@@ -1336,51 +1336,21 @@ pub fn parse_lgtm(form_id: u32, subs: &[SubRecord], game: GameKind) -> LgtmRecor
                 // dimensionless Fog Near/Far scales — which `normalize`
                 // then lifted ×70 as light fades. All 6 vanilla
                 // `Starfield.esm` LGTMs carry exactly 108 bytes.
+                // #5346 — the tail is decoded by the one shared decoder
+                // (`decode_starfield_lighting_tail`), the same bytes the SF
+                // XCLL arm reads; the hand-copied offset table this replaced
+                // was the drift risk.
                 if game == GameKind::Starfield && sub.data.len() >= 108 {
                     out.directional_fade = None; // byte 28 is Gravity Scale on SF
-                    let mut tail = SubReader::new(&sub.data[28..]);
-                    let gravity_scale = tail.f32_or_default(); // 28
-                    let fog_clip = tail.f32_or_default(); // 32
-                    let fog_power = tail.f32_or_default(); // 36
-                    let fog_far_color = tail.rgb_color().ok(); // 40
-                    let fog_max = tail.f32().ok(); // 44
-                    let lf_begin = tail.f32().ok(); // 48
-                    let lf_end = tail.f32().ok(); // 52
-                    let unknown_color = tail.rgb_color().unwrap_or([0.0; 3]); // 56
-                    let near_height_mid = tail.f32_or_default(); // 60
-                    let near_height_range = tail.f32_or_default(); // 64
-                    let fog_color_high_near = tail.rgb_color().unwrap_or([0.0; 3]); // 68
-                    let fog_color_high_far = tail.rgb_color().unwrap_or([0.0; 3]); // 72
-                    let high_density_scale = tail.f32_or_default(); // 76
-                    let fog_near_scale = tail.f32_or_default(); // 80
-                    let fog_far_scale = tail.f32_or_default(); // 84
-                    let fog_high_near_scale = tail.f32_or_default(); // 88
-                    let fog_high_far_scale = tail.f32_or_default(); // 92
-                    let far_height_mid = tail.f32_or_default(); // 96
-                    let far_height_range = tail.f32_or_default(); // 100
-                    let interior_type = tail.u8_or_default(); // 104 (105-107 pad)
-                    out.fog_clip = Some(fog_clip);
-                    out.fog_power = Some(fog_power);
-                    out.fog_far_color = fog_far_color;
-                    out.fog_max = fog_max;
-                    out.light_fade_begin = lf_begin;
-                    out.light_fade_end = lf_end;
-                    out.starfield = Some(StarfieldLighting {
-                        gravity_scale,
-                        unknown_color,
-                        near_height_mid,
-                        near_height_range,
-                        fog_color_high_near,
-                        fog_color_high_far,
-                        high_density_scale,
-                        fog_near_scale,
-                        fog_far_scale,
-                        fog_high_near_scale,
-                        fog_high_far_scale,
-                        far_height_mid,
-                        far_height_range,
-                        interior_type,
-                    });
+                    let (tail_fields, starfield) =
+                        crate::esm::cell::decode_starfield_lighting_tail(&sub.data[28..]);
+                    out.fog_clip = Some(tail_fields.fog_clip);
+                    out.fog_power = Some(tail_fields.fog_power);
+                    out.fog_far_color = Some(tail_fields.fog_far_color);
+                    out.fog_max = Some(tail_fields.fog_max);
+                    out.light_fade_begin = Some(tail_fields.light_fade_begin);
+                    out.light_fade_end = Some(tail_fields.light_fade_end);
+                    out.starfield = Some(starfield);
                 } else if sub.data.len() >= 92 {
                     r.skip_or_eof(32);
                     out.fog_far_color = r.rgb_color().ok();

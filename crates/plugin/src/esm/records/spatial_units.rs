@@ -32,11 +32,20 @@ fn lighting(light: &mut CellLighting) {
     optional(&mut light.light_fade_begin);
     optional(&mut light.light_fade_end);
     if let Some(sf) = &mut light.starfield {
-        sf.near_height_mid *= UNITS;
-        sf.near_height_range *= UNITS;
-        sf.far_height_mid *= UNITS;
-        sf.far_height_range *= UNITS;
+        starfield_heights(sf);
     }
+}
+
+/// #5346 — the SF height-fog distance lift, shared by the XCLL carrier
+/// ([`lighting`]) and the LGTM template loop in [`normalize`]): the four
+/// height mid/ranges ×UNITS, the dimensionless scales untouched. The LGTM
+/// site used to be a hand-copied four-liner (#5002) — the exact "fix kept
+/// at only one site" drift shape this dedup removes.
+fn starfield_heights(sf: &mut crate::esm::cell::StarfieldLighting) {
+    sf.near_height_mid *= UNITS;
+    sf.near_height_range *= UNITS;
+    sf.far_height_mid *= UNITS;
+    sf.far_height_range *= UNITS;
 }
 
 fn cell(cell: &mut CellData) {
@@ -148,14 +157,10 @@ pub(super) fn normalize(index: &mut EsmIndex) {
         optional(&mut light.fog_clip);
         optional(&mut light.light_fade_begin);
         optional(&mut light.light_fade_end);
-        // #5002 — the template's SF height-fog model lifts exactly like
-        // the XCLL one in `lighting()` above: the four height
-        // mid/ranges ×UNITS, the dimensionless scales untouched.
+        // #5002 / #5346 — the template's SF height-fog model lifts through
+        // the same shared `starfield_heights` the XCLL carrier uses.
         if let Some(sf) = &mut light.starfield {
-            sf.near_height_mid *= UNITS;
-            sf.near_height_range *= UNITS;
-            sf.far_height_mid *= UNITS;
-            sf.far_height_range *= UNITS;
+            starfield_heights(sf);
         }
     }
     // #5134 — WTHR fog distances are metric on Starfield, same as the

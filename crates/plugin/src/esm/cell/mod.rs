@@ -138,6 +138,61 @@ pub struct StarfieldLighting {
     pub interior_type: u8,
 }
 
+/// The Starfield tail fields that land on a carrier's *base* lighting
+/// `Option`s (see [`CellLighting`]'s fog/lights group and `LgtmRecord`'s
+/// mirrors) — returned by [`decode_starfield_lighting_tail`] beside the
+/// height-fog model.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StarfieldTailFields {
+    pub fog_clip: f32,
+    pub fog_power: f32,
+    pub fog_far_color: [f32; 3],
+    pub fog_max: f32,
+    pub light_fade_begin: f32,
+    pub light_fade_end: f32,
+}
+
+/// #5346 — decode Starfield's shared lighting tail (bytes 28..108 of an
+/// `XCLL` body or an `LGTM` `DATA`) in ONE place. The two carriers are
+/// byte-identical from 28 on (#5002 fixed LGTM by hand-copying the XCLL
+/// offset table, leaving two 20-field decoders to drift — and the
+/// byte-28/56-59 labels are already disputed between xEdit's SF1 LGTM and
+/// XCLL definitions, so any future correction must land once). Callers
+/// guarantee `tail.len() >= 80` (the ≥108 record gate); short input
+/// degrades to zeros exactly like the previous per-site `or_default`
+/// reads. Layout per xEdit SF1 `wbDefinitionsSF1.pas` (#1293 / #5002).
+pub(crate) fn decode_starfield_lighting_tail(
+    tail: &[u8],
+) -> (StarfieldTailFields, StarfieldLighting) {
+    let mut r = super::sub_reader::SubReader::new(tail);
+    let gravity_scale = r.f32_or_default(); // 28
+    let fields = StarfieldTailFields {
+        fog_clip: r.f32_or_default(), // 32 Fog Clip Distance
+        fog_power: r.f32_or_default(), // 36 Fog Power
+        fog_far_color: r.rgb_color().unwrap_or([0.0; 3]), // 40 Fog Color Far
+        fog_max: r.f32_or_default(), // 44 Fog Max
+        light_fade_begin: r.f32_or_default(), // 48 Light Fade Begin
+        light_fade_end: r.f32_or_default(), // 52 Light Fade End
+    };
+    let starfield = StarfieldLighting {
+        gravity_scale,
+        unknown_color: r.rgb_color().unwrap_or([0.0; 3]), // 56 Unknown
+        near_height_mid: r.f32_or_default(), // 60
+        near_height_range: r.f32_or_default(), // 64
+        fog_color_high_near: r.rgb_color().unwrap_or([0.0; 3]), // 68
+        fog_color_high_far: r.rgb_color().unwrap_or([0.0; 3]), // 72
+        high_density_scale: r.f32_or_default(), // 76
+        fog_near_scale: r.f32_or_default(), // 80
+        fog_far_scale: r.f32_or_default(), // 84
+        fog_high_near_scale: r.f32_or_default(), // 88
+        fog_high_far_scale: r.f32_or_default(), // 92
+        far_height_mid: r.f32_or_default(), // 96
+        far_height_range: r.f32_or_default(), // 100
+        interior_type: r.u8_or_default(), // 104 (105-107 pad)
+    };
+    (fields, starfield)
+}
+
 /// A texture layer within a terrain quadrant.
 #[derive(Debug, Clone)]
 pub struct TerrainTextureLayer {

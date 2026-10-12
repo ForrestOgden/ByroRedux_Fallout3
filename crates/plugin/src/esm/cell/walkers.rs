@@ -279,9 +279,9 @@ fn parse_cell_group_inner(
                             // Starfield gets a dedicated decode here. `r` is at
                             // offset 28 (shared 0-27 prefix read above). Byte 28
                             // is `Gravity Scale` (Skyrim's `Directional Fade`
-                            // slot); 32/36 fog clip/power are shared; 40-55
-                            // fog-far-colour / max / light-fade map onto the
-                            // base fields; the rest is SF-only height-fog.
+                            // slot); the 28..108 tail is decoded by the ONE
+                            // shared tail decoder (#5346) — the LGTM arm in
+                            // `records/misc/world.rs` decodes the same bytes.
                             // `>= 108` (not `== 108`): a future-DLC SF XCLL with
                             // trailing pad must still take the SF arm and not
                             // fall through to the Skyrim `>= 92` ambient-cube
@@ -289,26 +289,8 @@ fn parse_cell_group_inner(
                             // The SF decode reads a fixed 108-byte body and
                             // ignores any excess. See #1579.
                             if game == GameKind::Starfield && sub.data.len() >= 108 {
-                                let gravity_scale = r.f32_or_default(); // 28
-                                let fog_clip = r.f32_or_default(); // 32 Fog Clip Distance
-                                let fog_power = r.f32_or_default(); // 36 Fog Power
-                                let fog_far_color = r.rgb_color().unwrap_or([0.0; 3]); // 40 Fog Color Far
-                                let fog_max = r.f32_or_default(); // 44 Fog Max
-                                let lf_begin = r.f32_or_default(); // 48 Light Fade Begin
-                                let lf_end = r.f32_or_default(); // 52 Light Fade End
-                                let unknown_color = r.rgb_color().unwrap_or([0.0; 3]); // 56 Unknown
-                                let near_height_mid = r.f32_or_default(); // 60 Near Height Mid
-                                let near_height_range = r.f32_or_default(); // 64 Near Height Range
-                                let fog_color_high_near = r.rgb_color().unwrap_or([0.0; 3]); // 68
-                                let fog_color_high_far = r.rgb_color().unwrap_or([0.0; 3]); // 72
-                                let high_density_scale = r.f32_or_default(); // 76 High Density Scale
-                                let fog_near_scale = r.f32_or_default(); // 80 Fog Near Scale
-                                let fog_far_scale = r.f32_or_default(); // 84 Fog Far Scale
-                                let fog_high_near_scale = r.f32_or_default(); // 88 Fog High Near Scale
-                                let fog_high_far_scale = r.f32_or_default(); // 92 Fog High Far Scale
-                                let far_height_mid = r.f32_or_default(); // 96 Far Height Mid
-                                let far_height_range = r.f32_or_default(); // 100 Far Height Range
-                                let interior_type = r.u8_or_default(); // 104 (105-107 unused pad)
+                                let (tail_fields, starfield) =
+                                    super::decode_starfield_lighting_tail(&sub.data[28..]);
                                 lighting = Some(CellLighting {
                                     ambient,
                                     directional_color,
@@ -320,33 +302,18 @@ fn parse_cell_group_inner(
                                     // SF reuses byte 28 as gravity_scale, and has
                                     // no ambient cube / specular / fresnel.
                                     directional_fade: None,
-                                    fog_clip: Some(fog_clip),
-                                    fog_power: Some(fog_power),
-                                    fog_far_color: Some(fog_far_color),
-                                    fog_max: Some(fog_max),
-                                    light_fade_begin: Some(lf_begin),
-                                    light_fade_end: Some(lf_end),
+                                    fog_clip: Some(tail_fields.fog_clip),
+                                    fog_power: Some(tail_fields.fog_power),
+                                    fog_far_color: Some(tail_fields.fog_far_color),
+                                    fog_max: Some(tail_fields.fog_max),
+                                    light_fade_begin: Some(tail_fields.light_fade_begin),
+                                    light_fade_end: Some(tail_fields.light_fade_end),
                                     directional_ambient: None,
                                     specular_color: None,
                                     specular_alpha: None,
                                     fresnel_power: None,
                                     inheritance_flags: None,
-                                    starfield: Some(StarfieldLighting {
-                                        gravity_scale,
-                                        unknown_color,
-                                        near_height_mid,
-                                        near_height_range,
-                                        fog_color_high_near,
-                                        fog_color_high_far,
-                                        high_density_scale,
-                                        fog_near_scale,
-                                        fog_far_scale,
-                                        fog_high_near_scale,
-                                        fog_high_far_scale,
-                                        far_height_mid,
-                                        far_height_range,
-                                        interior_type,
-                                    }),
+                                    starfield: Some(starfield),
                                 });
                                 // SF XCLL fully decoded — skip the Skyrim path.
                                 continue;
