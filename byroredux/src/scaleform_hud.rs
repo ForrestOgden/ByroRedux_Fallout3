@@ -206,17 +206,7 @@ fn hud_scaleform_args(args: &[String]) -> Result<Option<(ScaleformGame, String)>
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
     }
-    let esm = args
-        .iter()
-        .position(|a| a == "--esm")
-        .and_then(|i| args.get(i + 1))
-        .filter(|v| !v.starts_with("--"))
-        .cloned()
-        .ok_or_else(|| "--hud requires --esm <path> (archive discovery root)".to_string())?;
-    let esm_dir = std::path::PathBuf::from(&esm)
-        .parent()
-        .map(|d| d.to_path_buf())
-        .ok_or_else(|| "--hud: cannot resolve the --esm directory".to_string())?;
+    let (_esm, esm_dir) = crate::cli_args::esm_discovery_root(args)?;
     for game in [ScaleformGame::Skyrim, ScaleformGame::Fallout4] {
         let archive = esm_dir.join(game.menu_archive());
         if archive.is_file() {

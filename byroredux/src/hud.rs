@@ -385,24 +385,11 @@ fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGamePr
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
     }
-    let esm = args
-        .iter()
-        .position(|a| a == "--esm")
-        .and_then(|i| args.get(i + 1))
-        .filter(|v| !v.starts_with("--"))
-        .cloned()
-        .ok_or_else(|| "--hud requires --esm <path> (archive discovery root)".to_string())?;
-    let esm_dir = std::path::PathBuf::from(&esm)
-        .parent()
-        .map(|d| d.to_path_buf())
-        .ok_or_else(|| "--hud: cannot resolve the --esm directory".to_string())?;
+    let (esm, esm_dir) = crate::cli_args::esm_discovery_root(args)?;
 
-    let load_order: Vec<&str> = args
+    let masters = crate::cli_args::parse_all_string_args(args, "--master");
+    let load_order: Vec<&str> = masters
         .iter()
-        .enumerate()
-        .filter(|(_, arg)| *arg == "--master")
-        .filter_map(|(i, _)| args.get(i + 1))
-        .filter(|value| !value.starts_with("--"))
         .map(String::as_str)
         .chain(std::iter::once(esm.as_str()))
         .filter_map(|plugin| std::path::Path::new(plugin).file_name()?.to_str())

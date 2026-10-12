@@ -1218,10 +1218,8 @@ impl App {
 /// Use the same full-detail radius as cold exterior startup. An explicit
 /// boot-time override still wins for traversal smokes and constrained hosts.
 fn exterior_transition_radius(args: &[String]) -> i32 {
-    args.iter()
-        .position(|arg| arg == "--radius")
-        .and_then(|index| args.get(index + 1))
-        .map(|value| crate::scene::parse_exterior_radius(value))
+    crate::cli_args::parse_string_arg(args, "--radius")
+        .map(|value| crate::scene::parse_exterior_radius(&value))
         .unwrap_or(crate::scene::DEFAULT_EXTERIOR_RADIUS)
 }
 

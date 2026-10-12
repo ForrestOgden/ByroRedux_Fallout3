@@ -66,6 +66,43 @@ pub fn parse_string_arg(args: &[String], flag: &str) -> Option<String> {
     matched
 }
 
+/// Every `--flag <value>` occurrence, in argv order — the repeatable-flag
+/// counterpart of [`parse_string_arg`] (`--master`, `--extension`, …). A value
+/// that is itself a flag (`--master --esm x`) is skipped rather than consumed,
+/// and the `--flag=value` trap warns exactly as the single-value reader does
+/// when no space-separated occurrence exists. Lifted from
+/// `extensions::install::flag_values` so the four hand-rolled `--master`
+/// collectors share it (#5598).
+pub fn parse_all_string_args(args: &[String], flag: &str) -> Vec<String> {
+    let values: Vec<String> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| *value == flag)
+        .filter_map(|(index, _)| args.get(index + 1))
+        .filter(|value| !value.starts_with("--"))
+        .cloned()
+        .collect();
+    if values.is_empty() {
+        warn_on_equals_form(args, flag);
+    }
+    values
+}
+
+/// The `--esm <path>` archive-discovery root every `--hud` probe starts from:
+/// the plugin path and the directory that holds it (where the interface and
+/// menu archives sit). The two HUD routes (`hud_archive_args`,
+/// `hud_scaleform_args`) used to carry this prologue verbatim (#5598).
+pub fn esm_discovery_root(args: &[String]) -> Result<(String, std::path::PathBuf), String> {
+    let esm = parse_string_arg(args, "--esm")
+        .filter(|value| !value.starts_with("--"))
+        .ok_or_else(|| "--hud requires --esm <path> (archive discovery root)".to_string())?;
+    let esm_dir = std::path::PathBuf::from(&esm)
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .ok_or_else(|| "--hud: cannot resolve the --esm directory".to_string())?;
+    Ok((esm, esm_dir))
+}
+
 /// Parse `--window-size <width>x<height>` for deterministic capture runs.
 ///
 /// The window remains 1280×720 unless this explicit CLI override is present.
@@ -324,6 +361,41 @@ mod tests {
 
         // A flag that simply is not present must not invent a diagnostic.
         assert_eq!(equals_form_diagnostic(&argv, "--grid"), None);
+    }
+
+    /// #5598 — the repeatable reader keeps every occurrence in argv order,
+    /// skips a value that is itself a flag, and reports the `=` spelling.
+    #[test]
+    fn parse_all_string_args_collects_repeats_and_skips_flag_values() {
+        let argv = args(&[
+            "byroredux", "--master", "Skyrim.esm", "--master", "--esm", "x.esm", "--master",
+            "Update.esm",
+        ]);
+        assert_eq!(
+            parse_all_string_args(&argv, "--master"),
+            vec!["Skyrim.esm".to_owned(), "Update.esm".to_owned()]
+        );
+        assert!(parse_all_string_args(&argv, "--extension").is_empty());
+        // The equals form is not a synonym here either, and is diagnosable.
+        let argv = args(&["byroredux", "--master=Skyrim.esm"]);
+        assert!(parse_all_string_args(&argv, "--master").is_empty());
+        assert!(equals_form_diagnostic(&argv, "--master").is_some());
+    }
+
+    #[test]
+    fn esm_discovery_root_returns_the_plugin_and_its_directory() {
+        let argv = args(&["byroredux", "--hud", "--esm", "/games/fnv/Data/FalloutNV.esm"]);
+        let (esm, dir) = esm_discovery_root(&argv).unwrap();
+        assert_eq!(esm, "/games/fnv/Data/FalloutNV.esm");
+        assert_eq!(dir, std::path::PathBuf::from("/games/fnv/Data"));
+        // Absent, valueless, or value-is-a-flag all report the same error.
+        for bad in [
+            args(&["byroredux", "--hud"]),
+            args(&["byroredux", "--hud", "--esm"]),
+            args(&["byroredux", "--hud", "--esm", "--cell"]),
+        ] {
+            assert!(esm_discovery_root(&bad).unwrap_err().contains("--esm"));
+        }
     }
 
     #[test]

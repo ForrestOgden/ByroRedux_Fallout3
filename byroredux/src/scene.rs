@@ -429,42 +429,25 @@ fn load_scene_content(
         // Skip the demo-primitive spawn + flag the scene as populated so
         // the player rig defaults sensibly (see FlyCam gate below).
         has_nif_content = true;
-    } else if let Some(esm_idx) = args
-        .iter()
-        .position(|a| a == "--esm")
-        .filter(|_| !studio_mode)
+    } else if let Some(esm_path) =
+        crate::cli_args::parse_string_arg(args, "--esm").filter(|_| !studio_mode)
     {
-        let esm_path = args.get(esm_idx + 1).cloned();
-        let cell_id = args
-            .iter()
-            .position(|a| a == "--cell")
-            .and_then(|i| args.get(i + 1))
-            .cloned();
-        let grid_str = args
-            .iter()
-            .position(|a| a == "--grid")
-            .and_then(|i| args.get(i + 1))
-            .cloned();
+        let esm_path = Some(esm_path);
+        let cell_id = crate::cli_args::parse_string_arg(args, "--cell");
+        let grid_str = crate::cli_args::parse_string_arg(args, "--grid");
         // #444 — explicit worldspace EDID override. Used with --grid
         // when the ESM defines multiple exterior worldspaces (e.g.
         // FO3 + DLC masters ship Wasteland, PointLookout, Zeta, Pitt,
         // Anchorage) and the automatic pick lands on the wrong one.
         // Case-insensitive EDID match inside load_exterior_cells.
-        let wrld_name = args
-            .iter()
-            .position(|a| a == "--wrld")
-            .and_then(|i| args.get(i + 1))
-            .cloned();
+        let wrld_name = crate::cli_args::parse_string_arg(args, "--wrld");
         // #531 — optional `--radius N` override for the exterior grid.
         // Defaults to 5 (11×11 grid, ~45K terrain units view distance);
         // raised from 3 for a longer horizon. Clamped to 1..=12 by
         // [`parse_exterior_radius`] so an accidental 100 doesn't try
         // to load 40 401 cells.
-        let radius = args
-            .iter()
-            .position(|a| a == "--radius")
-            .and_then(|i| args.get(i + 1))
-            .map(|s| parse_exterior_radius(s))
+        let radius = crate::cli_args::parse_string_arg(args, "--radius")
+            .map(|s| parse_exterior_radius(&s))
             // #1745 — default full-detail ring extended to the 12-cell max
             // (25×25 = 625 cells, ~98K-unit view). Distant content beyond it
             // is the engine LOD ring; the user wants non-distant geometry to
@@ -481,17 +464,7 @@ fn load_scene_content(
         // placing a base-game STAT resolves cleanly. Without this,
         // Dawnguard / HearthFires / Dragonborn interiors render
         // empty silently. See M46.0.
-        let masters: Vec<String> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| {
-                if a == "--master" {
-                    args.get(i + 1).cloned()
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let masters: Vec<String> = crate::cli_args::parse_all_string_args(args, "--master");
         if !masters.is_empty() {
             log::info!("Load order: masters={:?}, main='{:?}'", masters, esm_path);
         }
@@ -719,97 +692,95 @@ fn start_cli_animation(
 ) {
     // Animation: --kf <path> loads a .kf file and starts playback.
     // Tries BSA extraction first (KF files live in mesh BSAs), falls back to loose file.
-    if let Some(kf_idx) = args.iter().position(|a| a == "--kf") {
-        if let Some(kf_path) = args.get(kf_idx + 1).cloned() {
-            let kf_provider = build_texture_provider(args);
-            let kf_data = kf_provider
-                .extract_mesh(&kf_path)
-                .inspect(|_| {
-                    log::info!("Extracted KF from BSA: '{}'", kf_path);
-                })
-                .or_else(|| {
-                    std::fs::read(&kf_path)
-                        .map_err(|e| log::error!("Failed to read KF '{}': {}", kf_path, e))
-                        .ok()
-                });
-            if let Some(kf_data) = kf_data {
-                match byroredux_nif::parse_nif(&kf_data) {
-                    Ok(kf_scene) => {
-                        let nif_clips = byroredux_nif::anim::import_kf(&kf_scene);
-                        if nif_clips.is_empty() {
-                            log::warn!("No animation clips found in '{}'", kf_path);
-                        } else {
-                            let first_handle;
-                            {
-                                let mut registry = world.resource_mut::<AnimationClipRegistry>();
-                                let mut pool = world.resource_mut::<StringPool>();
-                                for nif_clip in &nif_clips {
-                                    let clip = convert_nif_clip(nif_clip, &mut pool);
-                                    let handle = registry.add(clip);
-                                    log::info!(
-                                        "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
-                                        nif_clip.name,
-                                        nif_clip.duration,
-                                        nif_clip.channels.len(),
-                                        handle,
+    if let Some(kf_path) = crate::cli_args::parse_string_arg(args, "--kf") {
+        let kf_provider = build_texture_provider(args);
+        let kf_data = kf_provider
+            .extract_mesh(&kf_path)
+            .inspect(|_| {
+                log::info!("Extracted KF from BSA: '{}'", kf_path);
+            })
+            .or_else(|| {
+                std::fs::read(&kf_path)
+                    .map_err(|e| log::error!("Failed to read KF '{}': {}", kf_path, e))
+                    .ok()
+            });
+        if let Some(kf_data) = kf_data {
+            match byroredux_nif::parse_nif(&kf_data) {
+                Ok(kf_scene) => {
+                    let nif_clips = byroredux_nif::anim::import_kf(&kf_scene);
+                    if nif_clips.is_empty() {
+                        log::warn!("No animation clips found in '{}'", kf_path);
+                    } else {
+                        let first_handle;
+                        {
+                            let mut registry = world.resource_mut::<AnimationClipRegistry>();
+                            let mut pool = world.resource_mut::<StringPool>();
+                            for nif_clip in &nif_clips {
+                                let clip = convert_nif_clip(nif_clip, &mut pool);
+                                let handle = registry.add(clip);
+                                log::info!(
+                                    "Loaded animation clip '{}' ({:.2}s, {} channels) → handle {}",
+                                    nif_clip.name,
+                                    nif_clip.duration,
+                                    nif_clip.channels.len(),
+                                    handle,
+                                );
+                            }
+                            first_handle = registry.len() as u32 - nif_clips.len() as u32;
+                        }
+
+                        // #2221 — attach the non-transform sinks for
+                        // EVERY clip this KF registered, not just
+                        // `first_handle`: an `AnimationStack` can
+                        // later play any of them on the same subtree,
+                        // and a sink that only exists for clip 0
+                        // leaves the rest silently inert.
+                        if let Some(root) = nif_root {
+                            let last_handle = first_handle + nif_clips.len() as u32;
+                            for handle in first_handle..last_handle {
+                                let channels = {
+                                    let registry = world.resource::<AnimationClipRegistry>();
+                                    registry.get(handle).map(|clip| {
+                                        (
+                                            clip.bool_channels.clone(),
+                                            clip.float_channels.clone(),
+                                            clip.color_channels.clone(),
+                                            clip.texture_flip_channels.clone(),
+                                        )
+                                    })
+                                };
+                                if let Some((bools, floats, colors, texture_flips)) = channels {
+                                    crate::anim_convert::attach_animation_sinks(
+                                        world,
+                                        &bools,
+                                        &floats,
+                                        &colors,
+                                        &texture_flips,
+                                        Some(ctx),
+                                        Some(&kf_provider),
+                                        root,
                                     );
                                 }
-                                first_handle = registry.len() as u32 - nif_clips.len() as u32;
                             }
-
-                            // #2221 — attach the non-transform sinks for
-                            // EVERY clip this KF registered, not just
-                            // `first_handle`: an `AnimationStack` can
-                            // later play any of them on the same subtree,
-                            // and a sink that only exists for clip 0
-                            // leaves the rest silently inert.
-                            if let Some(root) = nif_root {
-                                let last_handle = first_handle + nif_clips.len() as u32;
-                                for handle in first_handle..last_handle {
-                                    let channels = {
-                                        let registry = world.resource::<AnimationClipRegistry>();
-                                        registry.get(handle).map(|clip| {
-                                            (
-                                                clip.bool_channels.clone(),
-                                                clip.float_channels.clone(),
-                                                clip.color_channels.clone(),
-                                                clip.texture_flip_channels.clone(),
-                                            )
-                                        })
-                                    };
-                                    if let Some((bools, floats, colors, texture_flips)) = channels {
-                                        crate::anim_convert::attach_animation_sinks(
-                                            world,
-                                            &bools,
-                                            &floats,
-                                            &colors,
-                                            &texture_flips,
-                                            Some(ctx),
-                                            Some(&kf_provider),
-                                            root,
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Spawn an AnimationPlayer scoped to the NIF subtree.
-                            let player_entity = world.spawn();
-                            // #3345 — start at the clip's authored phase offset.
-                            let phase = world
-                                .resource::<AnimationClipRegistry>()
-                                .get(first_handle)
-                                .map(|c| c.phase)
-                                .unwrap_or(0.0);
-                            let mut player = AnimationPlayer::new(first_handle).with_phase(phase);
-                            if let Some(root) = nif_root {
-                                player.root_entity = Some(root);
-                            }
-                            world.insert(player_entity, player);
-                            log::info!("Animation playback started (clip handle {})", first_handle);
                         }
+
+                        // Spawn an AnimationPlayer scoped to the NIF subtree.
+                        let player_entity = world.spawn();
+                        // #3345 — start at the clip's authored phase offset.
+                        let phase = world
+                            .resource::<AnimationClipRegistry>()
+                            .get(first_handle)
+                            .map(|c| c.phase)
+                            .unwrap_or(0.0);
+                        let mut player = AnimationPlayer::new(first_handle).with_phase(phase);
+                        if let Some(root) = nif_root {
+                            player.root_entity = Some(root);
+                        }
+                        world.insert(player_entity, player);
+                        log::info!("Animation playback started (clip handle {})", first_handle);
                     }
-                    Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
                 }
+                Err(e) => log::error!("Failed to parse KF '{}': {}", kf_path, e),
             }
         }
     }

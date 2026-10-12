@@ -451,8 +451,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
 /// shipping formula (mode 1). A `.min(3)` here used to turn e.g. `4` into
 /// mode 3 — one of the explicitly-wrong CCW diagnostic conventions.
 pub(super) fn rotation_mode_arg(args: &[String]) -> Option<u8> {
-    let idx = args.iter().position(|a| a == "--rotation-mode")?;
-    args.get(idx + 1)?.parse::<u8>().ok()
+    crate::cli_args::parse_string_arg(args, "--rotation-mode")?
+        .parse::<u8>()
+        .ok()
 }
 
 /// Remove every `<flag> <value>` pair from the args list. Used

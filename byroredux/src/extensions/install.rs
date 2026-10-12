@@ -717,12 +717,12 @@ impl ExtensionHost {
 /// capability requested by that manifest. A failure leaves the default empty
 /// host installed, so ordinary content remains usable.
 pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyhow::Result<usize> {
-    let manifest_paths = flag_values(args, "--extension");
+    let manifest_paths = crate::cli_args::parse_all_string_args(args, "--extension");
     let mut staged_host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default())?;
     let mut sources = BTreeMap::<ExtensionId, PathBuf>::new();
     let mut manifests = Vec::with_capacity(manifest_paths.len());
-    for path in manifest_paths {
+    for path in &manifest_paths {
         let manifest_path = std::fs::canonicalize(path)
             .map_err(|error| anyhow::anyhow!("extension manifest {path:?}: {error}"))?;
         let source = std::fs::read_to_string(&manifest_path).map_err(|error| {
@@ -748,7 +748,7 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
         .map(|manifest| (manifest.id.clone(), manifest))
         .collect();
     let mut grants = BTreeMap::<ExtensionId, CapabilitySet>::new();
-    for spec in flag_values(args, "--extension-grant") {
+    for spec in &crate::cli_args::parse_all_string_args(args, "--extension-grant") {
         let (extension, capability) = spec.split_once('=').ok_or_else(|| {
             anyhow::anyhow!(
                 "invalid --extension-grant {spec:?}; expected <extension-id>=<capability-id|*>"
@@ -829,15 +829,6 @@ pub(crate) fn load_requested_extensions(world: &World, args: &[String]) -> anyho
         "activated {package_count} executable extension packages ({component_count} components)"
     );
     Ok(package_count)
-}
-
-fn flag_values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
-    args.iter()
-        .enumerate()
-        .filter_map(|(index, value)| (value == flag).then(|| args.get(index + 1)).flatten())
-        .filter(|value| !value.starts_with("--"))
-        .map(String::as_str)
-        .collect()
 }
 
 fn read_package_artifact(root: &Path, relative: &str, maximum: usize) -> anyhow::Result<Vec<u8>> {

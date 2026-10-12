@@ -194,10 +194,8 @@ pub(crate) fn run() -> Result<()> {
     // line to stdout, then exit. Intended for CI perf tracking and for
     // reproducing the ROADMAP's sweetroll FPS claim without interactive
     // window-title reading. See #366.
-    let bench_frames = args
-        .iter()
-        .position(|a| a == "--bench-frames")
-        .and_then(|i| args.get(i + 1).and_then(|v| v.parse::<u32>().ok()));
+    let bench_frames =
+        parse_string_arg(&args, "--bench-frames").and_then(|v| v.parse::<u32>().ok());
     if bench_frames == Some(0) {
         anyhow::bail!("--bench-frames must be greater than zero");
     }
@@ -432,14 +430,10 @@ pub(crate) fn run() -> Result<()> {
             .get(idx + 1)
             .filter(|v| !v.starts_with("--"))
             .map(|s| s.as_str());
-        let masters: Vec<&str> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| (a == "--master").then(|| args.get(i + 1)).flatten())
-            .map(|s| s.as_str())
-            .collect();
+        let masters = crate::cli_args::parse_all_string_args(&args, "--master");
         let plugin_paths: Vec<&str> = masters
-            .into_iter()
+            .iter()
+            .map(String::as_str)
             .chain(std::iter::once(esm_path.as_str()))
             .collect();
         return crate::list_cells::run(&plugin_paths, filter);
