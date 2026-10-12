@@ -67,6 +67,42 @@ a working checkout and want to understand or change engine internals.
 | [Testing](testing.md) | all | Unit + integration test inventory, how to run |
 | [Dependencies](dependencies.md) | all | Workspace crates and per-crate deps |
 
+## Designs, plans, fixtures and ruleset captures
+
+Per-feature design records, frozen fixtures, execution plans and the
+[CHARAL](charal.md) per-game data captures. Plans and status records are
+dated snapshots; [ROADMAP.md](../../ROADMAP.md) is the live source of truth.
+
+| Doc | Crate(s) | What it covers |
+|---|---|---|
+| [Story Manager](story-manager.md) | plugin, scripting, byroredux | `SMBN`/`SMEN`/`SMQN` decode and event dispatch through the quest lifecycle (#5366, Phases 0–4) |
+| [Dialogue Trees](dialogue-trees.md) | plugin, byroredux | Greeting, line-lifetime, force-greet and voice layers (#5367) |
+| [Playable Vertical Slice](playable-vertical-slice.md) | all | P0–P5 phase record: what each phase of the playable slice proved |
+| [P2 Combat Fixture](p2-combat-fixture.md) | byroredux | Frozen real-data actor/weapon target for the first combat loop |
+| [P2 Combat Animation & Sound Fixture](p2-combat-anim-sound-fixture.md) | byroredux | Combat tail: animation and sound decode verdicts against the real archives |
+| [P4 Quest Fixture](p4-quest-fixture.md) | byroredux, scripting | Skyrim MS01 "The Forsworn Conspiracy" as the authored-objective/dialogue fixture |
+| [Near-Term Action Plan](near-term-action-plan.md) | all | 2026-09-20 priority spine and open-issue triage (historical snapshot) |
+| [Exterior Readiness Plan](exterior-readiness-plan.md) | byroredux, renderer | Execution plan for a dependable cross-game open-world path |
+| [RT Lighting & Material Recovery](rt-lighting-material-recovery.md) | renderer, byroredux | 2026-08 execution contract for ray-traced lighting and material correctness |
+| [Interior Godrays Status](interior-godrays-status.md) | renderer, byroredux | Hand-off: time-of-day light shafts and sky apertures in interiors (in progress) |
+| [Dependency Update Follow-ups](dependency-update-followups-plan.md) | all | Follow-ups after the 2026-10 crate update (rapier 0.36, glam 0.33, egui 0.36, kira 0.12, wasmtime 49, Ruffle) |
+| [M27 Phase 1 Survey](m27-phase1-survey.md) | core, byroredux | Per-system read/write/structural-mutation survey behind the scheduler access declarations |
+| [M47.0 Event Hooks Design](m47-0-design.md) | scripting | Event-hooks runtime design, retained for architecture history |
+| [M47.2 Scripting Runtime Design](m47-2-design.md) | scripting, papyrus | Full scripting runtime design (Tier 3) |
+| [M47.2 Recognizer Scaling](m47-2-recognizer-scaling.md) | scripting | Recognizer-catalog corpus characterization and tiered design |
+| [M47.3 Quest Alias Design](m47-3-quest-alias-design.md) | plugin, scripting | `ALST`/`ALLS` decode and the alias-fill runtime |
+| [NIF → Engine Translation Layer](nif-engine-translation-layer.md) | nif, byroredux | Closed umbrella issue #1277: original problem statement and translation-boundary design |
+| [Starfield ESM Roadmap](starfield-esm-roadmap.md) | plugin | Starfield ESM parser action plan |
+| [Starfield ESM Phase 0 Baseline](starfield-esm-phase0-baseline.md) | plugin | Phase 0+1 measurement baseline for the Starfield ESM parser |
+| [SDK v0.1 Development Plan](sdk-v0.1-development-plan.md) | sdk, mod-runtime | SDK and extension platform development plan |
+| [SDK v0.1 Next Action Plan](sdk-v0.1-next-action-plan.md) | sdk, mod-runtime | SDK hand-off backlog |
+| [CHARAL — FNV / FO3 Ruleset](charal-fnv-fo3-ruleset.md) | core | Skill-based Fallout `CharacterRuleset` data capture |
+| [CHARAL — FO4 Ruleset](charal-fo4-ruleset.md) | core | Perk-only Fallout 4 `CharacterRuleset` data capture |
+| [CHARAL — FO76 Ruleset](charal-fo76-ruleset.md) | core | Fallout 76 `CharacterRuleset` data capture |
+| [CHARAL — Oblivion Ruleset](charal-oblivion-ruleset.md) | core | Oblivion gameplay-system formulas downstream of the core ruleset |
+| [CHARAL — Skyrim Ruleset](charal-skyrim-ruleset.md) | core | Skyrim `CharacterRuleset` gameplay-system formulas |
+| [CHARAL — Starfield Ruleset](charal-starfield-ruleset.md) | core | Starfield `CharacterRuleset` data capture |
+
 ## Legacy reference
 
 - [Gamebryo 2.3 Architecture](../legacy/gamebryo-2.3-architecture.md) — directory structure, class hierarchy, compatibility mapping

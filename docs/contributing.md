@@ -107,8 +107,9 @@ as useful as the comments feeding it.
 # Full workspace (the live test count is tracked in ROADMAP.md)
 cargo test --workspace
 
-# Single crate
-cargo test -p byroredux-core
+# Single crate (core needs `--features inspect`: a bare run silently drops
+# the animation inspect_tests round-trips, #3895 — see CLAUDE.md)
+cargo test -p byroredux-core --features inspect
 cargo test -p byroredux-nif
 cargo test -p byroredux-plugin
 

@@ -93,7 +93,7 @@ via `pre_parse_cell`, and sends `LoadCellPayload` back on a second channel.
 
 Trigger: `App::step_streaming` (`byroredux/src/app_step.rs:21`) runs once
 per tick, converts the active camera's position to a grid coordinate via
-`world_pos_to_grid` (`streaming.rs:752`). Cell diff/dispatch only runs when
+`world_pos_to_grid` (`byroredux/src/streaming/mod.rs`). Cell diff/dispatch only runs when
 that grid cell changed, but the step continues on stationary frames while a
 deferred LOD reconcile or cell apply is pending.
 

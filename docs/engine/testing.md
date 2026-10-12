@@ -48,7 +48,7 @@ each crate's `tests/` directory and the binary crate's own
 - **Header parser** — minimal Skyrim header, blocks + strings, NetImmerse pre-Gamebryo, BSStreamHeader for FO4/FO76, user_version threshold
 - **Stream reader** — primitives, version-dependent string format, block refs, transforms
 - **Block parsers** — every supported block type (NiNode, NiTriShape, BSTriShape variants, NiSkinPartition, BSLightingShaderProperty across 8 shader-type variants, BSEffectShaderProperty, particle systems, FO76 CRC32 flag arrays, FO76 stopcond, FO76 luminance/translucency). Collision (`bhk*`) coverage lives next to the parsers in the Session-35 split [`crates/nif/src/blocks/collision/`](../../crates/nif/src/blocks/collision/) — dedicated sibling tests for `bhk_rigid_body`, `bhk_ragdoll`, `bhk_breakable_constraint`, `bhk_blend_collision_object`, and `hk_packed_ni_tri_strips_data`
-- **Dispatch regression tests** (`blocks::dispatch_tests`) — the original N26-audit module has grown into a per-topic directory [`crates/nif/src/blocks/dispatch_tests/`](../../crates/nif/src/blocks/dispatch_tests/) (Session-35 split out of a 3 667-LOC monolith, ~67 tests today across `shader`, `havok`, `interpolators`, `controllers`, `extra_data`, `nodes`, `effects`, `starfield`). Shared fixtures (`oblivion_header`, `oblivion_bsshader_bytes`) live in `mod.rs`. Each test drives a minimal game-shaped byte stream through `parse_block`, downcasts the result, and asserts *exact* stream consumption so any future byte-width or version-gate drift fails fast — the original goal of catching regressions on Oblivion's block-sizes-less (v20.0.0.5) path, now extended to FO76/Starfield block families
+- **Dispatch regression tests** (`blocks::dispatch_tests`) — the original N26-audit module has grown into a per-topic directory [`crates/nif/src/blocks/dispatch_tests/`](../../crates/nif/src/blocks/dispatch_tests/) (Session-35 split out of a 3 667-LOC monolith, ~106 tests today across 10 topic files — `shader`, `havok`, `interpolators`, `controllers`, `extra_data`, `nodes`, `effects`, `starfield`, `legacy_particle`, plus the shared `mod.rs`; count the live total with `grep -rc '#[test]' crates/nif/src/blocks/dispatch_tests/`). Shared fixtures (`oblivion_header`, `oblivion_bsshader_bytes`) live in `mod.rs`. Each test drives a minimal game-shaped byte stream through `parse_block`, downcasts the result, and asserts *exact* stream consumption so any future byte-width or version-gate drift fails fast — the original goal of catching regressions on Oblivion's block-sizes-less (v20.0.0.5) path, now extended to FO76/Starfield block families
 - **Animation import** — the `crates/nif/src/anim/` submodule split (`coord`, `controlled_block`, `transform`, `sequence`, `keys`, `channel`, `bspline`, `entry`) with its own `tests.rs`: `NiTransformInterpolator`, `NiKeyframeData`, `NiTextKeyExtraData`, controller-manager and `NiControllerSequence` import, compressed B-spline evaluation
 - **Mesh import** — the `crates/nif/src/import/mesh/` submodule split keeps geometry extraction beside its tests (Session-35 stage-A split out of the old `mesh.rs`): `bs_geometry` + `_skin_tests` + `_tangent_tests`, `bs_tri_shape` + `_kind_passthrough` + `_partition_remap` + `_shader_flag` siblings, `material_path_capture_tests`, `shader_type_fields_tests`, `skin_tests`, `sse_skin_geometry_reconstruction_tests`, `tangent_convention_tests`
 - **Coordinate conversion** — Z-up→Y-up identity, 90° rotation around each axis, vertex positions, vertex normals, winding-order preservation
@@ -174,13 +174,14 @@ small env-var-resolving `data_dir` helper following the same shape.
 # Default — fast, no game data required.
 cargo test
 
-# A single crate
-cargo test -p byroredux-core
+# A single crate (core needs `--features inspect`: a bare run silently drops
+# the animation inspect_tests round-trips, #3895 — see CLAUDE.md)
+cargo test -p byroredux-core --features inspect
 cargo test -p byroredux-nif
 cargo test -p byroredux-plugin
 
 # A single module
-cargo test -p byroredux-core -- ecs::world
+cargo test -p byroredux-core --features inspect -- ecs::world
 
 # Integration tests requiring game data
 cargo test -p byroredux-nif --release --test parse_real_nifs -- --ignored
