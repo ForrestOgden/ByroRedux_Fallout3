@@ -141,9 +141,10 @@ pub enum ItemKind {
     },
     /// ARMO: armor or clothing.
     Armor {
-        /// Body parts covered (bitfield). Source varies by game: FO3/FNV
-        /// use BMDT low-u32 as biped slots; Skyrim uses BOD2 u32 biped
-        /// slots directly.
+        /// Body parts covered (bitfield). Source varies by game: Oblivion
+        /// uses the BMDT u16 Biped Flags (its General Flags byte is not part
+        /// of the mask, #5696); FO3/FNV use BMDT low-u32 as biped slots;
+        /// Skyrim uses BOD2 u32 biped slots directly.
         biped_flags: u32,
         /// Damage Threshold (FO3/FNV) — flat damage absorbed. 0 on Skyrim
         /// and later (game uses `armor_rating` instead).
@@ -527,12 +528,25 @@ pub fn parse_armo(
 
     for sub in subs {
         match &sub.sub_type {
-            // BMDT shape varies: Oblivion (4 bytes — just biped_flags u32)
-            // vs FO3/FNV/FO4 (8 bytes — biped_flags u32 + general_flags
-            // u32). Skyrim+ dropped BMDT entirely in favor of BOD2.
-            // Measured: Oblivion.esm 996/996 ARMO records use 4-byte BMDT.
+            // BMDT shape varies. Oblivion (4 bytes): Biped Flags u16, General
+            // Flags u8 (Hide Rings 0, Hide Amulets 1, Non-Playable 6, Heavy
+            // Armor 7), 1 unused byte — xEdit `wbDefinitionsTES4`, the same
+            // shape `parse_clot` reads. FO3/FNV (8 bytes): Biped Flags u32,
+            // General Flags u8, 3 pad. Skyrim+ dropped BMDT entirely in
+            // favor of BOD2. Measured: Oblivion.esm 996/996 ARMO records
+            // use 4-byte BMDT.
+            //
+            // #5696 — Oblivion used to read the whole sub-record as one u32,
+            // so the General Flags byte landed in `biped_flags` bits 16–23
+            // on 661 of 996 vanilla armors (`SE32CirionsHelmet4`: `03 00 80
+            // 00` decoded to 0x0080_0003). The slots are the low u16 only.
             b"BMDT" => {
-                biped_flags = SubReader::new(&sub.data).u32_or_default();
+                let mut r = SubReader::new(&sub.data);
+                biped_flags = if game == GameKind::Oblivion {
+                    u32::from(r.u16_or_default())
+                } else {
+                    r.u32_or_default()
+                };
                 slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
@@ -2277,7 +2291,9 @@ mod tests {
         // DATA is 14 bytes: armor(u16) value(u32) health(u32) weight(f32).
         // Decoded from disk: armor_x100=575 (5.75), value=400, health=775,
         //                    weight=9.8.
-        let bmdt = [0x00, 0x00, 0x00, 0x00]; // 4-byte BMDT, biped flags 0 for sample
+        // The real record's BMDT (#5696): Head+Hair slots (u16 0x0003),
+        // General Flags 0x80 (Heavy Armor), 1 unused byte.
+        let bmdt = [0x03, 0x00, 0x80, 0x00];
         let data = [
             0x3f, 0x02, // armor = 575 (= 5.75 × 100)
             0x90, 0x01, 0x00, 0x00, // value = 400
@@ -2292,6 +2308,16 @@ mod tests {
             sub(b"DATA", data),
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
+        match &item.kind {
+            ItemKind::Armor { biped_flags, slot_mask, .. } => {
+                assert_eq!(
+                    *biped_flags, 0x3,
+                    "the General Flags byte (0x80, Heavy) must not leak into bits 16-23"
+                );
+                assert_eq!(*slot_mask, 0x3);
+            }
+            _ => panic!("expected Armor kind"),
+        }
         assert_eq!(
             item.common.value, 400,
             "value at offset 2 (after armor u16)"
@@ -2322,7 +2348,9 @@ mod tests {
         // Pre-fix the parser required `len >= 8` on BMDT, so Oblivion's
         // 4-byte BMDT silently dropped biped_flags entirely. Guard that
         // a 4-byte BMDT is now accepted on Oblivion records.
-        let bmdt = [0x04, 0x00, 0x00, 0x00]; // biped_flags = Hair (bit 2)
+        // Biped Flags u16 = 0x0004 (bit 2 = UpperBody in Oblivion), General
+        // Flags 0xC0 (Non-Playable | Heavy) — must not reach biped_flags.
+        let bmdt = [0x04, 0x00, 0xC0, 0x00];
         let data = [
             0x00, 0x00, 0xc8, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
