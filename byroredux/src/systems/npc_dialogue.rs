@@ -1117,6 +1117,64 @@ mod tests {
         );
     }
 
+    /// #5642 — two greeters in radius on the same tick: the first opens
+    /// its conversation, the second must hold. Pass 1 judged both `Open`
+    /// against a pre-open snapshot, so the second open used to strip the
+    /// first's line mid-sentence and spend both directives.
+    #[test]
+    fn two_same_frame_force_greeters_open_one_conversation() {
+        use crate::systems::forcegreet::{forcegreet_system, ForceGreetDirective};
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+
+        let mut world = World::new();
+        world.register::<NpcDialogueTopic>();
+        world.register::<SceneAliasCandidate>();
+        world.register::<Dead>();
+        world.register::<ForceGreetDirective>();
+        world.register::<GlobalTransform>();
+        world.register::<Transform>();
+        world.insert_resource(DialogueRegistry::default());
+        world.insert_resource(DialogueSurfaceState::default());
+        world.insert_resource(greeting_index(false));
+        let player = spawn_player(&mut world);
+        world.insert(player, GlobalTransform::default());
+        world.insert(player, Transform::default());
+        let greeters = [
+            spawn_actor(&mut world, 0xAB_0001, 0x97_0001),
+            spawn_actor(&mut world, 0xAB_0002, 0x97_0002),
+        ];
+        for npc in greeters {
+            world.insert(npc, GlobalTransform::default());
+            world.insert(npc, Transform::default());
+            world.insert(
+                npc,
+                ForceGreetDirective {
+                    topic: None,
+                    radius: crate::systems::forcegreet::FORCE_GREET_RADIUS,
+                },
+            );
+        }
+
+        forcegreet_system(&world, 0.016);
+
+        let open: Vec<EntityId> = greeters
+            .into_iter()
+            .filter(|npc| selected(&world, *npc).is_some())
+            .collect();
+        assert_eq!(open.len(), 1, "exactly one greeter owns the conversation");
+        assert_eq!(
+            world.resource::<DialogueSurfaceState>().npc,
+            Some(open[0]),
+            "the surface belongs to the greeter that opened"
+        );
+        let pending: Vec<EntityId> = greeters
+            .into_iter()
+            .filter(|npc| world.get::<ForceGreetDirective>(*npc).is_some())
+            .collect();
+        assert_eq!(pending.len(), 1, "the held greeter keeps its directive");
+        assert_ne!(pending[0], open[0], "the opener's directive was spent");
+    }
+
     /// #5367 Phase L — a Goodbye line arms the timed close; once
     /// `TotalTime` passes the estimate, the Late system ends the
     /// conversation (OnEnd ran via `end_open_conversation`) and cues the

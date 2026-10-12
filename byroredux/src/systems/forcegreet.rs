@@ -81,6 +81,14 @@ pub(crate) fn make_forcegreet_system(walk_enabled: bool) -> impl FnMut(&World, f
     }
 }
 
+/// The NPC the player is currently in conversation with, if any — read
+/// fresh each call (#5642: it changes within a tick as greeters open).
+fn open_conversation_partner(world: &World) -> Option<EntityId> {
+    world
+        .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+        .and_then(|surface| surface.npc)
+}
+
 fn forcegreet_system_inner(
     world: &World,
     dt: f32,
@@ -116,9 +124,7 @@ fn forcegreet_system_inner(
     // #5392 — the NPC the player is already talking to, if any. A
     // force-greet must not pre-empt that conversation (`apply_selection`
     // would strip the partner's line and fire its OnEnd mid-sentence).
-    let open_partner = world
-        .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
-        .and_then(|surface| surface.npc);
+    let open_partner = open_conversation_partner(world);
     // #5371 — the three-pass shape every other locomotion system
     // shares (travel.rs / patrol.rs / wander.rs / …): `PhysicsWorld` is
     // a lock-order sink ("nothing taken under it", docs/engine/ecs.md),
@@ -227,6 +233,22 @@ fn forcegreet_system_inner(
         match step {
             Step::Refuses => opened.push(*npc), // consume below
             Step::Open { topic } => {
+                // #5642 — Pass 1 judged `Open` against a snapshot taken
+                // before any conversation opened this frame. Two greeters in
+                // radius on the same tick would both pass it, and the second
+                // `apply_selection` would strip the first's line mid-sentence
+                // and spend both directives. Re-read the live surface per
+                // open: a conversation opened a moment ago by an earlier
+                // greeter holds this one (its directive stays pending, like
+                // the Pass 1 `Some(_)` arm); the greeter itself is consumed.
+                match open_conversation_partner(world) {
+                    Some(partner) if partner == *npc => {
+                        opened.push(*npc);
+                        continue;
+                    }
+                    Some(_) => continue,
+                    None => {}
+                }
                 if forcegreet_open(world, *npc, *topic) {
                     opened.push(*npc);
                 } else {
