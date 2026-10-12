@@ -122,7 +122,9 @@ pub enum Effect {
     /// `<quest>.SetActive(active)`.
     SetQuestActive { quest: QuestRef, active: bool },
     /// `<quest>.SetObjectiveDisplayed(objective, displayed)`. Papyrus's
-    /// optional `abForce` 3rd arg doesn't affect the stored state.
+    /// optional `abForce` 3rd arg doesn't affect the stored state, but is
+    /// accepted only as a literal (declining non-literal 3rd expressions,
+    /// #5652).
     SetObjectiveDisplayed {
         quest: QuestRef,
         objective: i32,
@@ -1043,6 +1045,12 @@ fn prim_set_objective_displayed(e: &Expr, scope: &Scope) -> Option<Effect> {
     let objective = i32::try_from(int_arg(args, 0)?).ok()?;
     // Optional 2nd arg `abDisplayed` defaults to true in Papyrus.
     let displayed = bool_arg(args, 1)?.unwrap_or(true);
+    // #5652 — the optional 3rd arg `abForce` (redisplay an already-shown
+    // objective) must be a literal, the AddItem-abSilent discipline:
+    // accepting the arity bound while never reading the slot silently
+    // dropped a non-literal or side-effecting 3rd expression. Not
+    // applied — the stored objective state is the same either way.
+    bool_arg(args, 2)?;
     Some(Effect::SetObjectiveDisplayed {
         quest: receiver_quest(object, scope)?,
         objective,
@@ -3876,6 +3884,39 @@ mod tests {
                 quest: QuestRef::SelfRef,
                 objective: 10,
                 failed: false,
+            }])
+        );
+    }
+
+    /// #5652 — `SetObjectiveDisplayed` accepts its 3rd argument only as a
+    /// literal: a non-literal (or side-effecting) `abForce` expression
+    /// must decline the call instead of being silently dropped while the
+    /// arity bound pretends three arguments were handled.
+    #[test]
+    fn set_objective_displayed_declines_non_literal_third_arguments() {
+        // A variable is the simplest non-literal 3rd arg a fragment body
+        // can carry — not a bool literal, so `bool_arg` declines.
+        let non_literal = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_57()\n\
+             Int force\n\
+             force = 1\n\
+             Self.SetObjectiveDisplayed(10, true, force)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&non_literal), None);
+
+        // The literal shapes still lower, including the 3rd arg true.
+        let forced = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_58()\n\
+             Self.SetObjectiveDisplayed(10, false, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&forced),
+            Some(vec![Effect::SetObjectiveDisplayed {
+                quest: QuestRef::SelfRef,
+                objective: 10,
+                displayed: false,
             }])
         );
     }
