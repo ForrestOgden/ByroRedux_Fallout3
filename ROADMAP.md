@@ -657,10 +657,11 @@ performance finding. The measured knob table is in
   Prospector, Skyrim BanneredMare). Derived reach should land near the
   ~512-unit vanilla LIGH radius, and fires without a companion LIGH should not
   blow out the room.
-- [ ] **CHARAL runtime-dead surface.** The formulas are right: 62 constants
-  were verified with zero mismatch in
-  [`AUDIT_CHARACTER_2026-08-15.md`](docs/audits/AUDIT_CHARACTER_2026-08-15.md).
-  FO3, FNV, Skyrim and FO4 reach actors. Still open:
+- [ ] **CHARAL runtime-dead surface.** The 2026-08-15 audit verified 62
+  constants with zero mismatch at that HEAD; #5238 later falsified the
+  then-current NPC Health row (fixed, and the capture's Health rows are now
+  split player/NPC — #5342), so treat that "zero mismatch" as dated, not
+  standing. FO3, FNV, Skyrim and FO4 reach actors. Still open:
   - The Oblivion ruleset is unwired (see Status).
   - `regen` no-ops until an Oblivion-shaped `PoolRegenConfig` exists.
   - `affliction_tick_system` is never registered.

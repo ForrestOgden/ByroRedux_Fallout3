@@ -90,7 +90,8 @@ base + tag it's the **complete player skill model** for FO3/FNV.
 
 | Stat | Gov | FO3 formula | FNV formula | Status |
 |---|---|---|---|---|
-| Health (NPC) | END + level | `base + 5·(END−1) + 5·(Level−1)` | same | **BUILT** (#5238 — authored `fAVDNPCHealth{Endurance,Level}Mult` = 5/5 + exe-default `fAVDNPCHealthEnduranceOffset` = −1 per term; 15/15 vanilla infobox pin) |
+| Health (player) | END + level | `90 + 20·END + 10·Level` | `100 + 20·END + 5·(Level−1)` | **BUILT** — `fallout3_ruleset`/`falloutnv_ruleset` encode exactly these, `.player_only()` scope. Sourced from the authored player GMSTs (`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV, `fAVDHealthEnduranceOffset` = 0.0 in both masters) and the fandom *Hit Points* page; #5342 restored this row after #5238 replaced it — the two scopes are different rows, not one |
+| Health (NPC) | END + level | `base + 5·(END−1) + 5·(Level−1)` | same | **BUILT** (#5238 — authored `fAVDNPCHealth{Endurance,Level}Mult` = 5/5, exe-default `fAVDNPCHealthEnduranceOffset` = −1 on the END term, engine-hardcoded level anchor −1 (#5340); 15/15 synthetic pin whose inputs are the masters' own `DATA` bytes + 3 end-to-end real-master asserts) |
 | Action Points | AGI | `65 + 2·AGI` (cap 85) | `65 + 3·AGI` (cap 95) | **BUILT** (formula sourced; the GECK *Stats Tab — NPC* "Reported Stats" list has **no AP entry** (#5240), corroborating #2937's conservative player-only choice) |
 | Carry Weight | STR | `150 + 10·STR` | `150 + 10·STR` | **BUILT** (actor-general) |
 | Critical Chance | Luck | `Luck × 1%` (cap 10%) | `Luck × 1%` (Luck>10 inert) | **BUILT** (formula LOCKED, `critchance` AV; **scope SOURCED actor-general** — GECK *Stats Tab — NPC*: "Generally the same as the NPC's luck" (#5240); pinned by `fo3_fnv_geck_npc_page_scopes_the_shared_derived_rows`) |
@@ -110,17 +111,22 @@ CHARAL profile as `body_condition_base: Some(100.0)` on the `FALLOUT3` and
 Oblivion/Skyrim+ profiles leave it `None`).
 
 Health (NPCs, #5238): `base + fAVDNPCHealthEnduranceMult·(END + fAVDNPCHealthEnduranceOffset)
-+ fAVDNPCHealthLevelMult·(Level + fAVDNPCHealthEnduranceOffset)` — both masters author the
++ fAVDNPCHealthLevelMult·(Level + level_anchor)` — both masters author the
 mult pair at **5.0 / 5.0** (FormIDs 0xAE66A / 0xAE66B, measured with
 `crates/plugin/examples/health_gmst_dump.rs`), the offset is an **exe default of −1.0**
 (Fallout3.exe packed default-GMST table; neither master authors an override; GECK settings
 list corroborates the setting), and `base` is each record's own `DATA` Base Health (GECK
 *Stats Tab — NPC*: "Health is calculated with Endurance and level. This value is then added
-to that result."). The per-term −1 composes to the −10 constant that fits 15/15 vanilla
-infobox `hp` samples across both masters (pinned by
-`fo3_fnv_named_npc_health_matches_the_authored_curve`). The player formulas
-(`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV) are a separate
-path and do not apply to NPCs — the row above previously carried them by mistake.
+to that result."). #5340 — the level anchor is an **engine-hardcoded −1.0**, not the
+Endurance offset: no level-offset GMST exists in either exe (`strings` sweep), and the
+authored player-side `fAVDHealthEnduranceOffset` is 0.0 while the player formula still
+reads `(Level − 1)`. On vanilla data the split is value-identical to the old per-term
+binding (END −1, Level −1 → the −10 constant). The 15 vanilla infobox `hp` samples are
+pinned by `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples` (8 FNV + 7 FO3, inputs
+from the masters' `DATA` bytes) plus 3 end-to-end real-master asserts in
+`fo3_fnv_named_npc_health_matches_the_authored_curve`. The player formulas
+(`fAVDHealthEnduranceMult` = 20, `fAVDHealthLevelMult` = 10 FO3 / 5 FNV) are the separate
+`Health (player)` row above — NPCs never read them.
 
 Carry Weight: `fAVDCarryWeight{Base=150, Mult=10}` — actor-general (NPCs/companions
 too), same GMST family as FO4 (`Base=200, Mult=10`) and FO76 (`Base=150, Mult=5` —

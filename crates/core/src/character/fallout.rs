@@ -185,8 +185,9 @@ pub fn fallout3_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
                 .capped(85.0)
                 // #2937 — `player_only()` here is UNSOURCED, unlike Health's
                 // above. `charal-fnv-fo3-ruleset.md`'s derived-stat table
-                // annotates scope on every other locked row (Health
-                // "(player)", Carry Weight "(actor-general)") but gives
+                // annotates scope on its locked rows (Health "(player)"
+                // (#5342) and Health (NPC) separately, Carry Weight
+                // "(actor-general)") but gives
                 // Action Points none; its prose only ties the formula to the
                 // `fAVDActionPoints{Base,Mult}` GMST family FO3/FNV share
                 // with FO4/FO76, never states NPC scope. FO4's own
@@ -309,7 +310,8 @@ mod tests {
     /// #2937 — FO3/FNV Action Points is `player_only` as a deliberate but
     /// UNsourced conservative choice (see `fallout3_ruleset`'s AP row and
     /// the module docs), unlike Health's player-only scope, which the
-    /// capture document does state. Pin the current, chosen behavior so a
+    /// capture document's `Health (player)` row states (#5342 restored
+    /// it). Pin the current, chosen behavior so a
     /// future edit that silently flips it to `ActorGeneral` (or the reverse
     /// on FO4/FO76) is a deliberate, reviewed change, not an accident.
     #[test]

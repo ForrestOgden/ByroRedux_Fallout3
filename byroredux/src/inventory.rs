@@ -3374,8 +3374,9 @@ mod tests {
         assert_eq!(
             values.current(health),
             200.0,
-            "FNV Health 95 + 20·END(5) + 5·L(1), the NPC curve the player \
-             record's class derives"
+            "FNV player Health 100 + 20·END(5) + 5·(L 1 − 1) = 200, the \
+             player_only() ruleset row (#5342) — not the NPC curve (which \
+             gives 20 here)"
         );
         assert_eq!(values.current(index.actor_value_form_id("Luck").unwrap()), 5.0);
         // #4674 — AP is PlayerOnly and was never seeded pre-fix (read 0.0);

@@ -33,8 +33,11 @@
 //!   geckwiki *SPECIAL*. FO3 and FNV use distinct canonical 13-skill rosters;
 //!   FNV's displayed Guns/Survival retain the `AVSmallGuns`/`AVThrowing`
 //!   record identities.
-//! - **Health**: FO3 `90 + 20·END + 10·Level`; FNV
-//!   `100 + 20·END + 5·(Level−1)`, from the locked CHARAL ruleset capture.
+//! - **Health (NPC)**: `DATA` Base Health + the sourced
+//!   `NpcHealthCurve` (`base + 5·(END−1) + 5·(L−1)` — see
+//!   `crates/core/src/character/profile.rs`, #5238/#5340). The player
+//!   formulas (FO3 `90 + 20·END + 10·L`, FNV `100 + 20·END + 5·(L−1)`)
+//!   are the `Health (player)` row of the capture and never seed NPCs.
 //!
 //! ## Deferred (intentionally, not guessed)
 //!
