@@ -731,9 +731,13 @@ pub fn evaluate_function(
             let Some(state) = world.try_resource::<QuestStageState>() else {
                 return 0.0;
             };
-            let running = state
-                .is_running(QuestFormId(condition.param_1))
-                || state.is_started(QuestFormId(condition.param_1));
+            // `is_running` alone — the predicate ObScript's `GetQuestRunning`,
+            // dialogue ownership, SM pool eligibility and alias refresh all
+            // use. `is_started` is plain map membership, so it stays true
+            // after `Quest.Stop()` and after Complete/Fail; folding it in
+            // made every `GetQuestRunning(X) == 0` gate permanently false
+            // once X had run and stopped (#5636).
+            let running = state.is_running(QuestFormId(condition.param_1));
             if running { 1.0 } else { 0.0 }
         }
         ConditionFunction::GetGlobalValue => {
@@ -2137,6 +2141,60 @@ mod tests {
         let mut eq = cond(58, ComparisonOp::Eq, 0.0, false).with_param_1(0xAA);
         eq.comparand = ConditionValue::Global(0x0100_0099);
         assert!(evaluate(&vec![eq], &world, &ctx(0)));
+    }
+
+    // ── GetQuestRunning (#5636) ────────────────────────────────────────
+
+    /// A quest that has been started and then stopped (or completed /
+    /// failed) is not running: `GetQuestRunning` must read 0.0 for it, not
+    /// the "has ever entered the lifecycle" membership bit.
+    #[test]
+    fn get_quest_running_is_false_for_stopped_completed_and_failed_quests() {
+        use crate::quest_stages::{QuestFormId, QuestStageState};
+        // Fresh world per case: `setup` drives the quest through its
+        // lifecycle, then `GetQuestRunning(0xA1) == 1` is evaluated.
+        let running = |setup: &dyn Fn(&mut QuestStageState)| {
+            let mut world = World::new();
+            crate::register(&mut world);
+            let mut state = QuestStageState::default();
+            setup(&mut state);
+            world.insert_resource(state);
+            let eq1 = cond(56, ComparisonOp::Eq, 1.0, false).with_param_1(0xA1);
+            evaluate(&vec![eq1], &world, &ctx(0))
+        };
+        let q = QuestFormId(0xA1);
+
+        assert!(!running(&|_| {}), "never started");
+        assert!(
+            running(&|s| {
+                s.start_quest(q, None);
+            }),
+            "started → running"
+        );
+        assert!(
+            !running(&|s| {
+                s.start_quest(q, None);
+                s.stop(q);
+                // Map membership stays true after a stop — the bit the
+                // old `|| is_started` arm leaked into the answer.
+                assert!(s.is_started(q));
+            }),
+            "stopped → not running"
+        );
+        assert!(
+            !running(&|s| {
+                s.start_quest(q, None);
+                s.complete(q);
+            }),
+            "completed → not running"
+        );
+        assert!(
+            !running(&|s| {
+                s.start_quest(q, None);
+                s.fail(q);
+            }),
+            "failed → not running"
+        );
     }
 
     // ── subject_requirement ────────────────────────────────────────────
