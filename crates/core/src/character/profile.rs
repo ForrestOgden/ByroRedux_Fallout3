@@ -13,7 +13,7 @@ use super::{
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
 /// Health plus two GMST-driven terms,
-/// `base_health + endurance_multiplier·(END + offset) + level_multiplier·(L + offset)`.
+/// `base_health + endurance_multiplier·(END + offset) + level_multiplier·(L + level_anchor)`.
 ///
 /// All three coefficients are engine settings, not invented constants: the
 /// masters author `fAVDNPCHealthEnduranceMult` = `fAVDNPCHealthLevelMult` =
@@ -24,11 +24,23 @@ use super::{
 /// GECK's settings list corroborates the setting's existence). The GECK
 /// *Stats Tab — NPC* note ("Base Health: Health is calculated with Endurance
 /// and level. This value is then added to that result") supplies the base
-/// term, which each record authors per-NPC. Applied per-term, the −1.0
-/// offset composes to the −10 constant every vanilla sample shows: the fit
-/// `base + 5·(END−1) + 5·(L−1)` reproduces 15/15 fandom infobox `hp` values
-/// across both masters (Easy Pete 65, Sunny Smiles 90, Ringo 120, Boone 230,
-/// Benny 205, Veronica 235, Cass 210, Raul 280; Three Dog 25, Gob 35, Nova
+/// term, which each record authors per-NPC.
+///
+/// #5340 — the level term's −1 is **not** `fAVDNPCHealthEnduranceOffset`:
+/// a `strings` sweep of both exes finds no level-offset setting at all
+/// (the only NPC Health settings are the three above), and the authored
+/// player-side `fAVDHealthEnduranceOffset` is 0.0 while the player
+/// formula still anchors the level term at `(Level − 1)` — so the anchor
+/// is an engine-hardcoded constant, mirroring the player formula, and no
+/// GMST overlays it. Binding it to the Endurance offset was a plausible
+/// decomposition, not a citation: a mod retuning
+/// `fAVDNPCHealthEnduranceOffset` would have moved every NPC's Health
+/// twice. On vanilla data the split is value-identical: with the offset
+/// at −1 and the anchor at −1 the curve composes to the −10 constant
+/// every sample shows, and the fit `base + 5·(END−1) + 5·(L−1)`
+/// reproduces 15/15 fandom infobox `hp` values across both masters
+/// (Easy Pete 65, Sunny Smiles 90, Ringo 120, Boone 230, Benny 205,
+/// Veronica 235, Cass 210, Raul 280; Three Dog 25, Gob 35, Nova
 /// 40, Moira 80, Lucas Simms 60, Charon 240, Clover 240) — pinned by
 /// `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples`. The previous
 /// "curve" here was the *player* formula with "sourced" in its doc, which
@@ -39,6 +51,10 @@ pub struct NpcHealthCurve {
     pub endurance_multiplier: f32,
     pub level_multiplier: f32,
     pub offset: f32,
+    /// The level term's anchor — engine-hardcoded `−1.0` (the player
+    /// formula's `(Level − 1)`), deliberately outside [`Self::with_gmst`]:
+    /// no level-offset GMST exists in either exe (#5340).
+    pub level_anchor: f32,
 }
 
 impl NpcHealthCurve {
@@ -50,14 +66,16 @@ impl NpcHealthCurve {
     pub fn evaluate(self, base_health: f32, endurance: f32, level: f32) -> f32 {
         base_health
             + self.endurance_multiplier * (endurance + self.offset)
-            + self.level_multiplier * (level + self.offset)
+            + self.level_multiplier * (level + self.level_anchor)
     }
 
     /// Overlay authored GMST values on the engine-supplied fallback curve.
     /// Missing settings retain the measured constants, keeping older masters
     /// and synthetic fixtures deterministic while allowing mods to retune
     /// the parsed curve — the same discipline as
-    /// [`super::leveling::LevelingModel::with_gmst`].
+    /// [`super::leveling::LevelingModel::with_gmst`]. Only the Endurance
+    /// term's settings are overlaid; [`Self::level_anchor`] has no GMST to
+    /// overlay (#5340).
     #[must_use]
     pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
         Self {
@@ -65,6 +83,7 @@ impl NpcHealthCurve {
                 .unwrap_or(self.endurance_multiplier),
             level_multiplier: gmst("fAVDNPCHealthLevelMult").unwrap_or(self.level_multiplier),
             offset: gmst("fAVDNPCHealthEnduranceOffset").unwrap_or(self.offset),
+            level_anchor: self.level_anchor,
         }
     }
 }
@@ -101,6 +120,7 @@ impl NpcStatModel {
                 endurance_multiplier: 0.0,
                 level_multiplier: 0.0,
                 offset: 0.0,
+                level_anchor: 0.0,
             },
         }
     }
@@ -207,6 +227,7 @@ impl CharacterRulesProfile {
                 endurance_multiplier: 5.0,
                 level_multiplier: 5.0,
                 offset: -1.0,
+                level_anchor: -1.0,
             },
         },
         creature_stats: NpcStatModel::CreatureData,
@@ -226,6 +247,7 @@ impl CharacterRulesProfile {
                 endurance_multiplier: 5.0,
                 level_multiplier: 5.0,
                 offset: -1.0,
+                level_anchor: -1.0,
             },
         },
         creature_stats: NpcStatModel::CreatureData,
@@ -411,12 +433,18 @@ mod tests {
             .npc_stat_model()
             .health_curve();
         // (base, END, level, wiki hp) — FNV: Easy Pete, Sunny Smiles, Ringo,
-        // Boone, Raul (levels 1–14 span the curve's reach).
+        // Boone, Benny, Veronica, Cass, Raul (levels 1–14 span the curve's
+        // reach). #5342 — the full 15 the doc claims: base/END are the
+        // records' own DATA bytes (dump_record_subs over FalloutNV.esm);
+        // levels are the fandom infobox values the hp column comes from.
         for &(base, end, level, hp) in &[
             (50.0, 4.0, 1.0, 65.0),
             (70.0, 4.0, 2.0, 90.0),
             (75.0, 6.0, 5.0, 120.0),
             (190.0, 5.0, 5.0, 230.0),
+            (150.0, 5.0, 8.0, 205.0),
+            (190.0, 6.0, 5.0, 235.0),
+            (175.0, 4.0, 5.0, 210.0),
             (200.0, 4.0, 14.0, 280.0),
         ] {
             assert_eq!(
@@ -425,13 +453,17 @@ mod tests {
                 "FNV sample (base {base}, END {end}, L {level})"
             );
         }
-        // FO3: Three Dog (base 10), Lucas Simms (base 10, END 6, L 6),
-        // Clover (base 225) — same coefficients, FO3's differing *player*
-        // level mult does not touch the NPC curve.
+        // FO3: Three Dog (base 10), Gob, Nova, Moira, Lucas Simms (base 10,
+        // END 6, L 6), Charon, Clover — same coefficients, FO3's differing
+        // *player* level mult does not touch the NPC curve.
         let fo3 = CharacterRulesProfile::FALLOUT3.npc_stat_model().health_curve();
         for &(base, end, level, hp) in &[
             (10.0, 4.0, 1.0, 25.0),
+            (10.0, 4.0, 3.0, 35.0),
+            (10.0, 4.0, 4.0, 40.0),
+            (50.0, 4.0, 4.0, 80.0),
             (10.0, 6.0, 6.0, 60.0),
+            (200.0, 5.0, 5.0, 240.0),
             (225.0, 4.0, 1.0, 240.0),
         ] {
             assert_eq!(
@@ -463,6 +495,17 @@ mod tests {
             tuned.level_multiplier, curve.level_multiplier,
             "a missing setting must retain the sourced constant"
         );
+        // #5340 — retuning the Endurance offset moves ONLY the Endurance
+        // term. Pre-split it dragged the level term by the same Δ, so a mod
+        // overlaying fAVDNPCHealthEnduranceOffset shifted Health by
+        // level_multiplier·Δ twice instead of once.
+        let (endurance, level) = (5.0_f32, 10.0_f32);
+        assert_eq!(
+            tuned.evaluate(0.0, endurance, level) - curve.evaluate(0.0, endurance, level),
+            tuned.endurance_multiplier * (endurance + tuned.offset)
+                - curve.endurance_multiplier * (endurance + curve.offset),
+            "the level term must be identical before and after the overlay"
+        );
         // The vanilla authored pair resolves to the same curve the profile
         // carries, so a real master's overlay is a no-op.
         let from_master = curve.with_gmst(|name| match name {
@@ -470,6 +513,33 @@ mod tests {
             _ => None,
         });
         assert_eq!(from_master, curve);
+    }
+
+    /// #5340 — no GMST can overlay the level term's anchor: a `strings`
+    /// sweep of both exes finds no level-offset setting at all, so
+    /// `with_gmst` must leave `level_anchor` at its engine-hardcoded −1.0
+    /// (the player formula's `(Level − 1)`) no matter what it answers.
+    #[test]
+    fn the_level_anchor_is_engine_hardcoded_and_never_overlaid() {
+        let curve = CharacterRulesProfile::FALLOUT_NEW_VEGAS
+            .npc_stat_model()
+            .health_curve();
+        assert_eq!(curve.level_anchor, -1.0);
+        let hostile = curve.with_gmst(|name| match name {
+            "fAVDNPCHealthEnduranceOffset" => Some(9.0),
+            "fAVDNPCHealthLevelMult" => Some(9.0),
+            _ => None,
+        });
+        assert_eq!(
+            hostile.level_anchor, -1.0,
+            "no GMST name the overlay answers can move the level anchor"
+        );
+        // And the anchor is its own term: with the offset driven to +9 the
+        // level half still reads 9·(L−1).
+        assert_eq!(
+            hostile.evaluate(0.0, 5.0, 6.0),
+            5.0 * (5.0 + 9.0) + 9.0 * (6.0 - 1.0)
+        );
     }
 
     /// #2941 — `esm_header_selects_one_canonical_character_profile`
