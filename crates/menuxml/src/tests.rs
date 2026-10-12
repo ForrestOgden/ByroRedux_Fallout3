@@ -1274,6 +1274,111 @@ fn spellings_of_one_menu_texture_share_one_decode() {
     assert_eq!(assets.fetched.borrow().len(), 1, "the archive is read once");
 }
 
+/// #5693 — the over-budget refusal is remembered per resolved archive
+/// path, consulted before the fetch. Pre-fix the refusal was cached only
+/// under the authored spelling, so each additional spelling of the same
+/// over-budget file re-extracted it from the archive for the same
+/// refusal (~33 MB inflated per 8192² DXT1) — a first-render stall whose
+/// cost was bounded only by the tile count. Every archive path may be
+/// fetched for a budget decision at most once.
+#[test]
+fn refused_menu_texture_paths_are_not_refetched_per_spelling() {
+    let names = [
+        "Menus\\hud\\a.dds",
+        "Menus80\\hud\\a.dds",
+        "textures\\menus\\hud\\a.dds",
+    ];
+    let assets = BudgetAssets::new(&names);
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    r.texture_budget = 1; // every candidate is over budget
+    r.render_frame(&assets);
+
+    let fetched = assets.fetched.borrow();
+    assert!(!fetched.is_empty(), "the first spelling does fetch");
+    let mut unique = std::collections::HashSet::new();
+    assert!(
+        fetched.iter().all(|path| unique.insert(path.clone())),
+        "no archive path may be fetched twice for the same refusal: {fetched:?}"
+    );
+    assert!(
+        r.tex_cache.values().all(|t| t.is_none()),
+        "every spelling resolves to nothing"
+    );
+}
+
+/// A size-aware texture source: lowercase archive path → DDS dimension.
+struct SizedAssets {
+    xml: Vec<u8>,
+    sizes: HashMap<String, u32>,
+    fetched: std::cell::RefCell<Vec<String>>,
+}
+
+impl MenuAssets for SizedAssets {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        (path.eq_ignore_ascii_case("menus\\main\\hud_main_menu.xml")).then(|| self.xml.clone())
+    }
+    fn texture(&self, path: &str) -> Option<Vec<u8>> {
+        self.fetched.borrow_mut().push(path.to_string());
+        self.sizes.get(path).map(|&size| dxt1_dds(size))
+    }
+    fn font(&self, _index: u8) -> Option<Vec<u8>> {
+        None
+    }
+    fn font_texture(&self, _path: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// #5693 — the budget check is per texture, so a later, smaller texture
+/// that still fits is decoded and drawn after an over-budget refusal;
+/// the old warning ("it and any further new textures are not drawn")
+/// overstated what is refused. Unequal sizes tell the two apart (the
+/// #5658 tests use equal sizes and cannot).
+#[test]
+fn a_smaller_menu_texture_still_draws_after_a_budget_refusal() {
+    let mut xml = String::from("<menu name=\"HUDMainMenu\"><locus> &true; </locus>");
+    for (i, name) in ["Menus\\big.dds", "Menus\\small.dds"].iter().enumerate() {
+        xml.push_str(&format!(
+            "<image name=\"i{i}\"><filename>{name}</filename>\
+             <width>8</width><height>8</height></image>"
+        ));
+    }
+    xml.push_str("</menu>");
+    let assets = SizedAssets {
+        xml: xml.into_bytes(),
+        sizes: HashMap::from([
+            ("textures\\menus\\big.dds".to_string(), 256),
+            ("textures\\menus\\small.dds".to_string(), 64),
+        ]),
+        fetched: Default::default(),
+    };
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    r.texture_budget = 64 * 64 * 4; // exactly one small texture
+    r.render_frame(&assets);
+
+    assert_eq!(r.decoded.len(), 1, "only the small texture decoded");
+    assert!(r.decoded.contains_key("textures\\menus\\small.dds"));
+    assert_eq!(r.decoded_bytes, 64 * 64 * 4);
+    assert!(
+        r.tex_cache.get("menus\\big.dds").is_some_and(|t| t.is_none()),
+        "the over-budget texture resolves to nothing"
+    );
+    assert!(
+        r.tex_cache.get("menus\\small.dds").is_some_and(|t| t.is_some()),
+        "the smaller later texture still draws"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Tile-mode raster (FO3 `<tile>` trait — M48.5)
 // ---------------------------------------------------------------------------

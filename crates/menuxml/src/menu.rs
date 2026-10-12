@@ -121,6 +121,13 @@ pub struct MenuRenderer {
     pub(crate) texture_budget: usize,
     /// The over-budget warning fires once per renderer.
     budget_warned: bool,
+    /// Archive paths already refused for budget (#5693). `tex_cache`
+    /// remembers the refusal only under the authored spelling, so each
+    /// additional spelling of the same over-budget file used to pay a
+    /// full archive extract (~33 MB inflated per 8192² DXT1) for the
+    /// same refusal. Consulted before the fetch, so a path is extracted
+    /// for a budget decision at most once per renderer.
+    refused_paths: HashSet<String>,
     /// Filenames already logged as missing (once each).
     missing: HashSet<String>,
     frame: Framebuffer,
@@ -247,6 +254,7 @@ impl MenuRenderer {
             decoded_bytes: 0,
             texture_budget: MAX_DECODED_TEXTURE_BYTES,
             budget_warned: false,
+            refused_paths: HashSet::new(),
             missing: HashSet::new(),
             frame: Framebuffer::new(screen.width as u32, screen.height as u32),
             texture_set,
@@ -490,30 +498,40 @@ impl MenuRenderer {
         // decoder gap.
         let mut decoded: Option<Arc<Rgba8>> = None;
         let mut undecodable: Vec<&str> = Vec::new();
+        let mut refused_any = false;
         for path in &candidates {
             if let Some(shared) = self.decoded.get(path) {
                 decoded = Some(Arc::clone(shared));
                 break;
             }
+            // #5693 — a path already refused for budget is not fetched
+            // again: the refusal is remembered per resolved archive
+            // path, not just per authored spelling.
+            if self.refused_paths.contains(path) {
+                refused_any = true;
+                continue;
+            }
             let Some(bytes) = assets.texture(path) else { continue };
             // #5658 — charge the decode against the renderer's budget from
             // the header alone, before anything is allocated. Over budget,
-            // this filename resolves to nothing (cached), as do new ones
-            // after it; already-decoded images keep being served.
+            // this candidate resolves to nothing and is remembered; a
+            // smaller sibling in another resolution set may still serve,
+            // and already-decoded images keep being served.
             if let Some(len) = Rgba8::decoded_len(&bytes) {
                 if self.decoded_bytes.saturating_add(len) > self.texture_budget {
                     if !self.budget_warned {
                         self.budget_warned = true;
                         log::warn!(
                             "menuxml: menu texture budget ({} MiB) exhausted at '{filename}' \
-                             ({path}, {} MiB decoded); it and any further new textures are \
-                             not drawn",
+                             ({path}, {} MiB decoded); this texture is not drawn — later \
+                             textures that still fit the budget are",
                             self.texture_budget >> 20,
                             len >> 20,
                         );
                     }
-                    self.tex_cache.insert(cache_key, None);
-                    return None;
+                    self.refused_paths.insert(path.clone());
+                    refused_any = true;
+                    continue;
                 }
             }
             match Rgba8::decode_dds(&bytes) {
@@ -527,7 +545,7 @@ impl MenuRenderer {
                 None => undecodable.push(path),
             }
         }
-        if decoded.is_none() && self.missing.insert(cache_key.clone()) {
+        if decoded.is_none() && !refused_any && self.missing.insert(cache_key.clone()) {
             if undecodable.is_empty() {
                 log::warn!("menuxml: menu texture '{filename}' not found in any resolution set");
             } else {
