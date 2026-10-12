@@ -3756,8 +3756,10 @@ mod tests {
     /// fires on any movement that is not upward. The probe stays for its
     /// other two jobs — slope-drift correction and the #3971
     /// unwalkable-slope screen — but this pins which case the OR is no
-    /// longer needed for. The existing #3799 tests feed the KCC verdict
-    /// in as a literal; this one exercises real rapier.
+    /// longer needed for: the IDLE one. It is still needed while walking —
+    /// see `walking_capsule_loses_kcc_grounded_on_frames_the_support_probe_covers`
+    /// (#5560). The existing #3799 tests feed the KCC verdict in as a
+    /// literal; this one exercises real rapier.
     #[test]
     fn kcc_reports_grounded_for_a_capsule_at_rest() {
         let mut w = PhysicsWorld::new();
@@ -3801,6 +3803,137 @@ mod tests {
                 pos.y
             );
             pos += result.translation;
+        }
+    }
+
+    /// #5560 — the walking counterpart of
+    /// `kcc_reports_grounded_for_a_capsule_at_rest`. That pin covers the idle
+    /// input rapier 0.36 fixed; it says nothing about a grounded capsule
+    /// sliding horizontally at exactly the offset gap, where parry 0.31's
+    /// support-map cast returns a `Converged` hit at a small-but-above-
+    /// threshold TOI with a GJK normal tilted 4–21° against the motion.
+    /// `handle_slopes` reads that as a climbable slope (< 50°) and lifts the
+    /// capsule by up to ≈ ½ the step, outside the narrowed grounded band, so
+    /// the KCC alone answers `grounded = false` on a flat floor — measured
+    /// here as 80/600 frames walking +X and 8/600 walking diagonally.
+    ///
+    /// The engine's support probe (`character_controller_system`, #3799) is
+    /// what keeps `is_grounded` — and so jump — on those frames, which makes
+    /// the OR in `resolve_ground_contact` LOAD-BEARING while walking, not
+    /// "only a defence" (738ab7391's rationale said the latter, true of the
+    /// idle input alone). This replays the production per-frame loop — the
+    /// anti-drift probe correction, the walkable-normal gate, the grounded
+    /// OR — over real rapier and pins both halves: every frame is
+    /// `kcc_grounded || probe_support`, and the KCC alone does lose frames.
+    /// If the loss count ever reaches 0, rapier closed the phantom slope and
+    /// the OR's rationale in `character.rs` deserves a second look.
+    #[test]
+    fn walking_capsule_loses_kcc_grounded_on_frames_the_support_probe_covers() {
+        // (label, horizontal speed X, Z) in BU/s — HUMAN `move_speed` 220.
+        for (label, speed_x, speed_z) in [("+X walk", 220.0f32, 0.0f32), ("diagonal walk", 155.6, 155.6)] {
+            let mut w = PhysicsWorld::new();
+            // Flat cuboid floor, top at y = 0; 4 000 BU half-extent so the
+            // 600-frame walk (≤ 2 200 BU) never leaves it.
+            let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+            w.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(4000.0, 10.0, 4000.0)
+                    .translation(Vector::new(0.0, -10.0, 0.0))
+                    .build(),
+                floor,
+                &mut w.bodies,
+            );
+            w.update_query_pipeline();
+
+            // Production `CharacterController::HUMAN` extents and KCC settings.
+            let (half_height, radius) = (46.0f32, 18.0f32);
+            let (step_height, offset) = (32.0f32, 4.0f32);
+            let max_slope_climb_deg = 50.0f32;
+            let min_walkable_normal_y = max_slope_climb_deg.to_radians().cos();
+            let gravity = -1220.8f32;
+
+            let mut pos = Vec3::new(0.0, half_height + radius + offset, 0.0);
+            let mut grounded = true;
+            let mut vertical_velocity = 0.0f32;
+            let (mut kcc_only_losses, mut uncovered) = (0u32, 0u32);
+            let (mut min_gap, mut max_gap) = (f32::MAX, f32::MIN);
+
+            for _ in 0..600 {
+                // `character_controller_system`: the probe runs while the
+                // controller believes it is grounded and returns the
+                // anti-drift correction plus the walkable-gated support bit.
+                let mut probe_support = false;
+                let desired_vertical = if grounded {
+                    match w.cast_capsule_down_surface_and_normal(
+                        pos,
+                        half_height,
+                        radius,
+                        step_height + offset,
+                        None,
+                    ) {
+                        Some((surface_y, normal_y)) => {
+                            probe_support = normal_y.abs() >= min_walkable_normal_y;
+                            let feet_y = pos.y - half_height - radius;
+                            (-(feet_y - surface_y - offset)).clamp(-step_height, offset)
+                        }
+                        None => vertical_velocity * PHYSICS_DT,
+                    }
+                } else {
+                    vertical_velocity * PHYSICS_DT
+                };
+                let result = w.move_character(CharacterMoveParams {
+                    capsule_half_height: half_height,
+                    capsule_radius: radius,
+                    position: pos,
+                    desired_translation: Vec3::new(
+                        speed_x * PHYSICS_DT,
+                        desired_vertical,
+                        speed_z * PHYSICS_DT,
+                    ),
+                    dt: PHYSICS_DT,
+                    max_slope_climb_deg,
+                    step_height,
+                    step_min_width: 8.0,
+                    snap_to_ground: 32.0,
+                    exclude_collider: None,
+                    filter_groups: None,
+                    kcc_offset_bu: offset,
+                });
+                if !result.grounded {
+                    kcc_only_losses += 1;
+                    if !probe_support {
+                        uncovered += 1;
+                    }
+                }
+                // `resolve_ground_contact` (not swimming).
+                grounded = result.grounded || probe_support;
+                vertical_velocity = if grounded {
+                    0.0
+                } else {
+                    vertical_velocity + gravity * PHYSICS_DT
+                };
+                pos += result.translation;
+                let gap = pos.y - half_height - radius;
+                min_gap = min_gap.min(gap);
+                max_gap = max_gap.max(gap);
+            }
+
+            assert_eq!(
+                uncovered, 0,
+                "{label}: every frame the KCC alone lost grounded must be one \
+                 the support probe found walkable support on, or jump input drops"
+            );
+            assert!(
+                kcc_only_losses > 0,
+                "{label}: the KCC no longer loses grounded while walking — rapier \
+                 closed the phantom slope (#5560); revisit the 'OR is load-bearing \
+                 on walking frames' rationale in `resolve_ground_contact`'s doc"
+            );
+            assert!(
+                (3.0..=8.5).contains(&min_gap) && (3.0..=8.5).contains(&max_gap),
+                "{label}: the feet gap bobs (≤ ½ step) around the {offset} BU offset \
+                 but never leaves the band: [{min_gap}, {max_gap}]"
+            );
+            assert!(grounded, "{label}: still grounded at the end of the walk");
         }
     }
 

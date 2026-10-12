@@ -1612,12 +1612,24 @@ pub(crate) fn integrate_vertical(
 /// (which gates on `is_grounded`) silently dropped on half of all
 /// frames, and the M28.5 diagnostic firing on 58% of them.
 ///
-/// rapier 0.36 closed that hole — its grounded branch calls the grounded
-/// check explicitly when the move is below 1e-5
+/// rapier 0.36 closed that hole for the IDLE input — its grounded branch
+/// calls the grounded check explicitly when the move is below 1e-5
 /// (`control/character_controller.rs`), pinned by
-/// `kcc_reports_grounded_for_a_capsule_at_rest` in the physics crate —
-/// so the OR below is no longer a workaround for a rapier bug. It stays
-/// as a defence, and because the probe still does two jobs the KCC
+/// `kcc_reports_grounded_for_a_capsule_at_rest` in the physics crate. It did
+/// NOT close it for WALKING (#5560): a grounded capsule sliding horizontally
+/// at exactly the offset gap gets a `Converged` hit from parry 0.31's
+/// support-map cast at a small-but-above-threshold TOI (the contact-normal
+/// fallback only covers `toi < 1e-4`) whose GJK normal is tilted 4–21°
+/// against the motion; `handle_slopes` reads that as a climbable slope and
+/// lifts the capsule by up to ≈ ½ the step, outside the narrowed grounded
+/// band, so the KCC alone answers `grounded = false` on a flat floor —
+/// measured 80/600 frames walking +X and 8/600 walking diagonally. The
+/// probe's walkable hit is what keeps `is_grounded`, and therefore jump,
+/// on those frames, so the OR below is still load-bearing while walking, not
+/// merely a defence; weakening it on the strength of the idle pin would drop
+/// jump input on up to ~13% of walking frames. Pinned by
+/// `walking_capsule_loses_kcc_grounded_on_frames_the_support_probe_covers`
+/// in the physics crate. And the probe still does two jobs the KCC
 /// verdict cannot: the grounded branch's surface correction rides on the
 /// probe's hit (the exact gap the #2857 policy clamps), so dropping the
 /// probe would reintroduce the 0.05 BU/frame creep on inclined
