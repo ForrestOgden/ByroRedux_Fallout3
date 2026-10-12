@@ -54,7 +54,7 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   event (Dim 5 doc sweep).
 - Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
   `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
-- Open (verified 2026-10-10) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
+- Open (verified 2026-10-12) — cite, do not re-file: #4137 (six `template_flags` bits with no consumer),
   #4232 (`effective_actor_level` returns 0 verbatim). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -165,7 +165,10 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
 - **One derivation, one implementation** (the class that keeps recurring): `effective_actor_level` lives
   once in `actor/mod.rs` and is `.max(0)` on the non-multiplier branch — a second copy or a `.max(1)` (also
   in `examples/`) is the regression (#3171/#4095); `pc_level_mult_actors_resolve_to_calc_min_not_the_raw_
-  multiplier` calls it through the plugin crate. TPLT template inheritance: since #4457 the population boundary resolves
+  multiplier` calls it through the plugin crate. TPLT template inheritance: FO4 authors a per-flag `TPTA`
+  Template Actors array (`NpcRecord::template_actors: [u32; 13]`, 0 = use the `TPLT` default) and
+  `walk_inherited_records` picks the flag's own entry when non-zero (#5498 `99c22a8db`; FO4-only data, no game
+  branch — pinned by `crates/plugin/src/equip.rs` tests). Since #4457 the population boundary resolves
   every category once through `ResolvedNpc::resolve` (`crates/plugin/src/equip.rs`) and consumers read the
   resolved type; the guard pins production `resolve_inherited_*` calls per file (two left, both pre-spawn
   race boundaries: `cell_loader/references/mod.rs` and `player_body.rs`, the latter joined in #5047
@@ -205,13 +208,24 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `skill = 2 + 2×SPECIAL + ceil(Luck/2)` implemented, tag-skill part still *absent* not guessed.
   FO3/FNV NPC Health is the **NPC** curve, not the player row (#5238 `c71eeed80`): `NpcHealthCurve` in
   `NpcStatModel::ClassAutoCalc` = `NPC_` `DATA` Base Health + `fAVDNPCHealthEnduranceMult`·(END + offset) +
-  `fAVDNPCHealthLevelMult`·(L + offset), measured 5 / 5 / −1 with `with_gmst` overlaying authored GMSTs
-  (pins `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples` — 15 infobox samples — and the `#[ignore]`d
-  `fo3_fnv_named_npc_health_matches_the_authored_curve`). The player-curve constants (bias 90/95, END·20)
-  on an NPC path are the regression.
+  `fAVDNPCHealthLevelMult`·(L + `level_anchor`), measured 5 / 5 / −1 / −1. `with_gmst` overlays the Endurance
+  offset and the two mults only: the level anchor is an engine-hardcoded −1 (the player formula's `Level − 1`;
+  no level-offset GMST exists in either exe), so a retuned Endurance offset moves only the Endurance term
+  (#5340 `5ed49ed5c`, `the_level_anchor_is_engine_hardcoded_and_never_overlaid`). Pins
+  `fo3_fnv_npc_health_curve_reproduces_the_vanilla_samples` — all 15 infobox samples since #5342 `274ba13c5`, which
+  also restored the player Health row beside the NPC row in the capture — and the `#[ignore]`d
+  `fo3_fnv_named_npc_health_matches_the_authored_curve`. The player-curve constants (bias 90/95, END·20)
+  on an NPC path are the regression. Non-auto-calc NPCs (ACBS auto-calculate bit clear, ~40% of the FO3/FNV
+  census) seed their authored `NPC_` `DATA` SPECIAL (`NpcRecord::data_attributes`) instead of the class `ATTR`,
+  falling back to the class for a `DATA`-less shell; skills still derive from the SPECIAL, the DNAM per-skill
+  half is unparsed (#5338 `4957536ba`).
 - Skyrim `derive_skyrim_actor_values`: Health/Magicka/Stamina resolve **independently** (race base +
   signed ACBS offset, own AVIF; `RaceRecord.starting_*` are `Option<f32>`) — a missing pool suppresses
   only itself. The capture's class/level term is deferred and must be disclosed in place (#4454).
+- **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + permanent + temporary) is the
+  single ceiling; `current()` is `undamaged() − damage`. HUD bar fractions, debug vitals and the SDK projection
+  read through it (the SDK folds `set_override` into base — `ActorValueState` has no override slot); a reader that
+  re-sums layers by hand is the regression (#5508 `627149b62`, `undamaged_includes_every_layer_but_damage`).
 - `setav`/`modav` write the *base* component, not a derived output the next tick recomputes — except the
   player's `PlayerOnly` derived pools: `setav`/SDK `SetBase` there route through
   `CharacterRuleset::is_player_derived_pool` into the `set_override` layer (`ActorValues::set_override`, composed

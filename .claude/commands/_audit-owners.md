@@ -42,8 +42,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/ecs/components/{actor_values,perk_list,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
 | `crates/core/src/lighting.rs` | renderer, nifal | MEDIUM |
 | `crates/core/src/atomic_file.rs` | save, tooling | MEDIUM |
+| `crates/core/src/bytes.rs` | parsers, ecs | HIGH |
 | `crates/core/src/source_scan.rs` | tech-debt, tooling | LOW |
 | `crates/core/` | ecs, concurrency | HIGH |
+| `crates/nif/src/import/attach_light.rs` | nif, nifal; per-game | HIGH |
 | `crates/nif/src/import/material/` | nifal, nif | HIGH |
 | `crates/nif/src/import/collision/` | physics, nif | HIGH |
 | `crates/nif/src/import/units.rs` | nifal, nif | HIGH |
@@ -81,6 +83,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/cxx-bridge/` | tech-debt (placeholder) | LOW |
 | `crates/platform/` | tech-debt (placeholder) | LOW |
 | `tools/` | tooling | LOW |
+| `third_party/` | renderer Dim 11, safety Dim 1 | LOW |
 | `byroredux/src/env_translate` | exterior, nifal (mirror); per-game | HIGH |
 | `byroredux/src/groundcover_translate` | exterior | MEDIUM |
 | `byroredux/src/fog.rs` | exterior, renderer | MEDIUM |
@@ -111,9 +114,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/water.rs` | exterior, physics | MEDIUM |
 | `byroredux/src/systems/weather.rs` | exterior | MEDIUM |
 | `byroredux/src/systems/character.rs` | physics Dim 4+5; gameplay, character | MEDIUM |
-| `byroredux/src/systems/audio.rs` | audio | MEDIUM |
+| `byroredux/src/systems/audio.rs` | audio, physics Dim 2+6 | MEDIUM |
 | `byroredux/src/systems/eat_sleep.rs` | gameplay Dim 5, physics Dim 4, ecs Dim 6, concurrency Dim 5; fnv, fo3 | MEDIUM |
-| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,navmesh_path,restoration}.rs` | gameplay | MEDIUM |
+| `byroredux/src/systems/navmesh_path.rs` | gameplay, physics Dim 4 | MEDIUM |
+| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,restoration}.rs` | gameplay | MEDIUM |
 | `byroredux/src/systems/combat_anim.rs` | gameplay, ecs Dim 9, audio | MEDIUM |
 | `byroredux/src/systems/npc_dialogue.rs` | scripting Dim 5, gameplay Dim 2, concurrency Dim 3 | MEDIUM |
 | `byroredux/src/systems/cinematic.rs` | scripting, ecs Dim 7, save Dim 5 | MEDIUM |
@@ -180,6 +184,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `scripts/renderer-eval-groundcover.sh` | exterior, runtime | LOW |
 | `scripts/check-byro-dbg-harness-contracts.sh` | runtime, tooling | LOW |
 | `scripts/` | runtime, performance | LOW |
+| `assets/debug_profiles.toml` | tooling; per-game | MEDIUM |
+| `assets/` | tooling | LOW |
 | `docs/smoke-tests/sm1-story-manager.sh` | runtime, scripting | LOW |
 | `docs/smoke-tests/dt1-dialogue-layers.sh` | runtime, gameplay, scripting; fnv, fo3 | LOW |
 | `docs/smoke-tests/dt2-skyrim-forcegreet.sh` | runtime, gameplay, scripting; skyrim | LOW |
@@ -187,6 +193,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/m-trees.sh` | runtime, speedtree; fnv, fo3 | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/` | tech-debt (doc rot) | LOW |
+| `.claude/agents/` | tech-debt (audit infrastructure) | LOW |
+| `.codex/agents/` | tech-debt (audit infrastructure mirror) | LOW |
 | `.claude/commands/` | tech-debt (audit infrastructure) | LOW |
 | `.zcode/` | tech-debt (audit infrastructure mirror) | LOW |
 | `.claude/issues/` | regression | LOW |
@@ -196,6 +204,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `Cargo.` | tech-debt, safety (dependency drift) | LOW |
 | `byroredux/Cargo.toml` | tech-debt | LOW |
 | `rust-toolchain.toml` | tech-debt | LOW |
+| `RENDERING-PLAN.md` | tech-debt (doc rot) | LOW |
+| `THIRD_PARTY_NOTICES.md` | tech-debt (doc rot) | LOW |
 | `README.md` | tech-debt (doc rot) | LOW |
 | `ROADMAP.md` | tech-debt (doc rot) | LOW |
 | `HISTORY.md` | tech-debt (doc rot) | LOW |

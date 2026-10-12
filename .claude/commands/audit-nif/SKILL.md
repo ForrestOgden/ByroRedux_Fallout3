@@ -53,7 +53,7 @@ constraint CInfo decode is a NIF seam).
    `BYROREDUX_<GAME>_DATA=<Data dir> cargo test -p byroredux-nif --test per_block_baselines <game> -- --ignored --nocapture`.
    Still true 2026-10-10: the workflow parses since d98769436 (#4619, closed), but no
    `byroredux-game-data` self-hosted runner is registered (repo runner count 0) — every scheduled
-   run queues and is cancelled at 24 h, so **no nightly result exists**. A green default
+   run queues and is cancelled at 24 h, so **no nightly result exists** (the corpus jobs now run `--no-fail-fast`, fa2af0e89, #5660, so one red test binary no longer hides the ones after it). A green default
    `cargo test` says nothing about parse rates; run the gate locally.
 
 ## Phase 2: Dimensions
@@ -219,9 +219,9 @@ This is the *parse → ECS* handoff; per-game material classification is `/audit
   `NiSkinData` via `decline_unbounded_packed_indices` (`import/mesh/skin.rs`; fixed in cf9dec258,
   #5389 — #4268's "siblings already bound" premise was false). The palette bound in
   `render/skinned.rs` is a producer-upheld invariant, so a new producer without the decline is
-  the regression. Known-open #5524 (LOW): the FO4 `BsSkinInstance` arm has no decline test, the
-  classic arm's warning says "BSTriShape", and the insertion orphaned
-  `widen_packed_bone_indices`' doc comment.
+  the regression. #5524 (fixed in 656e2bdc3) gave the FO4 `BsSkinInstance` arm its decline +
+  `bone_count - 1` boundary tests (`mesh/bs_tri_shape_partition_remap_tests.rs`), made the decline
+  warning arm-neutral, and restored `widen_packed_bone_indices`' doc comment.
 - **Particle emitters**: `NiPSysEmitter`/`NiPSysEmitterCtlr`/`NiPSysEmitterCtlrData`/
   `NiPSysGrowFadeModifier` are typed (`blocks/particle.rs`); params flow
   `extract_emitter_params` / `extract_emitter_rate` (`import/walk/emitter.rs`) →
@@ -257,7 +257,10 @@ Paths: `crates/nif/src/blocks/collision/`, `crates/nif/src/blocks/shader/`, `cra
 First step: `cargo test -p byroredux-nif -- dispatch_coverage_tests bhk_ hk_packed`
 **Guards**: `import::collision::dispatch_coverage_tests::every_dispatched_bhk_shape_has_resolve_arm`
 (a new `bhk*Shape` dispatch arm needs a `resolve_shape_inner` `downcast_ref` arm — else it
-parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
+parses then silently drops collision; *nif_shape_dispatch_resolve_parity*; the scan reads only the
+`resolve_shape_inner` body, #5573; a body's per-leaf Havok surface materials are pushed by
+`resolve_shape_into` in the same walk as the shape, #5550, and a packed-strips table is chained
+from the data block's `sub_parts`, #5541);
 `import::collision::dispatch_tests::havok_motion_type_maps_full_enum`;
 `blocks/collision/hk_packed_ni_tri_strips_data_tests.rs`;
 `tests/constraint_drift_corpus.rs` (opt-in; drift must be a known motor-tail value).
@@ -270,7 +273,9 @@ parses then silently drops collision; *nif_shape_dispatch_resolve_parity*);
   vanilla content decides it (0 `bhkRigidBody` on FO4/FO76/Starfield) — a `bsver > 130` body in
   the wild is the evidence to re-check (#4627). The PHYSAL per-game seam is only the constraint CInfo decode.
 - **Constraint CInfo**: typed decoders exist for hinge (into `LimitedHingeCInfo`), limited
-  hinge, prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
+  hinge (the Oblivion layout authors no `Perp Axis In B1`; it is derived as `PerpB2 × AxisB` from
+  nif.xml's own identity, never zeroed — 526cb07d9, #5537, pinned by
+  `oblivion_limited_hinge_derives_perp_b1_from_perp_b2_cross_axis_b`), prismatic, ragdoll, ball-and-socket, stiff-spring and the ball-socket chain
   (`BhkConstraintData`; `BhkBreakableConstraint` and malleable wrappers decode the inner
   CInfo). `bhkGenericConstraint` has no dispatch arm (nif.xml gives only its name), so it
   lands as `NiUnknown` with an exact `block_size` skip. There is no drift-suppression list
@@ -351,9 +356,13 @@ exactly for a `VF_TANGENTS | VF_NORMALS` descriptor and not otherwise, both pack
   capped per channel at `BSPLINE_MAX_SAMPLES_PER_CHANNEL` (108 k = 30 Hz × 1 h), and charged
   against one `BsplineSampling` budget (`BSPLINE_IMPORT_KEY_BUDGET`, 1 M keys) per `import_kf`
   pass (`import_embedded_animations` gets its own, with no sequence span); a spent budget takes
-  the static-pose fallback with a warn (fixed in 0c4d4af08, #5486; pins in
-  `anim/tests/bspline.rs`). Sampling from the interpolator's own `stop_time`, or a per-channel
-  `BsplineSampling::new()`, is the regression — the allocation abort it allows is not caught by
+  the static-pose fallback with a warn, the degraded channels counted and logged once per pass
+  (`BsplineSampling::degraded` / `log_degraded`, a076ca7fb #5577) (fixed in 0c4d4af08, #5486; pins in
+  `anim/tests/bspline.rs`). The sequence clamp only decides which times are emitted: `BsplineWindow`
+  (`reserve()`) keeps the interpolator's own span as the `u` domain (6fef6bd57, #5572), and only a
+  finite, positive-width sequence span clamps (`usable_sequence_span`, 356a74b0f, #5575 — the
+  pre-10.1.0.106 `f32::MAX`/`f32::MIN` defaults must not). Sampling from the interpolator's own
+  `stop_time` unclamped, or a per-channel `BsplineSampling::new()`, is the regression — the allocation abort it allows is not caught by
   `parse_one_nif`'s `catch_unwind`.
 **Output**: `/tmp/audit/nif/dim_6.md`
 

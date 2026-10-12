@@ -39,7 +39,7 @@ Output is `path  RISK  owners` from `.claude/commands/_audit-owners.md` (first m
 
 - [ ] **New bug** — logic error, off-by-one, wrong byte width, missing version/era gate (B-splines reach FNV/FO3, not just Skyrim+).
 - [ ] **Contract break** — public signature changed without every call site (`git grep` the symbol workspace-wide).
-- [ ] **Silent divergence** — a value built at two sites and only one edited (the classic NIFAL leak: the `translate_material` call sites — `byroredux/src/cell_loader/spawn/mesh_instance.rs`, `byroredux/src/scene/nif_loader.rs`, and the LOD paths `byroredux/src/cell_loader/{object_lod,placement_lod}.rs`; defer to `/audit-nifal`).
+- [ ] **Silent divergence** — a value built at two sites and only one edited (the classic NIFAL leak: the `translate_material` / `translate_material_with_provenance` call sites, pinned by `every_exterior_spawner_inserts_a_boundary_material` in `byroredux/src/material_translate.rs` — `byroredux/src/cell_loader/spawn/mesh_instance.rs`, `byroredux/src/scene/nif_loader.rs`, and the LOD paths `byroredux/src/cell_loader/{object_lod,placement_lod}.rs`; defer to `/audit-nifal`).
 - [ ] **Unsafe delta** — new `unsafe`, or a SAFETY comment that no longer matches the body (MEDIUM floor for unsafe-without-comment).
 - [ ] **Lock / query delta** — changed `RwLock` scope or new multi-component query: TypeId-sorted acquisition (deadlock → HIGH). A new system acquisition must be declared at its registration under `byroredux/src/boot/schedule/` (guard: `byroredux/src/boot/schedule/mod.rs` `system_access_declaration_tests`).
 - [ ] **Vulkan delta** — new pipeline/barrier/sync, AS build/refit, descriptor write: missing barrier or wrong AS geometry → severity special rules.

@@ -30,7 +30,11 @@ job conclusion via `gh run view <id> --json jobs`. **Never skip this step on a d
 this dimension's Paths are unchanged: the process-wide graph is built by every *caller*, and the cycles live in
 the binary's graph, not core's — core stayed green through the whole 2026-09-22..28 red streak (#4985, #4982).
 A `&mut World` function still records edges the detector cannot tell apart from `&World` ones, so hoisting
-several read guards into one block for speed (#4616) reddens the lane.
+several read guards into one block for speed (#4616) reddens the lane. The `-p byroredux` lane went red again
+on three production inversions — a gather taking `GlobalTransform` before `Transform` (every mover takes
+`Transform` first), a hair head-mount holding `MeshHandle` + `Children` across a `Parent` walk, a seated
+restore holding `Furniture` across a `GlobalTransform` read — and was re-greened by #5535 `1cb12fb3d`; a new
+multi-storage gather is the regression shape.
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -113,11 +117,11 @@ First step: `grep -n 'unsafe' crates/core/src/ecs/query.rs` (expect exactly 4 de
 - `HierarchyTraversalGuard` (`crates/core/src/ecs/hierarchy.rs`) bounds every parent/children walk to
   `entities + child refs + 1` steps; transform propagation and bounds use it. A new hierarchy walk
   without it, or without a visited set, is an unbounded-loop hazard on a cyclic `Parent` graph.
-  Known-open #5513 (cite, don't re-file): the #5384 adoption-subtree walk in `retry_cinematic_readoption`
-  (`byroredux/src/systems/cinematic.rs`) and `collect_stage_mesh_handles` / `collect_subtree`
-  (`byroredux/src/loading_screen.rs`) have neither; other hand-rolled walks (`cinematic_retained_entities`,
-  `release_finished_tethers`, `subtree_entities_under`) dedupe but carry no budget. Once a shared guarded
-  collector lands in `crates/core/src/ecs/hierarchy.rs`, check every new subtree walk routes through it.
+  The shared guarded collector `collect_subtree` (same file; visited set + `HierarchyTraversalGuard` budget,
+  `collect_subtree_terminates_on_a_cycle`) landed with #5513 `9da80470d`: `retry_cinematic_readoption`,
+  `loading_screen.rs`, `cinematic_retained_entities` / the unload purge (`cell_loader/unload.rs`),
+  `release_finished_tethers` and `subtree_entities_under` all route through it. Nothing mechanical forces a new
+  whole-subtree walk to use it — grep for hand-rolled `Children` stacks.
 
 ### 4. Resources & World-Level State
 
@@ -170,7 +174,9 @@ stage's parallel batch), not a stage. Registered per stage in `register_{early,u
   fails when an `add_to_with_access` lands outside the table; four exclusive fns are covered too
   (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
-  cross-file hops since #5414 `9d8fd4cc9`), and
+  cross-file hops since #5414 `9d8fd4cc9` and the cross-crate `evaluate_function` condition-evaluator hop since
+  #5649 `197a9e245`, which added 18 acquisitions to its row), `footstep_system`'s `PhysicsWorld` /
+  `RapierHandles` reads (`footstep_declares_its_physics_reads`, #5556 `ac710964e`), and
   `cross_file_hops_and_get_forms_reach_their_acquisitions` pins that the table's cross-file hops and the
   `get` forms actually surface types (#4994).
   Sibling gates in `scheduler_access_tests.rs`: `scheduler_access_invariants_hold_on_the_real_schedule`
@@ -253,9 +259,10 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
 - **Cinematic re-adoption** (`retry_cinematic_readoption`): only parentless released-convoy members queue on
   `CinematicReAdoption`; a root's adoption stamps its whole `Children` subtree with the same `CellRoot`
   (#5384 `faf8e5682`, `parented_subtree_rides_the_roots_adoption`), and the player subtree is never queued or
-  adopted (#5379 `203be9ed4`, `player_rider_is_never_queued_or_cell_adopted`). Known-open #5490: the
-  session-replace purge's bare `despawn_batch` removes only those pending roots — subtrees orphan, GPU/Rapier
-  release is skipped.
+  adopted (#5379 `203be9ed4`, `player_rider_is_never_queued_or_cell_adopted`). The session-replace purge
+  (`purge_cinematic_retention_state(world, ctx)`) collects each pending root's `Children` closure (minus the
+  player rig) and releases it through `release_entities`, so no subtree orphans and GPU/Rapier handles go with
+  it (#5490 `99cd9fd6c`).
 - **Detach pass**: `detach_victims_from_surviving_parents` reads every victim's `Parent` under one guard
   (dropped before the `Children` write) and tests membership by binary search over a sorted slice (#5418
   `9bbe9304e`, source-pinned by `detach_victims_takes_one_parent_guard_for_the_whole_sweep`); a per-victim

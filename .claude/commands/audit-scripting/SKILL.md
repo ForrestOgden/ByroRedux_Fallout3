@@ -25,7 +25,7 @@ analogue of NIFAL's no-fabrication rule).
 
 ## Scope
 
-`crates/scripting/src/` (~49k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~51k LOC): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs`; `quest_stages.rs`, `globals.rs`, `vm_state.rs`, `events.rs`, `cleanup.rs`, `timer.rs`,
 `recurring_update.rs`, `condition.rs`, `trigger.rs`, `player_control.rs`, `equipment.rs`, `registry.rs`;
@@ -45,7 +45,7 @@ Object fills, true `LCTN`, reference collections, unloaded-world search, injecte
 packages/spells/keywords overlays — real gaps, don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (verified 2026-10-10 with `gh issue view`): none owned here. #4113/#4115
+**Known-open — cite, don't re-file** (verified 2026-10-12 with `gh issue view`): none owned here. #4113/#4115
 are open but live in `crates/papyrus`/`crates/pex` (`/audit-papyrus`). Closed: #3817 (cinematic retention reversible, `63bf3347f`), #4415 (magic runtime incl. the racial pair, `9813af435`), #5366 (Story Manager, Phases 0-4 all shipped), #5367 (dialogue
 trees: greeting/line lifetime/FO3-FNV force-greet `14cff35ae`, Skyrim force-greet `287214103`) and its #5397
 Random-stack follow-up (`0436bea5c`), #4334 (once-only persistence, `ReferenceScriptState`), #4190, #4116.
@@ -92,8 +92,12 @@ they cannot see:
   classify_effect(..)?`; locals bind only via `bind_local` (quest / object / player / plain, else decline).
   Exactly **two** control-flow exceptions: `Stmt::While` only via `lower_3d_loaded_wait` (OR-tree of
   `!<actor>.Is3DLoaded()` + exactly one positive `Utility.Wait`), and `Stmt::If` only as `Effect::Conditional`
-  (no `elseif`; every atom an exact `GetStageDone == 0.0|1.0`; branches lowered against **cloned** `Scope`s;
-  no `Wait`/`WaitForActors3DLoaded` inside — `has_latent`). Widening either is a decline-invariant
+  (no `elseif`; every atom an exact `GetStageDone == 0.0|1.0`; branches lowered against **cloned** `Scope`s,
+  and a branch that re-binds a local declared before the `If` declines — `Scope::rebound_by`, #5632 `ed6998c51`;
+  no `Wait`/`WaitForActors3DLoaded` inside — `has_latent`). Bare `Return` lowers only as the body's final
+  statement at depth 0 (#5631), and an assignment to a bare identifier that is no declared local (a script
+  variable / property write) declines (#5638, `rebinding_a_pre_branch_local_inside_a_branch_declines`,
+  `assignment_to_a_script_variable_declines`). Widening any of these is a decline-invariant
   regression. `lower_statements` recursion is capped (`MAX_CONDITIONAL_DEPTH` = `MAX_STMT_DEPTH`, the smaller
   upstream cap).
 - **Lower only what is modeled, name it from the declared signature.** For each primitive compare against the
@@ -105,9 +109,17 @@ they cannot see:
   decline the rest" (`MoveTo`: ≤ `MOVE_TO_MAX_ARGS`=6 with offsets `0.0`, rotation flags at defaults;
   `AddItem`: literal `abSilent`). Post-2026-09-19 primitives to hold to this: `StopCombat`, `AddSpell` (accepts
   and drops a literal `abVerbose`), `RemoveSpell` (#4414/#4415), `AddRaceSpells`/`RemoveRaceSpells` (unqualified argless call onto the player; apply re-applies/clears exactly the stamped `RaceSpells` set, a scripted `AddSpell` survives the clear, `9813af435`; the player's own stamp is `attach_to_player`'s, #5413 `212a71dba` — before it both were silent no-ops on the only actor they target), `SetUnconscious` (`prim_set_unconscious`,
-  `[abUnconscious = true]`, player receiver declines; #5017 `3c08cfe50`).
+  `[abUnconscious = true]`, player receiver declines; #5017 `3c08cfe50`). Also held to it since 2026-10-10:
+  `Lock` takes the compiled two-parameter shape (`abLock`, literal `abAsOwner` parsed and not applied; a
+  non-literal or third argument declines, #5653 `2ce808553`), `SetObjectiveDisplayed` parses `abForce` through
+  `bool_arg` (#5652 `9777c41a2`), `Enable`/`DisablePlayerControls` fill absent arguments from their *own*
+  default tables (`ENABLE_PLAYER_CONTROLS_DEFAULT` vs `DISABLE_PLAYER_CONTROLS_DEFAULT`, #5651 `5e2fc3c8e`), and
+  `SetMotionType` integer literals lower only where every game agrees (just `1` = Dynamic; Skyrim/FO4 constants
+  differ, the named `Motion_*` property read still lowers; #5633 `92a1782fe`,
+  `literal_motion_types_lower_only_where_every_game_agrees`).
 - **Receiver/hole binding never defaults to form-id 0**: `QuestRef::{OwningQuest, SelfRef, Property}` must
-  fully resolve (`OwningQuest` needs `ctx.owning_quest`; `SelfRef` on a REFR declines); `ObjectRef` has no
+  fully resolve (`OwningQuest` needs `ctx.owning_quest` and lowers only from `Self.GetOwningQuest()` — an
+  alias property's `GetOwningQuest()` names another quest, #5634 `221befd61`; `SelfRef` on a REFR declines); `ObjectRef` has no
   bare-receiver case (`receiver_object` rejects `self`; object locals resolve through
   `scope.object_locals`, alias-bound via `SceneActorBindings`); a receiver the runtime would *drive* must
   not be the player (`StartCombat`, #4323). `PlayerRef` (0x14) resolves inside the shared
@@ -119,7 +131,9 @@ they cannot see:
   (`only_the_counter_only_primitives_are_placeholders`).
 - **Chain order**: `RECOGNIZERS` = per-script first (`two_state_activator`, `rumble`), generic second
   (`quest_stage_gate`); first match wins, all-`None` = silent miss; a new generic recognizer must not shadow a
-  per-script one. `quest_stage_gate` declines when the condition quest and the `SetStage` target disagree.
+  per-script one. `quest_stage_gate` declines when the condition quest and the `SetStage` target disagree, and arms only the
+  handler in effect in the script's **boot state** (the `Auto State`'s handler, else script scope; handlers
+  only in non-auto states are ignored — #5639 `e1b7e31e7`, `advance_handler_must_be_in_the_boot_state`).
   `rumble` extracts literal property values only. Fidelity gate: `recognizes_da10_and_reproduces_hand_builder`
   (`.psc` side) **and** `da10_pex_reproduces_hand_builder_byte_for_byte` (`.pex` side, `#[ignore]`d, Skyrim SE
   data) — the `.psc` half alone never touches the decompiler; run both.
@@ -213,7 +227,10 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   `or_precedence_quirk_*`, `and_chain_short_circuits_on_first_false`. Function catalog per the module-doc
   table (indices verified against TES5Edit; `CATALOG` is 24 since #5380 `395d2d831` added 56 `GetQuestRunning`,
   74 `GetGlobalValue`, 77 `GetRandomPercent` — the last rides `StoryManagerRng`, a documented 50.0 with none
-  installed; fn 0 is deliberately **unmapped** (xEdit: `GetWantBlocking` on TES5/FO4, no index 0 on
+  installed; the module-doc table and a row-count pin track the catalog, #5648 `2ed7f8ec3`. `GetQuestRunning`
+  reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
+  `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
+  mirror test, #5637 `722c06a76`; fn 0 is deliberately **unmapped** (xEdit: `GetWantBlocking` on TES5/FO4, no index 0 on
   TES4/FO3/FNV — the short-lived `GetButtonPressed` mapping was removed by #5431; `GetButtonPressed` exists
   only as an ObScript script function in `obscript_quests`)); `GetIsID` compares the Run-On's **base** object
   (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,
@@ -326,12 +343,19 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   Random stack (ended by the next passing non-Random INFO or a Random End, #5397 `0436bea5c`) through the seeded
   `DialogueRandomState`; position is the merged INFO chain (override INFOs fold by FormID after their PNAM
   predecessor, #5375 `168b81322` — the merge itself is `/audit-esm`). Spoken Say-Once INFOs are disqualified
-  through the saved `DialogueSpokenInfoForms` ledger (column added at FORMAT_MAJOR 33); a spoken Goodbye closes on
+  per actor through the saved `DialogueSpokenInfoForms` ledger — `(speaker reference FormID, INFO)` pairs since
+  FORMAT_MAJOR 38 (Skyrim ENAM/legacy-DATA flags now decode; #5300 `f18224b02`; re-selecting the same INFO ends
+  the outgoing line first); a spoken Goodbye closes on
   the presentation estimate. FO3/FNV
   INFOs honour their own owning quest (QSTI, #5271 `dbc07e8f0`). **Force-greet**
   (`systems/forcegreet.rs`, `ForceGreetDirective` bridge): FO3/FNV Dialogue procedure (`PKDD` topic on
-  `PackRecord::dialogue_topic`) and the Skyrim `ForceGreet` procedure-tree leaf (#5367 `287214103`) walk the NPC
-  to the player and open the topic through the same selection path without activation. Two installers: the
+  `PackRecord::dialogue_topic`) and the Skyrim `ForceGreet` procedure-tree leaf (#5367 `287214103`; a concrete package's leaf and topic are
+  sought on its own tree first, then on its PKCU template — 334 of 339 Skyrim.esm force-greet packs are template
+  instances, #5511 `72e863d80`) walk the NPC to the player and open the topic through the same selection path
+  without activation. The walk goes through `navmesh_path::cached_walk_step` and honours KCC-blocked: a mover
+  held against an obstacle for `LOCOMOTION_STUCK_REPICK_SECS` gives up the approach and opens in place (#5452
+  `6316719ed`), and the step is gated on the shared `ai_locomotion_enabled()` kill switch (the in-radius open
+  stays live and the directive stays pending, #5430 `bd366e300`). Two installers: the
   `dialogue.forcegreet` console door (any Dialogue package, unconditionally — the drivable one, smoke `dt1`/`dt2`)
   and FO3/FNV ambient package selection, which installs only from a fully-modeled, player-targeted (PTDT 0x14 or
   none) Conversation (`PackRecord::dialogue_type` 0) — #5376 `4e58f241d`, `AmbientBehavior::from_package` in
@@ -344,16 +368,19 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `f0c683ef1`). Every opened conversation raises an `AHEL` story event; `raise_hello_story_event` resolves the
   location *before* taking the `StoryEvent` guard and the open sites scope their `LoadedCellIndex` read to a clone
   (#5372 `1c15a2270` — the `LoadedCellIndex → StoryEvent → LoadedCellIndex` cycle). The `npc_dialogue_selection`
-  Access row declares the cross-file voice and AHEL hops, and the declaration scan lists `dialogue_voice.rs` and
-  `story_events.rs` explicitly (#5414 `9d8fd4cc9` — the same-file callee walk cannot follow a hop into another
-  file). Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
+  Access row declares the cross-file voice and AHEL hops, and the declaration scan lists `dialogue_voice.rs`,
+  `story_events.rs` and the condition evaluator (`evaluate_function`, 18 storages/resources incl. the
+  `StoryManagerRng` write) explicitly (#5414 `9d8fd4cc9`, #5649 `197a9e245` — the same-file callee walk cannot
+  follow a hop into another file). A replaced or closed line cuts its voice (`stop_line_voice` →
+  `AudioWorld::stop_sounds_for`; #5432 `40b77828b`). Talk-candidate filtering (`populate_candidates`, `byroredux/src/interaction.rs`)
   takes each alias-resource guard alone and builds bulk sets per storage (`running_quest_bound_entities`;
   #5025 `2a1a7a362` closed two ABBA cycles, #5109 `83d52707e`) — a guard nest reintroduced there reddens the
   lock-order lane. The egui response page itself is `/audit-tooling`.
 - **Story Manager** (`story_manager.rs`, `docs/engine/story-manager.md`; #5366 Phases 0-4, live gate `docs/smoke-tests/sm1-story-manager.sh`):
   `install_story_manager` folds the parsed `SMBN`/`SMEN`/`SMQN` map into an `SmTree`. `SNAM` names the
   **previous** sibling (xEdit): the head is the `SNAM == 0` (or dangling) member and the fold follows the inverse
-  edges, authored top-down (#5385 `846e4a6dd`, `snam_previous_semantics_walk_head_first`; the earlier same-parent
+  edges, authored top-down (#5385 `846e4a6dd`, `snam_previous_semantics_walk_head_first`; every member of a
+  sibling group is placed — groups replay in FormID order, not one SNAM chain, #5405 `76a927f8a`; the earlier same-parent
   check held in both directions, so a direction pin must be asymmetric); a sibling cycle must still terminate
   (`sibling_cycle_builds_and_dispatch_terminates`).
   `story_manager_dispatch_system` (exclusive, Update; `StoryClock` synced from `GameTimeRes` first) drains the
@@ -366,15 +393,20 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   the slots via `StoryEventAliasFill` consumed by `refresh_scene_actor_bindings`, which probes slot liveness
   (despawned id, or `Dead` without ALLOW_DEAD → `StoryManagerEventUnavailable`, never a stale bind; #5419
   `1dfdeb4f9`, `from_event_alias_skips_stale_and_dead_slot_entities`). `DNAM` policies: random parents
-  shuffle (`StoryManagerRng`), a processed node without Shares Event consumes the event, pools round-robin with
+  shuffle (`StoryManagerRng`, whose write guard is taken for the draw alone — `GetRandomPercent` fn 77 re-enters
+  it during `evaluate`, #5628 `faa00de2a`), a non-sharing quest node consumes the event only when its own pool
+  queued a start candidate (a passing node with an exhausted pool no longer swallows the event, #5404
+  `76a927f8a`), pools round-robin with
   `RNAM` reset windows (hours, decoded through xEdit's 1/24 scale, #5386) in `StoryManagerNodeState`. Saved SM
-  resources: `StoryManagerNodeState` and `StoryEventAliasFill` (#5394 `03e51dfad`, column added at FORMAT_MAJOR 35 — the R1/R2
+  resources: `StoryManagerNodeState` and `StoryEventAliasFill` (the CLOC location cursor is session-local and reset on every save load, #5435 `557ead21d`; #5394 `03e51dfad`, column added at FORMAT_MAJOR 35 — the R1/R2
   slots persist as reference FormIds and re-resolve among resident candidates, session `EntityId`s serde-skipped;
   `story_event_alias_fill_survives_save_load_as_reference_forms`); `SmTree`/cursors/clock/RNG are
   not-saved-by-design, so a quickload cannot re-fire spent radiants. Update ordering (CLOC producer → dispatcher →
   `quest_alias_refresh_system`, ambient installer → `forcegreet_system`) is pinned by
   `story_dispatch_and_forcegreet_update_ordering_is_pinned` (`byroredux/src/scheduler_access_tests.rs`, #5415).
-  Producers: `KILL` (combat death site),
+  Producers: `KILL` (`raise_kill_story_event`, called from all four live death producers — combat, NPC and
+  player drowning, SDK actor-value batch — with the session LCTN as L1; corpse restores deliberately do not
+  raise it, #5434 `c85d50356`; the per-frame CLOC key derivation early-outs on an empty `SmTree`, #5447),
   `CLOC` (`systems/story_events.rs`, LCTN-granularity key), `AHEL` (every opened conversation), `sm.event` console;
   `SCPT`/crime/crafting families have no producer, and `MNAM`/`XNAM` (Num quests to run / Max concurrent, named
   #5420) are unconsumed — one quest starts per node (documented gaps in `story-manager.md` §8, not findings).
@@ -411,7 +443,11 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   root containing them — un-rooted entities are despawn-immune, so a non-draining list is residency leak. Only
   **parentless** members queue and a root's adoption stamps its whole `Children` subtree (a local `Transform` is
   not a world position, #5384 `faf8e5682`); the player's subtree is never queued or cell-owned, and
-  `purge_cinematic_retention_state(world, ctx)` despawns the still-pending list at session replacement (#5379 `203be9ed4`).
+  `purge_cinematic_retention_state(world, ctx)` releases the still-pending roots' whole `Children` closure
+  (minus the player rig) through `release_entities` at session replacement (#5379 `203be9ed4`; the closure and
+  the render-side release, #5490 `99cd9fd6c`). `release_finished_tethers` clears `vehicle`, so `ExitCart`'s exit
+  heading falls back to the rider's own rotation — equal only because `vehicle_attachment_system` last wrote
+  `vehicle.rotation * vehicle_local_rotation` (`released_rider_exit_heading_matches_the_attached_heading`, #5461).
   Pins: `systems/cinematic.rs` (the #3817 lifecycle pair plus `parented_subtree_rides_the_roots_adoption`,
   `player_rider_is_never_queued_or_cell_adopted`) and `cell_loader/unload.rs`
   (`pending_readoption_victims_are_the_whole_subtree_closure`, `pending_readoption_victims_spare_the_player_rig`); a release path
@@ -428,7 +464,11 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
 - **`obscript_vm.rs` (pure interpreter) bounds discipline**: statement framing `[op][len][payload]`,
   `0x1c` explicit-caller escapes, implicit-caller statement calls (line opcode = command id), RPN expression
   tokens, `[u16 count]` typed arguments, `If/ElseIf/Else` nesting with `Return`-inside-arm early exit,
-  1-based SLSD local / SCRO reference resolution. Every `read_u16`/`checked_add`/span end must be bounds-checked
+  1-based SLSD local / SCRO+SCRV reference resolution — compiled reference indices are 1-based into the
+  *interleaved* SCRO+SCRV list (`ScriptRef`; `SCHR.num_refs` counts both; a reference-variable slot resolves to
+  nothing, an unresolved explicit caller is declined, #5629), and a tag-`r` `Set <ref>.<remote var>` is declined
+  and counted (`CMD_DECLINED`), never stored as a ref assignment (#5630, `aac6b25b3`). Argument payload reads
+  are checked against the statement's argument region, not just the script buffer (#5655 `291af4528`). Every `read_u16`/`checked_add`/span end must be bounds-checked
   and malformed input must yield `BlockOutcome::Malformed`, never panic (`truncated_bytecode_reports_malformed`;
   `installed_legacy_masters_have_structurally_valid_scda` is the real-data check, `#[ignore]`d). Recursion is
   capped by `MAX_OBSCRIPT_VM_NESTING` = 32 on both `exec_if_chain` ↔ `run_arm_body` and nested `X` argument
@@ -470,7 +510,13 @@ audited). Its SDK half (`crates/sdk`: StorageUtil/JContainers verbs, typed scrip
 is `/audit-tooling`; audit here the runtime that consumes it.
 - **Untrusted-input**: preflight/lowering run on `.pex`-derived data and provider manifests. `compatibility`
   caps its script table (`MAX_COMPATIBILITY_SCRIPTS`, `truncated()` must surface); lowering recursion is capped
-  (`MAX_PROVIDER_HANDLER_NESTING` = 32, `MAX_PROVIDER_FRAGMENT_BARRIERS` = 64 — cap-before-descend); value sizes
+  (`MAX_PROVIDER_HANDLER_NESTING` = 32 — an `elseif` chain counts its clause index into the depth so lowering and
+  the per-dispatch `validate_provider_statements` agree, #5656; `MAX_PROVIDER_FRAGMENT_BARRIERS` = 64 —
+  cap-before-descend); a literal `Utility.Wait` is capped at `MAX_PROVIDER_WAIT_SECONDS` (one game day) at
+  lowering so a mod cannot park immortal continuations in the bounded 4 096-slot queue, #5657 `05d8d5864`;
+  `execute_statements` runs on an explicit cursor stack, not a recursion per executed `If` (#5635 `afa5186a1`,
+  20 000 sequential `If`s on a 256 KiB stack); `papyrus_provider_system` groups ModEvent registrations by entity
+  once per frame and only when events are pending (#5640 `34a47ba81`); value sizes
   obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS`. `execute.rs` has
   `unreachable!` arms guarded by "validated …" invariants — each must be truly established by lowering.
   The `catching_panics` net (#3948) wraps the translate/lower path; check whether runtime execution in

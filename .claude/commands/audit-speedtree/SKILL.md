@@ -174,7 +174,7 @@ the attach, 811499b65, #5360; exits 0 on SKIP without data — run and reported 
   carry different ICON/OBND/BNAM); NIF keying unchanged.
 - `parse_and_import_spt` returns the same `CachedNifImport` shape as any model with synthetic
   defaults the spawn path must not mis-read as NIF-rooted (`bsx_flags = 0`, `root_flags = 0`,
-  `flame_attach_offset = None`).
+  `attach_light_offset = None`).
 - **Billboard attach is at mesh level**: `import_spt_scene` sets
   `mesh.billboard_mode = Some(BILLBOARD_MODE_BS_ROTATE_ABOUT_UP)` and the functional insert is
   `spawn/mesh_instance.rs`'s `if let Some(raw) = mesh.billboard_mode` (without it the quad spawns

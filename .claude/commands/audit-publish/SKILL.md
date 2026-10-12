@@ -123,6 +123,8 @@ label. Map the finding's subsystem directly:
 | Save/load (M45) | `save-load` |
 | Papyrus / ObScript / scripting runtime | `scripting` |
 | ECS storage / queries / scheduler | `ecs` |
+| Animation runtime / KF import / clip sampling | `animation` (+ `ecs` / `nif-parser` for the side it lands in) |
+| Cargo dependency drift, pins, MSRV | `dependencies` (+ `tech-debt`) |
 | GPU sync (semaphores, fences, barriers) | `sync` |
 | CPU lock ordering / races / access declarations | `concurrency` |
 | Platform / windowing, audit infrastructure | `tech-debt` *(no own label — flag the gap)* |

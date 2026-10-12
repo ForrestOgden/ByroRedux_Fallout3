@@ -30,7 +30,7 @@ The script writes the following into `$SCRATCH`:
 
 It also prints each group's weight: the changed files routed to it through `_audit-owners.md`, and the cited issues closed since the base. It exits non-zero if `groups.txt` misses an `audit-*` directory or lists one twice. A newly added audit skill must go into a group first.
 
-Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten agents was the right size for ~300 commits. Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
+Look at the printed weights. If one group carries well over ~2× the median of either number, split it in `groups.txt` before fanning out. Ten groups was the right size for ~300 commits; the per-game audits each get their own group when their routed counts dwarf the rest (the 2026-10-12 run used fourteen for 239 commits, with `fo3` and `oblivion` split out of the old `fo3-oblivion` pair). Two skills' routed counts are inflated by churn, not code: `regression` (every `.claude/issues/` note) and `tech-debt` (the `docs/audits/` reports, other `docs/` edits, `.claude/commands/`). Discount those two before splitting.
 
 ## Phase 2: Fan out
 

@@ -78,15 +78,17 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
      echo "test files >2000 total LOC (lower priority, separate bucket): $(find crates byroredux tools -name '*.rs' -not -path 'tools/nifskope/*' -exec wc -l {} + | awk '$1>2000 && $2!="total"' | wc -l)"
    } > /tmp/audit/tech-debt/baseline.txt
    ```
-   Measured 2026-10-10 (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
-   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 45 (34 on 2026-10-08; the +11 are `cfg(test)` TypeId-only markers in
-   `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable),
-   `#[ignore]` 287 (281 on 2026-10-08; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower),
-   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/env_translate/` (then one file), new —
-   1881 → 2097 since 2026-10-08 on the #5374/#5388/#5423/#5424 climate/LOD fixes, since split per concern
-   into `lod` / `climate` / `water` / `sky_weather` / `fallback` by #5584, none over 700 production LOC; `byroredux/src/components.rs`;
-   `crates/scripting/src/fragment/effects.rs`; watch-list within 5%: `crates/nif/src/import/types.rs` (1997),
-   `byroredux/src/save_io.rs`, `crates/audio/src/lib.rs`, `crates/scripting/examples/mq101_conformance.rs`), test-heavy >2000: 72.
+   Measured 2026-10-12 at 0d698d16c (diff direction only, re-run, never quote): markers 24 (15 are `XXXX` false positives, 2 the
+   FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 44 (45 on 2026-10-10; the 11 added since 2026-10-08 are `cfg(test)`
+   TypeId-only markers in `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a
+   fresh hit is notable), `#[ignore]` 299 (287 on 2026-10-10; tools-inclusive — earlier reports scoped to `crates`+`byroredux`
+   read lower),
+   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/components.rs`;
+   `crates/scripting/src/fragment/effects.rs`; `byroredux/src/save_io.rs`, new — it crossed to 2011. `byroredux/src/env_translate/`
+   left the list: it was one file at 1881 → 2186 across 2026-10-05..11 on the #5374/#5388/#5423/#5424 climate/LOD fixes and #5584 split it
+   per concern into `lod` / `climate` / `water` / `sky_weather` / `fallback`, none over 700 production LOC; watch-list within 5%:
+   `crates/nif/src/import/types.rs` (1997), `crates/audio/src/lib.rs`, `crates/plugin/src/esm/cell/mod.rs`,
+   `crates/scripting/src/translate/effects.rs`, `crates/scripting/examples/mq101_conformance.rs`), test-heavy >2000: 77.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.
 
 ## Phase 2: Dimension Agents
@@ -138,8 +140,10 @@ chains (BC1/BC3/BC5/RGBA) and image-layout barrier sequences repeated per pass i
 (`vulkan/image.rs` `GpuImage` and the shared barrier helpers are the consolidation targets — a pass that still
 hand-rolls create/bind/destroy is a candidate); `vk::WriteDescriptorSet` builder boilerplate; ESM sub-record parse loops
 across `crates/plugin/src/esm/records/`; AI-procedure systems sharing scaffolding; near-identical per-game HUD/profile
-tables; source-scan helpers (`production_text`, `count_identifier`) have ONE home, `crates/core/src/source_scan.rs` (#5100,
-655b317c9) — a re-copied cut in a test module is a regression. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
+tables; source-scan helpers (`production_text`, `production_text_or_whole`, `strip_test_modules`, `count_identifier`) have ONE
+home, `crates/core/src/source_scan.rs` (#5100, 655b317c9; #5469, 334458b3f routed the ~40 surviving inline cuts through it) — a
+re-copied cut in a test module is a regression; `no_source_scan_cuts_with_the_weak_cfg_test_needle`
+(`byroredux/src/workspace_hygiene_tests.rs`) fails a new weak `#[cfg(test)]` find/split outside its allowlist. The Z-up→Y-up conversion has one home, `crates/core/src/math/coord.rs` (`zup_to_yup_pos`,
 `zup_to_yup_quat_wxyz`); re-exports elsewhere are not leaks — a genuine reimplementation would live outside that file.
 
 ### Dimension 3: Stale Documentation & Comments

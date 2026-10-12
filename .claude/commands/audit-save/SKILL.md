@@ -108,9 +108,11 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   tombstone). Recent false reasons, since fixed: `StoryEventAliasFill` ("quests restart
   through fresh events" — now registered, #5394 `03e51dfad`), `EatSleepState` ("`resolve_destination` is
   idempotent" — restated per PLDT anchor, #5391 `42aab4c09`), `CinematicReAdoption` ("the teardown handles
-  them" — the purge now despawns them, #5379 `203be9ed4`). Known-open (cite, don't re-file): #5458 (the Eat/Sleep
-  rows still claim a "registered Seated restore", but `Seated` is not overlaid — `restore_world`-only) and
-  #5435 (`StoryLocationCursor` survives an in-process load).
+  them" — the purge now despawns them, #5379 `203be9ed4`); plus the Eat/Sleep rows' "registered Seated restore"
+  (`Seated` is not overlaid — `restore_world`-only; restated and pinned by the `seated_without_path` check at the tail
+  of the completeness guard, #5458 `0aa844dbb`) and `StoryLocationCursor` ("a load legitimately re-fires" —
+  `execute_pending_save_loads` now resets it on every in-process load, #5435 `557ead21d`, pinned in
+  `live_reload_tests.rs`).
 - **Removed-from-allowlist stays registered**: `CharacterController` (fractional breath/drowning carry),
   `RigidBodyData`, `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
   regressed out of `build_save_registry`, and no re-added `NOT_SAVED_BY_DESIGN` entry re-excludes them.
@@ -165,11 +167,13 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 35 as of 2026-10-10 — v31 #5042
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 38 as of 2026-10-12 — v31 #5042
   `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
-  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger; the doc has no
+  state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger; the doc still has no
   v32→v33 entry, known-open #5459), v34 #5412 `a614eb273` `ActorValue.set_override`, v35 #5394 `03e51dfad` new
-  saved resource `StoryEventAliasFill`; do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
+  saved resource `StoryEventAliasFill`, v36 Wave 4 `RigidBodyData.surface_material` required byte, v37 #5542
+  `surface_material` widened `u8`→`u32` (Skyrim CRC32 materials), v38 #5300 `DialogueSpokenInfoForms` element
+  `u32`→`(speaker ref FormID, INFO FormID)` pair — Say Once is per actor; do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:
@@ -283,9 +287,12 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   as a ghost twin sharing a `FormIdPair` — #5056 `a197e8563`, both reload arms + both debug-load paths, never
   ordinary cell transitions (`purge_wiring_tests`) — and despawns + clears the unsaved `CinematicReAdoption`
   pending list, whose un-rooted entities the `CellRootIndex` teardown cannot enumerate (#5379 `203be9ed4`).
-  Known-open #5490: since #5384 that list holds roots only, so the bare `despawn_batch` orphans their subtrees
-  (after which `validate_world` refuses every later save) and skips GPU/Rapier release. The teardown never
+  Since #5384 that list holds parentless roots only, so the purge (now taking the `VulkanContext`) collects each
+  root's `Children` closure and hands it to `release_entities` — subtrees no longer orphan (which made
+  `validate_world` refuse every later save) and GPU/Rapier handles are released, #5490 `99cd9fd6c`. The teardown never
   despawns the player rig: `unload_cell_inner` refuses `player_owned_entities`, #5483 `5a68e983e`)
+  → `reset_story_location_cursor` + `discard_pending_story_events` (the unsaved CLOC cursor and any straddling
+  `StoryEvent` markers describe the outgoing session; every load behaves like a fresh boot, #5435 `557ead21d`)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local

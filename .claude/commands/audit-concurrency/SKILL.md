@@ -162,7 +162,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -191,6 +191,13 @@ re-audit it here. This dimension owns how *systems* use it.
 - **The graph cannot tell `&mut World` from `&World`.** A function holding several read guards at once under
   `&mut World` cannot deadlock but still records edges and reddens the lane (#4982, the unload capture
   passes). The fix is the same snapshot-then-acquire shape, not an exemption.
+- **A new system body is the usual source of the next cycle (#5535, 1cb12fb3d).** The lane went red on five cycles across
+  26 tests, three of them production inversions in just-landed code: `eat_sleep`'s batched gather took
+  `GlobalTransform → WalkSpeed → Transform` (every other mover takes `Transform` first), hair head-mount's
+  `common_shape_rotation` held `MeshHandle` + `Children` across `bind_transform_relative_to`'s `Transform → Parent`, and the
+  #5501 seated restore held `Furniture` across a `GlobalTransform` read (sandbox takes `GlobalTransform → Furniture`). The
+  other two were test bodies holding a guard across a second read (#5032 shape). Attribution recipe: a temporary edge logger
+  in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **A fixture records only the edges its storages allow.** #5372 (1c15a2270) closed
   `LoadedCellIndex → StoryEvent → LoadedCellIndex` (the hello location resolved under the `StoryEvent` guard), which the
   lane never saw because the dialogue fixture lacked the Story Manager storages and `raise_hello_story_event` returned
@@ -224,8 +231,9 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures and macros; exclusive systems (four are
   scanned — `npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`, and
   `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307,
-  and `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9;
-  others only by the non-empty-access tests). The table and these scans live in `system_access_declaration_tests`
+  `apply_selection`'s voice / AHEL hops `play_line_voice` + `raise_hello_story_event`, #5414 9d8fd4cc9, and the condition
+  evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245;
+  others only by the non-empty-access tests, e.g. `footstep_declares_its_physics_reads`, #5556). The table and these scans live in `system_access_declaration_tests`
   (`byroredux/src/boot/schedule/mod.rs`).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c).
@@ -274,7 +282,9 @@ First step: `cargo test -p byroredux-physics sync` and `BYRO_LOCK_ORDER_CHECK=1 
   `PhysicsWorld` guard. `PhysicsWorld` is a sink like `StringPool` (last, nothing taken under it — `docs/engine/ecs.md`):
   #5371 (f0c683ef1) was `forcegreet_system` / `eat_sleep_system` holding it across storage reads and the dialogue open,
   closing `Transform → PhysicsWorld → Transform` against `ragdoll_writeback_system`; pinned by
-  `forcegreet_walk_with_real_physics_world` and `eat_walk_with_real_physics_world` under the detector.
+  `forcegreet_walk_with_real_physics_world` and `eat_walk_with_real_physics_world` under the detector. The same class
+  elsewhere: `footstep_system` took `FootstepConfig` under the `AudioWorld` write guard (an `AudioWorld → FootstepConfig`
+  edge on every footstep); the table is now cloned before the guard and `select_footstep_sound` is pure (#5556, ac710964e).
 - **`ContactConfig`** is read via `try_resource` and snapshotted once per batch in `register_newcomers`, not re-locked per newcomer.
 - **Cell-unload teardown (#1520).** `release_victim_rapier_bodies` (`unload.rs`) collects victims'
   `RapierHandles` under the read guard, drops it, then removes bodies from `PhysicsWorld`, before the despawn loop drops the handles.

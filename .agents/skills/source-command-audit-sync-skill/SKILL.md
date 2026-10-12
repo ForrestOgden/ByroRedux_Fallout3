@@ -16,7 +16,7 @@ Use the Claude Code command as the canonical workflow instead of maintaining a d
 ## Adapt Claude Conventions to Codex
 
 - Treat the user's text after the skill request as the command arguments described by the canonical skill's `argument-hint`.
-- Interpret Claude background agent fan-out as Codex sub-agent delegation, one per `groups.txt` line (max 3 concurrent); without delegation, work through the groups sequentially using the rendered brief.
+- Interpret Claude background agent fan-out as Codex sub-agent delegation, one per `groups.txt` line, all launched together as the canonical command does, each told not to start sub-agents; without delegation, work through the groups sequentially using the rendered brief.
 - Do not commit unless the user asks.
 
 Do not copy the canonical command body into this skill. The Claude command is the single source of truth.

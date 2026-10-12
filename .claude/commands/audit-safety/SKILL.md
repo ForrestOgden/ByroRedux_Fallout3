@@ -20,7 +20,7 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Measured 2026-10-10 (99 commits since 2026-10-08 added no `unsafe`; #5273 removed five):
+only 2 real blocks). Re-measured 2026-10-12 at 0d698d16c (the 239 commits since 2026-10-10 added and removed no `unsafe`; #5273 removed five earlier):
 
 - `crates/renderer/src`: **935** word tokens (944 by the substring recipe; 939 on 2026-10-08) — 715 `unsafe {`
   blocks (720), 96 declared `unsafe fn` (the loose `grep 'unsafe fn'` reads ~145: prose and source-scan
@@ -137,7 +137,9 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
   existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
-  `frames_in_flight_contract_names_every_dependent_resource`). `EguiPass` teardown ordering is `/audit-concurrency` Dim 6.
+  `frames_in_flight_contract_names_every_dependent_resource`). A `FullOutput` that is never drawn (shutdown, no overlay
+  pass, `VulkanContext::drop`) is discarded through `drop_without_applying_deltas` — egui 0.36 debug-asserts on a dropped
+  undrained `TexturesDelta` (500fcb8ca). `EguiPass` teardown ordering is `/audit-concurrency` Dim 6.
 - **GPU allocation inventory** (BLAS/TLAS + scratch, G-buffer, SVGF/TAA history, caustic accumulators, skin
   slots, MaterialBuffer, volumetric/bloom pyramids, ground-cover and sky-bake buffers): each tracked and freed;
   budgets are `docs/engine/memory-budget.md` — do not re-derive.
@@ -266,7 +268,11 @@ First step: `cargo tree -p byroredux-mod-runtime | grep -i wasi` (must print not
 - **Resource limits**: `SandboxConfig::validate()` (`limits.rs`) rejects absurd limits (`MAX_SANE_LIMIT`,
   `MAX_WASM_STACK_BYTES_CEILING`, `MAX_FUEL_PER_ENTRY`); fuel exhaustion yields a `FaultInfo` / terminal
   `InstanceStatus`, not a hang; guest-controlled buffers are capped (`max_log_entries` / `max_log_message_bytes` /
-  `max_log_bytes`, command and console-output budgets) with distinct `FaultKind`s.
+  `max_log_bytes`, command and console-output budgets) with distinct `FaultKind`s. `SandboxRuntime::new` pins the
+  wide-arithmetic and relaxed-SIMD proposals off (wasmtime 49 flipped the first on; the second lowers per CPU), and each
+  entry sets `Store::set_hostcall_fuel(max_log_message_bytes + 1024)` so a WIT `String` arg cannot make the host lift the
+  default 128 MiB before the size checks run (0781077b8, `runtime/sandbox.rs`). Fuel also charges `memory.fill` / `copy` /
+  `init` per byte since wasmtime 48, pinned by `memory_fill_is_charged_per_byte_and_quarantines` (9046b5ac5).
 - **Lifecycle**: a fault in one `LifecyclePhase` cannot leave the instance usable; `shutdown` is idempotent; a
   trapping guest is quarantined, not retried in a loop.
 - **Untrusted bytes at compile time**: `SandboxRuntime::compile` takes arbitrary bytes bounded by

@@ -122,7 +122,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
   jmpt inversion negates + swaps edges). A conditional-predecessor `last` (`||` shape the boolean pass should
   have collapsed) **fails closed** (`ControlFlowFailed`, #1732; `conditional_predecessor_fails_closed`) —
   a fix that resumes past the block drops statements. The module doc's "advanced past" wording is stale
-  (#4115 open).
+  (#4115 open, verified 2026-10-12).
 - **Three bookkept Champollion departures** — `boolean.rs`'s two, plus `lower.rs`'s `is` → object-typed `Cast`
   (#4477, `an_is_opcode_lowers_to_an_object_typed_cast`; recognizer-irrelevant only while no consumer keys on it).
   For the **`boolean.rs`** two — adjudicate benign-or-bug, evidence = corpus rate +
@@ -133,7 +133,7 @@ First step: `cargo test -p byroredux-pex -- decompile::`; with game data: `cargo
 - **Recursion**: `MAX_REBUILD_DEPTH = 1024` in `control_flow.rs` (`boolean.rs` derives it — not restated);
   both rebuilds return `RecursionLimit` (`rebuild_rejects_excessive_recursion_depth` exists in *both* files).
   It and `MAX_EXPR_DEPTH` (256) compose additively (~1,280) and independent edits erode the margin
-  (#4113 open) — check any change to either constant.
+  (#4113 open, verified 2026-10-12) — check any change to either constant.
 - **`lower.rs` totality**: `lower_expr`/`lower_stmt` never panic on any `NodeKind`; intentional lossy lowerings
   matter only if a recognizer keys on the lost info: statement-shaped node as sub-expression → `NoneLit`
   (should be unreachable), `is` → `Cast`, `StructCreate` → `New` size 0, `lower_binary_op` default arm →
@@ -180,7 +180,8 @@ First step: `cargo test -p byroredux-papyrus -- depth chain the_two_parser_depth
   explicit `skip_newlines()` or a bracket-bounded list. `expect()` / `expect_ident()` still skip newlines, so
   a keyword's **mandatory operand** goes through `expect_same_line` / `expect_raw` / `expect_ident_raw`
   (`parser/mod.rs`; #5021, `3b7ffa670`): declaration names, the `Extends` target, the `(` after a function
-  name, `State` after `Auto`, the If/ElseIf/While condition start — pinned by
+  name, `State` after `Auto`, the If/ElseIf/While condition start, and `New`'s type and `[` — #5331 `fd5aa4ead`,
+  `parse_new_expr` — pinned by
   `a_mandatory_operand_on_the_next_line_is_an_error`, `auto_on_its_own_line_does_not_make_an_auto_state`,
   `extends_with_its_target_on_the_next_line_sets_no_parent`, `single_line_forms_of_the_5021_sites_still_parse`.
   Only closing keywords may keep the newline-skipping `expect`; a new declaration keyword that uses it is the
