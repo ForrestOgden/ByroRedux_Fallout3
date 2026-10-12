@@ -1,5 +1,15 @@
 //! #5367 Phase V — per-line dialogue voice playback.
 //!
+//! **Scope: FO3 / FNV / (Skyrim `.fuz` deferred) only.** The shape below is
+//! the FO3/FNV convention, not a universal Bethesda rule. Oblivion is out of
+//! scope (#5526): `Oblivion.esm` authors no NPC `VTCK` and no `VTYP`
+//! records, so the voice-type resolve below is always `None` there, and its
+//! voices ship as `sound\voice\oblivion.esm\<voice race full name>\<m|f>\
+//! <quest>_<topic>_<formid 8-hex>_<n>.mp3` — untruncated, `.mp3`, keyed by
+//! race and sex through RACE `VNAM` (`RaceRecord::voice_forms`, decoded but
+//! unconsumed) instead of a voice type. Oblivion lines keep the
+//! subtitle-estimate fallback.
+//!
 //! Bethesda's authored convention (pinned against FNV's
 //! `Fallout - Voices1.bsa` and FO3's `Fallout - Voices.bsa`):
 //! `sound\voice\<plugin file>\<voice-type EDID>\<quest>_<topic>_<INFO

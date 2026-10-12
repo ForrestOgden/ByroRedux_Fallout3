@@ -218,6 +218,17 @@ see §5 phase 5.
    deliberately V2 scope. Live gate (`dt1-dialogue-layers.sh` leg 3):
    the fresh-boot greeting resolves 1 segment / 5.0 s in
    `maleuniquedocmitchell`.
+   **Scope: this is the FO3/FNV convention, not a universal one.** Oblivion
+   is out of scope (#5526): `Oblivion.esm` authors 0 `VTCK` on its 2,482 NPC_
+   and 0 `VTYP` records, so the voice-type lookup is always `None`, and its
+   voices (`Oblivion - Voices1/2.bsa`: 38,898 `.mp3` + 38,882 `.lip`) are
+   `sound\voice\oblivion.esm\<voice race full name, lowercased>\<m|f>\<quest
+   EDID>_<topic EDID>_<formid 8-hex>_<n>.mp3` — **not** truncated (quests run
+   to 22 characters, quest + topic to 46). The race folder is the speaker's
+   race mapped through RACE `VNAM` (by sex) to the voice race's FULL name
+   (`RaceRecord::voice_forms`, decoded, no consumer yet). An Oblivion line
+   keeps the Phase-L subtitle estimate until a per-game voice-path table
+   entry lands.
 
 ## 6. What this document does NOT decide
 
