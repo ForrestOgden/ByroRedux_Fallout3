@@ -121,7 +121,7 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `ListSystems` | List ECS systems in stage order |
 | `Stats` | FPS, frame time, entity/mesh/texture counts + draw-pipeline counts |
 | `FindEntity { name }` | Find entity by `Name` component |
-| `Screenshot { path? }` | Capture the composited frame as PNG. Always saved server-side: `path` names the file, else the server writes `screenshot_<secs>.png` under its cwd's `screenshots/`; the reply is `ScreenshotSaved` either way (#5150 removed the never-implemented base64 return the doc used to promise) |
+| `Screenshot { path? }` | Capture the composited frame as PNG. Always saved server-side: `path` names the file, else the server writes `screenshot_<secs>.png` (`screenshot_<secs>_2.png`, `_3`, … when that name is taken, #5147) under its cwd's `screenshots/`; the reply is `ScreenshotSaved` either way (#5150 removed the never-implemented base64 return the doc used to promise) |
 | `WalkEntity { entity, max_depth }` | Depth-first hierarchy walk — each visited node's id, depth, parent, children, world + local translation/rotation, and `has_skinned_mesh` / `has_mesh_handle` markers. Inspects runtime trees (NPC spawn chains) without per-component serde derives. |
 | `InspectSkinnedMesh { entity }` | Dump a `SkinnedMesh`'s skeleton root, per-bone resolved entity + `GlobalTransform`, bind-inverses, the per-skin global transform, and the computed palette. Pairs with `WalkEntity` for the M41 Phase 1b.x palette-formula investigation (#841). |
 | `Inspect { entity? }` | Per-entity component dump — every registered component on the entity as `(name, JSON value)`. `entity: None` reads the world's `SelectedRef` (see "Picked-Ref Workflow"). The inspection half of the Bethesda-console `prid` + introspection pattern. |
@@ -254,6 +254,11 @@ using the generic `register_component::<T>()` helper, called from
 | `SpeedTreeWind` | response, stiffness |
 | `RenderLayer` | (enum variant) — depth-bias content layer |
 | `TimedRestorations` | effects — pending timed actor-value restores |
+| `EatBehavior` | radius, location, form_id |
+| `SleepBehavior` | radius, location, form_id |
+| `EatSleepState` | destination |
+| `EditorPlacement` | translation |
+| `CreatureActor` | (marker, no fields) |
 
 Post-#517 the single `AnimatedColor` slot is split into one component per
 target. An entity with both a diffuse and an emissive controller now carries
@@ -367,7 +372,8 @@ tex.loaded                  → unique loaded textures + fallback count
 tex.dump <bsa> <tex> [out]  → extract one texture from an on-disk archive,
                              decode it, and write a PNG for offline
                              inspection (writes under `texture-dumps/`,
-                             default `texture-dumps/tex_dump.png`; quote
+                             default `texture-dumps/tex_dump.png`, then
+                             `tex_dump_2.png`, `_3`, … — never overwritten, #5147; quote
                              paths containing spaces). Menu art resolves
                              through the textures\menus / menus80 / menus50
                              resolution sets like the menu renderer; `.tex`

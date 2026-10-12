@@ -658,5 +658,33 @@ mod roster_tests {
             "debug-cli.md must report {count} in the example transcript too — \
              found the heading only"
         );
+
+        // #5694 — the count alone passed while the table below the heading
+        // listed 67 of 72 rows. Every registered NAME must have its own row
+        // (`| `Name` | …`). Names are the first string literal after each
+        // `register_component::<` (multi-line calls included); the hand-built
+        // `FactionReputation` registration is named explicitly.
+        let mut names: Vec<&str> = production
+            .split("register_component::<")
+            .skip(1)
+            .filter_map(|rest| {
+                let after = &rest[rest.find('"')? + 1..];
+                Some(&after[..after.find('"')?])
+            })
+            .collect();
+        names.push("FactionReputation");
+        assert!(
+            names.len() >= 70,
+            "name extraction found only {} registrations — the scan broke",
+            names.len()
+        );
+        let missing: Vec<&&str> = names
+            .iter()
+            .filter(|name| !docs.contains(&format!("| `{name}` |")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "debug-cli.md's component table has no row for {missing:?} (#5694)"
+        );
     }
 }
