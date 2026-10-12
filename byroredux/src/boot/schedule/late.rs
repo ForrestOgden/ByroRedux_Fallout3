@@ -531,7 +531,35 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::GlobalTransform>()
             .writes::<byroredux_scripting::story_manager::StoryEvent>()
             .reads_resource::<crate::cell_loader::CurrentCellContext>()
-            .reads_resource::<crate::cell_loader::CurrentExteriorContext>(),
+            .reads_resource::<crate::cell_loader::CurrentExteriorContext>()
+            // #5649 — the INFO speaker/condition gate routes through the
+            // scripting crate's `evaluate_function` dispatcher (cross-crate
+            // hop, pinned in the `npc_dialogue_selection_declares_everything_…`
+            // scan). Storages: the subject-identity and equipment reads
+            // (`ActorValues`, `CharacterLevel`, `Background`, `Perks`,
+            // `FactionRanks`/`FactionReputation`, `EquipmentSlots`,
+            // `Inventory`, `CellRoot`/`CellFormId`, `ScenePlayer`,
+            // `ScriptVariables`); resources: `CharacterRuleset`, `Globals`,
+            // `SceneRegistry`, `HardcoreMode`, `FormIdPool` reads and the
+            // `GetRandomPercent` `StoryManagerRng` write.
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .reads::<byroredux_core::character::CharacterLevel>()
+            .reads::<byroredux_core::character::Background>()
+            .reads::<byroredux_core::character::Perks>()
+            .reads::<byroredux_core::ecs::components::FactionRanks>()
+            .reads::<byroredux_core::character::FactionReputation>()
+            .reads::<byroredux_core::ecs::components::EquipmentSlots>()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .reads::<byroredux_core::ecs::CellRoot>()
+            .reads::<byroredux_core::ecs::CellFormId>()
+            .reads::<byroredux_scripting::scene::ScenePlayer>()
+            .reads::<byroredux_scripting::vm_state::ScriptVariables>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads_resource::<byroredux_scripting::globals::Globals>()
+            .reads_resource::<byroredux_scripting::scene::SceneRegistry>()
+            .reads_resource::<byroredux_core::ecs::resources::HardcoreMode>()
+            .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

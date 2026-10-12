@@ -586,6 +586,12 @@ mod system_access_declaration_tests {
     // so they are listed explicitly like every other cross-file hop.
     const DIALOGUE_VOICE_SRC: &str = include_str!("../../systems/dialogue_voice.rs");
     const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
+    // #5649 — the INFO speaker/condition gate routes through the scripting
+    // crate's condition evaluator (cross-crate, invisible to the callee
+    // walk), and its dispatcher reads a dozen storages/resources the row
+    // never declared — including the `StoryManagerRng` write
+    // `GetRandomPercent` takes.
+    const CONDITION_SRC: &str = include_str!("../../../../crates/scripting/src/condition.rs");
 
     /// The nine `add_to_with_access` registrations, each mapped to the
     /// function bodies that make up its acquisition surface.
@@ -1055,6 +1061,13 @@ mod system_access_declaration_tests {
     /// `raise_hello_story_event` (story_events.rs; the `StoryEvent` write
     /// plus the cell-context reads). Without the explicit entries the
     /// same-file callee walk never sees either and the row can rot again.
+    ///
+    /// #5649 — the condition evaluator is the third cross-crate hop:
+    /// `evaluate_function` (condition.rs) is the dispatcher behind the
+    /// INFO speaker/condition gate and acquires the subject-identity
+    /// storages, the quest/scene/global ruleset resources, and the
+    /// `GetRandomPercent` `StoryManagerRng` write — none of which the row
+    /// declared before.
     #[test]
     fn npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires() {
         assert_declares_everything_it_acquires(
@@ -1065,6 +1078,7 @@ mod system_access_declaration_tests {
                 (SCRIPTING_SCENE_SRC, "mark_scene_actor_bindings_dirty"),
                 (DIALOGUE_VOICE_SRC, "play_line_voice"),
                 (STORY_EVENTS_SRC, "raise_hello_story_event"),
+                (CONDITION_SRC, "evaluate_function"),
             ],
             "make_npc_dialogue_selection_system",
         );
