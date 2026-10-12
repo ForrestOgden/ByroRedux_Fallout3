@@ -389,7 +389,16 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         // masks cost `transform_count * 4` bytes per block regardless of
         // frames); the MAX_FRAMES_PER_BLOCK cap above closes it.
         || num_frames as u64 > num_blocks as u64 * (max_frames_per_block as u64 - 1) + 1
-        || mask_size != transform_count * 4 + float_count
+        // #5659 (PAR-D1-2026-10-12-02) — Havok stores the mask table size
+        // padded to 4 bytes: 4 per transform track plus 1 per float track,
+        // rounded up. The unpadded equality rejected every vanilla clip
+        // whose float-track count is not a multiple of 4 (229 SE / 167 LE,
+        // all 117 Falmer clips among them); the block walk below already
+        // starts the curve data at `align_up(mask_end, 4)`. Measured, not
+        // sourced: every one of those clips stores exactly this value and
+        // decodes byte-exactly to its float block. Both counts are ≤ 4096
+        // by the clauses above, so the sum cannot overflow.
+        || mask_size != pad(transform_count * 4 + float_count, 4)
     {
         return Err(HkxError::InvalidData("unsupported spline clip dimensions"));
     }
@@ -1324,15 +1333,16 @@ mod tests {
             skipped <= 1_700,
             "{skipped} files skipped — a parse/extract regression turns clips into skips"
         );
-        // The real decoder rejects 288 of the 6,126 vanilla clips today
-        // (measured 2026-10-11: 229 "unsupported spline clip dimensions" —
-        // one of the #4655 / #5006 / `mask_size` gates, not yet diagnosed
-        // per file — and 59 "non-finite spline scalar"). The audit that
-        // filed #5326 expected 0; the number is pinned as the CURRENT
-        // baseline so this gate catches drift in either direction, and the
-        // gap itself is an open decoder finding (a vanilla clip that fails
-        // to decode never animates), not something this gate may bless.
-        const KNOWN_VANILLA_REJECTS: usize = 288;
+        // The real decoder rejected 288 of the 6,126 vanilla clips on
+        // 2026-10-11: 229 were the unpadded `mask_size` equality (fixed by
+        // #5659 — Havok pads the mask table to 4 bytes) and 59 are
+        // "non-finite spline scalar" (#5662: NaN bounds on one prop-
+        // attachment bone). The remainder is pinned as an upper bound, so
+        // growth fails here; making it exact (and naming the clips) is
+        // #5671. The gap itself is an open decoder finding (a vanilla clip
+        // that fails to decode never animates), not something this gate
+        // may bless.
+        const KNOWN_VANILLA_REJECTS: usize = 59;
         assert!(
             rejects.len() <= KNOWN_VANILLA_REJECTS,
             "{} vanilla clips rejected by decode_spline_animation (baseline \
@@ -1749,6 +1759,123 @@ mod tests {
             err,
             HkxError::InvalidData("unsupported spline clip dimensions")
         );
+    }
+
+    /// A one-transform-track spline clip in the 64-bit (SE) layout that
+    /// fully decodes: one block whose mask table (4 bytes for the track,
+    /// then one byte per float track, then padding) occupies `mask_size`
+    /// bytes, followed at the next 4-byte boundary by a static translation.
+    /// Float-track data is empty — the decoder never reads it.
+    fn synthetic_static_clip(float_count: u32, mask_size: u32, translation: [f32; 3]) -> Vec<u8> {
+        use crate::packfile::fixtures::PackfileBuilder;
+
+        const CLIP: usize = 0;
+        const BINDING: usize = 0x100;
+        const BLOCKS: usize = 0x140;
+        const FLOAT_BLOCKS: usize = 0x148;
+        const SPLINE: usize = 0x150;
+        let layout = Layout::new(8);
+        assert!(
+            layout.spline_data.count + 4 <= BINDING,
+            "clip object overlaps the binding"
+        );
+
+        let mut spline = vec![0u8, 0x07, 0, 0]; // 8-bit scalars; static x/y/z translation
+        spline.resize(4 + float_count as usize, 0); // float-track masks
+        spline.resize(pad(mask_size as usize, 4), 0); // padding up to the curve data
+        for component in translation {
+            spline.extend_from_slice(&component.to_le_bytes());
+        }
+        let float_start = spline.len() as u32;
+
+        let mut data = vec![0u8; SPLINE + spline.len()];
+        let put_u32 = |data: &mut Vec<u8>, at: usize, value: u32| {
+            data[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        };
+        put_u32(&mut data, CLIP + layout.animation_type, 5); // spline-compressed
+        data[CLIP + layout.animation_duration..CLIP + layout.animation_duration + 4]
+            .copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
+        put_u32(&mut data, CLIP + layout.transform_tracks, 1);
+        put_u32(&mut data, CLIP + layout.float_tracks, float_count);
+        put_u32(&mut data, CLIP + layout.num_frames, 2);
+        put_u32(&mut data, CLIP + layout.num_blocks, 1);
+        put_u32(&mut data, CLIP + layout.max_frames_per_block, 2);
+        put_u32(&mut data, CLIP + layout.mask_size, mask_size);
+        data[CLIP + layout.frame_duration..CLIP + layout.frame_duration + 4]
+            .copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
+        put_u32(&mut data, CLIP + layout.block_offsets.count, 1);
+        put_u32(&mut data, CLIP + layout.float_block_offsets.count, 1);
+        put_u32(
+            &mut data,
+            CLIP + layout.spline_data.count,
+            spline.len() as u32,
+        );
+        put_u32(&mut data, BLOCKS, 0);
+        put_u32(&mut data, FLOAT_BLOCKS, float_start);
+        data[SPLINE..].copy_from_slice(&spline);
+
+        let mut local = vec![
+            ((CLIP + layout.block_offsets.pointer) as u32, BLOCKS as u32),
+            (
+                (CLIP + layout.float_block_offsets.pointer) as u32,
+                FLOAT_BLOCKS as u32,
+            ),
+            ((CLIP + layout.spline_data.pointer) as u32, SPLINE as u32),
+        ];
+        local.sort_unstable();
+        let mut builder = PackfileBuilder {
+            data,
+            local,
+            ..Default::default()
+        };
+        let clip_class = builder.class("hkaSplineCompressedAnimation");
+        let binding_class = builder.class("hkaAnimationBinding");
+        builder.virtual_fixups.push((CLIP as u32, 0, clip_class));
+        builder
+            .virtual_fixups
+            .push((BINDING as u32, 0, binding_class));
+        builder.build()
+    }
+
+    /// #5659 (PAR-D1-2026-10-12-02) — Havok writes `mask_size` padded to 4
+    /// bytes. A clip with one float track (the Falmer shape: 4·tc + 1,
+    /// stored rounded up) must decode, and the curve data after the padding
+    /// must land byte-exactly — the static translation proves the cursor
+    /// starts at the padded boundary. The unpadded equality rejected 229
+    /// vanilla SE clips with exactly this shape.
+    #[test]
+    fn decode_spline_animation_accepts_a_padded_mask_table() {
+        let translation = [1.5, -2.0, 3.25];
+        for float_count in [1u32, 2, 3, 4, 5] {
+            let padded = pad(4 + float_count as usize, 4) as u32;
+            let clip =
+                decode_spline_animation(&synthetic_static_clip(float_count, padded, translation))
+                    .unwrap_or_else(|e| panic!("fc={float_count}, mask_size={padded}: {e:?}"));
+            assert_eq!(clip.tracks.len(), 1);
+            assert_eq!(clip.track_to_bone, vec![0]);
+            for pose in &clip.tracks[0] {
+                assert_eq!(pose.translation, translation, "fc={float_count}");
+                assert_eq!(pose.rotation, [0.0, 0.0, 0.0, 1.0]);
+                assert_eq!(pose.scale, [1.0; 3]);
+            }
+        }
+    }
+
+    /// #5659 — the gate stays an exact tie to the file's track counts, so
+    /// #5006's file-bytes argument still holds: neither the unpadded value
+    /// (never written by Havok when it differs) nor an over-padded one is
+    /// accepted.
+    #[test]
+    fn decode_spline_animation_rejects_a_mask_size_off_the_padded_value() {
+        for mask_size in [5u32, 12] {
+            let err = decode_spline_animation(&synthetic_static_clip(1, mask_size, [0.0; 3]))
+                .expect_err("mask_size must equal the padded track-mask size");
+            assert_eq!(
+                err,
+                HkxError::InvalidData("unsupported spline clip dimensions"),
+                "mask_size={mask_size}"
+            );
+        }
     }
 
     /// #3018 (SCR-D8-2026-08-16-03) — an out-of-range annotation timestamp
