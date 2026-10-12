@@ -400,6 +400,100 @@ fn budget_exhausted_includes_never_fetch() {
     );
 }
 
+/// #5668 — every fetch charges a 1 KiB floor against the fetch budget,
+/// so a document spliced to one byte under the byte cap and then naming
+/// hundreds of distinct 2-byte fragments stops fetching after
+/// `MAX_INCLUDE_FETCHED_BYTES / INCLUDE_FETCH_FLOOR_BYTES` probes
+/// (pre-fix each 2-byte refusal still paid a full extract — the budget
+/// moved by 2 per fetch, admitting ~131k of them).
+#[test]
+fn tiny_post_cap_fragments_are_bounded_by_the_fetch_floor() {
+    // Splice to one byte under the 256 KiB cap: three 64 KiB fragments
+    // plus one of 65,535 bytes (fragments are capped at 64 KiB).
+    let mut files: HashMap<String, String> = HashMap::new();
+    let mut host = String::from(r#"<menu name="A"><image name="x">"#);
+    for (tag, size) in [("f0", 65_536), ("f1", 65_536), ("f2", 65_536), ("f3", 65_535)] {
+        files.insert(format!("menus\\prefabs\\{tag}.xml"), "a".repeat(size));
+        host.push_str(&format!(r#"<include src="{tag}.xml"/>"#));
+    }
+    // Then 600 distinct two-byte fragments: each fetches, then refuses
+    // at the spliced-byte cap (262,143 + 2 > 262,144).
+    for i in 0..600 {
+        files.insert(format!("menus\\prefabs\\t{i}.xml"), "ab".to_string());
+        host.push_str(&format!(r#"<include src="t{i}.xml"/>"#));
+    }
+    host.push_str("</image></menu>");
+    let mut s = CountingSource { files, probes: Default::default() };
+    let _doc = parse_document(&host, &mut s);
+    let tiny_fetches = s
+        .probes
+        .borrow()
+        .iter()
+        .filter(|p| p.starts_with("menus\\prefabs\\t"))
+        .count();
+    assert!(
+        tiny_fetches <= 512,
+        "the 1 KiB floor bounds the tiny-fragment fetches to 512, got {tiny_fetches}"
+    );
+}
+
+/// #5668 — the exhausted-budget warnings fire once per document, not
+/// once per refused path: the byte-cap refusals above name 600 distinct
+/// fragments, and pre-fix each logged its own line (200,000 lines on
+/// the audit's hostile menu). The collector asserts the FIRST refused
+/// path is named exactly once and the second never — unique marker
+/// paths keep this race-free against the binary's other budget tests.
+#[test]
+fn exhausted_budget_warnings_fire_once_per_document() {
+    use std::sync::Mutex;
+
+    static MSGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    struct MenuWarnCollector;
+    impl log::Log for MenuWarnCollector {
+        fn enabled(&self, _metadata: &log::Metadata) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record) {
+            let message = format!("{}", record.args());
+            if message.starts_with("menuxml:") {
+                MSGS.lock().unwrap().push(message);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: MenuWarnCollector = MenuWarnCollector;
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Warn);
+
+    let mut files: HashMap<String, String> = HashMap::new();
+    let mut host = String::from(r#"<menu name="A"><image name="x">"#);
+    for (tag, size) in [("f0", 65_536), ("f1", 65_536), ("f2", 65_536), ("f3", 65_535)] {
+        files.insert(format!("menus\\prefabs\\{tag}.xml"), "a".repeat(size));
+        host.push_str(&format!(r#"<include src="{tag}.xml"/>"#));
+    }
+    for i in 0..40 {
+        files.insert(format!("menus\\prefabs\\zzq{i}.xml"), "ab".to_string());
+        host.push_str(&format!(r#"<include src="zzq{i}.xml"/>"#));
+    }
+    host.push_str("</image></menu>");
+    let mut s = CountingSource { files, probes: Default::default() };
+    let _doc = parse_document(&host, &mut s);
+    let messages = MSGS.lock().unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.contains("zzq0.xml") && m.contains("byte budget"))
+            .count(),
+        1,
+        "the first byte-cap refusal names its path once"
+    );
+    assert!(
+        !messages.iter().any(|m| m.contains("zzq1.xml")),
+        "further refused paths stay silent: {} zzq warnings total",
+        messages.iter().filter(|m| m.contains("zzq")).count()
+    );
+}
+
 /// #5007 — fetched fragment bytes are cached per document, so a repeated
 /// sequential (non-cyclic) include of the same fragment is one fetch plus
 /// map hits.

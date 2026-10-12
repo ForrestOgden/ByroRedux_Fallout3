@@ -616,6 +616,16 @@ const MAX_INCLUDE_FRAGMENT_BYTES: usize = 64 * 1024;
 /// cap.
 const MAX_INCLUDE_FETCHED_BYTES: usize = 2 * MAX_INCLUDE_BYTES;
 
+/// #5668 — every fetch charges at least this many bytes against
+/// `MAX_INCLUDE_FETCHED_BYTES`, whatever the payload's real size: the
+/// budget otherwise counts payload bytes, so a hostile document's
+/// sub-KiB fragments each cost a full archive extract while moving the
+/// counter by almost nothing (~131k extracts against the 512 KiB
+/// budget). With the floor the fetch count is bounded by
+/// `MAX_INCLUDE_FETCHED_BYTES / INCLUDE_FETCH_FLOOR_BYTES` (512). The
+/// smallest vanilla prefab clears the floor by an order of magnitude.
+const INCLUDE_FETCH_FLOOR_BYTES: usize = 1024;
+
 /// #5314 — total tiles materialized per document (root + all spliced
 /// fragments). The 48-level cap bounds DEPTH only; without a total cap a
 /// wide-enough document (or fragment fan-out) grows the arena without
@@ -671,9 +681,21 @@ impl IncludeState {
         }
     }
 
-    /// Warn for a dead include once per (cause, authored spelling).
+    /// Warn for a dead include. The exhausted-budget causes ("budget",
+    /// "bytes", "fetched", "tiles") fire once per DOCUMENT — a hostile
+    /// menu naming thousands of further includes past a cap used to log
+    /// one line per distinct path (#5668: 200,000 warn lines). The
+    /// per-include causes ("cycle", "oversize", "missing", …) stay once
+    /// per authored spelling: each names a specific authoring mistake
+    /// worth seeing individually.
     fn warn_once(&mut self, cause: &str, path: &str) {
-        if self.warned.insert(format!("{cause}:{path}")) {
+        let once_per_document = matches!(cause, "budget" | "bytes" | "fetched" | "tiles");
+        let key = if once_per_document {
+            cause.to_string()
+        } else {
+            format!("{cause}:{path}")
+        };
+        if self.warned.insert(key) {
             match cause {
                 "cycle" => log::warn!("menuxml: include cycle on '{path}' — splice skipped"),
                 "budget" => log::warn!(
@@ -842,7 +864,14 @@ fn splice_include(
         }
         match src.menu_xml(cand) {
             Some(bytes) => {
-                includes.bytes_fetched += bytes.len();
+                // #5668 — charge every fetch a floor: the budget counts
+                // payload bytes, so a document naming thousands of
+                // 2-byte fragments paid one archive extract each (the
+                // refusals past the spliced-byte cap still fetch before
+                // refusing) while moving the counter by 2. The floor
+                // bounds the per-document fetch count by the budget
+                // (~512), not by budget/min-fragment-size (~131k).
+                includes.bytes_fetched += bytes.len().max(INCLUDE_FETCH_FLOOR_BYTES);
                 // #5314 — an oversized fragment can never fit the byte
                 // budget, so treat it as absent for this spelling and
                 // cache `None`: the bytes are dropped, later includes of
