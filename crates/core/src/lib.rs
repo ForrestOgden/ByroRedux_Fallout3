@@ -13,6 +13,7 @@
 
 pub mod animation;
 pub mod atomic_file;
+pub mod bytes;
 pub mod character;
 pub mod combat;
 pub mod combustion;

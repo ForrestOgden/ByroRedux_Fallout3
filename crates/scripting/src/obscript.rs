@@ -87,13 +87,13 @@ pub fn decode_extender_calls(bytes: &[u8], dialect: ObscriptDialect) -> Obscript
     let mut decoded = ObscriptDecode::default();
     let mut offset = 0usize;
     while offset < bytes.len() {
-        let Some(opcode) = read_u16(bytes, offset) else {
+        let Some(opcode) = byroredux_core::bytes::le_u16_at(bytes, offset) else {
             malformed(&mut decoded, offset, "truncated SCDA statement opcode");
             break;
         };
         let (actual_opcode, length_offset, payload_offset, command_offset) =
             if opcode == REFERENCE_FUNCTION {
-                let Some(actual_opcode) = read_u16(bytes, offset + 4) else {
+                let Some(actual_opcode) = byroredux_core::bytes::le_u16_at(bytes, offset + 4) else {
                     malformed(
                         &mut decoded,
                         offset,
@@ -105,7 +105,7 @@ pub fn decode_extender_calls(bytes: &[u8], dialect: ObscriptDialect) -> Obscript
             } else {
                 (opcode, offset + 2, offset + 4, offset)
             };
-        let Some(payload_len) = read_u16(bytes, length_offset).map(usize::from) else {
+        let Some(payload_len) = byroredux_core::bytes::le_u16_at(bytes, length_offset).map(usize::from) else {
             malformed(&mut decoded, offset, "truncated SCDA statement length");
             break;
         };
@@ -150,8 +150,8 @@ pub(crate) fn decode_exact_load_order_expression(
     if expression.first() != Some(&b'X') {
         return None;
     }
-    let opcode = read_u16(expression, 1)?;
-    let argument_len = usize::from(read_u16(expression, 3)?);
+    let opcode = byroredux_core::bytes::le_u16_at(expression, 1)?;
+    let argument_len = usize::from(byroredux_core::bytes::le_u16_at(expression, 3)?);
     let end = 5usize.checked_add(argument_len)?;
     if end != expression.len() {
         return None;
@@ -189,7 +189,7 @@ fn scan_expression(
     dialect: ObscriptDialect,
     decoded: &mut ObscriptDecode,
 ) {
-    let Some(expression_len) = read_u16(payload, length_offset).map(usize::from) else {
+    let Some(expression_len) = byroredux_core::bytes::le_u16_at(payload, length_offset).map(usize::from) else {
         malformed(
             decoded,
             base_offset + length_offset,
@@ -232,7 +232,7 @@ fn scan_expression(
                 cursor += 3;
             }
             b'"' => {
-                let Some(string_len) = read_u16(expression, cursor + 1).map(usize::from) else {
+                let Some(string_len) = byroredux_core::bytes::le_u16_at(expression, cursor + 1).map(usize::from) else {
                     malformed(
                         decoded,
                         expression_base + cursor,
@@ -262,7 +262,7 @@ fn scan_expression(
                 cursor = next;
             }
             b'X' => {
-                let Some(opcode) = read_u16(expression, cursor + 1) else {
+                let Some(opcode) = byroredux_core::bytes::le_u16_at(expression, cursor + 1) else {
                     malformed(
                         decoded,
                         expression_base + cursor,
@@ -270,7 +270,7 @@ fn scan_expression(
                     );
                     return;
                 };
-                let Some(data_len) = read_u16(expression, cursor + 3).map(usize::from) else {
+                let Some(data_len) = byroredux_core::bytes::le_u16_at(expression, cursor + 3).map(usize::from) else {
                     malformed(
                         decoded,
                         expression_base + cursor,
@@ -351,7 +351,7 @@ fn decode_known_arguments(
     if payload.is_empty() && expected == 0 {
         return Vec::new();
     }
-    let Some(count) = read_u16(payload, 0).map(usize::from) else {
+    let Some(count) = byroredux_core::bytes::le_u16_at(payload, 0).map(usize::from) else {
         malformed(
             decoded,
             byte_offset,
@@ -372,7 +372,7 @@ fn decode_known_arguments(
     }
 
     if matches!(command, "IsModLoaded" | "GetModIndex") {
-        let Some(length) = read_u16(payload, 2).map(usize::from) else {
+        let Some(length) = byroredux_core::bytes::le_u16_at(payload, 2).map(usize::from) else {
             malformed(
                 decoded,
                 byte_offset,
@@ -494,12 +494,6 @@ pub fn legacy_load_order_call(
         _ => return Ok(None),
     };
     Ok(Some(result))
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    let end = offset.checked_add(2)?;
-    let pair: [u8; 2] = bytes.get(offset..end)?.try_into().ok()?;
-    Some(u16::from_le_bytes(pair))
 }
 
 fn malformed(decoded: &mut ObscriptDecode, byte_offset: usize, message: &'static str) {

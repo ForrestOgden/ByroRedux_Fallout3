@@ -249,8 +249,7 @@ impl HavokPackfile {
 }
 
 fn read_u32_le(data: &[u8], offset: usize) -> io::Result<u32> {
-    data.get(offset..offset + 4)
-        .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+    byroredux_core::bytes::le_u32_at(data, offset)
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "havok packfile: truncated"))
 }
 

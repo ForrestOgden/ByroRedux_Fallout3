@@ -366,12 +366,12 @@ fn decode_sse_packed_buffer_with_external_positions(
         // W/bitangent-X lane in its trailing Vector4 array (#2318).
         let mut packed_position = None;
         if has_packed_positions {
-            let x = read_f32_le(bytes, off)?;
-            let y = read_f32_le(bytes, off + 4)?;
-            let z = read_f32_le(bytes, off + 8)?;
+            let x = byroredux_core::bytes::le_f32_at(bytes, off)?;
+            let y = byroredux_core::bytes::le_f32_at(bytes, off + 4)?;
+            let z = byroredux_core::bytes::le_f32_at(bytes, off + 8)?;
             packed_position = Some([x, y, z]);
             if has_tangents {
-                bitangent_x = Some(read_f32_le(bytes, off + 12)?);
+                bitangent_x = Some(byroredux_core::bytes::le_f32_at(bytes, off + 12)?);
             }
             off += 16;
         }
@@ -388,8 +388,8 @@ fn decode_sse_packed_buffer_with_external_positions(
 
         // UV: 2 × f16.
         if vertex_attrs & VF_UVS != 0 {
-            let u = half_to_f32(read_u16_le(bytes, off)?);
-            let v = half_to_f32(read_u16_le(bytes, off + 2)?);
+            let u = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off)?);
+            let v = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off + 2)?);
             uvs.push([u, v]);
             off += 4;
         }
@@ -445,10 +445,10 @@ fn decode_sse_packed_buffer_with_external_positions(
         // `bone_weights` / `bone_indices` here so every NPC body
         // animates correctly once M41 spawns them.
         if is_skinned {
-            let w0 = half_to_f32(read_u16_le(bytes, off)?);
-            let w1 = half_to_f32(read_u16_le(bytes, off + 2)?);
-            let w2 = half_to_f32(read_u16_le(bytes, off + 4)?);
-            let w3 = half_to_f32(read_u16_le(bytes, off + 6)?);
+            let w0 = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off)?);
+            let w1 = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off + 2)?);
+            let w2 = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off + 4)?);
+            let w3 = half_to_f32(byroredux_core::bytes::le_u16_at(bytes, off + 6)?);
             // Renormalize to unit sum — the inline BSTriShape skin
             // path runs the same helper. `triangle.vert` does not
             // divide by `wsum`, so half-float quantization drift

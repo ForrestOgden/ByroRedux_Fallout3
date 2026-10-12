@@ -175,7 +175,7 @@ pub fn compile_legacy_obscript_bytecode_program(
             if payload.len() < 6 {
                 return None;
             }
-            let event = compiled_event(read_u16(payload, 0)?).filter(|_| payload.len() == 6);
+            let event = compiled_event(byroredux_core::bytes::le_u16_at(payload, 0)?).filter(|_| payload.len() == 6);
             block = Some((event, Vec::new()));
             continue;
         }
@@ -320,7 +320,7 @@ fn parse_compiled_condition(
     payload: &[u8],
     dialect: ObscriptDialect,
 ) -> Option<LegacyObscriptCall> {
-    let expression_len = usize::from(read_u16(payload, 2)?);
+    let expression_len = usize::from(byroredux_core::bytes::le_u16_at(payload, 2)?);
     let expression_end = 4usize.checked_add(expression_len)?;
     if expression_end != payload.len() {
         return None;
@@ -329,13 +329,13 @@ fn parse_compiled_condition(
 }
 
 fn compiled_line(bytes: &[u8], offset: usize) -> Option<(u16, &[u8], usize)> {
-    let opcode = read_u16(bytes, offset)?;
+    let opcode = byroredux_core::bytes::le_u16_at(bytes, offset)?;
     let (actual_opcode, length_offset, payload_offset) = if opcode == REFERENCE_FUNCTION {
-        (read_u16(bytes, offset + 4)?, offset + 6, offset + 8)
+        (byroredux_core::bytes::le_u16_at(bytes, offset + 4)?, offset + 6, offset + 8)
     } else {
         (opcode, offset + 2, offset + 4)
     };
-    let payload_len = usize::from(read_u16(bytes, length_offset)?);
+    let payload_len = usize::from(byroredux_core::bytes::le_u16_at(bytes, length_offset)?);
     let payload_end = payload_offset.checked_add(payload_len)?;
     Some((
         actual_opcode,
@@ -361,8 +361,8 @@ fn parse_compiled_assignment(
     if !matches!(payload.first(), Some(b's' | b'f')) {
         return None;
     }
-    let local_index = u32::from(read_u16(payload, 1)?);
-    let expression_len = usize::from(read_u16(payload, 3)?);
+    let local_index = u32::from(byroredux_core::bytes::le_u16_at(payload, 1)?);
+    let expression_len = usize::from(byroredux_core::bytes::le_u16_at(payload, 3)?);
     let expression_end = 5usize.checked_add(expression_len)?;
     if expression_end != payload.len() {
         return None;
@@ -391,17 +391,12 @@ fn decode_compiled_call(expression: &[u8], dialect: ObscriptDialect) -> Option<L
 }
 
 fn exact_expression_payload(expression: &[u8], opcode: u16) -> Option<&[u8]> {
-    if expression.first() != Some(&b'X') || read_u16(expression, 1)? != opcode {
+    if expression.first() != Some(&b'X') || byroredux_core::bytes::le_u16_at(expression, 1)? != opcode {
         return None;
     }
-    let payload_len = usize::from(read_u16(expression, 3)?);
+    let payload_len = usize::from(byroredux_core::bytes::le_u16_at(expression, 3)?);
     let payload_end = 5usize.checked_add(payload_len)?;
     (payload_end == expression.len()).then(|| &expression[5..payload_end])
-}
-
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    let end = offset.checked_add(2)?;
-    Some(u16::from_le_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
 /// Compile exact load-order-query assignments and bounded conditional trees.

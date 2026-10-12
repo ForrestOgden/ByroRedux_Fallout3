@@ -143,7 +143,7 @@ impl<'a> ObScriptProgram<'a> {
         let bytes = vm.bytes;
         let mut offset = 0usize;
         loop {
-            let Some(op) = read_u16(bytes, offset) else {
+            let Some(op) = byroredux_core::bytes::le_u16_at(bytes, offset) else {
                 // Stream exhausted without the requested block (ScriptName-
                 // only scripts, or a later block type) — nothing to run.
                 return BlockOutcome::Completed;
@@ -153,7 +153,7 @@ impl<'a> ObScriptProgram<'a> {
                     return BlockOutcome::Malformed(offset);
                 };
                 // Payload: [block_type u16][body_len u32].
-                let this_block = read_u16(bytes, payload_start).unwrap_or(0);
+                let this_block = byroredux_core::bytes::le_u16_at(bytes, payload_start).unwrap_or(0);
                 offset = payload_end;
                 if this_block == block_type {
                     let outcome = vm.exec_block_body(offset);
@@ -190,24 +190,20 @@ struct Vm<'a> {
     returned: bool,
 }
 
-fn read_u16(b: &[u8], o: usize) -> Option<u16> {
-    b.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]))
-}
-
 /// Offset of the statement following the one at `offset`.
 fn next_statement(bytes: &[u8], offset: usize, op: u16) -> Option<usize> {
     if op == 0x1c {
         // [1c][ref u16][cmd u16][len u16][args]
-        let end = offset + 8 + read_u16(bytes, offset + 6)? as usize;
+        let end = offset + 8 + byroredux_core::bytes::le_u16_at(bytes, offset + 6)? as usize;
         return (end <= bytes.len()).then_some(end);
     }
-    let len = read_u16(bytes, offset + 2)? as usize;
+    let len = byroredux_core::bytes::le_u16_at(bytes, offset + 2)? as usize;
     let end = offset + 4 + len;
     (end <= bytes.len()).then_some(end)
 }
 
 fn payload_span(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
-    let len = read_u16(bytes, offset + 2)? as usize;
+    let len = byroredux_core::bytes::le_u16_at(bytes, offset + 2)? as usize;
     let start = offset + 4;
     let end = start.checked_add(len)?;
     (end <= bytes.len()).then_some((start, end))
@@ -236,7 +232,7 @@ impl<'a> Vm<'a> {
             if self.returned {
                 return BlockOutcome::Returned;
             }
-            let Some(op) = read_u16(self.bytes, offset) else {
+            let Some(op) = byroredux_core::bytes::le_u16_at(self.bytes, offset) else {
                 return BlockOutcome::Malformed(offset);
             };
             match op {
@@ -264,9 +260,9 @@ impl<'a> Vm<'a> {
     /// Run (`run`) or step over one statement. Returns the next offset.
     fn run_or_skip_statement(&mut self, op: u16, offset: usize, run: bool) -> Option<usize> {
         if op == 0x1c {
-            let caller_ref = read_u16(self.bytes, offset + 2)?;
-            let cmd = read_u16(self.bytes, offset + 4)?;
-            let len = read_u16(self.bytes, offset + 6)? as usize;
+            let caller_ref = byroredux_core::bytes::le_u16_at(self.bytes, offset + 2)?;
+            let cmd = byroredux_core::bytes::le_u16_at(self.bytes, offset + 4)?;
+            let len = byroredux_core::bytes::le_u16_at(self.bytes, offset + 6)? as usize;
             let args_start = offset + 8;
             let args_end = args_start.checked_add(len)?;
             if args_end > self.bytes.len() {
@@ -312,11 +308,11 @@ impl<'a> Vm<'a> {
             return None;
         }
         loop {
-            let op = read_u16(self.bytes, offset)?;
+            let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
                 0x16 | 0x18 => {
                     // Arm header: [op][len][u16][u16 expr_len][expr].
-                    let expr_len = read_u16(self.bytes, offset + 6)? as usize;
+                    let expr_len = byroredux_core::bytes::le_u16_at(self.bytes, offset + 6)? as usize;
                     let cond_start = offset + 8;
                     let cond_end = cond_start.checked_add(expr_len)?;
                     if cond_end > self.bytes.len() {
@@ -351,7 +347,7 @@ impl<'a> Vm<'a> {
                 // rest of the chain so the caller's offset stays valid.
                 return self.skip_to_chain_end(offset);
             }
-            let op = read_u16(self.bytes, offset)?;
+            let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
                 0x19 => return next_statement(self.bytes, offset, op),
                 0x17 | 0x18 => return self.skip_to_chain_end(offset),
@@ -373,7 +369,7 @@ impl<'a> Vm<'a> {
     fn skip_to_next_arm(&mut self, mut offset: usize) -> Option<usize> {
         let mut depth = 0usize;
         loop {
-            let op = read_u16(self.bytes, offset)?;
+            let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
                 0x16 => depth += 1,
                 0x17 | 0x18 if depth == 0 => return Some(offset),
@@ -394,7 +390,7 @@ impl<'a> Vm<'a> {
     fn skip_to_chain_end(&mut self, mut offset: usize) -> Option<usize> {
         let mut depth = 0usize;
         loop {
-            let op = read_u16(self.bytes, offset)?;
+            let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
                 0x16 => depth += 1,
                 0x19 => {
@@ -413,7 +409,7 @@ impl<'a> Vm<'a> {
     fn skip_to_block_end(&mut self, mut offset: usize) -> Option<usize> {
         let mut depth = 1usize;
         loop {
-            let op = read_u16(self.bytes, offset)?;
+            let op = byroredux_core::bytes::le_u16_at(self.bytes, offset)?;
             match op {
                 0x10 => depth += 1,
                 0x11 => {
@@ -453,7 +449,7 @@ impl<'a> Vm<'a> {
         // Target escape: `'s'+idx` is 3 bytes (the leading space of the
         // *expression* escapes is absent here — corpus: `73 07 00 | 05 00 |
         // " 1200"`), then `[u16 expr_len][expr]`.
-        let idx = read_u16(self.bytes, start + 1).unwrap_or(0);
+        let idx = byroredux_core::bytes::le_u16_at(self.bytes, start + 1).unwrap_or(0);
         let expr_len_at = match tag {
             b's' | b'f' | b'G' => start + 3,
             _ => return,
@@ -461,7 +457,7 @@ impl<'a> Vm<'a> {
         if expr_len_at + 2 > end {
             return;
         }
-        let expr_len = read_u16(self.bytes, expr_len_at).unwrap_or(0) as usize;
+        let expr_len = byroredux_core::bytes::le_u16_at(self.bytes, expr_len_at).unwrap_or(0) as usize;
         let expr_start = expr_len_at + 2;
         let expr_end = expr_start + expr_len;
         if expr_end > end {
@@ -497,20 +493,20 @@ impl<'a> Vm<'a> {
                 let tag = bytes[i + 1];
                 let consumed = match tag {
                     b'r' if i + 4 <= bytes.len() => {
-                        let idx = read_u16(bytes, i + 2).unwrap_or(0);
+                        let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
                         let resolved = self.resolve_ref_var(idx).unwrap_or(0);
                         stack.push(ObScriptValue::Ref(resolved));
                         Some(4)
                     }
                     b's' | b'f' if i + 4 <= bytes.len() => {
-                        let idx = read_u16(bytes, i + 2).unwrap_or(0);
+                        let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
                         stack.push(ObScriptValue::Num(
                             self.state.locals.get(&idx).copied().unwrap_or(0.0),
                         ));
                         Some(4)
                     }
                     b'G' if i + 4 <= bytes.len() => {
-                        let idx = read_u16(bytes, i + 2).unwrap_or(0);
+                        let idx = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
                         let form = self.resolve_ref_var(idx).unwrap_or(0);
                         let value = self
                             .host
@@ -531,8 +527,8 @@ impl<'a> Vm<'a> {
                         Some(6)
                     }
                     b'X' if i + 6 <= bytes.len() => {
-                        let cmd = read_u16(bytes, i + 2).unwrap_or(0);
-                        let arg_len = read_u16(bytes, i + 4).unwrap_or(0) as usize;
+                        let cmd = byroredux_core::bytes::le_u16_at(bytes, i + 2).unwrap_or(0);
+                        let arg_len = byroredux_core::bytes::le_u16_at(bytes, i + 4).unwrap_or(0) as usize;
                         let arg_start = i + 6;
                         let Some(arg_end) = arg_start.checked_add(arg_len) else {
                             break;
@@ -601,7 +597,7 @@ impl<'a> Vm<'a> {
         if start == end {
             return Some(args);
         }
-        let count = read_u16(self.bytes, start)?;
+        let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
         let mut o = start + 2;
         for _ in 0..count {
             if o >= end {
@@ -610,20 +606,20 @@ impl<'a> Vm<'a> {
             let tag = self.bytes[o];
             match tag {
                 b'r' => {
-                    let idx = read_u16(self.bytes, o + 1)?;
+                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     let form = self.resolve_ref_var(idx).unwrap_or(0);
                     args.push(ObScriptValue::Ref(form));
                     o += 3;
                 }
                 b's' | b'f' => {
-                    let idx = read_u16(self.bytes, o + 1)?;
+                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     args.push(ObScriptValue::Num(
                         self.state.locals.get(&idx).copied().unwrap_or(0.0),
                     ));
                     o += 3;
                 }
                 b'G' => {
-                    let idx = read_u16(self.bytes, o + 1)?;
+                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     let form = self.resolve_ref_var(idx).unwrap_or(0);
                     let value = self
                         .host
@@ -661,8 +657,8 @@ impl<'a> Vm<'a> {
                     o += 1;
                 }
                 b'X' => {
-                    let cmd = read_u16(self.bytes, o + 1)?;
-                    let inner_len = read_u16(self.bytes, o + 3)? as usize;
+                    let cmd = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
+                    let inner_len = byroredux_core::bytes::le_u16_at(self.bytes, o + 3)? as usize;
                     let inner_start = o + 5;
                     let inner_end = inner_start.checked_add(inner_len)?;
                     if inner_end > end {
@@ -675,7 +671,7 @@ impl<'a> Vm<'a> {
                 }
                 _ => {
                     // u16 integer literal.
-                    let v = read_u16(self.bytes, o)?;
+                    let v = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
                     args.push(ObScriptValue::Num(v as f32));
                     o += 2;
                 }

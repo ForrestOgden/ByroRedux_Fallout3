@@ -1094,9 +1094,7 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
 
 #[inline]
 fn read_f32_at(data: &[u8], offset: usize) -> Option<f32> {
-    let bytes: [u8; 4] = data.get(offset..offset + 4)?.try_into().ok()?;
-    let value = f32::from_le_bytes(bytes);
-    value.is_finite().then_some(value)
+    byroredux_core::bytes::le_f32_at(data, offset).filter(|value| value.is_finite())
 }
 
 #[inline]

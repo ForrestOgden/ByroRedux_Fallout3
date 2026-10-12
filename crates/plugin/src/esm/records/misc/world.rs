@@ -1,6 +1,7 @@
 //! World-definition records — navigation, regions, encounter zones,
 //! lighting templates, image-space adapters, activators, terminals.
 
+use byroredux_core::bytes::le_u32_at;
 use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::cell::StarfieldLighting;
@@ -324,7 +325,7 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         .iter()
         .find(|s| s.sub_type == *b"DATA")
         .filter(|s| s.data.len() >= 24)
-        .map(|s| std::array::from_fn(|i| u32_at(&s.data, i * 4).unwrap_or(0)));
+        .map(|s| std::array::from_fn(|i| le_u32_at(&s.data, i * 4).unwrap_or(0)));
     for sub in subs {
         let data = &sub.data;
         match &sub.sub_type {
@@ -332,7 +333,7 @@ pub fn parse_navm(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 out.version = SubReader::new(data).u32_or_default();
             }
             b"DATA" if data.len() >= 24 => {
-                out.cell_form = u32_at(data, 0);
+                out.cell_form = le_u32_at(data, 0);
             }
             // #3404 — `rows_exact` refuses a stride remainder instead of
             // silently truncating it away like `rows()` does, and the
@@ -586,7 +587,7 @@ fn decode_nvtr_row(r: &[u8]) -> NavmTriangle {
     NavmTriangle {
         vertices: [w(0), w(1), w(2)],
         edge_neighbours: [link(3), link(4), link(5)],
-        flags: u32_at(r, 12).unwrap_or(0),
+        flags: le_u32_at(r, 12).unwrap_or(0),
     }
 }
 
@@ -650,8 +651,8 @@ fn decode_nvgd(data: &[u8]) -> Option<NavmGridAccel> {
 /// Decode one 10-byte external-connection row, shared by `NVEX` and `NVNM`.
 fn decode_nvex_row(r: &[u8]) -> Option<NavmExternalConnection> {
     Some(NavmExternalConnection {
-        unknown: u32_at(r, 0)?,
-        mesh_form: u32_at(r, 4)?,
+        unknown: le_u32_at(r, 0)?,
+        mesh_form: le_u32_at(r, 4)?,
         triangle: u16::from_le_bytes([r[8], r[9]]),
     })
 }
@@ -902,13 +903,6 @@ pub fn select_active_region_sound<'a>(
     candidates.into_iter().next()
 }
 
-/// Decode a little-endian `u32` at `offset`, or `None` past the end.
-fn u32_at(data: &[u8], offset: usize) -> Option<u32> {
-    let end = offset.checked_add(4)?;
-    let slice = data.get(offset..end)?;
-    Some(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
-}
-
 /// Split `data` into fixed-size rows, ignoring a short trailing remainder.
 ///
 /// Every `RDAT` payload observed in the corpus is an exact multiple of its row
@@ -1002,7 +996,7 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     out.areas.push(previous);
                 }
                 area = Some(RegionArea {
-                    edge_fall_off: u32_at(&sub.data, 0).unwrap_or(0),
+                    edge_fall_off: le_u32_at(&sub.data, 0).unwrap_or(0),
                     points: Vec::new(),
                 });
             }
@@ -1022,7 +1016,7 @@ pub fn parse_regn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     out.entries.push(previous);
                 }
                 open = Some(RegionDataEntry {
-                    kind: RegionDataKind::from_word(u32_at(&sub.data, 0).unwrap_or(0)),
+                    kind: RegionDataKind::from_word(le_u32_at(&sub.data, 0).unwrap_or(0)),
                     flags: sub.data[4],
                     priority: sub.data[5],
                     payload: RegionDataPayload::Empty,
@@ -1099,9 +1093,9 @@ fn decode_weather_rows(data: &[u8]) -> Vec<RegionWeather> {
         let out: Vec<RegionWeather> = rows(data, stride)
             .filter_map(|r| {
                 Some(RegionWeather {
-                    weather_form: u32_at(r, 0)?,
-                    chance: u32_at(r, 4)?,
-                    global_form: if stride >= 12 { u32_at(r, 8) } else { None },
+                    weather_form: le_u32_at(r, 0)?,
+                    chance: le_u32_at(r, 4)?,
+                    global_form: if stride >= 12 { le_u32_at(r, 8) } else { None },
                 })
             })
             .collect();
@@ -1133,7 +1127,7 @@ fn decode_weather_rows(data: &[u8]) -> Vec<RegionWeather> {
 fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
     match sig {
         b"RDOT" => {
-            let forms: Vec<u32> = rows(data, 52).filter_map(|r| u32_at(r, 0)).collect();
+            let forms: Vec<u32> = rows(data, 52).filter_map(|r| le_u32_at(r, 0)).collect();
             entry.payload = RegionDataPayload::Objects(forms);
         }
         b"RDWT" => {
@@ -1147,7 +1141,7 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
             // corpus sweep showed before this branch existed.
             if data.len() == 4 {
                 entry.payload =
-                    RegionDataPayload::MapStringId(u32_at(data, 0).expect("length checked"));
+                    RegionDataPayload::MapStringId(le_u32_at(data, 0).expect("length checked"));
             } else {
                 entry.payload = RegionDataPayload::Map(read_zstring(data));
             }
@@ -1155,7 +1149,7 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
         b"ICON" => entry.payload = RegionDataPayload::Landscape(read_zstring(data)),
         b"RDGS" => entry.payload = RegionDataPayload::Grass(data.to_vec()),
         b"RDID" => {
-            let forms: Vec<u32> = rows(data, 4).filter_map(|r| u32_at(r, 0)).collect();
+            let forms: Vec<u32> = rows(data, 4).filter_map(|r| le_u32_at(r, 0)).collect();
             entry.payload = RegionDataPayload::Imposters(forms);
         }
         // Sound sections mix a single music/blanket form with a variable
@@ -1165,9 +1159,9 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
             let list: Vec<RegionSound> = rows(data, 12)
                 .filter_map(|r| {
                     Some(RegionSound {
-                        sound_form: u32_at(r, 0)?,
-                        flags: u32_at(r, 4)?,
-                        chance_raw: u32_at(r, 8)?,
+                        sound_form: le_u32_at(r, 0)?,
+                        flags: le_u32_at(r, 4)?,
+                        chance_raw: le_u32_at(r, 8)?,
                     })
                 })
                 .collect();
@@ -1178,7 +1172,7 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
             });
         }
         b"RDMD" | b"RDMO" | b"RDSB" => {
-            let value = u32_at(data, 0);
+            let value = le_u32_at(data, 0);
             merge_sound(entry, |p| {
                 if let RegionDataPayload::Sound { music, .. } = p {
                     *music = value;
@@ -1186,7 +1180,7 @@ fn apply_region_payload(entry: &mut RegionDataEntry, sig: &[u8], data: &[u8]) {
             });
         }
         b"RDSI" => {
-            let value = u32_at(data, 0);
+            let value = le_u32_at(data, 0);
             merge_sound(entry, |p| {
                 if let RegionDataPayload::Sound { incidental, .. } = p {
                     *incidental = value;

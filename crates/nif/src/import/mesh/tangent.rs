@@ -3,6 +3,7 @@
 //! Extra-data tangent capture, Mikkelsen-style synthesis fallback, and
 //! Zup→Yup quaternion fix-up for BS tangent payloads.
 
+use byroredux_core::bytes::le_f32_at;
 use crate::scene::NifScene;
 use crate::types::{BlockRef, NiPoint3};
 
@@ -71,12 +72,15 @@ pub fn extract_tangents_from_extra_data(
             let bethesda_t_off = i * 12;
             let bethesda_b_off = bethesda_bitangent_offset + i * 12;
             // Read Vector3 (3 × f32 LE).
-            let bethesda_tx = read_f32_le_at(blob, bethesda_t_off);
-            let bethesda_ty = read_f32_le_at(blob, bethesda_t_off + 4);
-            let bethesda_tz = read_f32_le_at(blob, bethesda_t_off + 8);
-            let bethesda_bx = read_f32_le_at(blob, bethesda_b_off);
-            let bethesda_by = read_f32_le_at(blob, bethesda_b_off + 4);
-            let bethesda_bz = read_f32_le_at(blob, bethesda_b_off + 8);
+            // The `blob.len() == expected_size` check above bounds every
+            // offset below, so the `unwrap_or` is unreachable.
+            let f32_at = |offset: usize| le_f32_at(blob, offset).unwrap_or(0.0);
+            let bethesda_tx = f32_at(bethesda_t_off);
+            let bethesda_ty = f32_at(bethesda_t_off + 4);
+            let bethesda_tz = f32_at(bethesda_t_off + 8);
+            let bethesda_bx = f32_at(bethesda_b_off);
+            let bethesda_by = f32_at(bethesda_b_off + 4);
+            let bethesda_bz = f32_at(bethesda_b_off + 8);
 
             // Z-up → Y-up basis change applied to both direction
             // vectors: same `(x, y, z) → (x, z, -y)` swap used for
@@ -118,16 +122,6 @@ pub fn extract_tangents_from_extra_data(
     // Bethesda relied on the runtime to compute tangents at load
     // time. See #783.
     Vec::new()
-}
-
-#[inline]
-pub fn read_f32_le_at(blob: &[u8], offset: usize) -> f32 {
-    f32::from_le_bytes([
-        blob[offset],
-        blob[offset + 1],
-        blob[offset + 2],
-        blob[offset + 3],
-    ])
 }
 
 /// Synthesize per-vertex tangents from positions + normals + UVs +

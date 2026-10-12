@@ -5,6 +5,7 @@
 //! subrecords carry scalar or RGBA curves. Keeping the authored curves here
 //! lets the runtime sample them without retaining opaque plugin bytes.
 
+use byroredux_core::bytes::le_f32_at;
 use super::super::common::CommonNamedFields;
 use crate::esm::reader::{GameKind, SubRecord};
 
@@ -78,26 +79,21 @@ impl Default for ImadRecord {
     }
 }
 
-fn read_f32(data: &[u8], offset: usize) -> Option<f32> {
-    let bytes: [u8; 4] = data.get(offset..offset + 4)?.try_into().ok()?;
-    Some(f32::from_le_bytes(bytes))
-}
-
 fn scalar_key(data: &[u8]) -> Option<ImadScalarKey> {
     Some(ImadScalarKey {
-        time: read_f32(data, 0)?,
-        value: read_f32(data, 4)?,
+        time: le_f32_at(data, 0)?,
+        value: le_f32_at(data, 4)?,
     })
 }
 
 fn color_key(data: &[u8]) -> Option<ImadColorKey> {
     Some(ImadColorKey {
-        time: read_f32(data, 0)?,
+        time: le_f32_at(data, 0)?,
         color: [
-            read_f32(data, 4)?,
-            read_f32(data, 8)?,
-            read_f32(data, 12)?,
-            read_f32(data, 16)?,
+            le_f32_at(data, 4)?,
+            le_f32_at(data, 8)?,
+            le_f32_at(data, 12)?,
+            le_f32_at(data, 16)?,
         ],
     })
 }
@@ -159,9 +155,9 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord], game: GameKind) -> ImadRecor
                 if let Some(bytes) = sub.data.get(0..4) {
                     out.flags = u32::from_le_bytes(bytes.try_into().expect("four-byte slice"));
                 }
-                out.duration_seconds = read_f32(&sub.data, 4).unwrap_or_default();
+                out.duration_seconds = le_f32_at(&sub.data, 4).unwrap_or_default();
                 // DNAM offsets 204/208 in the 244-byte Skyrim layout.
-                if let (Some(x), Some(y)) = (read_f32(&sub.data, 204), read_f32(&sub.data, 208)) {
+                if let (Some(x), Some(y)) = (le_f32_at(&sub.data, 204), le_f32_at(&sub.data, 208)) {
                     if x.is_finite() && y.is_finite() {
                         out.radial_blur_center = [x, y];
                     }

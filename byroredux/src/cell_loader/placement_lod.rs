@@ -107,8 +107,7 @@ pub(crate) struct PlacementGroup {
 }
 
 fn u32_at(b: &[u8], o: usize) -> io::Result<u32> {
-    b.get(o..o + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    byroredux_core::bytes::le_u32_at(b, o)
         .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "truncated .lod"))
 }
 

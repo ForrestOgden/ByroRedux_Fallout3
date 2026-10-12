@@ -3,17 +3,6 @@
 //! Used by every mesh extractor; pinned to a single file so the bit-twiddling
 //! lives in one place.
 
-pub fn read_f32_le(bytes: &[u8], offset: usize) -> Option<f32> {
-    let slice = bytes.get(offset..offset + 4)?;
-    Some(f32::from_le_bytes(slice.try_into().ok()?))
-}
-
-#[inline]
-pub fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
-    let slice = bytes.get(offset..offset + 2)?;
-    Some(u16::from_le_bytes(slice.try_into().ok()?))
-}
-
 #[inline]
 pub fn half_to_f32(h: u16) -> f32 {
     // Same IEEE 754 binary16 decode as `tri_shape::half_to_f32`.

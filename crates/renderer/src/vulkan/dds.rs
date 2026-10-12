@@ -391,7 +391,7 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
         data.len()
     );
 
-    let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let magic = read_u32(data, 0)?;
     ensure!(
         magic == DDS_MAGIC,
         "Not a DDS file (bad magic: {:#010x})",
@@ -399,8 +399,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     );
 
     // DDS_HEADER starts at offset 4
-    let height = read_u32(data, 12);
-    let width = read_u32(data, 16);
+    let height = read_u32(data, 12)?;
+    let width = read_u32(data, 16)?;
     ensure!(
         width > 0
             && height > 0
@@ -409,10 +409,10 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
         "DDS dimensions {width}x{height} outside 1x1..={MAX_TEXTURE_DIMENSION} \
          — refusing to size a GPU image from it",
     );
-    let mip_count = read_u32(data, 28)
+    let mip_count = read_u32(data, 28)?
         .max(1)
         .min(full_mip_chain_len(width, height));
-    let caps2 = read_u32(data, 112);
+    let caps2 = read_u32(data, 112)?;
     let legacy_cubemap = caps2 & DDSCAPS2_CUBEMAP != 0;
     if legacy_cubemap {
         ensure!(
@@ -432,9 +432,9 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
     }
 
     // DDS_PIXELFORMAT at offset 76 within file (offset 72 within DDS_HEADER + 4 magic)
-    let pf_flags = read_u32(data, 80);
-    let pf_fourcc = read_u32(data, 84);
-    let pf_rgb_bit_count = read_u32(data, 88);
+    let pf_flags = read_u32(data, 80)?;
+    let pf_fourcc = read_u32(data, 84)?;
+    let pf_rgb_bit_count = read_u32(data, 88)?;
 
     if pf_flags & DDPF_FOURCC != 0 {
         if pf_fourcc == FOURCC_DX10 {
@@ -443,10 +443,10 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                 data.len() >= HEADER_SIZE + DX10_EXT_SIZE,
                 "DDS DX10 extended header truncated"
             );
-            let dxgi_format = read_u32(data, HEADER_SIZE);
-            let resource_dimension = read_u32(data, HEADER_SIZE + 4);
-            let misc_flag = read_u32(data, HEADER_SIZE + 8);
-            let array_size = read_u32(data, HEADER_SIZE + 12);
+            let dxgi_format = read_u32(data, HEADER_SIZE)?;
+            let resource_dimension = read_u32(data, HEADER_SIZE + 4)?;
+            let misc_flag = read_u32(data, HEADER_SIZE + 8)?;
+            let array_size = read_u32(data, HEADER_SIZE + 12)?;
             ensure!(
                 resource_dimension == D3D10_RESOURCE_DIMENSION_TEXTURE2D,
                 "Unsupported DDS DX10 resource dimension: {resource_dimension}",
@@ -512,10 +512,10 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             // FO3/FNV water noise maps). Only the two exact canonical
             // orders with a real alpha mask keep a zero-copy path;
             // everything else CPU-expands from the masks below.
-            let r_mask = read_u32(data, 92);
-            let g_mask = read_u32(data, 96);
-            let b_mask = read_u32(data, 100);
-            let a_mask = read_u32(data, 104);
+            let r_mask = read_u32(data, 92)?;
+            let g_mask = read_u32(data, 96)?;
+            let b_mask = read_u32(data, 100)?;
+            let a_mask = read_u32(data, 104)?;
             match (r_mask, g_mask, b_mask, a_mask) {
                 (0x0000_00FF, 0x0000_FF00, 0x00FF_0000, 0xFF00_0000) => {
                     // R8G8B8A8 byte order — zero-copy.
@@ -561,10 +561,10 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             // carry DDPF_RGB but no 32-bpp layout and no sampled Vulkan
             // format of their own. Decode them from the DDS_PIXELFORMAT
             // channel masks and CPU-expand to R8G8B8A8 at upload time.
-            let r_mask = read_u32(data, 92);
-            let g_mask = read_u32(data, 96);
-            let b_mask = read_u32(data, 100);
-            let a_mask = read_u32(data, 104);
+            let r_mask = read_u32(data, 92)?;
+            let g_mask = read_u32(data, 96)?;
+            let b_mask = read_u32(data, 100)?;
+            let a_mask = read_u32(data, 104)?;
             uncompressed_expand_meta(
                 data, width, height, mip_count, legacy_cubemap, bpp,
                 r_mask, g_mask, b_mask, a_mask,
@@ -584,8 +584,8 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             bpp == 8 || bpp == 16,
             "Unsupported luminance DDS: {bpp} bpp (expected 8 or 16)",
         );
-        let luminance_mask = read_u32(data, 92);
-        let a_mask = read_u32(data, 104);
+        let luminance_mask = read_u32(data, 92)?;
+        let a_mask = read_u32(data, 104)?;
         uncompressed_expand_meta(
             data, width, height, mip_count, legacy_cubemap, bpp,
             luminance_mask, luminance_mask, luminance_mask, a_mask,
@@ -997,13 +997,13 @@ fn map_dxgi_format(dxgi: u32) -> Result<(vk::Format, u32, bool)> {
     }
 }
 
-fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
+/// A header field, or an error when the file is cut short — the DDS header is
+/// mod-authorable input, so a truncated one must be refused rather than index
+/// out of bounds (#5596). `parse_dds`' length checks make this unreachable
+/// today; the error keeps it that way if one of them moves.
+fn read_u32(data: &[u8], offset: usize) -> Result<u32> {
+    byroredux_core::bytes::le_u32_at(data, offset)
+        .ok_or_else(|| anyhow::anyhow!("DDS header truncated at byte {offset}"))
 }
 
 #[cfg(test)]
