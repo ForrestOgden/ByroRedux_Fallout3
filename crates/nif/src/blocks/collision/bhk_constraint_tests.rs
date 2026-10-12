@@ -557,12 +557,12 @@ fn oblivion_limited_hinge_derives_perp_b1_from_perp_b2_cross_axis_b() {
         perp_b2[0] * axis_b[1] - perp_b2[1] * axis_b[0],
         0.0,
     ];
-    for i in 0..3 {
+    for (i, expected) in expect.iter().enumerate().take(3) {
         assert!(
-            (h.perp_axis_in_b1[i] - expect[i]).abs() < 1e-7,
+            (h.perp_axis_in_b1[i] - expected).abs() < 1e-7,
             "perp_b1[{i}] = {} must equal PerpB2 × AxisB = {}",
             h.perp_axis_in_b1[i],
-            expect[i]
+            expected
         );
     }
     assert_eq!(h.perp_axis_in_b1[3], 0.0);

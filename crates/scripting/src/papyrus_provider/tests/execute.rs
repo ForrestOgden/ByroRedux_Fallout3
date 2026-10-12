@@ -1387,15 +1387,16 @@ fn trigger_enter_and_update_events_dispatch_provider_handlers() {
 
 // ── execute_statements: explicit cursor stack (#5635) ─────────────────────
 
+/// (outcome, event names) — what [`run_statements`] reports back.
+type RunStatementsOutcome = (
+    Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String>,
+    Vec<String>,
+);
+
 /// Drive `execute_statements` directly and report the event names it
 /// registered (the ordered, observable side effect a `RegisterModEvent`
 /// leaves) plus its outcome.
-fn run_statements(
-    statements: &[PapyrusProviderStatement],
-) -> (
-    Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String>,
-    Vec<String>,
-) {
+fn run_statements(statements: &[PapyrusProviderStatement]) -> RunStatementsOutcome {
     let callback = Arc::new(
         |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
             Ok(ScriptValue::None)

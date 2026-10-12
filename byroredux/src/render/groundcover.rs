@@ -1292,7 +1292,7 @@ mod tests {
     /// independent-grids 1 - 0.7^10, split evenly, whatever the count.
     #[test]
     fn equal_records_split_the_union_evenly() {
-        let records = std::iter::repeat((1.0, 0.3)).take(10);
+        let records = std::iter::repeat_n((1.0, 0.3), 10);
         let (weights, accept) = selection_weights_and_accept_rate(records, |_| true);
         assert!((accept - (1.0 - 0.7f32.powi(10))).abs() < 1.0e-6);
         assert!(weights.iter().all(|&w| (w - weights[0]).abs() < 1.0e-9));

@@ -1859,7 +1859,7 @@ mod oblivion_generation_tests {
     fn an_authored_anam_is_never_overridden_by_conditions() {
         let anam = 0xDEAD_BEEFu32.to_le_bytes();
         let subs = vec![
-            sub(b"ANAM", &anam),
+            sub(b"ANAM", anam),
             ctda_of(&get_is_id(0x0002_1234, true)),
         ];
         assert_eq!(parse_info(0xAAAA, &subs, &None, GameKind::default()).actor_form_id, 0xDEAD_BEEF);

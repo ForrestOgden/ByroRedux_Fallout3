@@ -88,6 +88,10 @@ fn type_table(module: &Module) -> HashMap<u32, Instruction> {
     types
 }
 
+/// (struct id, its `OpTypeStruct` instruction, the module's id→type
+/// instruction table) — what [`named_struct`] resolves a debug name to.
+type NamedStructLookup = (u32, Instruction, HashMap<u32, Instruction>);
+
 /// #5736 — the byte-for-byte named-struct lookup
 /// `uniform_block_size_by_name` and
 /// `uniform_block_member_offsets_by_name` shared: the `OpName` scan for
@@ -95,10 +99,7 @@ fn type_table(module: &Module) -> HashMap<u32, Instruction> {
 /// check. `Ok(None)` = no such name (the caller's "block absent"
 /// contract); `Err` = a name that resolves to something that is not a
 /// struct, or a dangling id.
-fn named_struct(
-    module: &Module,
-    name: &str,
-) -> Result<Option<(u32, Instruction, HashMap<u32, Instruction>)>> {
+fn named_struct(module: &Module, name: &str) -> Result<Option<NamedStructLookup>> {
     let mut struct_id = None;
     for inst in &module.debug_names {
         if inst.class.opcode != Op::Name {
@@ -113,7 +114,7 @@ fn named_struct(
         return Ok(None);
     };
 
-    let types = type_table(&module);
+    let types = type_table(module);
     let struct_inst = types
         .get(&struct_id)
         .ok_or_else(|| anyhow!("struct id={struct_id} ({name}) not in type table"))?

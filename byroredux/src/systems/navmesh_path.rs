@@ -739,6 +739,7 @@ pub(crate) struct CachedWalkStep {
 /// write — `PhysicsWorld` stays a lock-order sink (docs/engine/ecs.md).
 /// `goal.y` need not equal `current.y`: the waypoint step re-derives Y from
 /// the ground.
+#[allow(clippy::too_many_arguments)] // the parameters mirror the walk-step inputs one-to-one; a bundling struct would only be assembled here
 pub(crate) fn cached_walk_step(
     world: &World,
     npc: EntityId,

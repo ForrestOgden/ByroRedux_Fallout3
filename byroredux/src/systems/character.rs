@@ -1880,11 +1880,13 @@ mod tests {
         use byroredux_core::ecs::components::groundcover::WindField;
         use byroredux_core::ecs::resources::TotalTime;
 
-        let mut material = WaterMaterial::default();
-        material.wave_amplitude = 6.0;
-        material.wave_frequency = 1.0;
-        material.scroll_a = [0.012, 0.004];
-        material.scroll_b = [-0.006, 0.01];
+        let material = WaterMaterial {
+            wave_amplitude: 6.0,
+            wave_frequency: 1.0,
+            scroll_a: [0.012, 0.004],
+            scroll_b: [-0.006, 0.01],
+            ..Default::default()
+        };
 
         let mut world = World::new();
         world.register::<WaterPlane>();

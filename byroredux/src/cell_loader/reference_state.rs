@@ -1156,8 +1156,10 @@ mod script_kill_tests {
             vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
         );
         let build = |game: GameKind| {
-            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
-            index.game = game;
+            let mut index = byroredux_plugin::esm::records::EsmIndex {
+                game,
+                ..Default::default()
+            };
             index.scripts.insert(
                 0x0000_1111,
                 ScriptRecord {

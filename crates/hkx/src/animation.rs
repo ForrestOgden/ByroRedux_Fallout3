@@ -1418,7 +1418,7 @@ mod tests {
         // making it exact and naming the clips is #5671.
         const KNOWN_VANILLA_REJECTS: usize = 0;
         assert!(
-            rejects.len() <= KNOWN_VANILLA_REJECTS,
+            rejects.len() == KNOWN_VANILLA_REJECTS,
             "{} vanilla clips rejected by decode_spline_animation (baseline \
              {KNOWN_VANILLA_REJECTS}): {:#?}",
             rejects.len(),

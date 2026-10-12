@@ -568,8 +568,10 @@ mod tests {
         let mut world = World::new();
         let live_entity = world.spawn();
         let fresh_entity = world.spawn();
-        let mut live_row = Transform::default();
-        live_row.translation = byroredux_core::math::Vec3::new(9.0, 8.0, 7.0);
+        let live_row = Transform {
+            translation: byroredux_core::math::Vec3::new(9.0, 8.0, 7.0),
+            ..Transform::default()
+        };
         world.insert(live_entity, live_row);
         let remap = HashMap::from([(11, live_entity), (12, fresh_entity)]);
         let apply = registry.component_apply("Transform").unwrap();

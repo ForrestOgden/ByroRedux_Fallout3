@@ -35,6 +35,7 @@ pub(super) struct DynamicRgbaUploads {
 ///   * [`Self::RETRY_INTERVAL_FRAMES`] frames, or
 ///   * a smaller request than the one that failed (a request that is
 ///     smaller may fit where the larger one did not).
+///
 /// Any success clears the backoff. Frames are counted only on frames that
 /// would have attempted growth, so an idle overlay does not burn the window.
 #[derive(Default)]

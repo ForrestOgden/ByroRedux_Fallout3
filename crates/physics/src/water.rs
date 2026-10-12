@@ -2377,13 +2377,12 @@ mod tests {
 
         let start_y = -6.0_f32;
         let (mut world, water, body) = submerged_ball_world(start_y);
-        let material = {
-            let mut m = byroredux_core::ecs::components::water::WaterMaterial::default();
-            m.wave_amplitude = 6.0;
-            m.wave_frequency = 1.0;
-            m.scroll_a = [0.012, 0.004];
-            m.scroll_b = [-0.006, 0.01];
-            m
+        let material = byroredux_core::ecs::components::water::WaterMaterial {
+            wave_amplitude: 6.0,
+            wave_frequency: 1.0,
+            scroll_a: [0.012, 0.004],
+            scroll_b: [-0.006, 0.01],
+            ..Default::default()
         };
         world.insert(
             water,
@@ -2638,9 +2637,11 @@ mod tests {
         world.register::<RapierHandles>();
         world.register::<WaterContact>();
 
-        let mut material = WaterMaterial::default();
-        material.wave_amplitude = 2.0;
-        material.wave_frequency = 1.0;
+        let material = WaterMaterial {
+            wave_amplitude: 2.0,
+            wave_frequency: 1.0,
+            ..Default::default()
+        };
         let water = world.spawn();
         world.insert(
             water,

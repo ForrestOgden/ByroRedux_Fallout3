@@ -1540,7 +1540,7 @@ mod tests {
             ..Default::default()
         };
         assert!(dispatch(
-            vec![da09_running.clone(), random_percent(ComparisonOp::Le, 100.0)],
+            vec![da09_running, random_percent(ComparisonOp::Le, 100.0)],
             true
         ));
         assert!(!dispatch(

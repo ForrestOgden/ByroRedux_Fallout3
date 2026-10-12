@@ -932,9 +932,9 @@ impl PhysicsWorld {
                 // under-damped but nonzero stand-in where the pre-fix
                 // value was exactly zero on every link.
                 let torque = -ang * mass * w;
-                self.bodies
-                    .get_mut(handle)
-                    .map(|b| b.add_torque(torque, false));
+                if let Some(b) = self.bodies.get_mut(handle) {
+                    b.add_torque(torque, false);
+                }
             }
         }
     }
