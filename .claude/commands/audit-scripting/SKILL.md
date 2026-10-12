@@ -315,8 +315,9 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   `apply_alias_injections`/`QuestAliasInjectionState` (permanent inventory-grant ledger, saved) must not
   double-grant after load. **Refresh pre-filters must be exact supersets**: `refresh_scene_actor_bindings`
   visits per-fill `CandidateIndex` buckets and skips/filters condition-only fills via `subject_requirement`
-  (`ConditionFunction::reads_run_on_entity` must stay exhaustive; `run_on_identity` is shared with the
-  evaluator) — a bucket or requirement that excludes a candidate the full fill test or `evaluate` would admit silently
+  (`ConditionFunction::reads_run_on_entity` and `is_deterministic` must stay exhaustive — a stochastic
+  function like `GetRandomPercent` is never folded into a once-for-everyone value, #5645; `run_on_identity`
+  is shared with the evaluator) — a bucket or requirement that excludes a candidate the full fill test or `evaluate` would admit silently
   unbinds an alias (`subject_requirement_never_excludes_a_passing_subject`,
   `condition_only_identity_fill_binds_what_the_full_scan_would`).
 - **NPC dialogue selection** (`systems/npc_dialogue.rs`, Late exclusive): consumes the player's `ActivateEvent`

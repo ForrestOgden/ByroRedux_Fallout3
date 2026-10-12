@@ -390,6 +390,47 @@ impl ConditionFunction {
         }
     }
 
+    /// Whether the same inputs always give the same value. `false` only for
+    /// `GetRandomPercent`, which draws from the Story Manager's RNG: it
+    /// differs per evaluation and each evaluation advances the generator.
+    ///
+    /// [`subject_requirement`] must not fold such a function into "one value
+    /// on behalf of every subject" — a single draw is not what each subject's
+    /// own [`evaluate`] would see, so a block it decides could be wrongly
+    /// emptied (or kept) for subjects that would have drawn the other way,
+    /// and the pre-filter would stop being an exact superset of `evaluate`
+    /// (#5645). Exhaustive on purpose, like
+    /// [`reads_run_on_entity`](Self::reads_run_on_entity).
+    pub fn is_deterministic(self) -> bool {
+        match self {
+            Self::GetRandomPercent => false,
+            Self::GetDistance
+            | Self::GetActorValue
+            | Self::GetDead
+            | Self::GetInCell
+            | Self::GetIsClass
+            | Self::GetIsRace
+            | Self::GetIsID
+            | Self::GetFactionRank
+            | Self::GetInFaction
+            | Self::GetLevel
+            | Self::GetEquipped
+            | Self::HasPerk
+            | Self::GetXPForNextLevel
+            | Self::HasLoaded3D
+            | Self::GetReputation
+            | Self::GetReputationThreshold
+            | Self::GetQuestRunning
+            | Self::GetGlobalValue
+            | Self::GetStage
+            | Self::GetStageDone
+            | Self::IsSceneActionComplete
+            | Self::IsHardcore
+            | Self::GetVMScriptVariable
+            | Self::Unknown(_) => true,
+        }
+    }
+
     /// Whether this is an identity test: 1.0 exactly when
     /// [`Self::run_on_identity`] equals `param_1`, else 0.0.
     pub fn is_identity_test(self) -> bool {
@@ -1182,7 +1223,9 @@ pub enum SubjectRequirement {
 /// is always true, and a block whose members are all false in this way is
 /// always false. A subject-dependent member narrows its block only when it
 /// is an identity test that fails on a 0.0 result; then the block can only
-/// pass where one of those identities matches.
+/// pass where one of those identities matches. A non-deterministic member
+/// ([`ConditionFunction::is_deterministic`]) is never evaluated and never
+/// narrows: it leaves its block open.
 pub fn subject_requirement(
     conditions: &ConditionList,
     world: &World,
@@ -1194,7 +1237,14 @@ pub fn subject_requirement(
         let mut unconstrained = false;
         for condition in &conditions[block] {
             let function = ConditionFunction::from_index(condition.function_index);
-            if !matches!(condition.run_on, RunOn::Subject) || !function.reads_run_on_entity() {
+            if !function.is_deterministic() {
+                // #5645 — never evaluated here: one draw cannot stand for
+                // every subject's own, and evaluating would advance the
+                // RNG. It narrows nothing, so the block stays open.
+                unconstrained = true;
+            } else if !matches!(condition.run_on, RunOn::Subject)
+                || !function.reads_run_on_entity()
+            {
                 if evaluate_condition(condition, world, ctx) {
                     continue 'blocks;
                 }
@@ -2391,6 +2441,61 @@ mod tests {
             unsatisfiable > 100 && narrowed > 100,
             "{unsatisfiable} / {narrowed}"
         );
+    }
+
+    /// #5645 — `GetRandomPercent` is stochastic: it is never folded into a
+    /// once-for-everyone value, never narrows a block, and the pre-filter
+    /// leaves the generator untouched. Whatever a subject's own `evaluate`
+    /// draws, the requirement must not have excluded it.
+    #[test]
+    fn a_random_percent_gate_neither_narrows_nor_consumes_the_rng() {
+        use crate::story_manager::StoryManagerRng;
+        assert!(!ConditionFunction::GetRandomPercent.is_deterministic());
+        assert!(ConditionFunction::CATALOG
+            .iter()
+            .filter(|f| **f != ConditionFunction::GetRandomPercent)
+            .all(|f| f.is_deterministic()));
+
+        let (mut world, subjects, shapes) = requirement_fixture();
+        world.insert_resource(StoryManagerRng { state: 0x5EED });
+        let gate = cond(77, ComparisonOp::Lt, 50.0, false);
+        let mut gated_or = gate;
+        gated_or.or_next = true;
+        let lists = [
+            vec![gate],
+            vec![gate, shapes[0]],
+            vec![gated_or, shapes[0]],
+            vec![shapes[0], gate],
+        ];
+        let race = IdentityTest {
+            function: ConditionFunction::GetIsRace,
+            id: 0x10,
+        };
+        let expected = [
+            SubjectRequirement::IdentityBlocks(vec![]),
+            SubjectRequirement::IdentityBlocks(vec![vec![race]]),
+            SubjectRequirement::IdentityBlocks(vec![]),
+            SubjectRequirement::IdentityBlocks(vec![vec![race]]),
+        ];
+        for (list, expected) in lists.iter().zip(expected) {
+            for round in 0..64u64 {
+                world.resource_mut::<StoryManagerRng>().state = round * 0x9E37 + 1;
+                let before = world.resource::<StoryManagerRng>().state;
+                let requirement = subject_requirement(list, &world, &ctx(EntityId::MAX));
+                assert_eq!(
+                    world.resource::<StoryManagerRng>().state,
+                    before,
+                    "the pre-filter must not consume the RNG"
+                );
+                assert_eq!(requirement, expected, "{list:?}");
+                // Whatever this subject's own draw is, it was not excluded.
+                for &subject in &subjects {
+                    if evaluate(list, &world, &ctx(subject)) {
+                        assert_ne!(requirement, SubjectRequirement::Unsatisfiable);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
