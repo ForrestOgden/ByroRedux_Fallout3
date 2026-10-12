@@ -10,6 +10,7 @@ on:
         type: choice
         options:
           - cornell
+          - golden
           - material-provider-matrix
           - all
 
@@ -67,6 +68,30 @@ jobs:
           path: target/rt-correctness-artifacts
           if-no-files-found: error
           retention-days: 30
+
+  golden:
+    name: Golden frames + FSR upscaler quality
+    if: inputs.gate == 'golden' || inputs.gate == 'all'
+    runs-on: [self-hosted, linux, x64, byroredux-rt]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # #5308 / #5478 — rust-toolchain.toml pins 1.96.0 and overrides
+      # this step inside the checkout; naming the same toolchain here
+      # keeps the version output truthful instead of installing an
+      # unused stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      # #5625 — the only pixel-level render regression guards are
+      # `#[ignore]` behind a Vulkan device; nothing ran them until now.
+      # The game-data `fsr_presets_on_game_content_report_only` case is
+      # left out: it needs BYROREDUX_QUALITY_GAME and only reports.
+      - name: Run golden frames
+        run: xvfb-run -a cargo test --release -p byroredux --test golden_frames -- --ignored --nocapture --test-threads=1
+      - name: Run FSR preset quality gate
+        run: xvfb-run -a cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture --test-threads=1 fsr_presets_track_the_native_reference
 
   material-provider-matrix:
     name: Five-game material provider matrix
