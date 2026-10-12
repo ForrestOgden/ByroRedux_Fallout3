@@ -3278,10 +3278,58 @@ mod tests {
             "a stepped frame must drop the queued leaves and a no-step frame \
              insert only them (#2864, #4685)"
         );
+        // `step` only calls `run_substep` since #5311 extracted the loop body,
+        // so scanning `step` alone left the per-substep body — and the
+        // post-rollback refresh in `recovery.rs` — unguarded: a "simplified"
+        // `refresh_query_geometry_after_restore` swapping its targeted
+        // `set_query_leaf` loop for the whole-set refresh would have kept
+        // this green (#5558). Each of the three must stay clean.
+        let recovery = byroredux_core::source_scan::production_text_or_whole(include_str!("recovery.rs"));
+        let method_body = |text: &'static str, signature: &str| -> String {
+            let start = text
+                .find(signature)
+                .unwrap_or_else(|| panic!("`{signature}` is gone — update this guard"));
+            let end = text[start..]
+                .find("\n    }\n")
+                .unwrap_or_else(|| panic!("`{signature}` has no closing brace at impl depth"))
+                + start;
+            text[start..end].to_owned()
+        };
+        let step_scanned: [(&str, String); 3] = [
+            ("step", step_body.to_owned()),
+            (
+                "run_substep",
+                method_body(
+                    crate::source_scan::production_text(include_str!("mod.rs")),
+                    "    fn run_substep(&mut self,",
+                ),
+            ),
+            (
+                "refresh_query_geometry_after_restore",
+                method_body(
+                    recovery,
+                    "    pub(super) fn refresh_query_geometry_after_restore(",
+                ),
+            ),
+        ];
+        for (name, body) in &step_scanned {
+            assert!(
+                !body.contains("update_query_pipeline"),
+                "the whole-set refresh must never run from `{name}` — it is the \
+                 explicit cold-start/test entry point, O(all colliders) (9.6 ms/frame \
+                 on a 95 k world in the #4685 measurement)"
+            );
+        }
+        // A scan over an empty or wrong window passes vacuously: each body
+        // must actually be the function it names.
         assert!(
-            !step_body.contains("update_query_pipeline"),
-            "the whole-set refresh must never run from `step` — it is the \
-             explicit cold-start/test entry point, O(all colliders)"
+            step_scanned[1].1.contains("SubstepOutcome") || step_scanned[1].1.contains("substep"),
+            "the `run_substep` window must contain the per-substep body"
+        );
+        assert!(
+            step_scanned[2].1.contains("set_query_leaf"),
+            "the `refresh_query_geometry_after_restore` window must contain its \
+             targeted `set_query_leaf` loop"
         );
         assert!(
             !rationale.contains("the rebuild accounts for essentially all of it"),
