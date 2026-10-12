@@ -1052,9 +1052,6 @@ impl CsgHandleCache {
     }
 }
 
-/// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
-/// (no collisions / lights / clips / particles) so the existing
-/// [`spawn_placed_instances`] path uploads + spawns them.
 /// What the import registry already knows about one `_oc.nif` path.
 ///
 /// The registry stores `Option<Arc<..>>` per key, so a lookup has two
@@ -1081,6 +1078,9 @@ fn lookup_precombine_cache(reg: &NifImportRegistry, path: &str) -> PrecombineCac
     }
 }
 
+/// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
+/// (no collisions / lights / clips / particles) so the existing
+/// [`spawn_placed_instances`] path uploads + spawns them.
 pub(super) fn geometry_only_cached(
     meshes: Vec<ImportedMesh>,
     geometry_dedup: Vec<u32>,
