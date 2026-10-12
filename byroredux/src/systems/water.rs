@@ -446,11 +446,21 @@ pub(crate) fn make_water_interaction_system() -> impl FnMut(&World, f32) + Send 
             let Some(global) = global_q.get(entity) else {
                 continue;
             };
-            // `GlobalTransform` is the body's centre; place the surface event
-            // at the waterline so a deeply submerged body does not sound as
-            // though the splash came from below the surface.
-            let mut position = global.translation;
-            position.y += contact.depth;
+            // Place the surface event at the waterline so a deeply submerged
+            // body does not sound as though the splash came from below the
+            // surface. The contact publishes the waterline under the
+            // collider AABB centre (#5562); `GlobalTransform` is the body
+            // ORIGIN, which for a compound part or a ragdoll bone is off the
+            // AABB centre by the collider offset, so `origin + depth` landed
+            // above or below the surface by that offset (and at the wrong
+            // XZ). A producer without a collider AABB (the player capsule,
+            // whose origin is its centre) leaves `waterline` empty and the
+            // old origin-based reconstruction is exact.
+            let position = contact.waterline.unwrap_or_else(|| {
+                let mut position = global.translation;
+                position.y += contact.depth;
+                position
+            });
             let intensity = (0.35 + contact.submerged_fraction * 0.65).clamp(0.0, 1.0);
             let Some(surface_entity) = contact.surface_entity else {
                 continue;
@@ -943,6 +953,66 @@ mod tests {
             .copied()
             .expect("camera state");
         assert!(state.depth < 0.0, "camera is above the crest: {state:?}");
+    }
+
+    /// #5562 — the splash and ripple are placed on the waterline the contact
+    /// publishes (collider-AABB-centre XZ, sampled surface height), not at
+    /// `GlobalTransform` (the body ORIGIN) + `depth`, which is off the
+    /// waterline by the origin↔collider-centre offset for a compound part or
+    /// a ragdoll bone. A contact without a waterline (the player capsule,
+    /// whose origin is its centre) keeps the origin-based reconstruction.
+    #[test]
+    fn surface_events_land_on_the_published_waterline() {
+        let place = |waterline: Option<Vec3>| {
+            let mut world = World::new();
+            byroredux_scripting::register(&mut world);
+            let surface = world.spawn();
+            let body = world.spawn();
+            // Body ORIGIN at (3, 1, 4); its collider centre is elsewhere.
+            world.insert(
+                body,
+                GlobalTransform::new(
+                    Vec3::new(3.0, 1.0, 4.0),
+                    byroredux_core::math::Quat::IDENTITY,
+                    1.0,
+                ),
+            );
+            world.insert(
+                body,
+                WaterContact {
+                    surface_entity: Some(surface),
+                    depth: 2.0,
+                    submerged_fraction: 0.5,
+                    waterline,
+                    ..WaterContact::default()
+                },
+            );
+            let mut system = make_water_interaction_system();
+            system(&world, 0.016);
+            let splash = world
+                .query::<SplashEvent>()
+                .expect("splash storage")
+                .get(surface)
+                .copied()
+                .expect("splash on the plane");
+            let ripple = world
+                .query::<RippleEvent>()
+                .expect("ripple storage")
+                .get(surface)
+                .copied()
+                .expect("ripple on the plane");
+            (splash.position, ripple.position)
+        };
+
+        // Published waterline wins, on every axis.
+        let (splash, ripple) = place(Some(Vec3::new(33.0, 7.5, -2.0)));
+        assert_eq!(splash, [33.0, 7.5, -2.0]);
+        assert_eq!(ripple, [33.0, 7.5, -2.0]);
+
+        // No waterline: origin + depth, as before.
+        let (splash, ripple) = place(None);
+        assert_eq!(splash, [3.0, 3.0, 4.0]);
+        assert_eq!(ripple, [3.0, 3.0, 4.0]);
     }
 
     #[test]

@@ -1232,6 +1232,15 @@ fn apply_buoyancy_with_scratch(
                                 head_submerged: max_y <= surface_y,
                                 flow: s.flow,
                                 damage_per_second: s.damage_per_second,
+                                // #5562 — the waterline under the collider AABB
+                                // centre, the reference point every decision in
+                                // this loop used, at the surface (waves
+                                // included) it sampled.
+                                waterline: Some(Vec3::new(
+                                    reference_point.x,
+                                    surface_y,
+                                    reference_point.z,
+                                )),
                             },
                         ));
                     } else if t.prior_wet {
@@ -1447,6 +1456,97 @@ mod tests {
         assert!(
             waves_require_contact_rescan(&world, &surfaces),
             "a live contact inside the crest band must continue to track authored waves"
+        );
+    }
+
+    /// #5562 — a wet contact publishes the waterline under the collider AABB
+    /// centre, not under the body origin. A compound part sits at its own
+    /// local offset (the bhk import path, ragdoll bones), so origin and AABB
+    /// centre differ by tens of BU; the buoyancy scan already used the AABB
+    /// centre for every containment decision, and the splash/ripple adapter
+    /// rebuilt its position from the origin instead.
+    #[test]
+    fn wet_contact_publishes_the_waterline_at_the_collider_aabb_centre() {
+        use crate::physics_sync_system;
+        use byroredux_core::ecs::components::collision::{
+            CollisionShape, MotionType, RigidBodyData,
+        };
+        use byroredux_core::ecs::components::{GlobalTransform, Transform};
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.insert_resource(WaterContactScratch::default());
+        world.register::<RapierHandles>();
+        world.register::<WaterContact>();
+
+        let water = world.spawn();
+        world.insert(
+            water,
+            WaterPlane {
+                kind: byroredux_core::ecs::components::water::WaterKind::Calm,
+                material: WaterMaterial::default(),
+                damage_per_second: 0.0,
+            },
+        );
+        world.insert(
+            water,
+            WaterVolume {
+                min: [-100.0, -100.0, -100.0],
+                max: [100.0, 3.0, 100.0],
+            },
+        );
+
+        // One ball whose collider is offset (30, -2.5, 0) from the body origin
+        // at (0, 2, 0): AABB centre (30, -0.5, 0), straddling the surface.
+        let body = world.spawn();
+        world.insert(
+            body,
+            CollisionShape::Compound {
+                children: vec![(
+                    Vec3::new(30.0, -2.5, 0.0),
+                    Quat::IDENTITY,
+                    Box::new(CollisionShape::Ball { radius: 1.0 }),
+                )],
+            },
+        );
+        world.insert(
+            body,
+            RigidBodyData {
+                motion_type: MotionType::Dynamic,
+                mass: 20.0,
+                friction: 0.5,
+                restitution: 0.0,
+                linear_damping: 0.0,
+                angular_damping: 0.0,
+                collidable: true,
+                surface_material: 0,
+                part_surface_materials: Box::new([]),
+            },
+        );
+        let origin = Vec3::new(0.0, 2.0, 0.0);
+        world.insert(body, GlobalTransform::new(origin, Quat::IDENTITY, 1.0));
+        world.insert(body, Transform::from_translation(origin));
+
+        physics_sync_system(&world, PHYSICS_DT);
+
+        let contact = *world
+            .get::<WaterContact>(body)
+            .expect("the body straddling the surface has a contact");
+        assert!(contact.submerged_fraction > 0.0, "fixture is wet: {contact:?}");
+        let waterline = contact.waterline.expect("a wet contact publishes its waterline");
+        assert!(
+            (waterline.x - 30.0).abs() < 0.05 && waterline.z.abs() < 0.05,
+            "XZ is the collider AABB centre (30, 0), not the origin (0, 0): {waterline:?}"
+        );
+        assert!(
+            (waterline.y - 3.0).abs() < 0.05,
+            "Y is the sampled surface height (the volume's surface, 3.0): {waterline:?}"
+        );
+        // The depth it rides with is relative to the same AABB centre.
+        assert!(
+            (contact.depth - (waterline.y - (-0.5))).abs() < 0.05,
+            "depth = surface_y − AABB-centre y: {contact:?}"
         );
     }
 

@@ -451,6 +451,7 @@ mod tests {
                     speed: 2.0,
                 }),
                 damage_per_second: 12.0,
+                waterline: None,
             },
         );
         world.insert(dry, WaterContact::default());

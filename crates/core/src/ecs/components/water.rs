@@ -40,6 +40,7 @@
 
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
+use crate::math::Vec3;
 use std::sync::Arc;
 
 /// Canonical sentinel values for water records that omit authored wave data.
@@ -844,6 +845,18 @@ pub struct WaterContact {
     /// FO3/FNV authored water damage per second, carried through contact
     /// resolution for actor/gameplay consumers. Zero is harmless water.
     pub damage_per_second: f32,
+    /// World-space point on the waterline for this contact (#5562): the
+    /// collider AABB centre's XZ — the one reference point every
+    /// containment decision in the buoyancy scan uses — at the sampled
+    /// surface height, waves included. Presentation bridges place the splash
+    /// and ripple here instead of rebuilding it from the body's
+    /// `GlobalTransform` origin + [`Self::depth`], which lands off the
+    /// waterline by the origin↔collider-centre offset (tens of BU for a
+    /// compound part or a ragdoll limb). `None` for a contact whose
+    /// producer has no collider AABB (the player capsule derives its
+    /// contact from `SubmersionState`, where origin and centre coincide);
+    /// consumers then fall back to origin + `depth`.
+    pub waterline: Option<Vec3>,
 }
 
 impl Component for WaterContact {

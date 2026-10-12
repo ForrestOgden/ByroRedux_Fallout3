@@ -1341,6 +1341,9 @@ fn sync_player_water_contact(
             head_submerged: state.fraction >= 1.0,
             flow: state.flow,
             damage_per_second: state.damage_per_second,
+            // The player capsule's origin is its centre, so consumers' origin
+            // + depth fallback is already on the waterline (#5562).
+            waterline: None,
         },
         None => {
             let already_dry = world
