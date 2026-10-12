@@ -274,12 +274,20 @@ impl PrecombinedSpawnJob {
             // cold loads but we still want the path through the LRU so
             // the `_oc.nif` survives a brief un/reload (e.g. interior →
             // re-enter same cell).
-            let cached: Option<Arc<CachedNifImport>> = {
-                let reg = world.resource::<NifImportRegistry>();
-                reg.get(&path).and_then(|opt| opt.clone())
-            };
+            //
+            let lookup = lookup_precombine_cache(&world.resource::<NifImportRegistry>(), &path);
 
             let pending = self.pending_placement.take();
+            if pending.is_none() && matches!(lookup, PrecombineCacheLookup::KnownFailure) {
+                self.misses += 1;
+                self.next_hash += 1;
+                budget.complete_unit();
+                continue;
+            }
+            let cached = match lookup {
+                PrecombineCacheLookup::Hit(c) => Some(c),
+                _ => None,
+            };
             let cached = if let Some((placement, _)) = &pending {
                 Arc::clone(&placement.cached)
             } else if let Some(c) = cached {
@@ -1047,6 +1055,32 @@ impl CsgHandleCache {
 /// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
 /// (no collisions / lights / clips / particles) so the existing
 /// [`spawn_placed_instances`] path uploads + spawns them.
+/// What the import registry already knows about one `_oc.nif` path.
+///
+/// The registry stores `Option<Arc<..>>` per key, so a lookup has two
+/// `None` levels: a **negative entry** (`Some(None)` — the streaming
+/// worker's pre-parse, or an earlier pass of this loop, already failed the
+/// file: missing, parse error, or a parser panic the worker contained under
+/// #854) and a path never seen. Collapsing them re-ran extract + parse +
+/// CSG decode on the main thread, where there is no `catch_unwind`, so a
+/// contained panic replayed there took the engine down (#5522). The REFR
+/// loader (`references/synth_child.rs`) already honours the negative entry
+/// as a cached miss; this is the same contract for the precombine route.
+enum PrecombineCacheLookup {
+    Hit(Arc<CachedNifImport>),
+    /// Terminal miss — do not re-extract or re-parse.
+    KnownFailure,
+    Unseen,
+}
+
+fn lookup_precombine_cache(reg: &NifImportRegistry, path: &str) -> PrecombineCacheLookup {
+    match reg.get(path) {
+        Some(Some(c)) => PrecombineCacheLookup::Hit(Arc::clone(c)),
+        Some(None) => PrecombineCacheLookup::KnownFailure,
+        None => PrecombineCacheLookup::Unseen,
+    }
+}
+
 pub(super) fn geometry_only_cached(
     meshes: Vec<ImportedMesh>,
     geometry_dedup: Vec<u32>,
@@ -1082,6 +1116,31 @@ mod tests {
     use super::*;
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
+
+    /// #5522 — a negative registry entry (the worker's failed pre-parse)
+    /// is a terminal miss, distinct from a path never seen: the precombine
+    /// job must not fall through to a main-thread extract + parse.
+    #[test]
+    fn negative_registry_entry_is_a_known_failure_not_unseen() {
+        let mut reg = NifImportRegistry::new();
+        let _ = reg.insert("meshes\\precombined\\bad_oc.nif".to_owned(), None);
+        let _ = reg.insert(
+            "meshes\\precombined\\good_oc.nif".to_owned(),
+            Some(Arc::new(geometry_only_cached(Vec::new(), Vec::new()))),
+        );
+        assert!(matches!(
+            lookup_precombine_cache(&reg, "meshes\\precombined\\bad_oc.nif"),
+            PrecombineCacheLookup::KnownFailure
+        ));
+        assert!(matches!(
+            lookup_precombine_cache(&reg, "meshes\\precombined\\good_oc.nif"),
+            PrecombineCacheLookup::Hit(_)
+        ));
+        assert!(matches!(
+            lookup_precombine_cache(&reg, "meshes\\precombined\\never_oc.nif"),
+            PrecombineCacheLookup::Unseen
+        ));
+    }
 
     /// #5484 — the absorption gate must un-skip per bake, not per cell.
     ///
