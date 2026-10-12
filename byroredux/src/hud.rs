@@ -846,7 +846,7 @@ pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f
         let Some(entry) = values.get(av) else {
             return 1.0;
         };
-        let max = entry.base + entry.permanent_mod + entry.temporary_mod;
+        let max = entry.undamaged();
         if max > 0.0 {
             (entry.current() / max).clamp(0.0, 1.0)
         } else {
@@ -933,6 +933,23 @@ mod tests {
         zero.set_base(43, 0.0);
         bare.insert(orphan, zero);
         assert_eq!(fraction(&bare, Some(43), None), 1.0, "zero-max degenerate");
+    }
+
+    /// #5508 — the bar's `max` includes the `set_override` layer: with
+    /// base 105 + override 500 and 200 damage the bar reads 405/605, not a
+    /// clamped-full 1.0 against a stale 105 max.
+    #[test]
+    fn fraction_max_includes_the_set_override_layer() {
+        let mut world = World::new();
+        let player = world.spawn();
+        let mut values = ActorValues::new();
+        values.set_base(43, 105.0);
+        values.set_override(43, 500.0);
+        values.apply_damage(43, 200.0);
+        world.insert(player, values);
+        world.insert_resource(PlayerEntity(Some(player)));
+        let want = 405.0 / 605.0;
+        assert!((fraction(&world, Some(43), None) - want).abs() < 1e-6);
     }
 
     /// #4724 — the change-signature combiner: stable within a process, and

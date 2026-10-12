@@ -298,8 +298,8 @@ fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
 /// Compose the player's vitals bars from canonical `ActorValues`. Returns
 /// `None` when there is no player body, it carries no actor values, or the
 /// catalog resolved no bars — the HUD then draws nothing rather than empty
-/// bars. `max` is the composed undamaged value (`base + permanent +
-/// temporary`); `current` additionally subtracts the damage layer, so the
+/// bars. `max` is the composed undamaged value (`base + set_override +
+/// permanent + temporary`); `current` additionally subtracts the damage layer, so the
 /// bar shows the red-equivalent missing share the same way combat damage
 /// and restorative consumption read it.
 pub(crate) fn vitals_snapshot(
@@ -314,7 +314,7 @@ pub(crate) fn vitals_snapshot(
         .iter()
         .filter_map(|&(label, avif)| {
             let entry = values.get(avif)?;
-            let max = entry.base + entry.permanent_mod + entry.temporary_mod;
+            let max = entry.undamaged();
             if max <= 0.0 {
                 return None;
             }
@@ -3700,6 +3700,36 @@ mod tests {
                 },
             ],
             "current subtracts the damage layer; absent values drop their bar"
+        );
+    }
+
+    /// #5508 — a routed player `SetBase` lives in `set_override`; the
+    /// vitals `max` must include it or the panel reports `base − damage`
+    /// (negative once damage passes the formula base).
+    #[test]
+    fn vitals_snapshot_max_includes_the_set_override_layer() {
+        let mut world = World::new();
+        world.register::<byroredux_core::ecs::components::ActorValues>();
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        world.insert_resource(PlayerVitals {
+            bars: vec![("Health", 1000)],
+            by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
+        });
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1000, 105.0);
+        values.set_override(1000, 500.0);
+        values.apply_damage(1000, 200.0);
+        world.insert(player, values);
+
+        let bars = vitals_snapshot(&world).expect("a populated player must compose bars");
+        assert_eq!(
+            bars,
+            vec![byroredux_debug_ui::VitalBarView {
+                label: "Health",
+                current: 405.0,
+                max: 605.0
+            }],
         );
     }
 

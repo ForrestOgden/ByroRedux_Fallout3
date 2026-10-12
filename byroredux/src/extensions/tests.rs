@@ -3766,6 +3766,20 @@ fn sdk_set_base_on_player_derived_pool_routes_into_the_override_layer() {
     // are left intact", FO4 CK SetValue).
     assert_eq!(avs.get(HEALTH).unwrap().set_override, 500.0);
     assert_eq!(avs.get(HEALTH).unwrap().permanent_mod, 0.0);
+    drop(avs);
+    // #5508 — the next callback's projection must carry the override
+    // layer: a mod reading back its own routed `SetBase` sees the value
+    // the live component composes, not the pre-write 105.
+    let projections = capture_entity_projections(&world, &BTreeSet::from([player]));
+    let projected = projections[&player]
+        .actor_values
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|(form, _)| *form == health_ref)
+        .expect("the player's Health must be projected")
+        .1;
+    assert_eq!(projected.current(), 605.0, "projection agrees with the live current()");
     assert!(host.take_diagnostics().is_empty());
 }
 

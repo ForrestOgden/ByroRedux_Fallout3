@@ -73,9 +73,17 @@ pub struct ActorValue {
 }
 
 impl ActorValue {
+    /// The undamaged ceiling: `base + set_override + permanent + temporary`.
+    /// What a "current / max" reader (HUD bar fraction, vitals panel) must
+    /// use as `max` — composing the layers by hand missed `set_override`
+    /// when #5412 added it (#5508).
+    pub fn undamaged(&self) -> f32 {
+        self.base + self.set_override + self.permanent_mod + self.temporary_mod
+    }
+
     /// `base + set_override + permanent + temporary − damage`.
     pub fn current(&self) -> f32 {
-        self.base + self.set_override + self.permanent_mod + self.temporary_mod - self.damage
+        self.undamaged() - self.damage
     }
 }
 
@@ -231,6 +239,21 @@ mod tests {
         av.mod_temporary(AV_HEALTH, 10.0); // +10 potion
         av.apply_damage(AV_HEALTH, 35.0); // -35 damage
         assert_eq!(av.current(AV_HEALTH), 95.0, "100 + 20 + 10 − 35");
+    }
+
+    /// #5508 — `undamaged()` is the one composition of the ceiling and
+    /// `current()` is exactly `undamaged() − damage`, override included.
+    #[test]
+    fn undamaged_includes_every_layer_but_damage() {
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 105.0);
+        av.set_override(AV_HEALTH, 500.0);
+        av.mod_permanent(AV_HEALTH, 20.0);
+        av.mod_temporary(AV_HEALTH, 10.0);
+        av.apply_damage(AV_HEALTH, 200.0);
+        let health = av.get(AV_HEALTH).unwrap();
+        assert_eq!(health.undamaged(), 635.0);
+        assert_eq!(health.current(), 435.0);
     }
 
     /// #5042 — only `set_base` authors the base; a modifier or damage write
