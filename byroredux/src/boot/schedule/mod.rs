@@ -586,6 +586,10 @@ mod system_access_declaration_tests {
     // so they are listed explicitly like every other cross-file hop.
     const DIALOGUE_VOICE_SRC: &str = include_str!("../../systems/dialogue_voice.rs");
     const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
+    // #5069 — equipment_appearance_system's mid-life gear-import hop lives
+    // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
+    // PARALLEL_SYSTEMS proof, so it gets its own scan below.
+    const LOOT_APPEARANCE_SRC: &str = include_str!("../../npc_spawn/loot_appearance.rs");
     // #5649 — the INFO speaker/condition gate routes through the scripting
     // crate's condition evaluator (cross-crate, invisible to the callee
     // walk), and its dispatcher reads a dozen storages/resources the row
@@ -1068,6 +1072,20 @@ mod system_access_declaration_tests {
     /// storages, the quest/scene/global ruleset resources, and the
     /// `GetRandomPercent` `StoryManagerRng` write — none of which the row
     /// declared before.
+    /// #5069 — `equipment_appearance_system` calls `queue_midlife_imports`
+    /// (mid-life gear imports, 0182fc5e8) whose acquisitions the row never
+    /// declared: PendingGearImport read+write, ActorBodyClass read, and the
+    /// LoadedCellIndex resource. Exclusive, so nothing mis-schedules today —
+    /// the row is the promotion baseline and the `sys.accesses` operator
+    /// view. Pinned with the same source-scan the other exclusive rows use.
+    #[test]
+    fn equipment_appearance_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(LOOT_APPEARANCE_SRC, "equipment_appearance_system")],
+            "equipment_appearance_system",
+        );
+    }
+
     #[test]
     fn npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires() {
         assert_declares_everything_it_acquires(

@@ -446,7 +446,17 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<crate::npc_spawn::loot_appearance::NpcAppearanceHidden>()
             .writes::<crate::npc_spawn::PendingGearRelease>()
             .reads::<byroredux_core::ecs::Children>()
-            .reads::<byroredux_core::ecs::MeshHandle>(),
+            .reads::<byroredux_core::ecs::MeshHandle>()
+            // #5069 — the mid-life gear-import half
+            // (`queue_midlife_imports`, landed with 0182fc5e8 without a
+            // schedule edit): PendingGearImport is read (the per-wearer
+            // dedup gate) and written (the batched insert through
+            // `query_mut`), ActorBodyClass read for the mesh pick, and the
+            // loaded-cell index resolves item form IDs.
+            .reads::<crate::npc_spawn::PendingGearImport>()
+            .writes::<crate::npc_spawn::PendingGearImport>()
+            .reads::<crate::npc_spawn::ActorBodyClass>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>(),
     );
     // P4 blocker 1 — NPC activation → topic selection. Runs beside the other
     // Late activation/event readers, before the end-of-Late cleanup drains
