@@ -211,7 +211,7 @@ crates/
     src/vulkan/gbuffer.rs    GBuffer — normal, motion vector, mesh ID, raw indirect, albedo attachments
     src/vulkan/svgf.rs       SvgfPipeline — temporal accumulation denoiser for indirect lighting
     src/vulkan/composite.rs  CompositePipeline — direct + denoised indirect + caustics + volumetrics reassembly, linear HDR out (#4202: tone map lives downstream in presentation)
-    src/vulkan/presentation.rs Presentation pass — output-res tonemap(graded × exposureTex), ACES|AgX switch, underwater extinction, swapchain write
+    src/vulkan/presentation.rs Presentation pass — output-res exposure → IMGS/IMAD grade → chroma compress → tonemap (ACES|AgX), underwater extinction, swapchain write (#5482 order)
     src/vulkan/ssao.rs       SSAO compute pipeline (noise texture, kernel, screen-space AO)
     src/vulkan/descriptors.rs Descriptor set/pool management
     src/vulkan/compute.rs    Compute pipeline utilities
@@ -225,7 +225,7 @@ crates/
       svgf_temporal.comp     SVGF temporal accumulation with motion vector reprojection
       taa.comp               TAA resolve (Halton jitter + YCoCg variance clamp, M37.5)
       composite.vert/frag    Fullscreen quad — direct + denoised indirect + caustics + volumetrics, linear HDR out (bloom + tone map live downstream)
-      presentation.frag      Output-resolution presentation — exposure × tonemap (ACES|AgX) + underwater extinction → swapchain
+      presentation.frag      Output-resolution presentation — exposure → grade → chroma compress → tonemap (ACES|AgX) + underwater extinction → swapchain
       ssao.comp              Screen-space ambient occlusion compute
       cluster_cull.comp      Clustered lighting frustum assignment
       skin_vertices.comp     GPU pre-skinning (M29)
