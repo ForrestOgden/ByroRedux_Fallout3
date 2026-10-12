@@ -8,6 +8,7 @@
 //! are private siblings that only it calls.
 
 use super::*;
+use byroredux_bgsm::BgsmFile;
 
 use super::cdb::apply_cdb_pbr_fallback;
 use byroredux_sfmaterial::CdbMaterial;
@@ -757,6 +758,424 @@ pub(crate) fn merge_external_material(
 /// BGSM in THIS resolver chain already claimed this slot", which is why they
 /// cannot be inferred from the field values: the NIF side defaults several of
 /// them to concrete values.
+/// #5735 — the BGSM texture-slot group of the template walk, one chain
+/// step per call. Verbatim move out of `merge_bgsm_arm`'s loop body: the
+/// ten `fill` calls plus the greyscale-LUT interlock (#2108/#3898/#4402),
+/// whose chain-local `nif_supplied_greyscale_lut` state this group owns
+/// (captured before the walk, cleared when a BGSM takes the slot).
+struct BgsmTextureSlotState {
+    nif_supplied_greyscale_lut: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_bgsm_texture_slots(
+    bgsm: &BgsmFile,
+    state: &mut BgsmTextureSlotState,
+    material: &mut ImportedMaterial,
+    pool: &mut byroredux_core::string::StringPool,
+    touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
+) {
+    fill(
+        &mut material.textures.base_color,
+        &bgsm.diffuse_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    fill(
+        &mut material.textures.normal,
+        &bgsm.normal_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // #4430 — filled regardless of the BGSM's own `glowmap` bool (65
+    // vanilla `glow_texture` materials say false, 249 true). Whether
+    // that bool gates the glow sample in FO4 is unsourced, so it is not
+    // consulted yet; see the FO4 slot-2 arm in `slot_role.rs`.
+    fill(
+        &mut material.textures.emissive,
+        &bgsm.glow_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // Smoothness/spec mask — .r encodes per-texel specular
+    // strength in the engine's existing gloss_map slot. #453.
+    fill(
+        &mut material.textures.smooth_spec,
+        &bgsm.smooth_spec_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // #1353 / FO4-D8-07 — BGSM greyscale-to-palette LUT path
+    // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
+    // creature colour variants; the palette slot is authored on
+    // v<=2 BGSMs). First non-empty in the template chain wins, to
+    // match the texture fills above. Routed through the common
+    // greyscale_lut role and flagged via EFFECT_PALETTE_COLOR in
+    // `pack_imported_material_flags` so the lit-path remap samples it.
+    //
+    // #2108 (SF-D9-01) — the greyscale slot is a legal, always-
+    // serialized field; its presence alone does NOT mean the
+    // material wants the remap. Capture the authoritative
+    // `grayscale_to_palette_color` enable bit from THIS SAME BGSM
+    // (not `fill`'s generic helper, and not OR'd across the whole
+    // chain) at the exact step that supplies the texture — an
+    // ancestor's own enable bit is irrelevant once a closer BGSM
+    // already won the texture slot.
+    //
+    // #3898 — the "slot empty → assign" half below is precedence
+    // among BGSMs and stays exactly as #2108 wrote it. What it
+    // silently also did was drop the enable bit whenever the NIF's
+    // own slot 3 had already filled the role (#2997 made that the
+    // common case on FO4), so a BGSM asking for the remap was
+    // ignored. Split the two situations:
+    //
+    //   - this BGSM wins the slot  -> it is authoritative for both the
+    //     texture and the enable bit (assignment, including OFF — #2108,
+    //     restored by #4402)
+    //   - the NIF won the slot     -> the LUT sampled is the NIF's, but
+    //     the BGSM still describes this material, so OR its enable bit
+    //     in. OR, not assignment: neither source may silently disable
+    //     the remap the other asked for, and the NIF's own SLSF1 bit
+    //     (#3897) has already been forwarded onto these same fields.
+    //   - a closer BGSM won the slot -> unchanged: an ancestor's bit is
+    //     irrelevant, which is why this keys on `nif_supplied_greyscale_lut`
+    //     rather than on `is_some()`.
+    //
+    // #4402 — #4286 flipped the first branch to OR on the strength of a
+    // Skyrim-layout reachability argument. That argument does not hold:
+    // Skyrim's `Greyscale_To_PaletteColor` is an EffectShader-only flag
+    // (nif.xml annotates it "in EffectShaderProperty"), and the effect
+    // path merges BGEM, not this BGSM arm — so a Skyrim-layout lighting
+    // shader cannot forward the bit #4286 was protecting, and the branch
+    // is effectively FO4-only. On FO4 the named material file IS the
+    // material (the CK authors the remap there; the NIF's SLSF1 word is
+    // a cached copy), so the winner-takes-the-bit rule — #2108's
+    // original contract, and what the bullet above has said all along —
+    // is the sourced behaviour. Assignment restored; the OR stays in
+    // the NIF-won branch where #3898 put it.
+    //
+    // #5106 — the fill runs FIRST and the winner is decided from what
+    // it did, because `fill` is also the slot's referee: #4636's
+    // dead-path repair hands the slot to this BGSM when the NIF's LUT
+    // resolves in no archive and this chain's does. Pre-fix the bit
+    // block ran before the fill, so exactly that case fell through the
+    // NIF-won OR branch and the material ended up sampling the BGSM's
+    // LUT under an enable bit the winning material authored OFF — the
+    // single-winner contract above, violated by ordering. A change to
+    // the slot (`lut_before_step` ≠ current) means this BGSM's path
+    // took it — filled it, or replaced a dead NIF/BGSM path — so the
+    // assign branch fires; no change means the incumbent path survived
+    // this step, so the NIF-won OR branch is the only other one that
+    // applies. `nif_supplied_greyscale_lut` is cleared on takeover so
+    // ancestor steps stop OR-ing against a NIF that no longer owns the
+    // slot (the same single-winner rule, applied across the chain).
+    let lut_before_step = material.textures.greyscale_lut;
+    fill(
+        &mut material.textures.greyscale_lut,
+        &bgsm.greyscale_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    if !bgsm.greyscale_texture.is_empty() {
+        if material.textures.greyscale_lut != lut_before_step {
+            // #2643 — BGSM has no alpha-variant field, so the color bit
+            // is the only one this format can author.
+            material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
+            material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
+            state.nif_supplied_greyscale_lut = false;
+        } else if state.nif_supplied_greyscale_lut {
+            material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
+            material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
+        }
+    }
+    // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
+    // #4428 (FO4-D2-2026-09-16-02) — gate the fill on the authored
+    // `environment_mapping` bit, the same bit `forward_bgsm_env_map_scale`
+    // honours for the mask scale and both BGEM arms honour since #2643.
+    // Unconditional binding switched `triangle.frag` into
+    // explicit-environment off a cubemap the material had disabled: the
+    // traced reflection ray is scaled by `env_map_scale` (0 for every
+    // non-Envmap shader type — 8,806 of the 8,979 affected vanilla shapes),
+    // so dielectrics paid an RT ray for a zeroed term, conductors lost the
+    // implicit strength-1.0 path, and 173 `shader_type = 1` shapes gained
+    // reflections the BGSM turned off. Per-step, like every `fill` here:
+    // each chain file's cubemap binds under that file's own enable bit.
+    if bgsm.base.environment_mapping {
+        fill(
+            &mut material.textures.environment,
+            &bgsm.envmap_texture,
+            touched,
+            pool,
+            texture_exists,
+        );
+    }
+    fill(
+        &mut material.textures.height,
+        &bgsm.displacement_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // #2627 / SF-D9-2026-08-07-02 — the v<=2 legacy texture list
+    // reads envmap, glow, inner_layer, wrinkles, displacement (see
+    // `bgsm.rs`'s parser comment); this was the one slot in that
+    // set the merge never forwarded, even though the sink is a
+    // live, populated role — the NIF `BSLightingShaderProperty`
+    // multi-layer-parallax path already resolves
+    // `MaterialTextureSet::inner_layer` to a real texture handle.
+    // A BGSM authoring its inner layer externally (Skyrim SE
+    // ice/glass, FO4 layered panes) rendered with the layer
+    // silently absent.
+    fill(
+        &mut material.textures.inner_layer,
+        &bgsm.inner_layer_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
+    // pre-fix were parsed but dropped on the floor. Each is
+    // empty on the v<=2 path (the parser leaves the String
+    // default) so the `fill` no-op suffices to gate the
+    // forward without an explicit version check.
+    fill(
+        &mut material.textures.specular,
+        &bgsm.specular_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    fill(
+        &mut material.textures.lighting,
+        &bgsm.lighting_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    fill(
+        &mut material.textures.flow,
+        &bgsm.flow_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    fill(
+        &mut material.textures.wrinkle,
+        &bgsm.wrinkles_texture,
+        touched,
+        pool,
+        texture_exists,
+    );
+    // #2642 (SF-D9-2026-08-07-03) — `bgsm.distance_field_alpha_texture`
+    // (v>=17, FO76/Starfield-era) is deliberately NOT forwarded here.
+    // `MaterialTextureSet` has no dedicated role for it — a genuine
+    // deferred-consumer gap, not a wiring bug, unlike every other
+    // texture slot in this block. Signage/decal cutouts authored
+    // with distance-field alpha fall back to plain alpha test until
+    // a role + shader consumer exist.
+}
+
+/// #5735 — the scalar-PBR group (#583 lineage: emissive, specular,
+/// glossiness, Fresnel, palette scale, rim/backlight/subsurface, env-map
+/// scale), one chain step per call, verbatim move. Child-first "first
+/// authored value wins" lives in these sentinels.
+#[derive(Default)]
+struct BgsmScalarState {
+    set_emissive: bool,
+    set_specular: bool,
+    set_glossiness: bool,
+    set_fresnel: bool,
+    set_palette_scale: bool,
+    set_rim: bool,
+    set_subsurface: bool,
+    set_env_map_scale: bool,
+}
+
+fn apply_bgsm_scalars(
+    bgsm: &BgsmFile,
+    state: &mut BgsmScalarState,
+    material: &mut ImportedMaterial,
+    touched: &mut bool,
+) {
+    // Scalar PBR forwarding (#583). Child-first: first authored
+    // value wins. Parser already decodes these fields; the
+    // pre-fix merge dropped them on the floor.
+    if !state.set_emissive && bgsm.emit_enabled {
+        material.emissive_color = bgsm.emittance_color;
+        material.emissive_mult = bgsm.emittance_mult;
+        state.set_emissive = true;
+        *touched = true;
+    }
+    if !state.set_specular {
+        // #4654 — honour the authored `specular_enabled` bit (the
+        // first chain step to carry the block decides, child-first
+        // like every sentinel here). Disabled zeroes BOTH fields the
+        // way walker.rs's disabled-NiSpecularProperty arm does
+        // (#696), so nothing downstream can re-promote specular:
+        // the audit counted 467 FO4 + 653 FO76 BGSMs authored off —
+        // paintings, magazines, signage — currently rendering with
+        // full-strength white specular from their left-in-place
+        // authoring defaults.
+        if bgsm.specular_enabled {
+            material.specular_color = bgsm.specular_color;
+            material.specular_strength = bgsm.specular_mult;
+        } else {
+            material.specular_color = [0.0, 0.0, 0.0];
+            material.specular_strength = 0.0;
+        }
+        state.set_specular = true;
+        *touched = true;
+    }
+    if !state.set_glossiness {
+        if !bgsm.specular_enabled {
+            // #4654 — smoothness rode the specular block the artist
+            // disabled; a matte material must not derive glossiness
+            // (or, via `1 - smoothness`, roughness) from it.
+        } else {
+            // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
+            // convention); `Material::glossiness` is on the 0–100 NIF
+            // scale (`classify_pbr_keyword` divides by 100). Multiply
+            // by 100 to normalize — without this, BGSM-driven FO4
+            // materials that don't keyword-match the metal/wood/glass
+            // arms in `classify_pbr_keyword` fall through to the
+            // glossiness fallback
+            // with `roughness=0.95`, killing direct specular and the
+            // RT-reflection metalness/roughness gate (Med-Tek floors).
+            material.glossiness = bgsm.smoothness * 100.0;
+        }
+        state.set_glossiness = true;
+        *touched = true;
+    }
+    // #1454 — BGSM authors Fresnel power (Schlick exponent for the
+    // rim Fresnel term). Child-first: first BGSM in the template
+    // chain wins. Vanilla FO4 defaults to 5.0, matching the
+    // `ImportedMesh` default, so no vanilla regression; mod-authored
+    // non-default values (power armor, shiny metals) were silently
+    // falling back to 5.0 before this fix.
+    if !state.set_fresnel {
+        material.fresnel_power = bgsm.fresnel_power;
+        state.set_fresnel = true;
+        *touched = true;
+    }
+    // #1455 — BGSM authors greyscale-to-palette scale. Child-first.
+    // Modulates the LUT remap intensity for NPC creature colour
+    // variants (deathclaw, supermutant). Default 1.0 = no change.
+    if !state.set_palette_scale {
+        material.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
+        state.set_palette_scale = true;
+        *touched = true;
+    }
+    // #2607 / #2608 (FO4-D7-02 / FO4-D7-03) — two more BGSM field
+    // groups that decoded correctly and were dropped at this exact
+    // hop. Both are enable-bit gated; see the fn docs for why
+    // unconditional forwarding would be fabrication rather than
+    // translation.
+    forward_bgsm_rim_subsurface(material, bgsm, &mut state.set_rim, &mut state.set_subsurface, touched);
+    forward_bgsm_env_map_scale(material, bgsm, &mut state.set_env_map_scale, touched);
+}
+
+/// #5735 — the alpha / texture-addressing / boolean-flag group (mat
+/// alpha, UV offset/scale, clamp mode, two-sided/decal, alpha-test with
+/// its chain-local threshold sentinel (#2212), alpha-blend), one chain
+/// step per call, verbatim move.
+#[derive(Default)]
+struct BgsmAlphaAddressingState {
+    set_alpha: bool,
+    set_uv: bool,
+    set_clamp_mode: bool,
+    set_blend: bool,
+    set_alpha_test: bool,
+}
+
+fn apply_bgsm_alpha_and_addressing(
+    bgsm: &BgsmFile,
+    state: &mut BgsmAlphaAddressingState,
+    material: &mut ImportedMaterial,
+    touched: &mut bool,
+) {
+    if !state.set_alpha {
+        material.mat_alpha = bgsm.base.alpha;
+        state.set_alpha = true;
+        *touched = true;
+    }
+    if !state.set_uv {
+        material.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
+        material.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
+        state.set_uv = true;
+        *touched = true;
+    }
+    // #3507 — `tile_u`/`tile_v` are BGSM's own texture-address-mode
+    // authoring channel (`base.rs:174-175` decodes them from the
+    // same bit-packed byte nif.xml's `TexClampMode` enum uses:
+    // bit 1 = S-axis wrap, bit 0 = T-axis wrap), separate from and
+    // in addition to the NIF shader property's `texture_clamp_mode`
+    // field this issue's sibling fix restores.
+    if !state.set_clamp_mode {
+        material.texture_clamp_mode =
+            ((bgsm.base.tile_u as u8) << 1) | (bgsm.base.tile_v as u8);
+        state.set_clamp_mode = true;
+        *touched = true;
+    }
+    // Boolean gameplay flags OR across the template chain — if
+    // ANY ancestor marks the material as two-sided / decal /
+    // alpha-test, the concrete instance is too.
+    if bgsm.base.two_sided {
+        material.two_sided = true;
+        *touched = true;
+    }
+    if bgsm.base.decal {
+        material.is_decal = true;
+        *touched = true;
+    }
+    // #2212 (NIFAL-D8-01) — the boolean itself stays a pure OR
+    // across the chain (matches the `two_sided` / `decal` siblings
+    // above and the doc comment's stated policy), but the
+    // threshold payload uses the chain-local `set_alpha_test`
+    // sentinel, not `material.alpha_test`'s value, so a NIF
+    // F4SF2-bit-25-synthesized default (pre-set before this loop
+    // runs) can never outrank the authored BGSM `alpha_test_ref`.
+    if bgsm.base.alpha_test {
+        material.alpha_test = true;
+        if !state.set_alpha_test {
+            material.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
+            state.set_alpha_test = true;
+        }
+        *touched = true;
+    }
+    // BGSM alpha-blend forwarding. FO4+ moved per-material blend
+    // state out of NiAlphaProperty into BGSM, so a BGSM-only
+    // glass / decal authored with `alpha_blend_mode.function == 1`
+    // (Standard) leaves the NIF-side `has_alpha` at false and
+    // every Institute / lab pane renders fully opaque
+    // (`INSTANCE_FLAG_ALPHA_BLEND` never sets → MATERIAL_KIND_GLASS
+    // never classifies → opaque path).
+    //
+    // Child-first precedence (matches the texture / scalar walks):
+    // first authored function > 0 wins. function == 0 (None)
+    // intentionally does NOT clear an already-set blend — a leaf
+    // that opts out shouldn't erase a parent's blend authoring.
+    //
+    // BGSM `src_blend` / `dst_blend` are already Gamebryo-native
+    // values — `bgsm_blend_to_gamebryo` just narrows the `u32`
+    // to the `u8` the renderer's blend-factor field expects, no
+    // translation. See its doc for why (#1823, regression of a
+    // wrong #1651 fix that assumed a GL-style enum requiring a
+    // swap).
+    if !state.set_blend && bgsm.base.alpha_blend_mode.function > 0 {
+        material.has_alpha = true;
+        material.src_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
+        material.dst_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
+        state.set_blend = true;
+        *touched = true;
+    }
+}
+
 fn merge_bgsm_arm(
     material: &mut ImportedMaterial,
     provider: &mut MaterialProvider,
@@ -775,24 +1194,12 @@ fn merge_bgsm_arm(
     // the first authored value wins, matching the texture-slot policy.
     // Pre-#583 every scalar the BGSM parser decoded was silently dropped
     // and the mesh rendered on NIF-fallback PBR.
-    let mut set_emissive = false;
-    let mut set_specular = false;
-    let mut set_glossiness = false;
-    let mut set_alpha = false;
-    let mut set_uv = false;
     // #3507 — `tile_u`/`tile_v` (BGSM's texture-address authoring channel)
     // dropped on the floor, same shape as the NIF-side arm this issue
     // paired with.
-    let mut set_clamp_mode = false;
-    let mut set_blend = false;
-    let mut set_fresnel = false;
-    let mut set_palette_scale = false;
     // #2607 — the v<8 rim / backlight / subsurface group. Backlight shares
     // `set_rim`: the format gives it no enable bit of its own.
-    let mut set_rim = false;
-    let mut set_subsurface = false;
     // #2608 — env-map mask scale, authored only on the v<10 base layout.
-    let mut set_env_map_scale = false;
     // #2212 (NIFAL-D8-01) — chain-local, unlike `material.alpha_test`
     // itself. The NIF F4SF2 bit-25 path (`dedicated_shader.rs`) can
     // pre-set `material.alpha_test = true` before this loop ever runs, so
@@ -801,7 +1208,6 @@ fn merge_bgsm_arm(
     // authored BGSM `alpha_test_ref` from ever landing. Track "has a BGSM
     // in THIS chain already set the threshold" separately from the
     // OR'd boolean, matching every other payload-carrying field above.
-    let mut set_alpha_test = false;
 
     let Some(resolved) = provider.resolve_bgsm(path) else {
         // #3230 — a Starfield session reaches here having genuinely
@@ -997,216 +1403,23 @@ fn merge_bgsm_arm(
     // from the NIF having won it outright — and CLEARED (#5106) the moment
     // a BGSM's path actually takes the slot, so ancestors of that BGSM key
     // on the real owner, not on the NIF that no longer holds it.
-    let mut nif_supplied_greyscale_lut = material.textures.greyscale_lut.is_some();
+    let mut tex_slots = BgsmTextureSlotState {
+        nif_supplied_greyscale_lut: material.textures.greyscale_lut.is_some(),
+    };
+    let mut scalars = BgsmScalarState::default();
+    let mut alpha_addressing = BgsmAlphaAddressingState::default();
     for step in resolved.walk() {
         let bgsm = &step.file;
-        fill(
-            &mut material.textures.base_color,
-            &bgsm.diffuse_texture,
-            touched,
+        // #5735 — the walk body moved verbatim into the three group
+        // helpers above the fn; execution order is unchanged.
+        apply_bgsm_texture_slots(
+            bgsm,
+            &mut tex_slots,
+            material,
             pool,
+            touched,
             texture_exists,
         );
-        fill(
-            &mut material.textures.normal,
-            &bgsm.normal_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // #4430 — filled regardless of the BGSM's own `glowmap` bool (65
-        // vanilla `glow_texture` materials say false, 249 true). Whether
-        // that bool gates the glow sample in FO4 is unsourced, so it is not
-        // consulted yet; see the FO4 slot-2 arm in `slot_role.rs`.
-        fill(
-            &mut material.textures.emissive,
-            &bgsm.glow_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // Smoothness/spec mask — .r encodes per-texel specular
-        // strength in the engine's existing gloss_map slot. #453.
-        fill(
-            &mut material.textures.smooth_spec,
-            &bgsm.smooth_spec_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // #1353 / FO4-D8-07 — BGSM greyscale-to-palette LUT path
-        // (`SLSF1::Greyscale_To_PaletteColor`, used by FO4 NPC /
-        // creature colour variants; the palette slot is authored on
-        // v<=2 BGSMs). First non-empty in the template chain wins, to
-        // match the texture fills above. Routed through the common
-        // greyscale_lut role and flagged via EFFECT_PALETTE_COLOR in
-        // `pack_imported_material_flags` so the lit-path remap samples it.
-        //
-        // #2108 (SF-D9-01) — the greyscale slot is a legal, always-
-        // serialized field; its presence alone does NOT mean the
-        // material wants the remap. Capture the authoritative
-        // `grayscale_to_palette_color` enable bit from THIS SAME BGSM
-        // (not `fill`'s generic helper, and not OR'd across the whole
-        // chain) at the exact step that supplies the texture — an
-        // ancestor's own enable bit is irrelevant once a closer BGSM
-        // already won the texture slot.
-        //
-        // #3898 — the "slot empty → assign" half below is precedence
-        // among BGSMs and stays exactly as #2108 wrote it. What it
-        // silently also did was drop the enable bit whenever the NIF's
-        // own slot 3 had already filled the role (#2997 made that the
-        // common case on FO4), so a BGSM asking for the remap was
-        // ignored. Split the two situations:
-        //
-        //   - this BGSM wins the slot  -> it is authoritative for both the
-        //     texture and the enable bit (assignment, including OFF — #2108,
-        //     restored by #4402)
-        //   - the NIF won the slot     -> the LUT sampled is the NIF's, but
-        //     the BGSM still describes this material, so OR its enable bit
-        //     in. OR, not assignment: neither source may silently disable
-        //     the remap the other asked for, and the NIF's own SLSF1 bit
-        //     (#3897) has already been forwarded onto these same fields.
-        //   - a closer BGSM won the slot -> unchanged: an ancestor's bit is
-        //     irrelevant, which is why this keys on `nif_supplied_greyscale_lut`
-        //     rather than on `is_some()`.
-        //
-        // #4402 — #4286 flipped the first branch to OR on the strength of a
-        // Skyrim-layout reachability argument. That argument does not hold:
-        // Skyrim's `Greyscale_To_PaletteColor` is an EffectShader-only flag
-        // (nif.xml annotates it "in EffectShaderProperty"), and the effect
-        // path merges BGEM, not this BGSM arm — so a Skyrim-layout lighting
-        // shader cannot forward the bit #4286 was protecting, and the branch
-        // is effectively FO4-only. On FO4 the named material file IS the
-        // material (the CK authors the remap there; the NIF's SLSF1 word is
-        // a cached copy), so the winner-takes-the-bit rule — #2108's
-        // original contract, and what the bullet above has said all along —
-        // is the sourced behaviour. Assignment restored; the OR stays in
-        // the NIF-won branch where #3898 put it.
-        //
-        // #5106 — the fill runs FIRST and the winner is decided from what
-        // it did, because `fill` is also the slot's referee: #4636's
-        // dead-path repair hands the slot to this BGSM when the NIF's LUT
-        // resolves in no archive and this chain's does. Pre-fix the bit
-        // block ran before the fill, so exactly that case fell through the
-        // NIF-won OR branch and the material ended up sampling the BGSM's
-        // LUT under an enable bit the winning material authored OFF — the
-        // single-winner contract above, violated by ordering. A change to
-        // the slot (`lut_before_step` ≠ current) means this BGSM's path
-        // took it — filled it, or replaced a dead NIF/BGSM path — so the
-        // assign branch fires; no change means the incumbent path survived
-        // this step, so the NIF-won OR branch is the only other one that
-        // applies. `nif_supplied_greyscale_lut` is cleared on takeover so
-        // ancestor steps stop OR-ing against a NIF that no longer owns the
-        // slot (the same single-winner rule, applied across the chain).
-        let lut_before_step = material.textures.greyscale_lut;
-        fill(
-            &mut material.textures.greyscale_lut,
-            &bgsm.greyscale_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        if !bgsm.greyscale_texture.is_empty() {
-            if material.textures.greyscale_lut != lut_before_step {
-                // #2643 — BGSM has no alpha-variant field, so the color bit
-                // is the only one this format can author.
-                material.bgsm_greyscale_lut_enabled = bgsm.base.grayscale_to_palette_color;
-                material.bgsm_greyscale_lut_color = bgsm.base.grayscale_to_palette_color;
-                nif_supplied_greyscale_lut = false;
-            } else if nif_supplied_greyscale_lut {
-                material.bgsm_greyscale_lut_enabled |= bgsm.base.grayscale_to_palette_color;
-                material.bgsm_greyscale_lut_color |= bgsm.base.grayscale_to_palette_color;
-            }
-        }
-        // Legacy v <= 2 environment cube; newer BGSMs drop the slot.
-        // #4428 (FO4-D2-2026-09-16-02) — gate the fill on the authored
-        // `environment_mapping` bit, the same bit `forward_bgsm_env_map_scale`
-        // honours for the mask scale and both BGEM arms honour since #2643.
-        // Unconditional binding switched `triangle.frag` into
-        // explicit-environment off a cubemap the material had disabled: the
-        // traced reflection ray is scaled by `env_map_scale` (0 for every
-        // non-Envmap shader type — 8,806 of the 8,979 affected vanilla shapes),
-        // so dielectrics paid an RT ray for a zeroed term, conductors lost the
-        // implicit strength-1.0 path, and 173 `shader_type = 1` shapes gained
-        // reflections the BGSM turned off. Per-step, like every `fill` here:
-        // each chain file's cubemap binds under that file's own enable bit.
-        if bgsm.base.environment_mapping {
-            fill(
-                &mut material.textures.environment,
-                &bgsm.envmap_texture,
-                touched,
-                pool,
-                texture_exists,
-            );
-        }
-        fill(
-            &mut material.textures.height,
-            &bgsm.displacement_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // #2627 / SF-D9-2026-08-07-02 — the v<=2 legacy texture list
-        // reads envmap, glow, inner_layer, wrinkles, displacement (see
-        // `bgsm.rs`'s parser comment); this was the one slot in that
-        // set the merge never forwarded, even though the sink is a
-        // live, populated role — the NIF `BSLightingShaderProperty`
-        // multi-layer-parallax path already resolves
-        // `MaterialTextureSet::inner_layer` to a real texture handle.
-        // A BGSM authoring its inner layer externally (Skyrim SE
-        // ice/glass, FO4 layered panes) rendered with the layer
-        // silently absent.
-        fill(
-            &mut material.textures.inner_layer,
-            &bgsm.inner_layer_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // #1076 / FO4-D6-002 — BGSM v>2 standalone slots that
-        // pre-fix were parsed but dropped on the floor. Each is
-        // empty on the v<=2 path (the parser leaves the String
-        // default) so the `fill` no-op suffices to gate the
-        // forward without an explicit version check.
-        fill(
-            &mut material.textures.specular,
-            &bgsm.specular_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        fill(
-            &mut material.textures.lighting,
-            &bgsm.lighting_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        fill(
-            &mut material.textures.flow,
-            &bgsm.flow_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        fill(
-            &mut material.textures.wrinkle,
-            &bgsm.wrinkles_texture,
-            touched,
-            pool,
-            texture_exists,
-        );
-        // #2642 (SF-D9-2026-08-07-03) — `bgsm.distance_field_alpha_texture`
-        // (v>=17, FO76/Starfield-era) is deliberately NOT forwarded here.
-        // `MaterialTextureSet` has no dedicated role for it — a genuine
-        // deferred-consumer gap, not a wiring bug, unlike every other
-        // texture slot in this block. Signage/decal cutouts authored
-        // with distance-field alpha fall back to plain alpha test until
-        // a role + shader consumer exist.
-        // #1077 / FO4-D6-003 (Phase 1: data propagation) — BGSM-only
-        // shader flags, extracted to `forward_bgsm_phase1_flags`
-        // (#2702 / FO4-D2-03) so its regression tests exercise this
-        // exact call, not a hand-copied mirror.
         forward_bgsm_phase1_flags(material, bgsm, touched);
 
         // #1147 Phase 2b — BGSM v>=8 translucency suite. Same
@@ -1227,157 +1440,8 @@ fn merge_bgsm_arm(
             material.translucency_mix_albedo = bgsm.translucency_mix_albedo_with_subsurface_color;
             *touched = true;
         }
-
-        // Scalar PBR forwarding (#583). Child-first: first authored
-        // value wins. Parser already decodes these fields; the
-        // pre-fix merge dropped them on the floor.
-        if !set_emissive && bgsm.emit_enabled {
-            material.emissive_color = bgsm.emittance_color;
-            material.emissive_mult = bgsm.emittance_mult;
-            set_emissive = true;
-            *touched = true;
-        }
-        if !set_specular {
-            // #4654 — honour the authored `specular_enabled` bit (the
-            // first chain step to carry the block decides, child-first
-            // like every sentinel here). Disabled zeroes BOTH fields the
-            // way walker.rs's disabled-NiSpecularProperty arm does
-            // (#696), so nothing downstream can re-promote specular:
-            // the audit counted 467 FO4 + 653 FO76 BGSMs authored off —
-            // paintings, magazines, signage — currently rendering with
-            // full-strength white specular from their left-in-place
-            // authoring defaults.
-            if bgsm.specular_enabled {
-                material.specular_color = bgsm.specular_color;
-                material.specular_strength = bgsm.specular_mult;
-            } else {
-                material.specular_color = [0.0, 0.0, 0.0];
-                material.specular_strength = 0.0;
-            }
-            set_specular = true;
-            *touched = true;
-        }
-        if !set_glossiness {
-            if !bgsm.specular_enabled {
-                // #4654 — smoothness rode the specular block the artist
-                // disabled; a matte material must not derive glossiness
-                // (or, via `1 - smoothness`, roughness) from it.
-            } else {
-                // BGSM authors `smoothness` 0–1 (Bethesda Material Editor
-                // convention); `Material::glossiness` is on the 0–100 NIF
-                // scale (`classify_pbr_keyword` divides by 100). Multiply
-                // by 100 to normalize — without this, BGSM-driven FO4
-                // materials that don't keyword-match the metal/wood/glass
-                // arms in `classify_pbr_keyword` fall through to the
-                // glossiness fallback
-                // with `roughness=0.95`, killing direct specular and the
-                // RT-reflection metalness/roughness gate (Med-Tek floors).
-                material.glossiness = bgsm.smoothness * 100.0;
-            }
-            set_glossiness = true;
-            *touched = true;
-        }
-        // #1454 — BGSM authors Fresnel power (Schlick exponent for the
-        // rim Fresnel term). Child-first: first BGSM in the template
-        // chain wins. Vanilla FO4 defaults to 5.0, matching the
-        // `ImportedMesh` default, so no vanilla regression; mod-authored
-        // non-default values (power armor, shiny metals) were silently
-        // falling back to 5.0 before this fix.
-        if !set_fresnel {
-            material.fresnel_power = bgsm.fresnel_power;
-            set_fresnel = true;
-            *touched = true;
-        }
-        // #1455 — BGSM authors greyscale-to-palette scale. Child-first.
-        // Modulates the LUT remap intensity for NPC creature colour
-        // variants (deathclaw, supermutant). Default 1.0 = no change.
-        if !set_palette_scale {
-            material.grayscale_to_palette_scale = bgsm.grayscale_to_palette_scale;
-            set_palette_scale = true;
-            *touched = true;
-        }
-        // #2607 / #2608 (FO4-D7-02 / FO4-D7-03) — two more BGSM field
-        // groups that decoded correctly and were dropped at this exact
-        // hop. Both are enable-bit gated; see the fn docs for why
-        // unconditional forwarding would be fabrication rather than
-        // translation.
-        forward_bgsm_rim_subsurface(material, bgsm, &mut set_rim, &mut set_subsurface, touched);
-        forward_bgsm_env_map_scale(material, bgsm, &mut set_env_map_scale, touched);
-        if !set_alpha {
-            material.mat_alpha = bgsm.base.alpha;
-            set_alpha = true;
-            *touched = true;
-        }
-        if !set_uv {
-            material.uv_offset = [bgsm.base.u_offset, bgsm.base.v_offset];
-            material.uv_scale = [bgsm.base.u_scale, bgsm.base.v_scale];
-            set_uv = true;
-            *touched = true;
-        }
-        // #3507 — `tile_u`/`tile_v` are BGSM's own texture-address-mode
-        // authoring channel (`base.rs:174-175` decodes them from the
-        // same bit-packed byte nif.xml's `TexClampMode` enum uses:
-        // bit 1 = S-axis wrap, bit 0 = T-axis wrap), separate from and
-        // in addition to the NIF shader property's `texture_clamp_mode`
-        // field this issue's sibling fix restores.
-        if !set_clamp_mode {
-            material.texture_clamp_mode =
-                ((bgsm.base.tile_u as u8) << 1) | (bgsm.base.tile_v as u8);
-            set_clamp_mode = true;
-            *touched = true;
-        }
-        // Boolean gameplay flags OR across the template chain — if
-        // ANY ancestor marks the material as two-sided / decal /
-        // alpha-test, the concrete instance is too.
-        if bgsm.base.two_sided {
-            material.two_sided = true;
-            *touched = true;
-        }
-        if bgsm.base.decal {
-            material.is_decal = true;
-            *touched = true;
-        }
-        // #2212 (NIFAL-D8-01) — the boolean itself stays a pure OR
-        // across the chain (matches the `two_sided` / `decal` siblings
-        // above and the doc comment's stated policy), but the
-        // threshold payload uses the chain-local `set_alpha_test`
-        // sentinel, not `material.alpha_test`'s value, so a NIF
-        // F4SF2-bit-25-synthesized default (pre-set before this loop
-        // runs) can never outrank the authored BGSM `alpha_test_ref`.
-        if bgsm.base.alpha_test {
-            material.alpha_test = true;
-            if !set_alpha_test {
-                material.alpha_threshold = f32::from(bgsm.base.alpha_test_ref) / 255.0;
-                set_alpha_test = true;
-            }
-            *touched = true;
-        }
-        // BGSM alpha-blend forwarding. FO4+ moved per-material blend
-        // state out of NiAlphaProperty into BGSM, so a BGSM-only
-        // glass / decal authored with `alpha_blend_mode.function == 1`
-        // (Standard) leaves the NIF-side `has_alpha` at false and
-        // every Institute / lab pane renders fully opaque
-        // (`INSTANCE_FLAG_ALPHA_BLEND` never sets → MATERIAL_KIND_GLASS
-        // never classifies → opaque path).
-        //
-        // Child-first precedence (matches the texture / scalar walks):
-        // first authored function > 0 wins. function == 0 (None)
-        // intentionally does NOT clear an already-set blend — a leaf
-        // that opts out shouldn't erase a parent's blend authoring.
-        //
-        // BGSM `src_blend` / `dst_blend` are already Gamebryo-native
-        // values — `bgsm_blend_to_gamebryo` just narrows the `u32`
-        // to the `u8` the renderer's blend-factor field expects, no
-        // translation. See its doc for why (#1823, regression of a
-        // wrong #1651 fix that assumed a GL-style enum requiring a
-        // swap).
-        if !set_blend && bgsm.base.alpha_blend_mode.function > 0 {
-            material.has_alpha = true;
-            material.src_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.src_blend);
-            material.dst_blend_mode = bgsm_blend_to_gamebryo(bgsm.base.alpha_blend_mode.dst_blend);
-            set_blend = true;
-            *touched = true;
-        }
+        apply_bgsm_scalars(bgsm, &mut scalars, material, touched);
+        apply_bgsm_alpha_and_addressing(bgsm, &mut alpha_addressing, material, touched);
         // #2704 (FO4-D7-02) — Deferred: no consumer. These eleven BGSM
         // scalars decode correctly on the parser side (`bgsm.rs`) but
         // have no `ImportedMaterial` sink here, same deferred-consumer
@@ -2330,7 +2394,11 @@ mod size_pin_tests {
     /// with no budget watching it. Pinned at its 2026-10-06 measured size:
     /// move new merge arms into a helper and record the decision instead of
     /// raising the pin.
-    const MERGE_BGSM_ARM_LINE_PIN: usize = 708;
+    // #5735 — lowered from 708 after the walk body split into the three
+    // verbatim group helpers (texture slots / scalars / alpha+addressing);
+    // the fn is now the resolve + translation + orchestration it always
+    // claimed to be.
+    const MERGE_BGSM_ARM_LINE_PIN: usize = 360;
 
     fn function_line_count(source: &str, declaration: &str) -> usize {
         let start = source
