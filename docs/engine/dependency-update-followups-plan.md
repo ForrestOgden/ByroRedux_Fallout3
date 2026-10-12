@@ -249,6 +249,36 @@ the OR still covers.
 
 **Estimate**: S–M.
 
+**Outcome (#5560)**: the idle input is fixed in 0.36 and pinned
+(`kcc_reports_grounded_for_a_capsule_at_rest`), but the OR is still load-bearing
+while *walking*: `walking_capsule_loses_kcc_grounded_on_frames_the_support_probe_covers`
+measures the KCC alone losing `grounded` on 80/600 frames walking +X and 8/600
+diagonally, all covered by the probe.
+
+**rapier 0.36 KCC semantics ledger (#5559).** Four behaviour changes of
+`KinematicCharacterController::move_shape` that the migration did not record. The
+first is the one that can surprise a caller; the engine's response is noted for
+each (*rapier3d-0.36.1/src/control/character_controller.rs*):
+
+1. **Zero-motion depenetration** (`check_and_fix_penetrations`, ~:240-290, run when
+   `|desired| < 1e-5`, ~:315-323). It pushes the capsule out of every non-sensor
+   collider until the `offset` gap is restored, at most a quarter of the capsule's
+   height per call. 0.22 did not depenetrate (the engine's own comments called it a
+   stub). *Engine*: the player's per-frame correction is below 1e-5 on most idle
+   frames, so a standing player takes this path and is nudged out of overlapping NPC
+   limbs and clutter (kept deliberately, see the note at the `move_character` call in
+   `character_controller_system`). The NPC step never sends a zero request — its
+   vertical anti-drift correction is always in `desired` — so the `dt = 0` boot tick
+   is a normal slide there, pinned by
+   `a_zero_dt_boot_step_matches_a_normal_first_step_for_embedded_npcs`.
+2. **The "No interference along the path" branch runs the grounded check** (~:401-412);
+   in 0.22 it applied the whole translation and broke. This is the #3799 fix above.
+3. **Snap-to-ground fires on any movement that is not upward**
+   (`translation.dot(up) <= 0.0`, ~:466). The NPC step zeroes the snap distance for
+   this reason (#5539).
+4. **The grounded band is `offset + 0.05`** (`predict_ground`, ~:487-489), 4.05 BU for
+   the 4 BU offset the engine uses.
+
 ### 1.6 Re-scope #5530
 
 **Why**: #5530 (an unchecked translation at newcomer registration and

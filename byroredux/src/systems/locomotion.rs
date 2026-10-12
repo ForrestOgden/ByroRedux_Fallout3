@@ -473,6 +473,56 @@ mod stuck_tests {
         );
     }
 
+    /// #5559 — rapier 0.36's `move_shape` runs `check_and_fix_penetrations`
+    /// whenever `|desired| < 1e-5`, pushing the capsule out of every
+    /// collider until the offset gap is restored (up to a quarter of the
+    /// capsule's height per call); 0.22 had only a commented-out stub. The
+    /// boot tick (`scheduler.run(&world, 0.0)`) steps every walking NPC with
+    /// `dt = 0`, so a zero `desired` would pop an NPC whose feet are embedded
+    /// in its floor by `offset + embed` at spawn.
+    ///
+    /// It does not, because `step_toward_detailed` never sends a zero
+    /// request: its anti-drift vertical correction (`desired += Y·clamp(
+    /// −(feet − support − offset), −step, offset)`, #5539) is nonzero for any
+    /// NPC not already exactly at the offset gap, so the move is a normal
+    /// slide and a `dt = 0` first step is IDENTICAL to a normal first step.
+    /// (The audit's probe P2 measured the pop with a bare `Vec3::ZERO`,
+    /// which no production caller sends.) Pinned over the embeds the probe
+    /// used, so removing the vertical correction — which would route boot
+    /// ticks onto the depenetration path — fails here.
+    #[test]
+    fn a_zero_dt_boot_step_matches_a_normal_first_step_for_embedded_npcs() {
+        use super::step_toward_detailed;
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_physics::world::PHYSICS_DT;
+
+        for embed in [0.0_f32, 0.5, 2.0, 6.0] {
+            let first_step = |dt: f32| {
+                let mut pw = byroredux_physics::PhysicsWorld::new();
+                // Top face at y = 0.
+                let _floor =
+                    pw.spawn_fixed_cuboid(Vec3::new(500.0, 20.0, 500.0), Vec3::new(0.0, -20.0, 0.0));
+                let start = Vec3::new(0.0, -embed, 0.0);
+                let target = Vec3::new(100.0 * PHYSICS_DT, start.y, 0.0);
+                let (next, _, _) =
+                    step_toward_detailed(start, Quat::IDENTITY, target, dt, 100.0, Some(&pw));
+                next.y - start.y
+            };
+            let boot = first_step(0.0);
+            let normal = first_step(PHYSICS_DT);
+            assert!(
+                (boot - normal).abs() < 0.05,
+                "embed {embed}: the dt = 0 boot step lifts {boot} BU but a normal \
+                 first step lifts {normal} — the zero-motion depenetration path fired"
+            );
+            assert!(
+                boot <= super::LOCOMOTION_NPC_KCC_OFFSET_BU + 1e-3,
+                "embed {embed}: a boot step must not lift beyond the {} BU offset (got {boot})",
+                super::LOCOMOTION_NPC_KCC_OFFSET_BU
+            );
+        }
+    }
+
     /// #5539 — the NPC analogue of the player's #2857 convex-floor sink
     /// gate, driving the REAL `step_toward_detailed` parameters. Under
     /// rapier 0.36 the snap-to-ground cast fires on every horizontal move

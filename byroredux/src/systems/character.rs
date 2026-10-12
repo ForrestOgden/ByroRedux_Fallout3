@@ -387,9 +387,12 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // direction with `target_distance = offset`. A grounded capsule rests
     // ~`offset` above its floor, i.e. already inside that band, and in that
     // configuration parry's cast against a CONVEX primitive frequently
-    // reports no interference at all — whereupon rapier's `else` branch
-    // (`character_controller.rs:317-322`) applies the ENTIRE requested
-    // translation and `break`s. A fixed -32 BU request therefore drove the
+    // reports no interference at all — whereupon rapier's "No interference
+    // along the path" branch applies the ENTIRE requested translation and
+    // `break`s (rapier 0.22 `character_controller.rs:317-322`; in 0.36 that
+    // branch is `character_controller.rs:401-412` and additionally runs the
+    // grounded check on the result, which is what #3799 needed, but it still
+    // applies the whole translation — #5559). A fixed -32 BU request therefore drove the
     // capsule 32 BU/frame straight through solid `BhkBoxShape` floors and
     // every synthesized packed-Havok AABB proxy, staying `grounded` for 2-3
     // frames (post-loop `snap_to_ground` re-asserts it) before free-falling
@@ -506,6 +509,17 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         step_min_width: controller.step_min_width,
         snap_to_ground: controller.snap_to_ground,
         exclude_collider: collider_handle,
+        // #5559 — deliberately NO `actor_move_interaction_groups()` mask
+        // (the NPC step passes one, so NPCs ghost each other's bones). The
+        // player is blocked by actor-bone colliders while it walks, and
+        // rapier 0.36 additionally pushes a capsule out of every solid
+        // collider when the request is ~zero (`check_and_fix_penetrations`,
+        // up to a quarter of the capsule's height per call). A standing
+        // player overlapped by an NPC limb or a dynamic body is therefore
+        // nudged out, a walking one is not. That asymmetry is kept as is:
+        // masking the bones here would let a standing player be walked
+        // through by NPCs, which is a gameplay choice with no reference
+        // consulted, not a physics fix.
         filter_groups: None,
         kcc_offset_bu: kcc_offset,
     });
@@ -951,8 +965,10 @@ pub fn carry_player_body_to_camera(world: &byroredux_core::ecs::World) -> bool {
 /// disagreed by ~120 BU for the very same door, and the transition path ran no
 /// ground probe, no walkable-normal check and no grounded verification at all.
 /// It handed a capsule buried in the destination floor to gravity, and since
-/// the body is kinematic and Rapier's penetration recovery is a stub, nothing
-/// pushed it back out.
+/// the body is kinematic and Rapier's KCC only depenetrates on a ZERO-motion
+/// request (`check_and_fix_penetrations`, rapier 0.36 — #5559; a stub under
+/// 0.22, which is the behaviour this fix was written against), a walking or
+/// falling capsule was never pushed back out.
 ///
 /// Routes through the same two pieces cold start uses —
 /// [`probe_walkable_floor_near`](crate::scene::probe_walkable_floor_near) then
