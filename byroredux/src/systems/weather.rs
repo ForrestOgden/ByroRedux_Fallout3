@@ -658,7 +658,7 @@ fn lerp_cloud_velocities(a: [[f32; 2]; 4], b: [[f32; 2]; 4], t: f32) -> [[f32; 2
 ///     blows along `+X`, then rotated by `wind_direction` (`[cosθ, sinθ]`,
 ///     supplied by the caller from the same WTHR `DATA` wind heading
 ///     `composite.frag`'s `weather_procedural_cloud` already consumes —
-///     see `env_translate.rs`) instead of the wind's own heading being
+///     see `env_translate/sky_weather.rs`) instead of the wind's own heading being
 ///     dropped entirely. `wind_direction = [1, 0]` (the legacy synthetic
 ///     default when no direction is authored either) reproduces the exact
 ///     pre-fix fallback vectors byte-for-byte — this is a rotation of the

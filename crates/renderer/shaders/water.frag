@@ -282,7 +282,7 @@ vec3 sampleScrollingNormal(uint normalMapIndex, vec2 uvBase, vec2 originOffset, 
         // DEFAULT for any cell whose water has no bound normal map
         // (every FNV/FO3/Oblivion water plane, plus any WATR with an
         // empty `texture_path` on any game — see `resolve_water_material`
-        // in `byroredux/src/env_translate.rs`), not an edge case, so
+        // in `byroredux/src/env_translate/water.rs`), not an edge case, so
         // `originOffset` (the render origin projected into the same
         // uvBase space by the caller) is subtracted here to keep the
         // hash input render-origin-relative rather than absolute.

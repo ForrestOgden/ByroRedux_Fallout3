@@ -47,7 +47,7 @@ outdoors pipeline.
 | Tier | What it is | Where it lives | Rule |
 |---|---|---|---|
 | **Raw / `Imported*`** | A faithful, per-game decode of the ESM wire format. May carry `Option`s, per-game quirk fields (Oblivion has no DNAM; Skyrim adds DALC). **This tier is allowed to be messy** — it mirrors the file. | `crates/plugin/src/esm/` (`WorldspaceRecord`, `ClimateRecord`, `WeatherRecord`, WATR/LAND/XCLL parses) | Decode only; never the engine's source of truth. |
-| **`translate()` boundary** | The single function per category that resolves a raw `Imported*` into the canonical tier. Folds in every per-game quirk so the output is one convention. | One module: `byroredux/src/env_translate.rs` (mirrors `material_translate.rs`; created step 1). | Exactly **one** site per category. No duplicate construction sites. |
+| **`translate()` boundary** | The single function per category that resolves a raw `Imported*` into the canonical tier. Folds in every per-game quirk so the output is one convention. | One module: `byroredux/src/env_translate/` (mirrors `material_translate.rs`; created step 1, split per concern into `lod` / `climate` / `water` / `sky_weather` / `fallback` by #5584). | Exactly **one** site per category. No duplicate construction sites. |
 | **Canonical** | The resolved, game-agnostic resource/component the renderer consumes. No `Option` "resolve-later" fields; every per-game decision already made. | ECS resources/components in `byroredux/src/components.rs` + `crates/core`. | The single source of truth. |
 
 ### The canonical-type rule (inherited from NIFAL)
@@ -206,8 +206,10 @@ This is the largest gap and the user-flagged must-have — see §5.
 
 ## 3. The single boundary (proposed)
 
-A top-level module `byroredux/src/env_translate.rs` (created in step 1, mirroring
-`material_translate.rs`) hosts the per-category translate functions. As built
+A top-level module `byroredux/src/env_translate/` (created in step 1, mirroring
+`material_translate.rs`; one file per concern since #5584 — `lod.rs`,
+`climate.rs`, `water.rs`, `sky_weather.rs`, `fallback.rs`, with the shared
+PNAM walk in `mod.rs`) hosts the per-category translate functions. As built
 (steps 1 + 3), every function is **pure** — the caller pre-resolves the
 `VulkanContext`-coupled texture handles into a `SkyTextures` and hands them in,
 exactly as `material_translate` takes a pre-resolved `ResolvedPaths`:
@@ -695,7 +697,8 @@ Each step ships independently behind `cargo test`; none touches the Vulkan
 render-pass / pipeline.
 
 1. ~~**Boundary skeleton**~~ — **done (2026-06-02).** Created top-level
-   `byroredux/src/env_translate.rs` (mirrors `material_translate.rs`); moved
+   `byroredux/src/env_translate/` (then a single file; split per concern by
+   #5584; mirrors `material_translate.rs`); moved
    `default_water_for_worldspace` (from `cell_loader/exterior.rs`) and
    `resolve_water_material` (from `cell_loader/water.rs`) under it verbatim, with
    their tests. Both call sites now go through the boundary. Behaviour-preserving:

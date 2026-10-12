@@ -50,7 +50,7 @@ pub const DEFAULT_WATER_WAVE_AMPLITUDE: f32 = 0.05;
 pub const DEFAULT_WATER_WAVE_FREQUENCY: f32 = 0.6;
 /// Upper bound authored by vanilla Starfield for each RGB water-column
 /// concentration lane. The WATAL translate boundary
-/// (`byroredux/src/env_translate.rs`) normalizes authored pigment
+/// (`byroredux/src/env_translate/water.rs`) normalizes authored pigment
 /// concentrations against this shared reference into the canonical 0..1
 /// pigment fraction; the fourth `oceanness` lane is authored natively in
 /// 0..1 and passes through. #4285 moved this normalization out of
@@ -308,7 +308,7 @@ pub struct WaterMaterial {
     /// the surface pattern, the physics current, and the rapids foam
     /// streaks all running the same way.
     ///
-    /// Composition lives at the translate boundary (`env_translate.rs`),
+    /// Composition lives at the translate boundary (`env_translate/water.rs`),
     /// not the cell loader: for `River` / `Rapids`, vector 0 is the flow
     /// term `flow.direction * flow.speed * WATER_SCROLL_UV_PER_BU_PER_S`
     /// plus the record's converted layer-0 motion; vector 1 is the

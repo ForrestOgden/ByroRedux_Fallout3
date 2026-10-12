@@ -79,7 +79,7 @@
 //!     differing by exactly the level ratio, agreeing after scaling;
 //!   * `WATER` sub-mesh heights land on authored round values once scaled —
 //!     the smallest is exactly Tamriel's `DNAM` default water height,
-//!     -14000 (see `env_translate.rs`). Unscaled they are -3500, with no
+//!     -14000 (see `env_translate/lod.rs`). Unscaled they are -3500, with no
 //!     relationship to any authored height.
 //!
 //! The sibling `.bto` object-LOD loader already reads the authored transform

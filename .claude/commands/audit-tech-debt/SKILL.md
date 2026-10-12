@@ -82,8 +82,9 @@ Tech-debt findings default to **LOW** (see `_audit-severity.md`). Promote only o
    FO4 `HACK` FourCC — Dim 5), `allow(dead_code)` 45 (34 on 2026-10-08; the +11 are `cfg(test)` TypeId-only markers in
    `crates/core/src/ecs/lock_tracker.rs`, c5113f0d9 — not debt), `unimplemented!/todo!()` **0** (a fresh hit is notable),
    `#[ignore]` 287 (281 on 2026-10-08; tools-inclusive — earlier reports scoped to `crates`+`byroredux` read lower),
-   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/env_translate.rs`, new —
-   1881 → 2097 since 2026-10-08 on the #5374/#5388/#5423/#5424 climate/LOD fixes; `byroredux/src/components.rs`;
+   production >2000 LOC: **4** (`shader_constants_data.rs` is a data table, Dim 1; `byroredux/src/env_translate/` (then one file), new —
+   1881 → 2097 since 2026-10-08 on the #5374/#5388/#5423/#5424 climate/LOD fixes, since split per concern
+   into `lod` / `climate` / `water` / `sky_weather` / `fallback` by #5584, none over 700 production LOC; `byroredux/src/components.rs`;
    `crates/scripting/src/fragment/effects.rs`; watch-list within 5%: `crates/nif/src/import/types.rs` (1997),
    `byroredux/src/save_io.rs`, `crates/audio/src/lib.rs`, `crates/scripting/examples/mq101_conformance.rs`), test-heavy >2000: 72.
    A raw whole-repo grep for `#[ignore]` also matches markdown prose — keep `--include='*.rs'`.

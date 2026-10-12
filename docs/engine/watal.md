@@ -189,7 +189,7 @@ near the ~2 s watchdog; a separate perf item, not a fault.
 | Tier | What it is | Where it lives | Rule |
 |---|---|---|---|
 | **Raw / `Imported*`** | A faithful, per-game decode of the WATR wire format (Oblivion DATA ~102 B, FO3/FNV DATA 196 B, Skyrim DNAM 252 B+) + cell `XCLW`/`XCWT` + worldspace `NAM2`/`DNAM`. May carry `Option`s and undecoded `raw_data`/`raw_dnam` tails. **Allowed to be messy.** | `crates/plugin/src/esm/records/misc/water.rs`, `crates/plugin/src/esm/cell/wrld.rs` | Decode only; never the engine's source of truth. |
-| **`translate()` boundary** | One composition boundary per authored family: ESM WATR/worldspace records and NIF mesh-water shader properties. Each folds its source quirks into the same convention. | `byroredux/src/env_translate.rs` (`resolve_water_material`, `default_water_for_worldspace`) and `byroredux/src/material_translate.rs` (`attach_mesh_water` plus its pure helpers). | Exactly one site per source family; no consumer-side construction. |
+| **`translate()` boundary** | One composition boundary per authored family: ESM WATR/worldspace records and NIF mesh-water shader properties. Each folds its source quirks into the same convention. | `byroredux/src/env_translate/` (`water.rs::resolve_water_material`, `lod.rs::default_water_for_worldspace`) and `byroredux/src/material_translate.rs` (`attach_mesh_water` plus its pure helpers). | Exactly one site per source family; no consumer-side construction. |
 | **Canonical** | The resolved, game-agnostic components/resources the renderer + solver consume. No `Option` "resolve-later" fields. | ECS components in `crates/core/src/ecs/components/water.rs` + a `PhysicsWaterConstants` resource. | The single source of truth. |
 
 ### The canonical-type rule (inherited from NIFAL)
@@ -246,7 +246,7 @@ flowing water. GNAM daytime/nighttime/underwater links are preserved and the
 first two now resolve into runtime surface palettes (the third feeds the
 underwater tint/fog response); `raw_data`/`raw_dnam` tails remain available.
 `resolve_water_material`
-(`env_translate.rs:535-807`) captures colors/fog/fresnel/reflectivity/flow.
+(`env_translate/water.rs`) captures colors/fog/fresnel/reflectivity/flow.
 Wave amplitude/frequency, reflection tint, and the per-game sun-specular exponent
 now cross the boundary. NAM2/NAM3/NAM4 noise layers and the FO3/FNV long-tail
 noise UV scales now resolve through the bindless water-material contract; FO3/FNV
@@ -351,7 +351,7 @@ extinction coefficients; consumers apply Beer–Lambert transmission as
 established scalar fog response. Its authored pigment concentrations arrive
 in their vanilla 0..20 range and are normalized at the WATAL translate
 boundary — ÷ the shared `STARFIELD_WATER_CONCENTRATION_REFERENCE`, in
-`env_translate.rs` (#4285: a per-game unit conversion at render time was the
+`env_translate/water.rs` (#4285: a per-game unit conversion at render time was the
 defect that commit fixed; `water.frag` only clamps). `oceanness` retains its
 native 0..1 scale and feeds both absorption and forward scattering.
 #5151 lifted Starfield's DNAM metres → Bethesda units at the same boundary
@@ -503,7 +503,7 @@ game by #4910, 2026-10-01):** WATR's per-layer wind angles are wind-FROM
 compass bearings in the record's Z-up frame (0 = from game north; see the §2
 per-game table), and the engine XZ plane reads them rotated +90° — the
 conversion lives at the translate boundary (`watr_angle_to_engine_xz` in
-`env_translate.rs`), so the authored layers run downstream and compose with
+`env_translate/water.rs`), so the authored layers run downstream and compose with
 the flow term verbatim. The #4544 paragraph this replaces treated the same
 measurement as authoring: it confined each layer to the flow axis
 (`WATER_CROSS_STREAM_SCROLL = 0.25`) and halved the perpendicular shear —
@@ -535,7 +535,7 @@ evidence:
 
 The same scoping silently changed Oblivion's `wind_direction` (`DATA[4]`,
 authored per #4931, the physics-current fallback for NAM0-less records at
-`env_translate.rs`'s `wind_direction` read): it went from the +90° read to
+`env_translate/water.rs`'s `wind_direction` read): it went from the +90° read to
 un-rotated, so it inherits the same OPEN frame question as layer 0. Latent in
 vanilla — no Oblivion WATR has a directional kind (no river/stream/creek/rapid
 name, no NAM5, no NAM0), so the fallback never fires on shipped content.
@@ -548,7 +548,7 @@ helper makes the pattern side comparable). Pinned by
 `dead_default_wind_direction_yields_no_physics_flow_for_named_creeks`,
 `riverwater_flowne_layers_run_downstream_under_the_corrected_frame`, and the
 ignored real-data sibling `riverwater_flowne_real_record_layers_run_downstream`
-in `env_translate.rs`.
+in `env_translate/water.rs`.
 
 **Caustic camera-visibility gate (#4545, 2026-09-20):** the refracted-sun
 caustic deposit is projected to the floor hit's screen pixel, so an occluder
@@ -651,7 +651,7 @@ game-default (`WaterParams::default` / `WaterMaterial::default`), **never** a
 render-time guess.
 
 ```rust
-// byroredux/src/env_translate.rs  (WATAL is EXAL's water arm)
+// byroredux/src/env_translate/water.rs  (WATAL is EXAL's water arm)
 
 pub(crate) fn resolve_water_material(
     waters: &HashMap<u32, WatrRecord>,

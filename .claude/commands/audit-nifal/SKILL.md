@@ -28,7 +28,7 @@ dropped = MEDIUM, HIGH if it removes visible content). Do not re-derive severiti
 **Scope vs `/audit-nif`**: NIF owns the *parse* side (bytes read wrong). NIFAL owns the
 *translate* side: bytes read fine but data dropped, duplicated, or resolved per-game
 downstream. **Not here**: mesh-water and env translation (`water_material_from_mesh`,
-`attach_mesh_water` in `material_translate.rs`, `env_translate.rs`) → `/audit-exterior`;
+`attach_mesh_water` in `material_translate.rs`, `env_translate/`) → `/audit-exterior`;
 `GpuMaterial` layout/shader contract → `/audit-renderer`; `Material` save shape →
 `/audit-save`; BGSM/BGEM/CDB *parse* → `/audit-parsers` (the merge boundary is Dim 8 here).
 
