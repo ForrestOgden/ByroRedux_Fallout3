@@ -95,6 +95,16 @@ const CLASS_FLAG_USER: u16 = 1 << 2;
 /// A DIFF stream's field-index terminator.
 const DIFF_TERMINATOR: u16 = 0xFFFF;
 
+/// #5687 — ceiling on struct / `Ref` nesting while skipping a diff
+/// value. `skip_diff_value` recurses on file-controlled data (a struct
+/// field may name its own class; a `Ref` target may be `Ref` again), each
+/// level costing only 2–4 payload bytes, so a hostile `RDIF` blob recursed
+/// ~payload/2 deep and aborted the process with a stack overflow. Mirrors
+/// `crates/sfmaterial/src/reader.rs`'s `MAX_NESTING_DEPTH` (duplicated
+/// because this crate does not depend on that one, #5615). Vanilla
+/// `RDIF`s are shallow — 163/163 decode — so 64 is ample.
+const MAX_NESTING_DEPTH: usize = 64;
+
 /// How a built-in's value is laid out inline in a diff stream.
 #[derive(Clone, Copy)]
 enum InlineValue {
@@ -354,7 +364,7 @@ fn collect_diff_indices(
         }
         let field = class.fields.get(idx as usize)?;
         indices.push(idx);
-        if !skip_diff_value(payload, &mut pos, field.type_ref, classes) {
+        if !skip_diff_value(payload, &mut pos, field.type_ref, classes, 0) {
             return None;
         }
     }
@@ -366,8 +376,19 @@ fn collect_diff_indices(
 /// sentinel — nothing inline), user-flagged classes ride side chunks,
 /// and a non-user class (struct) carries a nested diff-pair stream —
 /// diff semantics propagate into overridden structs. Returns `false`
-/// on truncation.
-fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[ReflectionClass]) -> bool {
+/// on truncation or when nesting exceeds [`MAX_NESTING_DEPTH`]
+/// (both struct and `Ref` edges recurse on file-controlled types,
+/// #5687).
+fn skip_diff_value(
+    src: &[u8],
+    pos: &mut usize,
+    type_ref: i32,
+    classes: &[ReflectionClass],
+    depth: usize,
+) -> bool {
+    if depth >= MAX_NESTING_DEPTH {
+        return false;
+    }
     if type_ref >= 0 {
         let Some(class) = classes.iter().find(|c| c.name_offset == type_ref) else {
             return false;
@@ -389,7 +410,7 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
             let Some(field) = class.fields.get(idx as usize) else {
                 return false;
             };
-            if !skip_diff_value(src, &mut nested_pos, field.type_ref, classes) {
+            if !skip_diff_value(src, &mut nested_pos, field.type_ref, classes, depth + 1) {
                 return false;
             }
         }
@@ -416,7 +437,7 @@ fn skip_diff_value(src: &[u8], pos: &mut usize, type_ref: i32, classes: &[Reflec
             if target == builtin::LIST || target == builtin::MAP {
                 return true; // List/Map ref → null sentinel, nothing inline.
             }
-            skip_diff_value(src, pos, target, classes)
+            skip_diff_value(src, pos, target, classes, depth + 1)
         }
         InlineValue::Fixed(n) => {
             *pos += n;
@@ -493,7 +514,7 @@ mod tests {
         assert_eq!(labels.len(), BUILTINS.len(), "labels are unique");
         // An unknown built-in refuses to guess rather than skipping bytes.
         let mut pos = 0;
-        assert!(!skip_diff_value(&[0; 8], &mut pos, -249, &[]));
+        assert!(!skip_diff_value(&[0; 8], &mut pos, -249, &[], 0));
     }
 
     /// Hand-built reflection container exercising every decoded chunk
@@ -654,6 +675,79 @@ mod tests {
         );
         assert_eq!(refl_usrd.instance_chunks.len(), 2);
         assert!(refl_usrd.unknown_chunks.is_empty());
+    }
+
+    /// #5687 — hostile `RDIF` shapes: a class whose field names the class
+    /// itself (the struct edge) and a `Ref` whose target is `Ref` again
+    /// (the Ref edge). Each nesting level consumes only 2–4 payload bytes,
+    /// so an unbounded walk recurses ~payload/2 deep and aborts the process
+    /// with a stack overflow; both edges now decline at
+    /// [`MAX_NESTING_DEPTH`], leaving `diff_field_indices` unset. Parsed on
+    /// a deliberately small thread so a regression aborts here, not during
+    /// a production load.
+    #[test]
+    fn hostile_self_referential_diffs_decline_at_the_depth_cap() {
+        let parse = |field_type: i32, value_bytes: Vec<u8>| {
+            // One class named at strtab offset 0 ("C"), not user-flagged,
+            // with the single field the DIFF payload exercises.
+            let mut clas = Vec::new();
+            clas.extend_from_slice(&0i32.to_le_bytes()); // name → strtab 0
+            clas.extend_from_slice(&0i32.to_le_bytes()); // type
+            clas.extend_from_slice(&0u16.to_le_bytes()); // flags (not User)
+            clas.extend_from_slice(&1u16.to_le_bytes()); // field count
+            clas.extend_from_slice(&0i32.to_le_bytes()); // field name → 0
+            clas.extend_from_slice(&field_type.to_le_bytes());
+            clas.extend_from_slice(&0u16.to_le_bytes()); // offset
+            clas.extend_from_slice(&0u16.to_le_bytes()); // size
+            let mut diff = Vec::new();
+            diff.extend_from_slice(&0i32.to_le_bytes()); // DIFF names the class
+            diff.extend_from_slice(&value_bytes);
+
+            let mut blob: Vec<u8> = Vec::new();
+            let chunk = |sig: &[u8; 4], payload: &[u8], out: &mut Vec<u8>| {
+                out.extend_from_slice(sig);
+                out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                out.extend_from_slice(payload);
+            };
+            chunk(
+                b"BETH",
+                &4u32.to_le_bytes().iter().chain(&5u32.to_le_bytes()).copied().collect::<Vec<u8>>(),
+                &mut blob,
+            );
+            chunk(b"STRT", b"C\0", &mut blob);
+            chunk(b"TYPE", 1u32.to_le_bytes().as_ref(), &mut blob);
+            chunk(b"CLAS", &clas, &mut blob);
+            chunk(b"DIFF", &diff, &mut blob);
+
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn(move || parse_bgs_reflection(&blob))
+                .expect("spawn")
+                .join()
+                .expect("no panic")
+        };
+
+        // Struct edge: field 0 names the class itself; every nested level
+        // re-enters the struct arm consuming one u16 field index.
+        let mut struct_body = Vec::new();
+        for _ in 0..100_000 {
+            struct_body.extend_from_slice(&0u16.to_le_bytes());
+        }
+        assert!(
+            parse(0, struct_body).diff_field_indices.is_none(),
+            "self-referential struct declines at the cap, not a stack overflow"
+        );
+
+        // Ref edge: a Ref field whose inline target is Ref again; every
+        // level consumes one i32 target.
+        let mut ref_body = vec![0u8, 0]; // DIFF pair index 0
+        for _ in 0..100_000 {
+            ref_body.extend_from_slice(&builtin::REF.to_le_bytes());
+        }
+        assert!(
+            parse(builtin::REF, ref_body).diff_field_indices.is_none(),
+            "self-referential Ref chain declines at the cap, not a stack overflow"
+        );
     }
 
     /// Built-in type refs (negative i32) resolve to their labels; the
