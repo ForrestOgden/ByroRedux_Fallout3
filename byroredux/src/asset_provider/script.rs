@@ -631,6 +631,22 @@ pub(crate) fn populate_scene_runtime(
     world.insert_resource(byroredux_scripting::DialogueQuestPriorities::from_quests(
         index.quests.values().map(|quest| (quest.form_id, quest.priority)),
     ));
+    // #5734 — the quest-level dialogue gates beside the priorities that
+    // order against them: the CK's Quest *Conditions* tab gates every
+    // INFO the quest owns before its own per-INFO list, and without this
+    // the priority ordering pre-empted every speaker with the
+    // highest-priority quest's unconditioned greeting.
+    let quest_condition_count = byroredux_scripting::install_dialogue_quest_conditions(
+        world,
+        index
+            .quests
+            .values()
+            .filter(|quest| !quest.dialogue_conditions.is_empty())
+            .map(|quest| (quest.form_id, quest.dialogue_conditions.clone())),
+    );
+    if quest_condition_count > 0 {
+        log::info!("Installed dialogue quest gates: {quest_condition_count} quests");
+    }
     // M42.9 / #2652 — ambient NPC package stacks must remain resolvable after
     // spawn so schedule boundaries and Papyrus EvaluatePackage can select a
     // new winner. Previously this registry received only SCEN-referenced PACK

@@ -64,10 +64,12 @@ pub use condition::{
     ConditionFunction,
 };
 pub use dialogue::{
-    estimate_dialogue_duration, install_dialogue_records, note_info_spoken,
+    estimate_dialogue_duration, install_dialogue_quest_conditions, install_dialogue_records,
+    note_info_spoken,
     scene_dialogue_system, select_first_info, ActiveDialogueLine, DialogueLine,
     DialogueLineCompletionBatch, DialoguePlayback, DialoguePresentationEvent,
-    DialoguePresentationEventBatch, DialogueQuestPriorities, DialogueRandomState,
+    DialoguePresentationEventBatch, DialogueQuestConditions, DialogueQuestPriorities,
+    DialogueRandomState,
     DialogueRegistry, DialogueSpokenInfoForms,
 };
 pub use equipment::{

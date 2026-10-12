@@ -15,9 +15,10 @@ use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{DialRecord, InfoRecord, SceneActionType};
 
-use crate::condition::{evaluate, ConditionContext};
+use crate::condition::{evaluate, ConditionContext, ConditionFunction};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{
@@ -113,6 +114,55 @@ impl DialogueQuestPriorities {
     /// malformed QUST — lowest precedence, matching the GECK's default).
     pub fn priority_of(&self, quest: u32) -> u8 {
         self.priority.get(&quest).copied().unwrap_or(0)
+    }
+}
+
+/// Quest-level dialogue conditions (`QustRecord.dialogue_conditions`, the
+/// CK's Quest *Conditions* tab): a CTDA list every INFO owned by the quest
+/// must pass BEFORE its own per-INFO list is evaluated. #5734 — parsed
+/// since the QUST decode but never evaluated, so a high-priority quest's
+/// unconditioned greeting hijacked every speaker its priority outranked
+/// (FO3's `WaterBeggars` begging line, FNV's ED-E beeps); #5271's
+/// priority ordering is what turned the missing gate into pre-emption.
+///
+/// Skyrim's per-quest dialogue conditions ride the same QUST field and
+/// the same resource. Installed once per load beside
+/// [`DialogueQuestPriorities`].
+#[derive(Debug, Clone, Default)]
+pub struct DialogueQuestConditions {
+    conditions: HashMap<u32, Arc<ConditionList>>,
+}
+
+impl Resource for DialogueQuestConditions {}
+
+impl DialogueQuestConditions {
+    /// Build from `(form_id, conditions)` pairs — `QustRecord`'s
+    /// `form_id`/`dialogue_conditions` at the install site. Empty lists
+    /// are skipped (an empty gate is a no-op, not a resource entry).
+    pub fn from_quests(quests: impl IntoIterator<Item = (u32, ConditionList)>) -> Self {
+        let mut conditions = HashMap::new();
+        for (form_id, list) in quests {
+            if list.is_empty() {
+                continue;
+            }
+            conditions.insert(form_id, Arc::new(list));
+        }
+        Self { conditions }
+    }
+
+    /// The quest's authored quest-level list, `None` when it authors none.
+    pub fn conditions_of(&self, quest: u32) -> Option<&ConditionList> {
+        self.conditions.get(&quest).map(Arc::as_ref)
+    }
+
+    /// How many quests carry a quest-level gate. Diagnostic.
+    pub fn len(&self) -> usize {
+        self.conditions.len()
+    }
+
+    /// Whether no quest authors a quest-level gate.
+    pub fn is_empty(&self) -> bool {
+        self.conditions.is_empty()
     }
 }
 
@@ -242,6 +292,11 @@ pub fn register(world: &mut World) {
     if world.try_resource::<DialogueQuestPriorities>().is_none() {
         world.insert_resource(DialogueQuestPriorities::default());
     }
+    // #5734 — the quest-level dialogue gate beside the priorities it
+    // orders against.
+    if world.try_resource::<DialogueQuestConditions>().is_none() {
+        world.insert_resource(DialogueQuestConditions::default());
+    }
     // #5367 Phase L — Say-Once bookkeeping and the selection RNG.
     if world.try_resource::<DialogueSpokenInfoForms>().is_none() {
         world.insert_resource(DialogueSpokenInfoForms::default());
@@ -266,6 +321,21 @@ pub fn install_dialogue_records(
     for record in records {
         registry.insert_topic(record);
     }
+    count
+}
+
+/// Install the quest-level dialogue gates (#5734). Returns how many quests
+/// carry a non-empty list. Re-installation refreshes by FormID.
+pub fn install_dialogue_quest_conditions(
+    world: &mut World,
+    quests: impl IntoIterator<Item = (u32, ConditionList)>,
+) -> usize {
+    if world.try_resource::<DialogueQuestConditions>().is_none() {
+        register(world);
+    }
+    let built = DialogueQuestConditions::from_quests(quests);
+    let count = built.len();
+    world.insert_resource(built);
     count
 }
 
@@ -326,6 +396,35 @@ fn select_info<'a>(
             std::cmp::Reverse(priorities.priority_of(quest))
         });
     }
+    // #5734 — the quest-level dialogue gate, evaluated once per quest per
+    // call (every INFO of one quest shares it). The #5380 fail-closed
+    // rule applies to the list itself: a quest-level condition on an
+    // uncatalogued function cannot be evaluated, so the quest's INFOs
+    // decline rather than play ungated — a hijacking greeting gated only
+    // by functions we cannot read must not win on priority alone.
+    let quest_gates = world.try_resource::<DialogueQuestConditions>();
+    let mut gate_verdicts: HashMap<u32, bool> = HashMap::new();
+    let quest_gate_passes = |quest: u32,
+                             context: &ConditionContext,
+                             verdicts: &mut HashMap<u32, bool>|
+     -> bool {
+        let Some(conditions) = quest_gates.as_deref().and_then(|g| g.conditions_of(quest)) else {
+            return true;
+        };
+        *verdicts.entry(quest).or_insert_with(|| {
+            // #5380 fail-closed: an uncatalogued function is an unreadable
+            // gate, and an unreadable gate never passes.
+            if conditions.iter().any(|condition| {
+                matches!(
+                    ConditionFunction::from_index(condition.function_index),
+                    ConditionFunction::Unknown(_)
+                )
+            }) {
+                return false;
+            }
+            evaluate(conditions, world, context)
+        })
+    };
     // filter_map, not find_map: the #5367 Phase L Random pool needs every
     // passing candidate, not just the first.
     let passing = order.into_iter().filter_map(|i| {
@@ -360,6 +459,16 @@ fn select_info<'a>(
         context.target = player;
         if let Some(quest) = context_quest {
             context = context.with_quest(quest);
+        }
+        // #5734 — the owning quest's quest-level gate comes FIRST: the CK
+        // evaluates the Quest *Conditions* tab before any INFO's own list,
+        // and the priority pre-emption #5271 wired is exactly what made the
+        // missing gate hand every speaker to the highest-priority quest's
+        // unconditioned line.
+        if let Some(quest) = context_quest {
+            if !quest_gate_passes(quest.0, &context, &mut gate_verdicts) {
+                return None;
+            }
         }
         (actor_matches(info, world, actor) && evaluate(&info.conditions, world, &context))
             .then_some((i, info))
@@ -673,6 +782,159 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    // ── #5734: quest-level dialogue gates ────────────────────────────
+
+    const HIJACKER: u32 = 0x700; // high-priority quest, gated
+    const GENERIC: u32 = 0x701; // low-priority quest, ungated
+
+    fn gated_topic() -> DialRecord {
+        let mut record = topic(vec![
+            // The hijacker: highest priority, no INFO-level conditions —
+            // pre-#5734 it won on priority alone.
+            InfoRecord {
+                form_id: 0x801,
+                quest: HIJACKER,
+                response_text: "the hijacker's line".to_owned(),
+                ..Default::default()
+            },
+            InfoRecord {
+                form_id: 0x802,
+                quest: GENERIC,
+                response_text: "the generic line".to_owned(),
+                ..Default::default()
+            },
+        ]);
+        record.quest_refs = vec![TOPIC_QUEST];
+        record
+    }
+
+    const TOPIC_QUEST: u32 = 0x702;
+
+    fn gate_fixture(priorities: bool) -> World {
+        let mut world = World::new();
+        crate::scene::register(&mut world);
+        super::register(&mut world);
+        install_dialogue_records(&mut world, vec![gated_topic()]);
+        if priorities {
+            world.insert_resource(DialogueQuestPriorities::from_quests([
+                (HIJACKER, 90u8),
+                (GENERIC, 10u8),
+            ]));
+        }
+        world
+    }
+
+    /// A literal-comparand CTDA, the `condition.rs` test helper's shape.
+    fn cond(
+        function_index: u32,
+        comparator: byroredux_plugin::esm::records::condition::ComparisonOp,
+        comparand: f32,
+        or_next: bool,
+    ) -> ConditionList {
+        vec![byroredux_plugin::esm::records::condition::Condition {
+            function_index,
+            comparator,
+            comparand:
+                byroredux_plugin::esm::records::condition::ConditionValue::Literal(comparand),
+            run_on: byroredux_plugin::esm::records::condition::RunOn::Subject,
+            or_next,
+            ..Default::default()
+        }]
+    }
+
+    /// The audit's measured symptom: a high-priority quest's unconditioned
+    /// greeting hijacked every speaker its priority outranked (#5271's
+    /// ordering turned the missing gate into pre-emption). With the quest's
+    /// quest-level list carrying an UNCATALOGUED function (FO3/FNV
+    /// GetIsVoiceType, fn 427 — the corpus census), the #5380 fail-closed
+    /// rule declines its INFOs and the generic line survives. A world
+    /// without gates installed keeps the pre-fix priority order.
+    #[test]
+    fn an_unreadable_quest_gate_declines_the_hijacker() {
+        // Legs are scoped: the ECS lock tracker is thread-global per type,
+        // so leg 1's registry read must drop before leg 2's install write.
+        {
+        let mut world = gate_fixture(true);
+        world.insert_resource(DialogueQuestConditions::from_quests([(
+            HIJACKER,
+            cond(
+                427,
+                byroredux_plugin::esm::records::condition::ComparisonOp::Eq,
+                1.0,
+                false,
+            ), // GetIsVoiceType — uncatalogued
+        )]));
+        let (actor, player, _) = setup_entities(&mut world);
+        let registry = world.resource::<DialogueRegistry>();
+        let topic = registry.topic(TOPIC).unwrap();
+        let line = super::select_first_info(topic, &world, Some(actor), Some(player))
+            .expect("the generic INFO must qualify");
+        assert_eq!(line.response_text, "the generic line");
+        }
+
+        // No gates installed → the hijacker still wins on priority
+        // (documented gap, not a regression).
+        {
+        let mut world = gate_fixture(true);
+        let (actor, player, _) = setup_entities(&mut world);
+        let registry = world.resource::<DialogueRegistry>();
+        let topic = registry.topic(TOPIC).unwrap();
+        let line = super::select_first_info(topic, &world, Some(actor), Some(player))
+            .expect("the hijacker qualifies ungated");
+        assert_eq!(line.response_text, "the hijacker's line");
+        }
+    }
+
+    /// A quest gate on a CATALOGUED function evaluates for real: running
+    /// quest → the hijacker's INFO passes and wins on priority; stopped
+    /// quest → declined and the generic line survives.
+    #[test]
+    fn a_catalogued_quest_gate_evaluates_running_state() {
+        // Running: the gate passes, priority picks the hijacker. Legs are
+        // scoped (see the lock-tracker note in the sibling test).
+        {
+        let mut world = gate_fixture(true);
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(HIJACKER), Some(1));
+        world.insert_resource(stages);
+        let mut gate = cond(56, byroredux_plugin::esm::records::condition::ComparisonOp::Eq, 1.0, false);
+        gate[0].param_1 = HIJACKER;
+        world.insert_resource(DialogueQuestConditions::from_quests([(HIJACKER, gate)]));
+        let (actor, player, _) = setup_entities(&mut world);
+        let registry = world.resource::<DialogueRegistry>();
+        let topic = registry.topic(TOPIC).unwrap();
+        let line = super::select_first_info(topic, &world, Some(actor), Some(player)).unwrap();
+        assert_eq!(line.response_text, "the hijacker's line");
+        }
+
+        // Stopped: the gate fails, the generic line survives. GENERIC runs
+        // (its INFO must pass the #5271 running-quest rule); only the
+        // hijacker's gate state differs.
+        {
+        let mut world = gate_fixture(true);
+        let mut stages = QuestStageState::default();
+        stages.start_quest(QuestFormId(GENERIC), Some(1));
+        world.insert_resource(stages);
+        let mut gate = cond(56, byroredux_plugin::esm::records::condition::ComparisonOp::Eq, 1.0, false);
+        gate[0].param_1 = HIJACKER;
+        world.insert_resource(DialogueQuestConditions::from_quests([(HIJACKER, gate)]));
+        let (actor, player, _) = setup_entities(&mut world);
+        let registry = world.resource::<DialogueRegistry>();
+        let topic = registry.topic(TOPIC).unwrap();
+        let line = super::select_first_info(topic, &world, Some(actor), Some(player)).unwrap();
+        assert_eq!(line.response_text, "the generic line");
+        }
+    }
+
+    /// setup()'s entity order, extracted for fixtures that build the world
+    /// themselves: (actor, player, third).
+    fn setup_entities(world: &mut World) -> (EntityId, EntityId, EntityId) {
+        let player = world.spawn();
+        let actor = world.spawn();
+        let third = world.spawn();
+        (actor, player, third)
     }
 
     /// #5397 (OBL-2026-10-08-D2-01) — the positional rule: an earlier
