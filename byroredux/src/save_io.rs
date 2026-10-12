@@ -2004,7 +2004,6 @@ pub fn execute_pending_save_loads(
                 // re-derive above).
                 clear_player_gear_handoff_scratch(world, player);
                 crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
-                crate::npc_spawn::loot_appearance::reconcile_worn_gear(world, player);
                 // #5058 — the ledger reset above cannot name the player's
                 // stale alias-injected memberships anymore, so strip them
                 // before the first refresh reads them as authored.
