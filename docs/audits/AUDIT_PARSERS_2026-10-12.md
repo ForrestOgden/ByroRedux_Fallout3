@@ -695,3 +695,78 @@ The orchestrator ran the unit and strict real-data lanes, the archive and ESM de
 | HIGH | 2 | 0 |
 | MEDIUM | 3 | 0 |
 | LOW | 11 | 6 (#5009, #5010, #5011, #5073, #5329, #5446) |
+
+---
+
+## Re-run at HEAD 5d31fd637
+
+**HEAD**: 5d31fd637 · **Baseline**: this report (HEAD c1a99c25e) · **Audited**: delta `c1a99c25e..HEAD` over the parser Paths: `fa2af0e89` (#5660/#5073), `eca0238e7` (#5659), `9707cb367` (#5662), `5dce486b6` (#5658), `0d698d16c` (#5661), `c961653f4` (#5284), `a7e05dd7b` (#5650, source-scan pins) and the `.github/workflows/real-data-gates.yml` hunk of `fa2af0e89`. These are the fixes for five of this report's own findings, so the work was to verify each fix in place and read the new code for residuals. **Unchanged since baseline (skimmed)**: `crates/bgsm/`, `crates/facegen/`, `crates/game-detect/`, `crates/sfmaterial/`, `crates/bsa/src/{ba2,csg,uvd,naming,read_at}.rs`, `crates/menuxml/src/{parse,font}.rs`, `asset_provider/{archive,texture}.rs`. No commits touch them. Dims 3 and 6 are therefore unchanged.
+
+**Result: 0 CRITICAL, 0 HIGH, 1 MEDIUM, 1 LOW new.** The MEDIUM is a residual of closed #5662. The LOW is a residual of the #5658 fix.
+
+### Verification of the fixes landed since c1a99c25e
+
+| Finding | Issue | State at 5d31fd637 |
+|---|---|---|
+| PAR-D1-2026-10-12-01 menu texture cache unbounded | #5658 (closed) | **Fixed.** `MAX_DECODED_TEXTURE_BYTES` 1 GiB is charged from the DDS header via `Rgba8::decoded_len` (shares `dds_dimensions` with the decoder) before any allocation. Decodes are keyed by resolved archive path, so the `Menus\` / `Menus80\` / `textures\menus\` spellings share one decode. `decoded_textures_stop_at_the_renderer_budget` and `spellings_of_one_menu_texture_share_one_decode` pass. Residual: PAR-D1-2026-10-12-04 below. Font atlases are outside the budget but bounded by the 5-slot per-game font table. |
+| PAR-D1-2026-10-12-02 HKX `mask_size` gate | #5659 (closed) | **Fixed.** `mask_size != pad(4*transform_count + float_count, 4)` stays an exact tie to the file's own counts. `decode_spline_animation_accepts_a_padded_mask_table` uses float counts 1–5, and `..._rejects_a_mask_size_off_the_padded_value` pins the exact tie. These are the first HKX gate fixtures with a non-zero `float_count`, which closes the clause PAR-D1-2026-10-12-02 added to #5446. The rest of #5446 is unchanged. |
+| PAR-D2-2026-10-12-01 empty compressed BSA record | #5660 / #5073 (closed) | **Fixed.** `BsaArchive::extract` answers `compressed_len == 0` before any decoder. A declared size of 0 gives `Ok(empty)`, a non-zero size gives `InvalidData` naming the entry. The 4-byte placeholder test covers v103, v104 and v105. `inflate_bounded_zlib` also pins the truncated-stream and empty-stream decoder semantics in the default lane. The CI `parsers` and `nif` loops now run `--no-fail-fast`. **Strict lane re-run: `oblivion_all_bsas_v103_brute_force_extract_zero_errors` passes (21.8 s, release).** |
+| PAR-D2-2026-10-12-02 one NaN channel rejects the HKX clip | #5662 (closed) | **Fixed for non-finite *stored* scalars.** The NaN track is dropped, its bytes are still consumed, the bone is reported in `HkxAnimation::dropped_bones`, and `convert_hkx_clip` warns with the clip path. A clip whose every track is flagged is still `Err`. Strict HKX census: **6,126 clips, 0 rejected, 59 decoded with a dropped track.** Residual: PAR-D2-2026-10-12-07 below (the finite-garbage half of the original title is not addressed). |
+| PAR-D5-2026-10-12-01 `has_opacity == None` | #5661 (**still open**) | **Fixed in code** by `0d698d16c`: the alpha test needs `has_opacity == Some(true)`. `alpha_test_requires_an_authored_has_opacity_true` pins `None` and `Some(false)` as not alpha-tested. The loose `.mat` decoder sets `has_opacity` from the authored `"HasOpacity"`, so a CK-authored `.mat` is unaffected. The commit is titled `fix(material): …` and carries no `Fix #5661`, so the tracker stays open: close it on the commit (publish hygiene, not a code finding). |
+| `c961653f4` (#5284) | n/a | `resolve_through_cdb` is behaviour-preserving. The `.mat` arm still records `ImportedTextureSource::Mat`, and the sidecar-miss arms now trace. The `the_cdb_resolve_tail_has_one_home` pin discriminates (count == 1 on production text via `strip_test_modules`). `source` is used only as `is_some()` and the `Mat` variant is hard-coded, which is a nit and not filed. |
+
+**Tests run (toolchain 1.96.0):** the 7 parser crates are green (bsa 114, bgsm 33, sfmaterial 41 + 6, hkx 29, facegen 31, menuxml 52, game-detect 59). `cargo test -p byroredux --bin byroredux asset_provider` gives 231 passed and 10 ignored (+1 over the baseline run, the #5284 pin). Strict real-data runs: bsa Oblivion brute force (above) and the HKX suite (3/3 passed, including the census and the LE/SE parity test).
+
+**Superseded notes in the baseline report.** PAR-D4-2026-10-12-02 (#5671) is half-moot: `KNOWN_VANILLA_REJECTS` is now 0, so the `<=` assertion is effectively exact. The new `partial <= 59` clause is one-sided, and the set-not-count and inert block-clause points still stand.
+
+### PAR-D2-2026-10-12-07: #5662's policy ("a non-finite scalar drops its track") is bypassed by finite bounds whose span overflows, so `decode_spline_animation` returns `Ok` with NaN/inf translation or scale samples
+- **Severity**: MEDIUM
+- **Dimension**: Error Semantics
+- **Location**: `crates/hkx/src/animation.rs:855-856` (`values.push(min + quantized * (max - min))` in `read_vector_curve`). The finite test is `:822` and covers only the stored `min` and `max`. Consumer: `byroredux/src/asset_provider/animation.rs:403-487` (`convert_hkx_clip`) copies the samples into `AnimationClip` keys without a finiteness check.
+- **Status**: NEW. It is the residual of closed #5662, whose title's second half (finite garbage on the same bones "passes unchecked") was left undecided by the fix. Searches of open and closed issues for "HKX non-finite" and "spline overflow" found nothing else.
+- **Trigger Input**: a dynamic translation or scale component with finite bounds `min = -3.0e38`, `max = +3.0e38` (both pass `is_finite()` and `min <= max`). `max - min` overflows to `+inf`, so a control point with quantized value 0 evaluates `0 * inf = NaN` and one with value 1 evaluates `inf`.
+- **Description**:
+  - #5662 made non-finite stored scalars drop the track instead of failing the clip. The sampled value is never checked, so the same artifact reaches the clip by arithmetic.
+  - The original report counted 12 *accepted* vanilla clips with finite garbage up to `|T| = 1.41e22` on the same prop-attachment bones. They are still accepted, and nothing downstream sanitises a key value. The only `is_finite` guards in `crates/core/src/animation/` are on phase and time.
+  - This is a mod-file hazard: vanilla bounds do not overflow.
+- **Evidence**: probe crate `/tmp/audit/parsers/probe-hkx`, a copy of `crates/hkx/src` (real-data tests cut) with one added test built on the repo's `synthetic_clip` / `dynamic_x_translation` fixtures:
+  ```
+  let curves = dynamic_x_translation((-3.0e38, 3.0e38));
+  decode_spline_animation(&synthetic_clip(0, 4, &[[0, 0x10, 0, 0]], &curves))
+  -> Ok, dropped=[], translation=[NaN, 0.0, 0.0] on both frames
+  ```
+- **Impact**: a hostile or corrupt mod clip puts NaN translation or scale into `AnimationClip`, then `Transform`, then the palette and TLAS instance. It affects only that clip while it plays. Downstream GPU behaviour of a NaN bone was not exercised, so it is not rated higher.
+- **Related**: #5662, #3013, #4396 (same class: finite components overflowing to a bad result), PAR-D1-2026-10-12-02.
+- **Suggested Fix**: after the `Dynamic` control points are pushed, mark the track `non_finite` if any value is non-finite (or compute `max - min` in `f64`). Optionally clamp `|T|` to a sane bound for the 12 vanilla finite-garbage clips. Add a fixture using the `dynamic_x_translation((-3.0e38, 3.0e38))` shape, since the existing `non_finite_*` tests only use NaN and inf stored scalars.
+
+### PAR-D1-2026-10-12-04: an over-budget menu texture is refused after the archive fetch, is not remembered by resolved path, and the warning overstates what is refused
+- **Severity**: LOW
+- **Dimension**: Size Discipline
+- **Location**: `crates/menuxml/src/menu.rs:494-519` (`MenuRenderer::texture`, the #5658 budget arm)
+- **Status**: NEW (residual of the #5658 fix).
+- **Trigger Input**: a menu naming K spellings (`Menus\x.dds`, `Menus80\x.dds`, `textures\menus\x.dds`, …) of one 8192² archive file after the budget is spent.
+- **Description**:
+  - `assets.texture(path)` runs before the budget check, so every refusal pays a full archive extract of the offending file. The refusal is cached only under the authored spelling (`tex_cache`), and the `decoded` map is keyed only on successful decodes. Each additional spelling of a *refused* file therefore re-extracts it (about 33 MB inflated per 8192² DXT1). The cost is transient and bounded by `MAX_DOCUMENT_TILES` (16,384) once per spelling, with no retained memory. It is a first-render CPU stall.
+  - The log text says "it and any further new textures are not drawn". The check is per texture (`decoded_bytes + len > budget`), so a later, smaller texture that still fits is decoded and drawn. Which textures draw depends on first-visible order. The tests use equal-size textures and cannot tell.
+- **Evidence**: code reading, `menu.rs:494-519`, with `self.decoded` populated only at `:521-525`.
+- **Impact**: first-render hitch on a hostile mod menu, plus a misleading operator message. No memory growth.
+- **Related**: #5658, #5667 (BC paths still allocate before checking the payload).
+- **Suggested Fix**: record refused resolved paths in a small `HashSet<String>` consulted before the fetch, and reword the warning to "this texture is not drawn; later textures that fit the budget still are".
+
+### Gate Matrix deltas
+
+| Crate / format | Change since c1a99c25e |
+|---|---|
+| bsa: BSA | Empty-record policy decided before the decoder, with default-lane decoder-semantics pins. Strict Oblivion lane green again. CI loop is `--no-fail-fast`. |
+| hkx | `mask_size` gate padded (exact tie kept). Non-finite scalar drops its track (`dropped_bones`). Census: 0 rejects, 59 partial. Open: PAR-D2-2026-10-12-07. |
+| menuxml (`tex.rs` + loader) | Total decoded budget 1 GiB with a shared decode per resolved path, charged from the header. Open: PAR-D1-2026-10-12-04. |
+| CDB merge | `HasOpacity` default is `false`. One CDB resolve tail (`resolve_through_cdb`). |
+
+### Publishing
+
+`/audit-publish docs/audits/AUDIT_PARSERS_2026-10-12.md` publishes only findings that are not already filed. Of the earlier findings, #5658, #5659, #5660/#5073 and #5662 are closed and #5661 is open although fixed.
+
+| Finding | Suggested labels |
+|---|---|
+| PAR-D2-2026-10-12-07 | `medium` `bug` `animation` `game:skyrim` |
+| PAR-D1-2026-10-12-04 | `low` `bug` `ui` |
