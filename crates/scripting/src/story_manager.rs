@@ -609,6 +609,10 @@ pub fn story_manager_dispatch_system(world: &World) {
     // stages WRITE here closed the ABBA cycle the CI lock-order lane
     // reported (#5366).
     let mut started_event_fills: Vec<(QuestFormId, EventDataSlots)> = Vec::new();
+    // #5406 — phase B consults the definitions for the `Run Once` flag
+    // (read guard, taken before `stages` to mirror phase A's
+    // registry → stages → node_state acquisition order).
+    let registry = world.try_resource::<QuestDefinitionRegistry>();
     let Some(mut stages) = world.try_resource_mut::<QuestStageState>() else {
         return;
     };
@@ -616,7 +620,28 @@ pub fn story_manager_dispatch_system(world: &World) {
         if stages.is_running(candidate.quest) {
             continue;
         }
-        stages.start_quest(candidate.quest, candidate.start_up_stage);
+        // #5406 — the CK resets a quest on start unless it is Run Once
+        // (Quest Data Tab: "Run Once: Prevents the Quest from being
+        // reset when it starts"). Reset first, so completed and failed
+        // radiants can rerun and stopped ones restart without the
+        // previous run's stage history; eligibility already excluded
+        // terminal Run Once quests. No definition → treat as
+        // repeatable.
+        let run_once = registry
+            .as_deref()
+            .is_some_and(|reg| reg.is_run_once(candidate.quest));
+        if !run_once && stages.is_started(candidate.quest) {
+            stages.reset(candidate.quest);
+        }
+        // #5406 — honor the refusal: a start that did not happen gets
+        // no pool mark, no event fill, no "started quest" log line, and
+        // wastes no event (the pool simply does not advance).
+        if stages
+            .start_quest(candidate.quest, candidate.start_up_stage)
+            .is_none()
+        {
+            continue;
+        }
         // Phase 3 — the pool mark (do-all `fired`, `RNAM`
         // `last_fire_hours`) lands only for quests that actually
         // started, with any do-all wrap applied first.
@@ -914,6 +939,20 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
             // (the radiant rerun path — `is_started` would block a
             // stopped quest's restart forever).
             if state.stages.is_some_and(|stages| stages.is_running(quest)) {
+                return false;
+            }
+            // #5406 — a terminal quest is only eligible for the rerun
+            // path phase B opens (reset-on-start for non-Run-Once
+            // quests); a Run Once quest that completed or failed stays
+            // done forever and must stop jamming stacked pools and
+            // winning random picks. Without definitions the quest is
+            // treated as repeatable and phase B decides.
+            if state.stages.is_some_and(|stages| {
+                stages.is_completed(quest) || stages.is_failed(quest)
+            }) && state
+                .registry
+                .is_some_and(|registry| registry.is_run_once(quest))
+            {
                 return false;
             }
             hours_gate_open(
@@ -2262,6 +2301,112 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
         {
             let state = world.try_resource::<StoryManagerNodeState>().unwrap();
             assert_eq!(state.nodes[&30].last_fire_hours, vec![150.0, 110.0]);
+        }
+    }
+
+    /// #5406 — phase B honors `start_quest`'s refusal and applies the
+    /// CK's reset-on-start rule. A COMPLETED Run Once radiant is
+    /// ineligible, so the stacked pool's second entry gets the pick
+    /// instead of the pool jamming on its first slot forever; a
+    /// COMPLETED repeatable (non-Run-Once) radiant is reset and reruns
+    /// from a clean stage history instead of resuming the finished run.
+    #[test]
+    fn completed_radiants_unjam_run_once_and_rerun_repeatable() {
+        use byroredux_plugin::esm::records::QustRecord;
+        let tree = build_story_manager_tree(&records(vec![
+            event_node(10, b"KILL"),
+            quest_node_full(30, 10, 0, &[0x111, 0x222], Default::default()),
+        ]));
+        let mut world = setup_world();
+        world.insert_resource(tree);
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(StoryManagerNodeState::default());
+        world.insert_resource(StoryEventAliasFill::default());
+        world.insert_resource(QuestDefinitionRegistry::default());
+        // 0x111 is authored Run Once (DNAM bit 8); 0x222 is a
+        // repeatable radiant. Neither needs the Start Game Enabled bit
+        // — the definitions registry is populated from every record.
+        crate::quest_stages::install_start_game_quests(
+            &mut world,
+            [
+                QustRecord {
+                    form_id: 0x111,
+                    editor_id: "WIOnce".into(),
+                    quest_flags: 0x0100,
+                    ..Default::default()
+                },
+                QustRecord {
+                    form_id: 0x222,
+                    editor_id: "WILoop".into(),
+                    ..Default::default()
+                },
+            ],
+        );
+
+        // A played-out session: both pool entries already completed.
+        {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            for quest in [0x111, 0x222] {
+                stages.start_quest(QuestFormId(quest), None);
+                stages.set_stage(QuestFormId(quest), 20);
+                stages.complete(QuestFormId(quest));
+            }
+        }
+
+        let fire = |world: &mut World| {
+            let actor = world.spawn();
+            if let Some(mut events) = world.query_mut::<StoryEvent>() {
+                events.insert(
+                    actor,
+                    StoryEvent {
+                        mnemonic: *b"KILL",
+                        reference_1: actor,
+                        reference_2: None,
+                        location_1: None,
+                        location_2: None,
+                    },
+                );
+            }
+            story_manager_dispatch_system(world);
+        };
+        fire(&mut world);
+        {
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            assert!(
+                !stages.is_running(QuestFormId(0x111)) && stages.is_completed(QuestFormId(0x111)),
+                "the completed Run Once entry stays done — pre-fix it was logged as started"
+            );
+            assert!(
+                stages.is_running(QuestFormId(0x222)),
+                "the completed repeatable entry got the pick, not a jam"
+            );
+            assert_eq!(
+                stages.get_stage(QuestFormId(0x222)),
+                0,
+                "the rerun starts from a reset history, not the finished run's stage 20"
+            );
+        }
+        // Only the quest that actually started consumed its pool mark.
+        {
+            let state = world.try_resource::<StoryManagerNodeState>().unwrap();
+            assert_eq!(state.nodes[&30].fired, vec![false, true]);
+        }
+
+        // The rerun completes again; the next fire repeats the same
+        // shape (0x111 ineligible forever, 0x222 rerunning).
+        {
+            let mut stages = world.try_resource_mut::<QuestStageState>().unwrap();
+            stages.stop(QuestFormId(0x222));
+            stages.complete(QuestFormId(0x222));
+        }
+        fire(&mut world);
+        {
+            let stages = world.try_resource::<QuestStageState>().unwrap();
+            assert!(
+                stages.is_running(QuestFormId(0x222)),
+                "a completed repeatable reruns on the next event"
+            );
+            assert!(stages.is_completed(QuestFormId(0x111)));
         }
     }
 

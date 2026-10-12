@@ -41,7 +41,8 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::{
     QuestObjective, QuestObjectiveTarget, QuestObjectiveTargetKind, QuestStageLogEntry, QustRecord,
     QUEST_FLAG_ACTIVE, QUEST_FLAG_ALLOW_REPEATED_STAGES, QUEST_FLAG_COMPLETED, QUEST_FLAG_FAILED,
-    QUEST_FLAG_START_GAME_ENABLED, QUEST_LOG_FLAG_COMPLETE_QUEST, QUEST_LOG_FLAG_FAIL_QUEST,
+    QUEST_FLAG_RUN_ONCE, QUEST_FLAG_START_GAME_ENABLED, QUEST_LOG_FLAG_COMPLETE_QUEST,
+    QUEST_LOG_FLAG_FAIL_QUEST,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -886,6 +887,16 @@ impl QuestDefinitionRegistry {
         self.definitions
             .get(&quest)
             .map(|definition| definition.flags)
+    }
+
+    /// #5406 — whether the quest carries `DNAM` bit 8 (`Run Once`): the
+    /// CK never resets a Run Once quest on start, and DOES reset a
+    /// non-Run-Once one. `None`-safe: without a definition the caller
+    /// treats the quest as repeatable.
+    pub fn is_run_once(&self, quest: QuestFormId) -> bool {
+        self.definitions
+            .get(&quest)
+            .is_some_and(|definition| definition.flags & QUEST_FLAG_RUN_ONCE != 0)
     }
 
     pub fn stages(&self, quest: QuestFormId) -> &[u16] {

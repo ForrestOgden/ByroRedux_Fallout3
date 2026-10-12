@@ -12,6 +12,14 @@ use crate::esm::sub_reader::SubReader;
 /// `QUST.DATA` / `QUST.DNAM` bit 0: activate the quest during game bootstrap
 /// instead of waiting for Story Manager or an explicit Papyrus `Start()` call.
 pub const QUEST_FLAG_START_GAME_ENABLED: u16 = 0x0001;
+
+/// `QUST.DNAM` bit 8: the quest is never reset when it starts. The CK
+/// *Quest Data Tab*: "Run Once: Prevents the Quest from being reset when
+/// it starts" — a non-Run-Once quest IS reset on start, so repeatable
+/// radiants rerun from a clean stage history while Run Once ones stay
+/// done forever (xEdit `wbDefinitionsTES5.pas`' DNAM flags, bit 8;
+/// #5406).
+pub const QUEST_FLAG_RUN_ONCE: u16 = 0x0100;
 pub const QUEST_FLAG_COMPLETED: u16 = 0x0002;
 pub const QUEST_FLAG_ALLOW_REPEATED_STAGES: u16 = 0x0008;
 pub const QUEST_FLAG_FAILED: u16 = 0x0040;
