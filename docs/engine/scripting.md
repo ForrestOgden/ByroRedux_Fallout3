@@ -261,6 +261,18 @@ unsupported statement, expression tail, event filter, or malformed branch
 rejects the whole handler. A registry miss is therefore silent only when
 neither path can attach behavior.
 
+**The FO3/FNV quest-script census (2026-10-11).** Quest SCPTs execute on
+every pre-Papyrus game, not just Oblivion: `install_quest_scripts`
+(`asset_provider/script.rs`) resolves each quest's `script_ref` into the
+obscript runtime with no game gate, and the 5 s GameMode tick
+(`obscript_quest_tick_system`, registered in `boot/schedule/update.rs`) runs
+whatever it installed. Command ids are shared across the three games, so the
+interpreter needs no per-game table. The 2026-10-11 agent census measured the
+live installed base: **322 FNV** and **101 FO3** quest scripts install and
+tick ungated, with the wrong-target reference-slot defects of that audit's
+SCR-D6-01/02 affecting 3–6 % of vanilla quest scripts — tracked separately
+from this execution fact.
+
 ### The R5 demo translations (`papyrus_demo/`)
 
 The proof-of-concept hand-translations that closed R5. Each is a faithful

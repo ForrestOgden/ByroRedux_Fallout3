@@ -266,7 +266,7 @@ design doc.
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
 | M47.2 | Full scripting runtime | **Shipped slices:** a Champollion-port `.pex` decompiler (99.996% of the corpus) lowered through the recognizer chain, with VMAD attach from `--scripts-bsa`; quest-advance and trigger volumes (Session 51); QUST stage fragments (Session 55); quest aliases and object-targeting effects (Session 59); the MQ101 SCEN/PACK scene runtime backed by `crates/hkx` (Session 62); the quest-area completion pass (2026-08-07); and an SKSE-family script-extender provider slice (~23.9k LOC, tested in-crate but never audited against real mods). **Open:** recognizer catalog breadth (OnEquip/OnHit emit sites), perk entry-point composition, general NPC playback from HKX, and the LCTN / created-object / reference-collection alias operations — the Story Manager event-node dispatch half landed with #5366 Phases 0–1, its remaining breadth (event-data run-ons, node-flag decode, FO4 pools) tracked there. Design: [`m47-2-design.md`](docs/engine/m47-2-design.md), [`sdk-v0.1-development-plan.md`](docs/engine/sdk-v0.1-development-plan.md). | R5, M30.2, M43 |
-| M47.3 | ObScript quest VM (Oblivion) | **Phase 1 shipped 2026-09-18:** an SCDA bytecode interpreter runs every running quest's `Begin GameMode` block on the vanilla 5 s cadence and lowers onto `QuestStageState`/`Globals`. Its opcode table was recovered by aligning source against bytecode over vanilla `Oblivion.esm` (2 349 of 2 393 scripts decode clean), and it was verified live (MS23 self-advances to stage 90). **Phase 2:** non-GameMode blocks (OnActivate/OnTrigger on object scripts), Message/MessageBox UI, per-quest `fquestdelaytime`, actor-state functions (GetDeadCount/GetItemCount/GetDistance), and the remaining ~60-command corpus. | M47.2, M42.10 |
+| M47.3 | ObScript quest VM | **Phase 1 shipped 2026-09-18:** an SCDA bytecode interpreter runs every running quest's `Begin GameMode` block on the vanilla 5 s cadence and lowers onto `QuestStageState`/`Globals`. Its opcode table was recovered by aligning source against bytecode over vanilla `Oblivion.esm` (2 349 of 2 393 scripts decode clean), and it was verified live (MS23 self-advances to stage 90). The interpreter, the load-order install and the 5 s tick are game-agnostic: command ids are shared across the three pre-Papyrus games, and FO3/FNV quest scripts execute today too (2026-10-11 agent census: 322 FNV and 101 FO3 quest scripts installed ungated; recorded in [`scripting.md`](docs/engine/scripting.md)). **Phase 2:** non-GameMode blocks (OnActivate/OnTrigger on object scripts), Message/MessageBox UI, per-quest `fquestdelaytime`, actor-state functions (GetDeadCount/GetItemCount/GetDistance), and the remaining ~60-command corpus. | M47.2, M42.10 |
 
 #### Tier 5 — Renderer polish (quality, not capability)
 
@@ -684,8 +684,6 @@ performance finding. The measured knob table is in
   exists. `Fragment_11`'s `AddRaceSpells()` now lowers onto the player's
   RACE `SPLO` set (#4415, `9813af435`); no live MQ101 replay has re-checked
   it.
-- [ ] **FO3/FNV SCPT records are parsed but not executed.** The SCDA
-  interpreter (M47.3) runs Oblivion quest scripts only.
 - [ ] **`NiStencilProperty` is parsed but never applied** (stencil test off,
   stencil-less `D32_SFLOAT`). Needs per-material stencil variants plus a
   stencil format, so it waits for a consumer (#4213).
