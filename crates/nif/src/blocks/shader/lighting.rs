@@ -968,60 +968,11 @@ fn parse_shader_type_data_fo4(
                 skin_tint_alpha,
             })
         }
-        // All other types same as Skyrim.
-        6 => {
-            let hair_tint_color = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            Ok(ShaderTypeData::HairTint { hair_tint_color })
-        }
-        7 => {
-            let max_passes = stream.read_f32_le()?;
-            let scale = stream.read_f32_le()?;
-            Ok(ShaderTypeData::ParallaxOcc { max_passes, scale })
-        }
-        11 => {
-            let inner_layer_thickness = stream.read_f32_le()?;
-            let refraction_scale = stream.read_f32_le()?;
-            let inner_layer_texture_scale = [stream.read_f32_le()?, stream.read_f32_le()?];
-            let envmap_strength = stream.read_f32_le()?;
-            Ok(ShaderTypeData::MultiLayerParallax {
-                inner_layer_thickness,
-                refraction_scale,
-                inner_layer_texture_scale,
-                envmap_strength,
-            })
-        }
-        14 => {
-            let sparkle_parameters = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            Ok(ShaderTypeData::SparkleSnow { sparkle_parameters })
-        }
-        16 => {
-            let eye_cubemap_scale = stream.read_f32_le()?;
-            let left_eye_reflection_center = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            let right_eye_reflection_center = [
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-                stream.read_f32_le()?,
-            ];
-            Ok(ShaderTypeData::EyeEnvmap {
-                eye_cubemap_scale,
-                left_eye_reflection_center,
-                right_eye_reflection_center,
-            })
-        }
-        _ => Ok(ShaderTypeData::None),
+        // All other types are byte-identical to Skyrim's trailing reads —
+        // delegate instead of re-typing them (#5737; a field-order fix in
+        // either copy used to have to be made twice). The Skyrim function
+        // returns `ShaderTypeData::None` for everything else.
+        _ => parse_shader_type_data(stream, shader_type),
     }
 }
 
