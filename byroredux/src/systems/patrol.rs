@@ -11,38 +11,36 @@
 //! `PROCEDURE_PATROL` doc). Absent that, there is nothing to distinguish
 //! v0 Patrol from Wander: both reduce to "walk to a random point within a
 //! radius, pause, repeat" with no target-reference resolution. Rather than
-//! duplicate `wander_system`'s ~40-line state machine under a new name (a
-//! straight copy-paste that would drift the moment one side changes),
-//! `patrol_system` reuses the exact same core function, differing only in
-//! which component types it reads/writes ([`PatrolBehavior`]/
-//! [`PatrolState`] instead of `WanderBehavior`/`WanderState`) — kept
-//! separate so Patrol and Wander actors stay independently selectable and
-//! inspectable, matching every other M42 procedure having its own
-//! component pair.
+//! duplicate `wander_system` under a new name (a straight copy-paste that
+//! would drift the moment one side changes), Patrol runs the very same
+//! generic system (`super::wander::oscillating_walk_system_inner`), differing
+//! only in which component types it reads/writes ([`PatrolBehavior`]/
+//! [`PatrolState`] instead of `WanderBehavior`/`WanderState`), supplied
+//! through the `OscillatingWalkProcedure` impl below — kept separate so
+//! Patrol and Wander actors stay independently selectable and inspectable,
+//! matching every other M42 procedure having its own component pair.
+//! (#5580 — until then only the inner step was shared and this file carried
+//! a ~130-line copy of the gather / cache / write-back body.)
 //!
 //! If real patrol-route data is ever decoded, this is the seam to swap:
-//! `patrol_system` would gain its own state machine here without touching
-//! `wander_system` at all.
+//! Patrol would drop the `OscillatingWalkProcedure` impl and gain its own
+//! system here without touching `wander_system` at all.
 //!
 //! v0 scope: identical to `wander.rs`'s documented approximations,
 //! including single-tile pathing (EX-16 item 3 Phase 4,
 //! `docs/engine/navmesh-pathfinding.md`) — `patrol_system` resolves and
-//! consumes its own `crate::components::NavPath` cache exactly the way
-//! `wander_system` does, passing the result into the same
+//! consumes its own `crate::components::NavPath` cache through the same
+//! generic system `wander_system` runs, passing the result into the
 //! `waypoint_override` parameter of the shared `step_oscillating_wander`
 //! core; no target-reference resolution and no animation-clip swap. Package
 //! selection is re-run once per in-game minute by
 //! `ambient_ai_package_system`, not per frame — see `systems::travel`.
 
-use super::locomotion::pop_reached_waypoint;
-use super::navmesh_path::resolve_cached_waypoints;
-use super::wander::{step_oscillating_wander, OscillateWalk};
-use crate::components::WalkStuckTimer;
-use crate::components::{NavPath, NavmeshTile};
-use byroredux_core::ecs::components::{PatrolBehavior, PatrolState, Transform, WanderPhase};
-use byroredux_core::ecs::{EntityId, World};
-use byroredux_core::math::{Quat, Vec3};
-use std::collections::VecDeque;
+use super::wander::{
+    oscillating_walk_system_inner, OscillateScratch, OscillateWalk, OscillatingWalkProcedure,
+};
+use byroredux_core::ecs::components::{PatrolBehavior, PatrolState};
+use byroredux_core::ecs::World;
 
 /// Fallback patrol radius (world units) around an actor's spawn position,
 /// used when `PatrolBehavior.patrol_radius` is `None` (no PLDT / radius
@@ -50,240 +48,46 @@ use std::collections::VecDeque;
 /// procedures share the same v0 algorithm, so they share the same default.
 const PATROL_DEFAULT_RADIUS: f32 = 512.0;
 
-/// One actor's computed movement/state update for this tick, applied in
-/// Pass 2 after all Pass-1 reads have dropped (mirrors `wander_system`'s
-/// two-pass structure).
-struct PatrolDecision {
-    entity: EntityId,
-    source_rotation: Quat,
-    radius: f32,
-    form_id: u32,
-    /// `WalkStuckTimer.secs` snapshot (M42.10) — `0.0` when the component
-    /// is absent. Mutated by the movement pass, written back in Pass 2.
-    stuck_secs: f32,
-    /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
-    /// absent.
-    speed: f32,
-    waypoint_override: Option<Vec3>,
-    effective_goal: Vec3,
-    waypoints: VecDeque<Vec3>,
-    translation: Vec3,
-    rotation: Option<Quat>,
-    state: PatrolState,
-    /// The updated `NavPath` cache to write in Pass 2 — mirrors
-    /// `WanderDecision::nav_path`'s exact contract.
-    nav_path: Option<NavPath>,
-}
-
-/// Reusable per-frame scratch for [`patrol_system_inner`] — captured by
-/// [`make_patrol_system`] so the `decisions` backing allocation survives
-/// across frames instead of being re-declared `Vec::new()` every tick
-/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
-/// `AnimScratch` (#1372).
-#[derive(Default)]
-struct PatrolScratch {
-    decisions: Vec<PatrolDecision>,
-}
-
-/// Drive `wander_system`'s shared oscillating-walk core for every
-/// [`PatrolBehavior`] actor. Registered `add_exclusive(Stage::PostUpdate,
-/// …)`, same stage/slot family as `wander_system` — NPC placement roots
-/// are propagation roots (no `Parent`), so `Transform` == world position
-/// for them.
-fn patrol_system_inner(world: &World, dt: f32, scratch: &mut PatrolScratch) {
-    // ── Pass 1a: gather component snapshots. `PhysicsWorld` is NOT
-    // acquired in this scope, so it never overlaps the five storage read
-    // guards (#3262, mirroring the #2134 sibling shape). ──
-    scratch.decisions.clear();
-    // #3256 — stamped onto every NavPath this system writes and compared on
-    // every cache hit, so a NAVM tile streaming in (or out) invalidates cached
-    // paths that goal distance alone would keep forever. Read once at function
-    // scope: the resolve pass and the apply pass below are separate blocks and
-    // must agree, and nothing can bump the counter between them (cell load /
-    // unload runs in a different scheduler stage).
-    let residency_generation = crate::components::navmesh_residency_generation(world);
-    {
-        let Some(behavior_q) = world.query::<PatrolBehavior>() else {
-            return;
-        };
-        let Some(transform_q) = world.query::<Transform>() else {
-            return;
-        };
-        let state_q = world.query::<PatrolState>();
-        let tile_q = world.query::<NavmeshTile>();
-        let nav_path_q = world.query::<NavPath>();
-        let stuck_q = world.query::<WalkStuckTimer>();
-        let walk_speed_q = world.query::<crate::components::WalkSpeed>();
-        for (entity, behavior) in behavior_q.iter() {
-            let Some(transform) = transform_q.get(entity) else {
-                continue;
-            };
-            let radius = behavior.patrol_radius.unwrap_or(PATROL_DEFAULT_RADIUS);
-            let state = state_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .copied()
-                .unwrap_or_else(|| {
-                    let home = transform.translation;
-                    PatrolState {
-                        home,
-                        target: super::wander::pick_wander_target(
-                            home,
-                            radius,
-                            behavior.form_id,
-                            0,
-                        ),
-                        phase: WanderPhase::Walking,
-                        pick_count: 0,
-                    }
-                });
-            let stuck_secs = stuck_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|t| t.secs)
-                .unwrap_or(0.0);
-            let speed = walk_speed_q
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|s| s.0)
-                .unwrap_or(super::locomotion::LOCOMOTION_WALK_SPEED);
-
-            // EX-16 item 3 Phase 4: mirrors `wander_system_inner` exactly
-            // (same shared primitive, same caching shape) — only resolve
-            // a path while actually walking this leg.
-            let (waypoint_override, effective_goal, waypoints) =
-                if matches!(state.phase, WanderPhase::Walking) {
-                    let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    let (effective_goal, waypoints) = resolve_cached_waypoints(
-                        cached,
-                        tile_q.as_ref(),
-                        transform.translation,
-                        state.target,
-                        0.0,
-                        residency_generation,
-                    );
-                    (waypoints.front().copied(), effective_goal, waypoints)
-                } else {
-                    (None, state.target, VecDeque::new())
-                };
-
-            scratch.decisions.push(PatrolDecision {
-                entity,
-                source_rotation: transform.rotation,
-                radius,
-                form_id: behavior.form_id,
-                stuck_secs,
-                speed,
-                waypoint_override,
-                effective_goal,
-                waypoints,
-                translation: transform.translation,
-                rotation: None,
-                state,
-                nav_path: None,
-            });
+/// Patrol's component pair on the shared oscillating-walk system (#5580):
+/// the gather, the step, the `NavPath` cache and the write-back are
+/// `wander.rs`'s generic [`oscillating_walk_system_inner`]; only the
+/// component types and the radius field are Patrol's own.
+impl OscillatingWalkProcedure for PatrolBehavior {
+    type State = PatrolState;
+    const DEFAULT_RADIUS: f32 = PATROL_DEFAULT_RADIUS;
+    fn authored_radius(&self) -> Option<f32> {
+        self.patrol_radius
+    }
+    fn form_id(&self) -> u32 {
+        self.form_id
+    }
+    fn walk_of(state: &PatrolState) -> OscillateWalk {
+        OscillateWalk {
+            home: state.home,
+            target: state.target,
+            phase: state.phase,
+            pick_count: state.pick_count,
         }
     }
-    if scratch.decisions.is_empty() {
-        return;
-    }
-
-    // ── Pass 1b: finish movement with only `PhysicsWorld` live. All
-    // component guards from Pass 1a have dropped before this acquisition
-    // (#3262). ──
-    {
-        let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        for d in &mut scratch.decisions {
-            let (new_pos, rotation, new_state) = step_oscillating_wander(
-                d.translation,
-                d.source_rotation,
-                dt,
-                physics.as_deref(),
-                d.speed,
-                d.radius,
-                d.form_id,
-                OscillateWalk {
-                    home: d.state.home,
-                    target: d.state.target,
-                    phase: d.state.phase,
-                    pick_count: d.state.pick_count,
-                },
-                d.waypoint_override,
-                &mut d.stuck_secs,
-            );
-            if !d.waypoints.is_empty() {
-                pop_reached_waypoint(new_pos, &mut d.waypoints);
-            }
-            d.translation = new_pos;
-            d.rotation = rotation;
-            d.state = PatrolState {
-                home: new_state.home,
-                target: new_state.target,
-                phase: new_state.phase,
-                pick_count: new_state.pick_count,
-            };
-            d.nav_path = matches!(new_state.phase, WanderPhase::Walking).then(|| NavPath {
-                goal: d.effective_goal,
-                residency_generation,
-                waypoints: std::mem::take(&mut d.waypoints),
-            });
-        }
-    }
-
-    // ── Pass 2: apply writes (each a scoped single-type lock). ──
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &scratch.decisions {
-            if let Some(t) = tq.get_mut(d.entity) {
-                t.translation = d.translation;
-                if let Some(r) = d.rotation {
-                    t.rotation = r;
-                }
-            }
-        }
-    }
-    if let Some(mut sq) = world.query_mut::<PatrolState>() {
-        for d in &scratch.decisions {
-            sq.insert(d.entity, d.state);
-        }
-    }
-    if let Some(mut nq) = world.query_mut::<NavPath>() {
-        // #4189 — take the path instead of cloning it: `scratch.decisions`
-        // is rebuilt from scratch next frame and nothing reads `d.nav_path`
-        // after this loop, so the clone was a per-entity-per-tick heap
-        // allocation for a value that is about to be dropped. Same
-        // mem::take treatment the input side got.
-        for d in &mut scratch.decisions {
-            match d.nav_path.take() {
-                Some(path) => {
-                    nq.insert(d.entity, path);
-                }
-                None => {
-                    nq.remove(d.entity);
-                }
-            }
-        }
-    }
-    // M42.10 — mirrors `wander_system_inner`'s stuck-timer write-back:
-    // insert while nonzero, remove once cleared.
-    if let Some(mut sq) = world.query_mut::<WalkStuckTimer>() {
-        for d in &scratch.decisions {
-            if d.stuck_secs > 0.0 {
-                sq.insert(d.entity, WalkStuckTimer { secs: d.stuck_secs });
-            } else {
-                sq.remove(d.entity);
-            }
+    fn state_of(walk: OscillateWalk) -> PatrolState {
+        PatrolState {
+            home: walk.home,
+            target: walk.target,
+            phase: walk.phase,
+            pick_count: walk.pick_count,
         }
     }
 }
 
 /// Patrol system factory — returns a closure with a persistent
-/// [`PatrolScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
-/// identical to calling [`patrol_system_inner`] fresh every frame; use
-/// this when wiring the system into the scheduler.
+/// [`OscillateScratch`] (#2033 / PERF-D1-2026-07-16-01) driving the shared
+/// oscillating-walk system for every [`PatrolBehavior`] actor. Registered
+/// `add_exclusive(Stage::PostUpdate, …)`, same stage/slot family as
+/// `wander_system`.
 pub(crate) fn make_patrol_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut scratch = PatrolScratch::default();
+    let mut scratch = OscillateScratch::default();
     move |world: &World, dt: f32| {
-        patrol_system_inner(world, dt, &mut scratch);
+        oscillating_walk_system_inner::<PatrolBehavior>(world, dt, &mut scratch);
     }
 }
 
@@ -291,13 +95,16 @@ pub(crate) fn make_patrol_system() -> impl FnMut(&World, f32) + Send + Sync {
 /// persistent scratch. Production code uses [`make_patrol_system`].
 #[cfg(test)]
 pub(crate) fn patrol_system(world: &World, dt: f32) {
-    patrol_system_inner(world, dt, &mut PatrolScratch::default());
+    oscillating_walk_system_inner::<PatrolBehavior>(world, dt, &mut OscillateScratch::default());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::{NavPath, NavmeshTile};
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
+    use byroredux_core::ecs::components::{Transform, WanderPhase};
+    use byroredux_core::math::Vec3;
 
     #[test]
     fn patrol_system_moves_actor_toward_target_with_no_physics_world() {
@@ -413,8 +220,8 @@ mod tests {
         // pathing treatment WanderBehavior/WanderState do via the shared
         // step_oscillating_wander core -- not a re-test of the algorithm
         // itself (navmesh_path's own suite already covers that), just
-        // that patrol_system_inner wires the override/cache through
-        // correctly for its own component types.
+        // that the shared oscillating-walk system wires the override/cache
+        // through correctly for Patrol's own component types.
         let mut world = World::new();
         world.register::<PatrolBehavior>();
         world.register::<PatrolState>();

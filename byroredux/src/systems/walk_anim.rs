@@ -109,7 +109,7 @@ enum WalkAnimAction {
     RemovePlayer,
 }
 
-/// Reusable per-frame scratch (mirrors `WanderScratch`'s #2033 shape —
+/// Reusable per-frame scratch (mirrors `OscillateScratch`'s #2033 shape —
 /// the decisions backing allocation survives across frames).
 #[derive(Default)]
 struct WalkAnimScratch {

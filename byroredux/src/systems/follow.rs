@@ -121,6 +121,18 @@ struct FollowDecision {
     state_to_insert: Option<FollowState>,
 }
 
+impl super::navmesh_path::WalkDecision for FollowDecision {
+    fn entity(&self) -> EntityId {
+        self.entity
+    }
+    fn movement(&self) -> Option<(Vec3, Option<Quat>)> {
+        self.movement
+    }
+    fn take_nav_path(&mut self) -> Option<NavPath> {
+        self.nav_path.take()
+    }
+}
+
 /// Reusable per-frame scratch for [`follow_system_inner`] — captured by
 /// [`make_follow_system`] so the `decisions` backing allocation survives
 /// across frames instead of being re-declared `Vec::new()` every tick
@@ -299,38 +311,13 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
         }
     }
 
-    // ── Pass 2: apply writes (each a scoped single-type lock). ──
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        for d in &scratch.decisions {
-            if let (Some((new_pos, rotation)), Some(t)) = (d.movement, tq.get_mut(d.entity)) {
-                t.translation = new_pos;
-                if let Some(r) = rotation {
-                    t.rotation = r;
-                }
-            }
-        }
-    }
+    // ── Pass 2: apply writes (each a scoped single-type lock). The shared
+    // Transform + NavPath tail (#5580), then this system's own state. ──
+    super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
     if let Some(mut sq) = world.query_mut::<FollowState>() {
         for d in &scratch.decisions {
             if let Some(state) = d.state_to_insert {
                 sq.insert(d.entity, state);
-            }
-        }
-    }
-    if let Some(mut nq) = world.query_mut::<NavPath>() {
-        // #4189 — take the path instead of cloning it: `scratch.decisions`
-        // is rebuilt from scratch next frame and nothing reads `d.nav_path`
-        // after this loop, so the clone was a per-entity-per-tick heap
-        // allocation for a value that is about to be dropped. Same
-        // mem::take treatment the input side got.
-        for d in &mut scratch.decisions {
-            match d.nav_path.take() {
-                Some(path) => {
-                    nq.insert(d.entity, path);
-                }
-                None => {
-                    nq.remove(d.entity);
-                }
             }
         }
     }

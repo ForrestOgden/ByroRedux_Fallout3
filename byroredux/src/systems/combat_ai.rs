@@ -65,7 +65,7 @@ struct CombatAiScratch {
     unconscious: Vec<EntityId>,
 }
 
-/// Mirrors `wander_system_inner`'s read/write split: gather a decision per
+/// Mirrors `oscillating_walk_system_inner`'s read/write split: gather a decision per
 /// `AiCombatState` entity while holding storage read guards, resolve the
 /// chase steps against `PhysicsWorld` with no storage guard held, then apply
 /// `HitEvent`/movement/state.

@@ -34,8 +34,9 @@
 //!   change in alongside `travel_system`'s simpler (non-shared, one-shot)
 //!   integration. [`step_oscillating_wander`] itself still only decides
 //!   *when* to pause/re-pick — the resident-tile waypoint queue is
-//!   resolved and consumed by the caller (`wander_system_inner`/
-//!   `patrol_system_inner`) and passed in as an override, since
+//!   resolved and consumed by the caller (the generic
+//!   [`oscillating_walk_system_inner`] both procedures run, #5580) and
+//!   passed in as an override, since
 //!   `WanderState`/`PatrolState` are save-registered `MUTABLE_DELTA_COLUMNS`
 //!   and must not gain a path field (see `crate::components::NavPath`'s
 //!   own doc for why the cache lives outside them entirely, same as
@@ -77,7 +78,7 @@ use super::locomotion::{advance_stuck_repick, pop_reached_waypoint, step_toward_
 use super::navmesh_path::resolve_cached_waypoints;
 use crate::components::{NavPath, NavmeshTile, WalkStuckTimer};
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
-use byroredux_core::ecs::{EntityId, World};
+use byroredux_core::ecs::{Component, EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
 use std::collections::VecDeque;
 
@@ -147,6 +148,7 @@ pub(crate) fn pick_pause_duration(form_id: u32, pick_count: u32) -> f32 {
 /// any specific ECS component type — both `WanderState` and `PatrolState`
 /// (M42.8) convert to/from this rather than either depending on the
 /// other's component type.
+#[derive(Clone, Copy)]
 pub(crate) struct OscillateWalk {
     pub home: Vec3,
     pub target: Vec3,
@@ -236,10 +238,58 @@ pub(crate) fn step_oscillating_wander(
     }
 }
 
+/// What separates the oscillating-walk procedures at the ECS seam (#5580):
+/// the behavior/state component pair and the authored radius field. The
+/// gather, the [`step_oscillating_wander`] core, the cache handling and the
+/// write-back are one generic [`oscillating_walk_system_inner`]; Wander and
+/// Patrol (M42.8) each implement this on their behavior component and stay
+/// independently selectable and inspectable, matching every other M42
+/// procedure having its own component pair. Before #5580 `patrol.rs` carried
+/// a ~130-line copy of the Wander system body with only these names changed.
+pub(crate) trait OscillatingWalkProcedure: Component {
+    /// The save-registered per-actor state (`WanderState` / `PatrolState`).
+    type State: Component + Copy;
+    /// Radius (world units) around spawn when the PLDT authors none.
+    const DEFAULT_RADIUS: f32;
+    /// The authored PLDT radius, `None` for none / zero.
+    fn authored_radius(&self) -> Option<f32>;
+    fn form_id(&self) -> u32;
+    fn walk_of(state: &Self::State) -> OscillateWalk;
+    fn state_of(walk: OscillateWalk) -> Self::State;
+}
+
+impl OscillatingWalkProcedure for WanderBehavior {
+    type State = WanderState;
+    const DEFAULT_RADIUS: f32 = WANDER_DEFAULT_RADIUS;
+    fn authored_radius(&self) -> Option<f32> {
+        self.wander_radius
+    }
+    fn form_id(&self) -> u32 {
+        self.form_id
+    }
+    fn walk_of(state: &WanderState) -> OscillateWalk {
+        OscillateWalk {
+            home: state.home,
+            target: state.target,
+            phase: state.phase,
+            pick_count: state.pick_count,
+        }
+    }
+    fn state_of(walk: OscillateWalk) -> WanderState {
+        WanderState {
+            home: walk.home,
+            target: walk.target,
+            phase: walk.phase,
+            pick_count: walk.pick_count,
+        }
+    }
+}
+
 /// One actor's computed movement/state update for this tick, applied in
 /// Pass 2 after all Pass-1 reads have dropped (mirrors `sandbox_seat_system`'s
-/// two-pass read-then-write structure).
-struct WanderDecision {
+/// two-pass read-then-write structure). Procedure-agnostic: the state rides
+/// as the plain [`OscillateWalk`] and converts back at the write.
+pub(crate) struct OscillateDecision {
     entity: EntityId,
     source_rotation: Quat,
     radius: f32,
@@ -257,7 +307,7 @@ struct WanderDecision {
     /// `None` when the actor didn't move enough this tick to have a
     /// meaningful facing direction (e.g. paused, or already at target).
     rotation: Option<Quat>,
-    state: WanderState,
+    state: OscillateWalk,
     /// The updated `NavPath` cache to write in Pass 2 (EX-16 item 3
     /// Phase 4) — `None` while paused (nothing to walk toward) or once
     /// the final wander target is reached (mirrors every other
@@ -266,22 +316,39 @@ struct WanderDecision {
     nav_path: Option<NavPath>,
 }
 
-/// Reusable per-frame scratch for [`wander_system_inner`] — captured by
-/// [`make_wander_system`] so the `decisions` backing allocation survives
-/// across frames instead of being re-declared `Vec::new()` every tick
-/// (#2033 / PERF-D1-2026-07-16-01), mirroring `animation_system`'s
-/// `AnimScratch` (#1372).
-#[derive(Default)]
-struct WanderScratch {
-    decisions: Vec<WanderDecision>,
+impl super::navmesh_path::WalkDecision for OscillateDecision {
+    fn entity(&self) -> EntityId {
+        self.entity
+    }
+    fn movement(&self) -> Option<(Vec3, Option<Quat>)> {
+        Some((self.translation, self.rotation))
+    }
+    fn take_nav_path(&mut self) -> Option<NavPath> {
+        self.nav_path.take()
+    }
 }
 
-/// Drive straight-line walk-to-point locomotion for every [`WanderBehavior`]
-/// actor. Registered `add_exclusive(Stage::PostUpdate, …)` so it reads this
-/// frame's propagated `GlobalTransform`-equivalent position via `Transform`
-/// directly — NPC placement roots are propagation roots (no `Parent`), so
-/// `Transform` == world position for them, same as `sandbox_seat_system`.
-fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
+/// Reusable per-frame scratch for [`oscillating_walk_system_inner`] —
+/// captured by [`make_wander_system`] / `make_patrol_system` so the
+/// `decisions` backing allocation survives across frames instead of being
+/// re-declared `Vec::new()` every tick (#2033 / PERF-D1-2026-07-16-01),
+/// mirroring `animation_system`'s `AnimScratch` (#1372).
+#[derive(Default)]
+pub(crate) struct OscillateScratch {
+    decisions: Vec<OscillateDecision>,
+}
+
+/// Drive the walk-to-a-random-point-then-pause procedure `B` (Wander or
+/// Patrol) for every actor carrying `B`. Registered
+/// `add_exclusive(Stage::PostUpdate, …)` so it reads this frame's position
+/// via `Transform` directly — NPC placement roots are propagation roots (no
+/// `Parent`), so `Transform` == world position for them, same as
+/// `sandbox_seat_system`.
+pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
+    world: &World,
+    dt: f32,
+    scratch: &mut OscillateScratch,
+) {
     // ── Pass 1a: gather component snapshots. `PhysicsWorld` is NOT
     // acquired in this scope, so it never overlaps the five storage read
     // guards (#3262, mirroring the #2134 sibling shape). ──
@@ -294,13 +361,13 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
     // unload runs in a different scheduler stage).
     let residency_generation = crate::components::navmesh_residency_generation(world);
     {
-        let Some(behavior_q) = world.query::<WanderBehavior>() else {
+        let Some(behavior_q) = world.query::<B>() else {
             return;
         };
         let Some(transform_q) = world.query::<Transform>() else {
             return;
         };
-        let state_q = world.query::<WanderState>();
+        let state_q = world.query::<B::State>();
         let tile_q = world.query::<NavmeshTile>();
         let nav_path_q = world.query::<NavPath>();
         let stuck_q = world.query::<WalkStuckTimer>();
@@ -309,16 +376,17 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
             let Some(transform) = transform_q.get(entity) else {
                 continue;
             };
-            let radius = behavior.wander_radius.unwrap_or(WANDER_DEFAULT_RADIUS);
+            let radius = behavior.authored_radius().unwrap_or(B::DEFAULT_RADIUS);
+            let form_id = behavior.form_id();
             let state = state_q
                 .as_ref()
                 .and_then(|q| q.get(entity))
-                .copied()
+                .map(B::walk_of)
                 .unwrap_or_else(|| {
                     let home = transform.translation;
-                    WanderState {
+                    OscillateWalk {
                         home,
-                        target: pick_wander_target(home, radius, behavior.form_id, 0),
+                        target: pick_wander_target(home, radius, form_id, 0),
                         phase: WanderPhase::Walking,
                         pick_count: 0,
                     }
@@ -354,11 +422,11 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                     (None, state.target, VecDeque::new())
                 };
 
-            scratch.decisions.push(WanderDecision {
+            scratch.decisions.push(OscillateDecision {
                 entity,
                 source_rotation: transform.rotation,
                 radius,
-                form_id: behavior.form_id,
+                form_id,
                 stuck_secs,
                 speed,
                 waypoint_override,
@@ -389,12 +457,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
                 d.speed,
                 d.radius,
                 d.form_id,
-                OscillateWalk {
-                    home: d.state.home,
-                    target: d.state.target,
-                    phase: d.state.phase,
-                    pick_count: d.state.pick_count,
-                },
+                d.state,
                 d.waypoint_override,
                 &mut d.stuck_secs,
             );
@@ -403,12 +466,7 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
             }
             d.translation = new_pos;
             d.rotation = rotation;
-            d.state = WanderState {
-                home: new_state.home,
-                target: new_state.target,
-                phase: new_state.phase,
-                pick_count: new_state.pick_count,
-            };
+            d.state = new_state;
             // `Some` only while still walking — arriving (transition to
             // Paused) drops the cache, same "arrived, remove" posture
             // every other locomotion system in this codebase uses.
@@ -420,37 +478,12 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
         }
     }
 
-    // ── Pass 2: apply writes (each a scoped single-type lock). ──
-    if let Some(mut tq) = world.query_mut::<Transform>() {
+    // ── Pass 2: apply writes (each a scoped single-type lock). The shared
+    // Transform + NavPath tail (#5580), then the procedure's state. ──
+    super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
+    if let Some(mut sq) = world.query_mut::<B::State>() {
         for d in &scratch.decisions {
-            if let Some(t) = tq.get_mut(d.entity) {
-                t.translation = d.translation;
-                if let Some(r) = d.rotation {
-                    t.rotation = r;
-                }
-            }
-        }
-    }
-    if let Some(mut sq) = world.query_mut::<WanderState>() {
-        for d in &scratch.decisions {
-            sq.insert(d.entity, d.state);
-        }
-    }
-    if let Some(mut nq) = world.query_mut::<NavPath>() {
-        // #4189 — take the path instead of cloning it: `scratch.decisions`
-        // is rebuilt from scratch next frame and nothing reads `d.nav_path`
-        // after this loop, so the clone was a per-entity-per-tick heap
-        // allocation for a value that is about to be dropped. Same
-        // mem::take treatment the input side got.
-        for d in &mut scratch.decisions {
-            match d.nav_path.take() {
-                Some(path) => {
-                    nq.insert(d.entity, path);
-                }
-                None => {
-                    nq.remove(d.entity);
-                }
-            }
+            sq.insert(d.entity, B::state_of(d.state));
         }
     }
     // M42.10 — the stuck timer is runtime scratch: insert while it holds a
@@ -468,13 +501,13 @@ fn wander_system_inner(world: &World, dt: f32, scratch: &mut WanderScratch) {
 }
 
 /// Wander system factory — returns a closure with a persistent
-/// [`WanderScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
-/// identical to calling [`wander_system_inner`] fresh every frame; use
-/// this when wiring the system into the scheduler.
+/// [`OscillateScratch`] (#2033 / PERF-D1-2026-07-16-01). Behavior is
+/// identical to calling [`oscillating_walk_system_inner`] fresh every frame;
+/// use this when wiring the system into the scheduler.
 pub(crate) fn make_wander_system() -> impl FnMut(&World, f32) + Send + Sync {
-    let mut scratch = WanderScratch::default();
+    let mut scratch = OscillateScratch::default();
     move |world: &World, dt: f32| {
-        wander_system_inner(world, dt, &mut scratch);
+        oscillating_walk_system_inner::<WanderBehavior>(world, dt, &mut scratch);
     }
 }
 
@@ -482,7 +515,7 @@ pub(crate) fn make_wander_system() -> impl FnMut(&World, f32) + Send + Sync {
 /// persistent scratch. Production code uses [`make_wander_system`].
 #[cfg(test)]
 pub(crate) fn wander_system(world: &World, dt: f32) {
-    wander_system_inner(world, dt, &mut WanderScratch::default());
+    oscillating_walk_system_inner::<WanderBehavior>(world, dt, &mut OscillateScratch::default());
 }
 
 #[cfg(test)]
@@ -617,9 +650,9 @@ mod tests {
     /// Regression for #2033 / PERF-D1-2026-07-16-01. Pre-fix,
     /// `wander_system` declared `let mut decisions: Vec<WanderDecision> =
     /// Vec::new()` fresh every call — a per-frame allocation regardless of
-    /// how it was driven. Post-fix, [`WanderScratch::decisions`] is
+    /// how it was driven. Post-fix, [`OscillateScratch::decisions`] is
     /// captured once by [`make_wander_system`] and reused via `clear()`
-    /// each tick. Drives [`wander_system_inner`] directly against the same
+    /// each tick. Drives [`oscillating_walk_system_inner`] directly against the same
     /// persistent scratch across two ticks and asserts (a) the backing
     /// allocation's capacity doesn't grow on the second tick (the actual
     /// perf property this fix delivers) and (b) `len()` resets to 1 each
@@ -643,8 +676,8 @@ mod tests {
             },
         );
 
-        let mut scratch = WanderScratch::default();
-        wander_system_inner(&world, 0.5, &mut scratch);
+        let mut scratch = OscillateScratch::default();
+        oscillating_walk_system_inner::<WanderBehavior>(&world, 0.5, &mut scratch);
         assert_eq!(
             scratch.decisions.len(),
             1,
@@ -653,7 +686,7 @@ mod tests {
         let cap_after_first = scratch.decisions.capacity();
         assert!(cap_after_first > 0);
 
-        wander_system_inner(&world, 0.5, &mut scratch);
+        oscillating_walk_system_inner::<WanderBehavior>(&world, 0.5, &mut scratch);
         assert_eq!(
             scratch.decisions.len(),
             1,

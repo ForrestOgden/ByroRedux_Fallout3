@@ -795,6 +795,59 @@ pub(crate) fn cached_walk_step(
     }
 }
 
+/// One walk-to-point system's per-actor Pass-1 result, as the shared Pass-2
+/// write-back reads it (#5580). Wander, Patrol, Travel, Follow, Guard and
+/// Escort each keep their own decision struct for the state they alone
+/// persist (and write it themselves); this is the part every one of them
+/// writes identically.
+pub(crate) trait WalkDecision {
+    fn entity(&self) -> EntityId;
+    /// The tick's move: the new translation plus the facing (`None` when the
+    /// step was too short to define one). `None` leaves `Transform`
+    /// untouched — Follow, inside its stand-off or with no target.
+    fn movement(&self) -> Option<(Vec3, Option<Quat>)>;
+    /// The `NavPath` cache to persist (`Some`, including a deliberately empty
+    /// "no resident-tile path" result) or to drop (`None`).
+    fn take_nav_path(&mut self) -> Option<crate::components::NavPath>;
+}
+
+/// The Pass-2 tail shared by the six walk-to-point systems (#5580): the
+/// `Transform` write, then the `NavPath` cache insert/remove. Six verbatim
+/// copies of this used to carry the #4189 take-not-clone fix applied by
+/// hand, and #5452 showed the family drifting. Each write is a scoped
+/// single-type lock taken after every Pass-1 guard has dropped, so a caller
+/// runs its own state writes before or after this with no lock-order edge.
+pub(crate) fn write_back_walk<D: WalkDecision>(world: &World, decisions: &mut [D]) {
+    use byroredux_core::ecs::components::Transform;
+    if let Some(mut tq) = world.query_mut::<Transform>() {
+        for d in decisions.iter() {
+            if let (Some((translation, rotation)), Some(t)) = (d.movement(), tq.get_mut(d.entity()))
+            {
+                t.translation = translation;
+                if let Some(r) = rotation {
+                    t.rotation = r;
+                }
+            }
+        }
+    }
+    if let Some(mut nq) = world.query_mut::<crate::components::NavPath>() {
+        // #4189 — take the path instead of cloning it: the decisions are
+        // rebuilt from scratch next frame and nothing reads the path after
+        // this loop, so a clone would be a per-entity-per-tick heap
+        // allocation for a value about to be dropped.
+        for d in decisions.iter_mut() {
+            match d.take_nav_path() {
+                Some(path) => {
+                    nq.insert(d.entity(), path);
+                }
+                None => {
+                    nq.remove(d.entity());
+                }
+            }
+        }
+    }
+}
+
 /// Drop the actor's cached path once its walk is over, so a stale queue
 /// never outlives the procedure that owned it.
 pub(crate) fn clear_cached_path(world: &World, npc: EntityId) {
@@ -932,6 +985,53 @@ mod tests {
         assert!(
             include_str!("follow.rs").contains("std::mem::take(&mut d.waypoints)"),
             "follow.rs must hand its waypoints to the stepper, not clone them"
+        );
+    }
+
+    /// #5580 — the six walk-to-point systems share one Pass-2 tail
+    /// ([`write_back_walk`]) and Wander/Patrol share one system body. Before,
+    /// each carried a verbatim Transform + `NavPath` write-back (the #4189
+    /// take-not-clone fix was applied by hand to all six) and `patrol.rs`
+    /// was a ~130-line copy of `wander.rs`'s gather / cache / write-back.
+    /// Neither shape is visible to a behavioural test, so pin it at the
+    /// source.
+    #[test]
+    fn walk_movers_share_one_pass_two_write_back() {
+        let production = |src: &'static str| {
+            src.split("#[cfg(test)]\nmod tests")
+                .next()
+                .expect("split always yields a first segment")
+        };
+        for (label, src) in [
+            ("wander.rs", include_str!("wander.rs")),
+            ("travel.rs", include_str!("travel.rs")),
+            ("guard.rs", include_str!("guard.rs")),
+            ("escort.rs", include_str!("escort.rs")),
+            ("follow.rs", include_str!("follow.rs")),
+            ("patrol.rs", include_str!("patrol.rs")),
+        ] {
+            let src = production(src);
+            assert!(
+                !src.contains("query_mut::<NavPath>()") && !src.contains("match d.nav_path.take()"),
+                "{label} writes its own NavPath cache again instead of `write_back_walk`"
+            );
+            assert!(
+                !src.contains("query_mut::<Transform>()"),
+                "{label} writes its own Transform loop again instead of `write_back_walk`"
+            );
+            if label != "patrol.rs" {
+                assert!(
+                    src.contains("write_back_walk(world, &mut scratch.decisions)"),
+                    "{label} must apply its move through the shared `write_back_walk`"
+                );
+            }
+        }
+        let patrol = production(include_str!("patrol.rs"));
+        assert!(
+            patrol.contains("oscillating_walk_system_inner::<PatrolBehavior>")
+                && !patrol.contains("step_oscillating_wander(")
+                && !patrol.contains("resolve_cached_waypoints("),
+            "patrol.rs must run the shared oscillating-walk system, not a copy of its body"
         );
     }
 
