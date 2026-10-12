@@ -936,6 +936,38 @@ mod tests {
     /// still load, with a resolvable sibling `ImportAssets` still fetched
     /// and the failure recorded in `resource_errors()` — not the whole
     /// menu load failing the way `.collect()`-short-circuiting used to.
+    /// #5732 — an `ImportAssets` tag with an EMPTY URL is skipped, not
+    /// resolved: upstream ruffle's own loader ignores empty records ("FP
+    /// does not attempt to load the url if it is empty"), and joining an
+    /// empty relative URL would resolve to the movie itself, emitting a
+    /// bogus archive path. Neither a path nor an error may come out.
+    #[test]
+    fn an_empty_import_assets_url_is_skipped_silently() {
+        let movie_url = archive_movie_url("interface\\hudmenu.swf").unwrap();
+        let tags = vec![Tag::ImportAssets {
+            url: SwfStr::from_utf8_str(""),
+            imports: Vec::new(),
+        }];
+        let (paths, errors) = super::import_asset_paths_from_tags(&movie_url, &tags);
+        assert!(paths.is_empty(), "no path from an empty URL: {paths:?}");
+        assert!(errors.is_empty(), "no error either — a skip, not a failure: {errors:?}");
+
+        // The empty record neither masks nor is masked by its siblings.
+        let tags = vec![
+            Tag::ImportAssets {
+                url: SwfStr::from_utf8_str(""),
+                imports: Vec::new(),
+            },
+            Tag::ImportAssets {
+                url: SwfStr::from_utf8_str("fonts_en.swf"),
+                imports: Vec::new(),
+            },
+        ];
+        let (paths, errors) = super::import_asset_paths_from_tags(&movie_url, &tags);
+        assert_eq!(paths, ["interface\\fonts_en.swf"]);
+        assert!(errors.is_empty());
+    }
+
     #[test]
     fn root_movie_with_one_unresolvable_import_still_loads() {
         let imported = movie(vec![

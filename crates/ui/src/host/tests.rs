@@ -946,3 +946,70 @@ fn reserved_engine_callbacks_are_exactly_the_adapter_lifecycle_names() {
          registrations — extend it alongside avm2_host when a new one lands"
     );
 }
+
+/// #5732 (UI-D1-2026-10-12-01) — `invoke_callback` against a name the
+/// bridge's set still records but the movie has unregistered (AVM2
+/// `ExternalInterface.addCallback(name, null)` removes it from ruffle's
+/// registry) must consult the registry itself, prune the stale entry, and
+/// return `None` — pre-86f5a1a0a it reached `call_internal_interface`'s
+/// unknown-callback warn and surfaced `Some(Null)`, which read as a live
+/// callback's answer. The stale-registry state is produced the way the
+/// bridge itself produces it — `BridgeProvider::on_callback_available` —
+/// against the real AVM2 fixture, so both halves of the check run: a live
+/// callback still answers through the same call, and the stale one leaves
+/// no unknown-method record behind.
+#[test]
+fn invoking_an_unregistered_callback_prunes_and_returns_none() {
+    use ruffle_core::external::ExternalInterfaceProvider as _;
+
+    let bytes = decode_base64(AVM2_FIXTURE);
+    if !crate::player::vulkan_adapter_available() {
+        eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+        return;
+    }
+    let mut player = crate::SwfPlayer::new_with_profile(
+        &bytes,
+        64,
+        64,
+        ScaleformProfile::Fallout4Avm2,
+    )
+    .expect("the AVM2 fixture loads");
+    for _ in 0..3 {
+        player.tick(1.0 / 30.0);
+    }
+    let bridge = player.host_bridge();
+
+    // The fixture's own live callback answers — the registry check must
+    // not over-prune (`parrot` echoes its string argument).
+    assert!(bridge.has_callback("parrot"));
+    assert_eq!(
+        player.invoke_callback("parrot", [ScaleformValue::from("ByroRedux")]),
+        Some(ScaleformValue::String("ByroRedux".to_string())),
+        "the live callback still answers"
+    );
+
+    // The unregistered shape: the bridge set knows a name ruffle's
+    // registry does not hold.
+    let mut provider = bridge.provider();
+    provider.on_callback_available("byroUnregistered");
+    drop(provider);
+    assert!(bridge.has_callback("byroUnregistered"));
+
+    // The fixture's own scripts legitimately record unknown-method entries;
+    // the leak check is that the stale invoke adds none of its own.
+    let unknown_before = bridge.unknown_methods();
+    assert_eq!(
+        player.invoke_callback("byroUnregistered", []),
+        None,
+        "a stale bridge entry must read as gone, not as Some(Null)"
+    );
+    assert!(
+        !bridge.has_callback("byroUnregistered"),
+        "the stale entry is pruned so available_callbacks stays truthful"
+    );
+    assert_eq!(
+        bridge.unknown_methods(),
+        unknown_before,
+        "no Null leak: the stale invoke never reaches the unknown-method warn"
+    );
+}
