@@ -45,36 +45,19 @@
 //!   so it is left out rather than fabricated. The base values below are
 //!   correct; tag skills will read a few points low until the level model
 //!   is pinned against the engine.
-//! - **Non-auto-calc NPCs — ~40 % of every FO3/FNV actor, not a tail
-//!   (#2957).** The discriminator is `ACBS` flag bit 4 (`0x0010`,
-//!   "Auto-calculate stats"): when it is *clear* the NPC stores its own
-//!   SPECIAL and skills in the `NPC_` record's DNAM-era layout, and those
-//!   authored values — not the class averages — are what the game reads.
-//!   [`derive_autocalc_actor_values`] never consults `acbs_flags`; it goes
-//!   straight to the class for every FO3/FNV actor.
-//!
-//!   Censused over the vanilla masters (`cargo run -p byroredux-plugin
-//!   --example autocalc_census -- FalloutNV.esm Fallout3.esm`):
-//!
-//!   |                  |    FNV    |    FO3    |
-//!   |------------------|-----------|-----------|
-//!   | `NPC_` records   |   3816    |   1647    |
-//!   | auto-calc **ON** | 2283 (59.8 %) | 935 (56.8 %) |
-//!   | auto-calc **OFF**| **1533 (40.2 %)** | **712 (43.2 %)** |
-//!
-//!   So this is a bare-majority-correct path, not a near-universal one: ~1500
-//!   FNV and ~700 FO3 actors — disproportionately the hand-authored named
-//!   NPCs that quests and dialogue conditions target — currently receive
-//!   class-averaged stats instead of their authored ones.
-//!
-//!   The deferral stands because the stored values are not merely unread,
-//!   they are **unparsed**: the FO3/FNV `NPC_` DNAM skill/SPECIAL block has
-//!   no parser arm at all (the only actor-value-capturing `b"DNAM"` arm is
-//!   gated on `GameKind::uses_actor_value_properties`, i.e. FO4+). That parse
-//!   is `/audit-esm` Dimension 4 work — `NPC_` record decoding, not CHARAL.
-//!   Once it lands, [`derive_npc_actor_values`] gains a third arm gated on
-//!   this bit, in the same resolve-or-skip shape the FO4 and Skyrim arms
-//!   already use.
+//! - **Non-auto-calc NPCs' authored *skills* (~40 % of every FO3/FNV
+//!   actor).** The discriminator is `ACBS` flag bit 4 (`0x0010`,
+//!   "Auto-calculate stats"): when clear the NPC stores its own SPECIAL
+//!   and skills in the `NPC_` record. #5338 reads the **SPECIAL half** —
+//!   the 7 `DATA` bytes the #5005 arm already held — so the authored
+//!   attributes (and the Health their Endurance drives) now seed
+//!   correctly. The **skill half** is still deferred: the FO3/FNV
+//!   `NPC_` DNAM skill/SPECIAL block has no parser arm (the only
+//!   actor-value-capturing `b"DNAM"` arm is gated on
+//!   `GameKind::uses_actor_value_properties`, i.e. FO4+), so skills
+//!   derive from the authored SPECIAL through the GECK formula instead
+//!   of the authored per-skill values. That parse is `/audit-esm`
+//!   Dimension 4 work — `NPC_` record decoding, not CHARAL.
 //! - **Derived attributes** beyond FO3/FNV/Skyrim Health and FO4's baked
 //!   Health / Action Points (Carry Weight, regeneration, …).
 //!
@@ -433,9 +416,22 @@ fn derive_stored_actor_values(
     out
 }
 
+/// `ACBS` flag bit 4 (`0x0010`) — "Auto-calculate stats" (GECK *Stats
+/// Tab — NPC*). When clear, the NPC's SPECIAL is authored in its own
+/// `DATA` (see [`NpcRecord::data_attributes`]); when set, it comes from
+/// the class.
+const ACBS_FLAG_AUTO_CALCULATE: u32 = 0x0010;
+
 /// FNV / FO3 auto-calc: SPECIAL = the NPC's class base attributes, skills
 /// derived via the GECK formula (`base_skill`), and Health derived from the
 /// locked per-game END + level curve. The #1663 reference path.
+///
+/// #5338 — with the `ACBS` auto-calculate bit *clear*, the SPECIAL comes
+/// from the record's own authored `DATA` bytes instead of the class
+/// (~40 % of every FO3/FNV actor, disproportionately the named NPCs quests
+/// target). The class still supplies the skill *roster* derivation inputs:
+/// the authored `DNAM` skill half remains unparsed, so skills derive from
+/// the authored SPECIAL through the same GECK formula.
 fn derive_autocalc_actor_values(
     npc: &NpcRecord,
     index: &EsmIndex,
@@ -445,7 +441,16 @@ fn derive_autocalc_actor_values(
     let Some(class) = index.classes.get(&npc.class_form_id) else {
         return Vec::new();
     };
-    let special = class.base_attributes;
+    // #5338 — authored beats class-averaged: GECK "Attributes may not be
+    // changed if Autocalc is checked", so with the box clear the seven
+    // `DATA` bytes are the actor's real SPECIAL and the class ATTR is the
+    // wrong table. Falls back to the class when the record ships no DATA
+    // (a shell whose Use-Stats terminal authored none).
+    let special = if npc.acbs_flags & ACBS_FLAG_AUTO_CALCULATE == 0 {
+        npc.data_attributes.unwrap_or(class.base_attributes)
+    } else {
+        class.base_attributes
+    };
     let luck = special[6];
 
     let skills = profile.skills();
@@ -1536,6 +1541,114 @@ mod tests {
 
         let pairs = derive_npc_actor_values(&npc, &index);
         assert_eq!(pairs.len(), 21, "7 SPECIAL + 13 FNV skills + Health");
+    }
+
+    /// #5338 — with the ACBS auto-calculate bit clear, the actor's SPECIAL
+    /// comes from its own authored `DATA` bytes, not the class ATTR. The
+    /// vanilla shape is GhoulJasonBright: DATA END 7 against a class END 4,
+    /// Base Health 80, level 6 → the wiki's 135, not the class-derived 120.
+    #[test]
+    fn authored_data_special_beats_the_class_when_auto_calc_is_off() {
+        // Class END 4; authored DATA SPECIAL END 7 (Jason Bright's row).
+        let index = fnv_index_with_class(0x2000, [5, 5, 4, 5, 5, 5, 5]);
+        let mut npc = npc_with_class(0x2000);
+        npc.acbs_flags = 0; // auto-calculate CLEAR
+        npc.data_attributes = Some([6, 5, 7, 2, 6, 6, 3]);
+        npc.data_base_health = Some(80);
+        npc.level = 6;
+
+        let pairs = derive_npc_actor_values(&npc, &index);
+        let val = |name: &str| -> f32 {
+            let fid = index.actor_value_form_id(name).unwrap();
+            pairs.iter().find(|(f, _)| *f == fid).unwrap().1
+        };
+        assert_eq!(val("Strength"), 6.0, "authored DATA Strength");
+        assert_eq!(val("Endurance"), 7.0, "authored DATA Endurance, not the class's 4");
+        assert_eq!(
+            val("Health"),
+            135.0,
+            "base 80 + 5·(DATA END 7 − 1) + 5·(L 6 − 1) — the wiki's value, \
+             not the 120 the class's END 4 derives"
+        );
+
+        // The bit is the discriminator: with auto-calc set, the same DATA
+        // bytes are the GECK's copy of the class and the class governs.
+        let mut auto = npc.clone();
+        auto.acbs_flags = 0x0010;
+        let pairs = derive_npc_actor_values(&auto, &index);
+        let fid = index.actor_value_form_id("Endurance").unwrap();
+        assert_eq!(
+            pairs.iter().find(|(f, _)| *f == fid).unwrap().1,
+            4.0,
+            "auto-calc ON → the class ATTR is the SPECIAL"
+        );
+
+        // A shell with the bit clear but no DATA falls back to the class —
+        // resolve-or-fall-back, not resolve-or-empty.
+        let mut shell = npc.clone();
+        shell.data_attributes = None;
+        let pairs = derive_npc_actor_values(&shell, &index);
+        let fid = index.actor_value_form_id("Endurance").unwrap();
+        assert_eq!(
+            pairs.iter().find(|(f, _)| *f == fid).unwrap().1,
+            4.0,
+            "no authored DATA → the class remains the fallback"
+        );
+    }
+
+    /// #5338 — the real-master pin the audit asked for: two hand-authored
+    /// non-auto-calc FNV NPCs whose `DATA` SPECIAL differs from their
+    /// class's, checked against the fandom infobox Hit Points values the
+    /// audit cited. GhoulJasonBright 135, MartinaGroesbeck 80; Easy Pete
+    /// (DATA == class) is the invariance control at 65.
+    #[test]
+    #[ignore = "needs FNV game data on disk"]
+    fn fnv_authored_data_special_reproduces_the_wiki_hit_points() {
+        let path = crate::esm::test_paths::fnv_esm();
+        if !path.exists() {
+            eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+            return;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let index = crate::esm::records::parse_esm(&data).expect("parse_esm");
+        let health = index.health_actor_value_key().expect("Health AVIF");
+
+        let expected = [
+            ("GhoulJasonBright", 135.0, 7.0),
+            ("MartinaGroesbeck", 80.0, 4.0),
+            ("GSEasyPete", 65.0, 4.0),
+        ];
+        for (editor_id, want_health, want_endurance) in expected {
+            let npc = index
+                .npcs
+                .values()
+                .find(|npc| npc.editor_id == editor_id)
+                .unwrap_or_else(|| panic!("{editor_id} must exist in FalloutNV.esm"));
+            assert_eq!(
+                npc.acbs_flags & 0x0010,
+                0,
+                "{editor_id} is the non-auto-calc shape this pin is about"
+            );
+            assert!(
+                npc.data_attributes.is_some(),
+                "{editor_id} must author the DATA SPECIAL block"
+            );
+            let pairs = derive_npc_actor_values(npc, &index);
+            let val = |name: &str| -> f32 {
+                let fid = index.actor_value_form_id(name).unwrap();
+                pairs
+                    .iter()
+                    .find(|(f, _)| *f == fid)
+                    .unwrap_or_else(|| panic!("{name} missing from {editor_id}'s pairs"))
+                    .1
+            };
+            assert_eq!(val("Endurance"), want_endurance, "{editor_id} DATA END");
+            assert_eq!(
+                pairs.iter().find(|(f, _)| *f == health).unwrap().1,
+                want_health,
+                "{editor_id}: the wiki Hit Points value, via the authored DATA SPECIAL"
+            );
+        }
     }
 
     /// A `*DEAD` corpse prop authors `health = 0`; skipping Health there

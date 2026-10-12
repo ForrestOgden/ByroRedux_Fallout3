@@ -205,6 +205,15 @@ pub struct NpcRecord {
     /// ≤ 0 stamps [`Self::starts_dead`] — the sourced FO3/FNV corpse rule;
     /// a positive value stays here for the actor-value seeding path.
     pub data_base_health: Option<i32>,
+    /// FO3 / FNV `NPC_` `DATA` SPECIAL (`7 × u8 @ 4`, Str → Luck — the same
+    /// ATTR order as [`ClassRecord::base_attributes`]). #5338: these are the
+    /// actor's *authored* attributes, valid exactly when the `ACBS`
+    /// auto-calculate bit is clear (GECK *Stats Tab — NPC*: "Attributes may
+    /// not be changed if Autocalc is checked" — with the box clear, the
+    /// attributes are authored on the NPC). `None` for `CREA` and every
+    /// other game; the DNAM skill half of the authored block remains
+    /// unparsed.
+    pub data_attributes: Option<[u8; 7]>,
     /// Race form ID (RNAM).
     pub race_form_id: u32,
     /// Class form ID (CNAM).
@@ -444,6 +453,7 @@ pub fn parse_npc(
         is_creature: false,
         creature_stats: None,
         data_base_health: None,
+        data_attributes: None,
         race_form_id: 0,
         class_form_id: 0,
         voice_form_id: 0,
@@ -635,12 +645,20 @@ fn parse_npc_core(
         // (25 bytes). The Base Health is the FO3/FNV corpse marker — see
         // [`NpcRecord::starts_dead`] for the sources, and the field doc on
         // [`NpcRecord::data_base_health`] for why only the health term of
-        // the xNVSE comment is applied.
+        // the xNVSE comment is applied. #5338 — the 7 trailing bytes are
+        // the actor's *authored* SPECIAL (valid when the ACBS auto-calc
+        // bit is clear; see [`NpcRecord::data_attributes`]).
         b"DATA"
             if matches!(game, GameKind::Fallout3NV) && matches!(sub.data.len(), 11 | 25) =>
         {
-            let health = SubReader::new(&sub.data).i32_or_default();
+            let mut r = SubReader::new(&sub.data);
+            let health = r.i32_or_default();
+            let mut attributes = [0u8; 7];
+            for slot in &mut attributes {
+                *slot = r.u8_or_default();
+            }
             record.data_base_health = Some(health);
+            record.data_attributes = Some(attributes);
             if health <= 0 {
                 record.starts_dead = true;
             }

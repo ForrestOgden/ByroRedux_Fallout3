@@ -2124,13 +2124,17 @@ fn fallout3nv_starts_dead_keys_on_base_data_health() {
     let npc = parse_npc(0x2, &[sub(b"DATA", &alive)], GameKind::Fallout3NV, &None);
     assert!(!npc.starts_dead, "a healthy NPC_ base spawns alive");
     assert_eq!(npc.data_base_health, Some(200));
+    // #5338 — the 7 trailing bytes are the actor's authored SPECIAL
+    // (valid with the ACBS auto-calc bit clear), in ATTR order.
+    assert_eq!(npc.data_attributes, Some([5u8; 7]));
 
-    // The 25-byte legacy-tail variant decodes the same health.
+    // The 25-byte legacy-tail variant decodes the same health and SPECIAL.
     let mut legacy = alive.clone();
     legacy.extend_from_slice(&[0u8; 14]);
     let npc = parse_npc(0x3, &[sub(b"DATA", &legacy)], GameKind::Fallout3NV, &None);
     assert!(!npc.starts_dead, "the legacy DATA tail must not flip the rule");
     assert_eq!(npc.data_base_health, Some(200));
+    assert_eq!(npc.data_attributes, Some([5u8; 7]), "the legacy tail follows the SPECIAL, so it must not displace them");
 
     // CREA DATA (17 B): i16 health @ 4 (CreatureStats).
     let mut crea = vec![0u8; 4]; // creature type + 3 skills
