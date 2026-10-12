@@ -3,7 +3,7 @@
 use crate::ecs::resource::Resource;
 use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
-use crate::math::camera::rh::{proj::directx::perspective, view::look_at_mat4};
+use crate::math::camera::rh::{proj::directx::perspective, view::look_to_mat4};
 use crate::math::{Mat4, Vec3};
 
 use super::transform::Transform;
@@ -570,11 +570,22 @@ impl Camera {
     /// The transform's translation is the camera position.
     /// The transform's rotation determines the look direction
     /// (forward is -Z in the camera's local space).
+    ///
+    /// Built from the look DIRECTION (`look_to_mat4`), never from a focal point.
+    /// `look_at_mat4(position, position + forward, up)` derives the direction
+    /// as `(center − eye).normalize()`, and at worldspace magnitude the
+    /// `position + forward` sum quantises `forward` to the f32 ulp of the
+    /// coordinate (Markarth, X ≈ −176 000: 2⁻⁶ ≈ 0.0156 per component), which
+    /// rotated the CPU cull frustum up to ≈ 0.45° against the rendered view
+    /// (#5566). Passing the rotated axis straight through keeps the rotation
+    /// part exact at any distance from the origin.
     pub fn view_matrix(transform: &Transform) -> Mat4 {
         let position = transform.translation;
-        let forward = transform.rotation * -Vec3::Z;
+        // Normalised exactly as `look_at_mat4` normalised its derived
+        // direction, so a slightly non-unit rotation behaves as before.
+        let forward = (transform.rotation * -Vec3::Z).normalize();
         let up = transform.rotation * Vec3::Y;
-        look_at_mat4(position, position + forward, up)
+        look_to_mat4(position, forward, up)
     }
 }
 
@@ -1259,6 +1270,41 @@ mod tests {
         let point = view * Vec4::new(0.0, 0.0, -5.0, 1.0);
         // In view space, the point should have negative Z (in front).
         assert!(point.z < 0.0);
+    }
+
+    /// #5566 — the view matrix's rotation must not depend on how far the
+    /// camera is from the origin. `look_at(position, position + forward)`
+    /// quantised `forward` to the ulp of the coordinate: at the Markarth
+    /// eye below the direction was off by 0.14° at yaw 20° and 0.31° at 37°
+    /// (worst ≈ 0.45°), enough to rotate the CPU frustum planes ~6 px at
+    /// 1080p against the camera-relative matrix the GPU renders with.
+    #[test]
+    fn view_matrix_rotation_is_exact_at_worldspace_magnitude() {
+        let eye = Vec3::new(-176_000.3, 500.1, 121_000.7);
+        for yaw_deg in [0.0_f32, 20.0, 37.0, 71.0, -123.0] {
+            let rotation =
+                Quat::from_rotation_y(yaw_deg.to_radians()) * Quat::from_rotation_x(-0.2);
+            let near_origin = Transform::new(Vec3::ZERO, rotation, 1.0);
+            let far = Transform::new(eye, rotation, 1.0);
+            let (a, b) = (Camera::view_matrix(&near_origin), Camera::view_matrix(&far));
+            // The 3×3 rotation block (view-space axes expressed in world axes).
+            for column in 0..3 {
+                let (ca, cb) = (a.col(column), b.col(column));
+                assert!(
+                    (ca.truncate() - cb.truncate()).length() < 1.0e-6,
+                    "yaw {yaw_deg}: rotation column {column} drifted with distance \
+                     from the origin: {ca:?} vs {cb:?}"
+                );
+            }
+            // And the look direction is the transform's own -Z axis, to f32 precision.
+            let forward = rotation * -Vec3::Z;
+            let view_z = Vec3::new(b.col(0).z, b.col(1).z, b.col(2).z);
+            assert!(
+                (-view_z - forward).length() < 1.0e-6,
+                "yaw {yaw_deg}: view -Z {:?} is not the camera forward {forward:?}",
+                -view_z
+            );
+        }
     }
 
     #[test]
