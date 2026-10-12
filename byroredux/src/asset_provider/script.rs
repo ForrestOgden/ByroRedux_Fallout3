@@ -972,21 +972,24 @@ mod tests {
     /// `logical_quest_reference_spawns_identity_and_attaches_scripts`.
     #[test]
     fn scene_actor_alias_stubs_spawn_through_the_script_attaching_helper() {
-        const SRC: &str = include_str!("script.rs");
+        // #5650 — production text only (this file carries one trailing test
+        // module, so the first-cut split is exact): a whole-file scan is
+        // half-vacuous, the positive `contains` satisfiable by this
+        // assertion's own literal even with the production call deleted.
+        let src = byroredux_core::source_scan::production_text(include_str!("script.rs"));
 
         assert!(
-            SRC.contains("references::spawn_logical_quest_reference_with_scripts("),
+            src.contains("references::spawn_logical_quest_reference_with_scripts("),
             "the scene-actor alias stub must call the shared spawner that also \
              attaches scripts (#4331)"
         );
-        // `_with_scripts(` does not contain `reference(`, so the only occurrence
-        // of the identity-only spawner's call syntax in this file is the one in
-        // this assertion's own literal. A second is a real call site that
-        // skipped the attach.
+        // The identity-only spawner's call syntax must be absent from
+        // production text entirely — a call site here drops the base
+        // record's SCRI/VMAD and the ACHR's own VMAD (#4331).
         assert_eq!(
-            SRC.matches("spawn_logical_quest_reference(").count(),
-            1,
-            "the identity-only spawner must not return to this path — it drops \
+            src.matches("spawn_logical_quest_reference(").count(),
+            0,
+            "the identity-only spawner must not appear on this path — it drops \
              the base record's SCRI/VMAD and the ACHR's own VMAD (#4331)"
         );
     }

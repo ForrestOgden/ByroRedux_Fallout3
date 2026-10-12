@@ -1193,45 +1193,52 @@ fn persistent_position_is_local(
 /// `quest_alias_closest_fill_needs_a_transform_on_its_only_candidate`.
 #[cfg(test)]
 mod logical_stub_source_pin_tests {
-    /// This file's own source. Self-matching is not a risk here: the literals
-    /// below appear in the assertions themselves, so each is checked for a
-    /// count rather than mere presence where that matters.
-    const SRC: &str = include_str!("exterior.rs");
+    /// #5650 — this file's own source with every `#[cfg(test)] mod` block
+    /// stripped. This file interleaves seven test modules with production
+    /// code (the stub loop lives between two of them), so the first-cut
+    /// `production_text` would drop it; `strip_test_modules` keeps it. A
+    /// whole-file scan is half-vacuous: the positive `contains` below used
+    /// to be satisfiable by the assertion's own literal even with the
+    /// production call deleted.
+    fn production_src() -> String {
+        byroredux_core::source_scan::strip_test_modules(include_str!("exterior.rs"))
+    }
 
     #[test]
     fn logical_actor_stubs_spawn_through_the_shared_transform_bearing_helper() {
+        let src = production_src();
         // #4112 — the spawner this pin named grew a paired variant that also
         // attaches the reference's scripts, and the stub loop moved onto it.
         // The plain identity-only spawner must NOT come back here: that is
         // precisely the call this issue was about. (Naming it in prose rather
         // than in backticked call syntax — the count below would see it.)
         assert!(
-            SRC.contains("references::spawn_logical_quest_reference_with_scripts("),
+            src.contains("references::spawn_logical_quest_reference_with_scripts("),
             "the persistent-cell logical stub must call the shared spawner that \
              also attaches scripts (#4112), not open-code the identity components"
         );
-        // `_with_scripts(` does not contain `reference(`, so the only occurrence
-        // of the identity-only spawner's call syntax in this file is the one in
-        // this assertion's own literal. A second is a real call site that
-        // skipped the attach.
+        // The identity-only spawner's call syntax must be absent from
+        // production text entirely — a call site here drops the base
+        // record's SCRI/VMAD and the ACHR's own VMAD (#4112).
         assert_eq!(
-            SRC.matches("spawn_logical_quest_reference(").count(),
-            1,
-            "the identity-only spawner must not return to this path — it drops \
+            src.matches("spawn_logical_quest_reference(").count(),
+            0,
+            "the identity-only spawner must not appear on this path — it drops \
              the base record's SCRI/VMAD and the ACHR's own VMAD (#4112)"
         );
         assert!(
-            SRC.contains("transition::position_zup_to_yup(placed.position)"),
+            src.contains("transition::position_zup_to_yup(placed.position)"),
             "the stub must be given the REFR's own placement, converted the same \
              way the reference loader converts it"
         );
-        // The hand-rolled block this replaced constructed the candidate inline.
-        // One occurrence is this assertion's own literal.
+        // The hand-rolled block this replaced constructed the candidate
+        // inline; `stamp_quest_reference` (references.rs) must stay the only
+        // construction site, so none may appear in this file's production.
         assert_eq!(
-            SRC.matches("SceneAliasCandidate {").count(),
-            1,
+            src.matches("SceneAliasCandidate {").count(),
+            0,
             "the alias-candidate component must be built only by \
-             `stamp_quest_reference`; a second construction site here is the \
+             `stamp_quest_reference`; a construction site here is the \
              duplication #2664 removed"
         );
     }
