@@ -105,7 +105,6 @@ priority review: close from this set, don't grow it.
 
 | Cluster | Issues | Notes |
 | --- | --- | --- |
-| PEX / scripting sweep | #4474–#4479 (low) + #4471–#4473 (medium) | The long-promised sweep; mediums first (#4471 EVENT_NAMES gaps, #4472 peek sites, #4473 auto-state collision) |
 | FO3 carryovers | #4468, #4469 (low) | Emitter-rate siblings from the FO3 audit |
 | Character audit tail | #4452–#4457, #4459–#4463 (low/med, incl. 2 doc-rot) | The 2026-09-19 batch's declared leftovers |
 | Starfield material cluster | #4429, #4428, #4283, #4282, #4279, #4268, #4256 | One coherent SF-materials pass; shares files with each other |
