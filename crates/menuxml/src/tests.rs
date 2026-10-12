@@ -1148,6 +1148,132 @@ fn renderer_produces_frame_and_applies_overrides() {
     let _ = r.render_frame(&assets);
 }
 
+/// A `size`×`size` DXT1 DDS (all-zero blocks).
+fn dxt1_dds(size: u32) -> Vec<u8> {
+    let mut dds = vec![0u8; 128];
+    dds[0..4].copy_from_slice(b"DDS ");
+    dds[4..8].copy_from_slice(&124u32.to_le_bytes());
+    dds[12..16].copy_from_slice(&size.to_le_bytes()); // height
+    dds[16..20].copy_from_slice(&size.to_le_bytes()); // width
+    dds[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+    dds[84..88].copy_from_slice(b"DXT1");
+    dds.resize(128 + (size as usize / 4).pow(2) * 8, 0);
+    dds
+}
+
+/// One XML naming each of `filenames` on its own visible image tile, and a
+/// texture source that serves a 64×64 DXT1 for every menu path, recording
+/// the paths it was asked for.
+struct BudgetAssets {
+    xml: Vec<u8>,
+    fetched: std::cell::RefCell<Vec<String>>,
+}
+
+impl BudgetAssets {
+    fn new(filenames: &[&str]) -> Self {
+        let mut xml = String::from("<menu name=\"HUDMainMenu\"><locus> &true; </locus>");
+        for (i, name) in filenames.iter().enumerate() {
+            xml.push_str(&format!(
+                "<image name=\"i{i}\"><filename>{name}</filename>\
+                 <width>8</width><height>8</height></image>"
+            ));
+        }
+        xml.push_str("</menu>");
+        Self {
+            xml: xml.into_bytes(),
+            fetched: Default::default(),
+        }
+    }
+}
+
+impl MenuAssets for BudgetAssets {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        (path.eq_ignore_ascii_case("menus\\main\\hud_main_menu.xml")).then(|| self.xml.clone())
+    }
+    fn texture(&self, path: &str) -> Option<Vec<u8>> {
+        self.fetched.borrow_mut().push(path.to_string());
+        path.starts_with("textures\\menus").then(|| dxt1_dds(64))
+    }
+    fn font(&self, _index: u8) -> Option<Vec<u8>> {
+        None
+    }
+    fn font_texture(&self, _path: &str) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// #5658 (PAR-D1-2026-10-12-01) — the decoded-texture cache never evicts,
+/// so a document naming K distinct textures used to pin K decodes with no
+/// total. Past the renderer's budget a new texture is refused from its
+/// header alone (no decode) and resolves to nothing, while everything
+/// decoded before keeps being served.
+#[test]
+fn decoded_textures_stop_at_the_renderer_budget() {
+    let names = [
+        "Menus\\a0.dds",
+        "Menus\\a1.dds",
+        "Menus\\a2.dds",
+        "Menus\\a3.dds",
+        "Menus\\a4.dds",
+    ];
+    let assets = BudgetAssets::new(&names);
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    let one = 64 * 64 * 4;
+    r.texture_budget = 3 * one;
+    r.render_frame(&assets);
+
+    assert_eq!(r.decoded.len(), 3, "three textures fit the budget");
+    assert_eq!(r.decoded_bytes, 3 * one);
+    assert_eq!(r.tex_cache.len(), 5);
+    assert_eq!(
+        r.tex_cache.values().filter(|t| t.is_none()).count(),
+        2,
+        "the two over budget resolve to nothing"
+    );
+    // Refusals are cached: a second frame fetches nothing new.
+    let fetched = assets.fetched.borrow().len();
+    r.render_frame(&assets);
+    assert_eq!(assets.fetched.borrow().len(), fetched);
+}
+
+/// #5658 — the authored spellings of one file (`Menus\`, `Menus80\`,
+/// `textures\menus\`) resolve to one archive path and must share one
+/// decode, charged once, instead of each keeping its own copy.
+#[test]
+fn spellings_of_one_menu_texture_share_one_decode() {
+    let names = [
+        "Menus\\hud\\a.dds",
+        "Menus80\\hud\\a.dds",
+        "textures\\menus\\hud\\a.dds",
+    ];
+    let assets = BudgetAssets::new(&names);
+    let mut r = MenuRenderer::load(
+        &assets,
+        "menus\\main\\hud_main_menu.xml",
+        ScreenTraits::new(1280.0, 720.0),
+    )
+    .expect("load");
+    r.render_frame(&assets);
+
+    assert_eq!(r.decoded.len(), 1, "one archive file, one decode");
+    assert_eq!(r.decoded_bytes, 64 * 64 * 4);
+    let images: Vec<_> = r
+        .tex_cache
+        .values()
+        .map(|t| t.clone().expect("resolved"))
+        .collect();
+    assert_eq!(images.len(), 3);
+    assert!(images
+        .windows(2)
+        .all(|pair| std::sync::Arc::ptr_eq(&pair[0], &pair[1])));
+    assert_eq!(assets.fetched.borrow().len(), 1, "the archive is read once");
+}
+
 // ---------------------------------------------------------------------------
 // Tile-mode raster (FO3 `<tile>` trait — M48.5)
 // ---------------------------------------------------------------------------

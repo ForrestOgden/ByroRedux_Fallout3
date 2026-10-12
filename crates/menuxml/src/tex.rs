@@ -76,9 +76,19 @@ impl Rgba8 {
     pub fn decode_dds(bytes: &[u8]) -> Option<Self> {
         decode_dds_impl(bytes)
     }
+
+    /// The RGBA byte count [`Self::decode_dds`] would allocate for `bytes`,
+    /// read from the header alone — `None` for a header it would reject.
+    /// Lets a caller hold a memory budget before paying for a decode
+    /// (#5658).
+    pub fn decoded_len(bytes: &[u8]) -> Option<usize> {
+        dds_dimensions(bytes).map(|(width, height)| width as usize * height as usize * 4)
+    }
 }
 
-fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
+/// The magic and dimension checks every decode starts with, shared with the
+/// pre-decode budget probe so the two can never disagree.
+fn dds_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 4 + 124 || &bytes[0..4] != b"DDS " {
         log::debug!("menuxml: not a DDS (len {})", bytes.len());
         return None;
@@ -90,6 +100,12 @@ fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
         log::debug!("menuxml: DDS absurd dimensions {width}x{height}");
         return None;
     }
+    Some((width, height))
+}
+
+fn decode_dds_impl(bytes: &[u8]) -> Option<Rgba8> {
+    let (width, height) = dds_dimensions(bytes)?;
+    let h = |off: usize| u32::from_le_bytes(bytes[4 + off..4 + off + 4].try_into().unwrap());
     // DDS_PIXELFORMAT lives at header offset 72.
     let pf_flags = h(76);
     let fourcc = &bytes[4 + 80..4 + 84];

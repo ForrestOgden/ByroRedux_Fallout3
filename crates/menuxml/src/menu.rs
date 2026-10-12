@@ -85,6 +85,20 @@ pub enum MenuError {
     MissingStrings,
 }
 
+/// Ceiling on the decoded RGBA bytes one [`MenuRenderer`] keeps (#5658).
+///
+/// Each image is already capped at 8192² (256 MiB) by the decoder, but the
+/// cache never evicts, so without a total a mod menu naming K distinct
+/// textures pinned K × 256 MiB for the HUD's lifetime (about 48 KB of
+/// archive per 256 MiB; a few MB of archive aborted a 32 GiB machine).
+/// Sized from the vanilla census (real decoder, every archive in the
+/// install, 2026-10-12): decoding *every* menu texture a game ships at
+/// once totals 979.9 MiB for Oblivion (6,111 files, all three resolution
+/// sets), 753.8 MiB for FNV and 425.9 MiB for FO3, largest single image
+/// 16 MiB. A renderer only ever decodes the handful its document names,
+/// so 1 GiB cannot refuse vanilla art in any supported game.
+const MAX_DECODED_TEXTURE_BYTES: usize = 1 << 30;
+
 /// A loaded, renderable menu.
 pub struct MenuRenderer {
     doc: Document,
@@ -94,7 +108,19 @@ pub struct MenuRenderer {
     overrides: Overrides,
     screen: ScreenTraits,
     fonts: Vec<Option<Arc<Font>>>,
-    tex_cache: HashMap<String, Option<Arc<Rgba8>>>,
+    /// Authored `<filename>` (lowercased) → its resolved texture, or `None`
+    /// once it is known missing, undecodable or over budget.
+    pub(crate) tex_cache: HashMap<String, Option<Arc<Rgba8>>>,
+    /// Decoded images by resolved archive path, so the `Menus\` /
+    /// `Menus80\` / `textures\menus\` spellings of one file share a
+    /// single decode and are charged against the budget once (#5658).
+    pub(crate) decoded: HashMap<String, Arc<Rgba8>>,
+    /// RGBA bytes held in `decoded`, against `texture_budget`.
+    pub(crate) decoded_bytes: usize,
+    /// [`MAX_DECODED_TEXTURE_BYTES`]; a field so tests can shrink it.
+    pub(crate) texture_budget: usize,
+    /// The over-budget warning fires once per renderer.
+    budget_warned: bool,
     /// Filenames already logged as missing (once each).
     missing: HashSet<String>,
     frame: Framebuffer,
@@ -217,6 +243,10 @@ impl MenuRenderer {
             screen,
             fonts,
             tex_cache: HashMap::new(),
+            decoded: HashMap::new(),
+            decoded_bytes: 0,
+            texture_budget: MAX_DECODED_TEXTURE_BYTES,
+            budget_warned: false,
             missing: HashSet::new(),
             frame: Framebuffer::new(screen.width as u32, screen.height as u32),
             texture_set,
@@ -461,10 +491,37 @@ impl MenuRenderer {
         let mut decoded: Option<Arc<Rgba8>> = None;
         let mut undecodable: Vec<&str> = Vec::new();
         for path in &candidates {
+            if let Some(shared) = self.decoded.get(path) {
+                decoded = Some(Arc::clone(shared));
+                break;
+            }
             let Some(bytes) = assets.texture(path) else { continue };
+            // #5658 — charge the decode against the renderer's budget from
+            // the header alone, before anything is allocated. Over budget,
+            // this filename resolves to nothing (cached), as do new ones
+            // after it; already-decoded images keep being served.
+            if let Some(len) = Rgba8::decoded_len(&bytes) {
+                if self.decoded_bytes.saturating_add(len) > self.texture_budget {
+                    if !self.budget_warned {
+                        self.budget_warned = true;
+                        log::warn!(
+                            "menuxml: menu texture budget ({} MiB) exhausted at '{filename}' \
+                             ({path}, {} MiB decoded); it and any further new textures are \
+                             not drawn",
+                            self.texture_budget >> 20,
+                            len >> 20,
+                        );
+                    }
+                    self.tex_cache.insert(cache_key, None);
+                    return None;
+                }
+            }
             match Rgba8::decode_dds(&bytes) {
                 Some(img) => {
-                    decoded = Some(Arc::new(img));
+                    let img = Arc::new(img);
+                    self.decoded_bytes += img.pixels.len();
+                    self.decoded.insert(path.clone(), Arc::clone(&img));
+                    decoded = Some(img);
                     break;
                 }
                 None => undecodable.push(path),
