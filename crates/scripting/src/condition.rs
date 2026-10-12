@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **19 functions** at their canonical CTDA
+//! lineage. This catalog ships **24 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -32,21 +32,26 @@
 //! | 1     | GetDistance            | `GlobalTransform`           |
 //! | 14    | GetActorValue          | `ActorValues[param_1]`      |
 //! | 46    | GetDead                | `Dead` marker               |
+//! | 56    | GetQuestRunning        | `QuestStageState[param_1]`  |
 //! | 58    | GetStage               | `QuestStageState[param_1]`  |
 //! | 59    | GetStageDone           | `QuestStageState[param_1]`  |
 //! | 67    | GetInCell              | `CellRoot` + `CellFormId`   |
 //! | 68    | GetIsClass             | `Background.class_form_id`  |
 //! | 69    | GetIsRace              | `Background.race_form_id`   |
+//! | 71    | GetInFaction           | `FactionRanks` (Skyrim)     |
 //! | 72    | GetIsID                | `SceneAliasCandidate` base  |
 //! | 73    | GetFactionRank         | `FactionRanks`              |
+//! | 74    | GetGlobalValue         | `Globals[param_1]`          |
+//! | 77    | GetRandomPercent       | `StoryManagerRng`           |
 //! | 80    | GetLevel               | `CharacterLevel`            |
 //! | 182   | GetEquipped            | `Inventory` + `EquipmentSlots` |
-//! | 449   | HasPerk (448 on Skyrim)| `PerkList`                  |
+//! | 449   | HasPerk (448 on Skyrim)| `Perks`                      |
 //! | 533   | GetXPForNextLevel      | `CharacterRuleset` leveling |
 //! | 550   | IsSceneActionComplete  | `ScenePlayer` history       |
 //! | 555   | HasLoaded3D             | `GlobalTransform`           |
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
+//! | 586   | IsHardcore             | `HardcoreMode` (FNV)        |
 //! | 630   | GetVMScriptVariable    | `ScriptVariables`           |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
@@ -2623,6 +2628,13 @@ mod catalog_count_doc_pin_tests {
 
     const FEATURE_MATRIX: &str = include_str!("../../../docs/feature-matrix.md");
     const NPC_SPAWN: &str = include_str!("../../../docs/engine/npc-spawn-ai-packages.md");
+    /// This file's own source — the module doc's function table lives
+    /// here, so the pin scans the file itself. The scan counts the
+    /// table's rows (each starting `//! | <index> |`), a property of the
+    /// doc text, not a call-site needle, so — unlike the #5650 stub
+    /// pins — there is no production literal the test's own body could
+    /// satisfy.
+    const CONDITION_SRC: &str = include_str!("condition.rs");
 
     /// The first run of ASCII digits at or after `from` in `haystack`.
     fn digits_after(haystack: &str, anchor: &str, file: &str) -> usize {
@@ -2639,6 +2651,42 @@ mod catalog_count_doc_pin_tests {
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(rest.len());
         rest[..end].parse().expect("a run of ASCII digits parses")
+    }
+
+    /// #5648 — the module doc's own table drifted to 19 rows while the
+    /// catalog grew to 24, the third recurrence of the size drift this
+    /// module already pins in the two engine docs. The table is the
+    /// auditor-facing catalog (the enum's variant docs carry the detail),
+    /// so its row count is pinned to `CATALOG` directly: adding a variant
+    /// without a table row fails here rather than in a future audit.
+    #[test]
+    fn the_module_doc_table_lists_the_whole_catalog() {
+        let module_doc = CONDITION_SRC
+            .split_once("## Function catalog status")
+            .and_then(|(_, rest)| rest.split_once("Unknown function indices"))
+            .expect("the module doc's catalog section must keep its \
+                     `## Function catalog status` / `Unknown function indices` framing")
+            .0;
+        let rows = module_doc
+            .lines()
+            .filter(|line| {
+                // Strip the `//!` doc-comment prefix before matching.
+                let t = line.trim().trim_start_matches("//!").trim();
+                t.starts_with("| ") && !t.starts_with("| Index") && !t.starts_with("|---")
+            })
+            .count();
+        assert_eq!(
+            rows,
+            ConditionFunction::CATALOG.len(),
+            "the module doc's function table has {rows} rows but `CATALOG` lists {} — every \
+             new catalog entry needs its table row (and its documented index re-verified)",
+            ConditionFunction::CATALOG.len(),
+        );
+        assert_eq!(
+            digits_after(CONDITION_SRC, "This catalog ships **", "condition.rs module doc"),
+            ConditionFunction::CATALOG.len(),
+            "the module doc's prose count no longer matches `ConditionFunction::CATALOG`",
+        );
     }
 
     #[test]
