@@ -134,10 +134,15 @@ surface, at spawn/import — never at render time. Two converter families in
 `CachedNifImport::beam_volumes` (`cell_loader/nif_import_registry.rs`) and
 `prepare_fog_mesh_instance` (`cell_loader/spawn/mesh_instance.rs`):
 
-- six asset-signature beam converters (`fnv_nellis_hangar_beam_volumes_from_mesh`,
+- seven asset-signature beam converters (`fnv_nellis_hangar_beam_volumes_from_mesh`,
   `window_beam_volume_from_mesh`, `oblivion_dungeon_beam_volume_from_mesh`,
   `authored_cone_beam_volume_from_mesh`, `fnv_superwide_beam_volume_from_mesh`,
-  `vault_window_beam_volume_from_mesh`, #4809 lineage), each matching a file
+  `vault_window_beam_volume_from_mesh`, #4809 lineage — plus
+  `fo4_ambient_lamp_beam_volume_from_mesh`, #5285: FO4's
+  `effects\ambient\` emergency / fluorescent / dusty lamp shafts, incl.
+  `emergencylightbeam01.nif`, the largest population of them all; its media
+  constants are the alpha-derived `−ln(1−α)` extinction clamped to
+  0.001–0.3 and `edge_softness` 0.5), each matching a file
   name plus exact vertex/index counts — on a match the drawn submesh is
   **replaced** before upload (no `Material`, no raster entity, no BLAS; one or
   more canonical `FogVolume`s are emitted instead), 0572bfd5a;

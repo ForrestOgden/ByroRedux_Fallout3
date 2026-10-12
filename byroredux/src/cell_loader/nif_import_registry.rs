@@ -771,3 +771,82 @@ impl NifImportRegistry {
 }
 
 impl Resource for NifImportRegistry {}
+
+#[cfg(test)]
+mod beam_chain_doc_pin_tests {
+    /// #5285 — nifal.md's declared mesh→medium inventory must name every
+    /// converter the `beam_volumes` chain actually runs. #5102's list said
+    /// six while the chain had a seventh (`fo4_ambient_lamp_beam_volume_
+    /// from_mesh`, FO4's ambient lamp shafts), so the inventory
+    /// under-reported which titles lose drawn submeshes on the cell path.
+    /// This pins doc ↔ chain in both directions: every chain arm is named
+    /// in the doc's beam-converter bullet, and every name in that bullet is
+    /// a real chain arm. Scans this file's production text only (the
+    /// appended test module is stripped, so the scan cannot match itself).
+    #[test]
+    fn the_doc_names_every_beam_converter_the_chain_runs() {
+        // This file interleaves test modules with production code (two
+        // before the chain), so the first-cut production_text would drop
+        // the chain — strip every test module instead (#5650's lesson).
+        let registry = byroredux_core::source_scan::strip_test_modules(include_str!(
+            "nif_import_registry.rs"
+        ));
+        let chain = registry
+            .split_once("beam_volumes.get_or_init")
+            .and_then(|(_, rest)| rest.split_once(".collect()"))
+            .expect("the beam_volumes chain must keep its get_or_init…collect shape")
+            .0;
+        let arm_prefix = format!("{}{}", "crate::fog::", "");
+        let mut chain_arms: Vec<String> = Vec::new();
+        for chunk in chain.split(arm_prefix.as_str()).skip(1) {
+            let name: String = chunk
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.ends_with("_beam_volume_from_mesh")
+                || name.ends_with("_beam_volumes_from_mesh")
+            {
+                chain_arms.push(name);
+            }
+        }
+        assert!(
+            chain_arms.len() >= 7,
+            "the chain-scan found only {} arms — the parse broke, not the doc",
+            chain_arms.len()
+        );
+
+        let doc = include_str!("../../../docs/engine/nifal.md");
+        let bullet = doc
+            .split_once("asset-signature beam converters")
+            .and_then(|(_, rest)| rest.split_once("\n- the older fog-token"))
+            .expect(
+                "nifal.md must keep the beam-converter bullet bounded by the \
+                 fog-token bullet that follows it",
+            )
+            .0;
+        let doc_arms: Vec<String> = bullet
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|t| {
+                t.ends_with("_beam_volume_from_mesh") || t.ends_with("_beam_volumes_from_mesh")
+            })
+            .map(str::to_owned)
+            .collect();
+
+        for arm in &chain_arms {
+            assert!(
+                doc_arms.contains(arm),
+                "`{arm}` runs in the beam_volumes chain but nifal.md's converter \
+                 list does not name it (#5285)"
+            );
+        }
+        for arm in &doc_arms {
+            assert!(
+                chain_arms.contains(arm),
+                "nifal.md names `{arm}` but the chain never calls it — a stale \
+                 doc entry (#5285)"
+            );
+        }
+    }
+}
