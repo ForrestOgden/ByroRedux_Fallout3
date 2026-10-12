@@ -404,6 +404,52 @@ struct Scope {
     known_quest_properties: HashSet<String>,
 }
 
+/// What a declared local currently means to the lowerer — the identity
+/// [`Scope::rebound_by`] compares across a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalBinding {
+    Quest(QuestRef),
+    Object(ObjectRef),
+    Player,
+    Plain,
+}
+
+impl Scope {
+    /// The binding of a name declared in this function, or `None` when no
+    /// `VarDecl`/`Assign` has bound it.
+    fn binding_of(&self, name: &str) -> Option<LocalBinding> {
+        if let Some(via) = self.quest_locals.get(name) {
+            Some(LocalBinding::Quest(via.clone()))
+        } else if let Some(via) = self.object_locals.get(name) {
+            Some(LocalBinding::Object(via.clone()))
+        } else if self.player_locals.contains(name) {
+            Some(LocalBinding::Player)
+        } else if self.decl_locals.contains(name) {
+            Some(LocalBinding::Plain)
+        } else {
+            None
+        }
+    }
+
+    /// Whether `name` is a local declared by this function (as opposed to a
+    /// script variable or property).
+    fn declares(&self, name: &str) -> bool {
+        self.binding_of(name).is_some()
+    }
+
+    /// Whether `branch` — a clone of `self` that a nested body was lowered
+    /// against — rebinds any name `self` already declares.
+    fn rebound_by(&self, branch: &Scope) -> bool {
+        let names = self
+            .quest_locals
+            .keys()
+            .chain(self.object_locals.keys())
+            .chain(self.player_locals.iter())
+            .chain(self.decl_locals.iter());
+        names.into_iter().any(|name| self.binding_of(name) != branch.binding_of(name))
+    }
+}
+
 /// Lower a predominantly flat fragment body to its canonical effects, or
 /// decline.
 ///
@@ -489,7 +535,7 @@ fn lower_statements(
         return None;
     }
     let mut effects = Vec::new();
-    for stmt in body {
+    for (position, stmt) in body.iter().enumerate() {
         match &stmt.node {
             // `Quest k = <quest-expr>` — a local quest binding. Other-typed
             // local decls are recorded (so a later misuse declines) but
@@ -509,10 +555,23 @@ fn lower_statements(
                 let Expr::Ident(name) = &target.node else {
                     return None; // assignment to a field/index — unmodeled
                 };
-                bind_local(scope, name.0.to_ascii_lowercase(), &value.node)?;
+                let name = name.0.to_ascii_lowercase();
+                // Only a local this function declared can be re-bound. A bare
+                // identifier that is none of them is a script variable or a
+                // property: that write is persistent state `bind_local` would
+                // record as a side-effect-free local and drop (#5638).
+                if !scope.declares(&name) {
+                    return None;
+                }
+                bind_local(scope, name, &value.node)?;
             }
-            // `Return` with no value is Champollion's fragment terminator.
-            Stmt::Return(None) => {}
+            // `Return` with no value is Champollion's fragment terminator —
+            // and only as the body's final statement. Anywhere else (an
+            // early `Return` inside an `If`, or before more statements) it
+            // is control flow: lowering it as nothing would run the rest
+            // unconditionally, so decline (#5631). The provider lowerer
+            // draws the same line (`lower_program.rs`).
+            Stmt::Return(None) if depth == 0 && position + 1 == body.len() => {}
             Stmt::ExprStmt(e) => {
                 effects.push(classify_effect_with_providers(&e.node, scope, providers)?)
             }
@@ -552,6 +611,15 @@ fn lower_statements(
                     Some(body) => lower_statements(body, &mut else_scope, providers, depth + 1)?,
                     None => Vec::new(),
                 };
+                // The branches lowered against clones, so a declaration inside
+                // one correctly stays inside it. But Papyrus locals are
+                // function-scoped: an assignment in a branch to a local
+                // declared BEFORE the `If` changes what that name means after
+                // `EndIf`, and the clone is dropped. Decline rather than lower
+                // the tail against the pre-branch binding (#5632).
+                if scope.rebound_by(&then_scope) || scope.rebound_by(&else_scope) {
+                    return None;
+                }
                 let has_latent = |branch: &[Effect]| {
                     branch.iter().any(|effect| {
                         matches!(
@@ -3458,6 +3526,130 @@ mod tests {
                     stage: 7,
                 }],
             }]),
+        );
+    }
+
+    /// #5631: `Return` is Champollion's terminator only as the body's final
+    /// statement. An early one is control flow — lowering it as nothing
+    /// applied the rest of the body unconditionally.
+    #[test]
+    fn return_lowers_only_as_the_final_statement() {
+        let set = |stage| Effect::SetStage { quest: QuestRef::SelfRef, stage };
+        let trailing = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Self.SetStage(10)\n\
+             Return\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&trailing), Some(vec![set(10)]));
+
+        let early_in_if = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             If Self.GetStageDone(10)\n\
+               Return\n\
+             EndIf\n\
+             Self.SetStage(20)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&early_in_if), None, "early return inside an If");
+
+        let mid_body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Self.SetStage(10)\n\
+             Return\n\
+             Self.SetStage(20)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&mid_body), None, "return before more statements");
+
+        let tail_of_a_branch = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             If Self.GetStageDone(10)\n\
+               Self.SetStage(20)\n\
+               Return\n\
+             EndIf\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&tail_of_a_branch), None, "return nested in a branch");
+    }
+
+    /// #5632: the branches lower against clones of the scope, so a local
+    /// DECLARED inside one stays inside it — but re-binding a local declared
+    /// before the `If` changes what the name means after `EndIf`, and the
+    /// clone is dropped. The tail used to lower against the old binding.
+    #[test]
+    fn rebinding_a_pre_branch_local_inside_a_branch_declines() {
+        let rebinds = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Quest Property OtherQ Auto\n\
+             Function Fragment_0()\n\
+             Quest k = Self\n\
+             If Self.GetStageDone(10)\n\
+               k = OtherQ\n\
+             EndIf\n\
+             k.SetStage(20)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&rebinds), None);
+
+        // Re-binding to the very same target changes nothing after the
+        // branch, so it still lowers.
+        let same = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Quest k = Self\n\
+             If Self.GetStageDone(10)\n\
+               k = Self\n\
+             EndIf\n\
+             k.SetStage(20)\n\
+             EndFunction\n",
+        );
+        assert!(lower_fragment(&same).is_some());
+
+        // A local declared inside the branch never leaks out, so it is fine.
+        let declared_inside = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Quest Property OtherQ Auto\n\
+             Function Fragment_0()\n\
+             If Self.GetStageDone(10)\n\
+               Quest j = OtherQ\n\
+               j.SetStage(5)\n\
+             EndIf\n\
+             EndFunction\n",
+        );
+        assert!(lower_fragment(&declared_inside).is_some());
+    }
+
+    /// #5638: only a local this function declared can be re-bound. A write
+    /// to a script variable (or property) by bare name is persistent state;
+    /// it used to be recorded as a side-effect-free local and dropped.
+    #[test]
+    fn assignment_to_a_script_variable_declines() {
+        let script_var = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Bool bFlag\n\
+             Function Fragment_0()\n\
+             bFlag = True\n\
+             Self.SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&script_var), None);
+
+        let declared_local = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_0()\n\
+             Int n = 1\n\
+             n = 2\n\
+             Self.SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&declared_local),
+            Some(vec![Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 }])
         );
     }
 
