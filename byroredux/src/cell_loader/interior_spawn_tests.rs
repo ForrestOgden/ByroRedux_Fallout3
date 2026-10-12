@@ -73,32 +73,9 @@ fn cell(editor_id: &str, references: Vec<PlacedRef>) -> CellData {
     CellData {
         form_id: 0xABCD,
         editor_id: editor_id.to_string(),
-        display_name: None,
         references,
         is_interior: true,
-        show_sky: None,
-        grid: None,
-        lighting: None,
-        landscape: None,
-        water_height: None,
-        water_height_is_explicit: false,
-        image_space_form: None,
-        water_type_form: None,
-        acoustic_space_form: None,
-        music_type_form: None,
-        music_type_enum: None,
-        climate_override: None,
-        location_form: None,
-        encounter_zone_form: None,
-        regions: Vec::new(),
-        regional_color_override: None,
-        precombined_mesh_hashes: Vec::new(),
-        absorbed_ref_bakes: Vec::new(),
-        lighting_template_form: None,
-        ownership: None,
-        navmeshes: Vec::new(),
-        pathgrids: Vec::new(),
-        deleted_refs: Vec::new(),
+        ..Default::default()
     }
 }
 

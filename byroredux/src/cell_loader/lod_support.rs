@@ -382,34 +382,8 @@ mod tests {
 
     fn empty_cell(grid: (i32, i32)) -> CellData {
         CellData {
-            form_id: 0,
-            editor_id: String::new(),
-            display_name: None,
-            references: Vec::new(),
-            is_interior: false,
-            show_sky: None,
             grid: Some(grid),
-            lighting: None,
-            landscape: None,
-            water_height: None,
-            water_height_is_explicit: false,
-            image_space_form: None,
-            water_type_form: None,
-            acoustic_space_form: None,
-            music_type_form: None,
-            music_type_enum: None,
-            climate_override: None,
-            location_form: None,
-            encounter_zone_form: None,
-            regions: Vec::new(),
-            lighting_template_form: None,
-            ownership: None,
-            regional_color_override: None,
-            precombined_mesh_hashes: Vec::new(),
-            absorbed_ref_bakes: Vec::new(),
-            navmeshes: Vec::new(),
-            pathgrids: Vec::new(),
-            deleted_refs: Vec::new(),
+            ..Default::default()
         }
     }
 

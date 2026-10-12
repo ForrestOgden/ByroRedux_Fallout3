@@ -187,7 +187,16 @@ pub struct LandscapeData {
 }
 
 /// A cell (interior or exterior) with its placed object references.
-#[derive(Debug)]
+///
+/// `Default` is the absent-everything cell: no DATA/XCLW/XCLL/LAND, no
+/// references, every optional link `None`. Fixtures build cells as
+/// `CellData { form_id, ..Default::default() }` so a new field is a
+/// one-site edit (#5581; #4480 was a bin-crate test-build break from six
+/// full literals missing one). The production walkers (`walkers.rs`,
+/// `wrld.rs`) keep exhaustive literals on purpose: they destructure the
+/// parsed sub-record bundle field by field, and the compiler checking
+/// that coverage is the point there.
+#[derive(Debug, Default)]
 pub struct CellData {
     pub form_id: u32,
     pub editor_id: String,

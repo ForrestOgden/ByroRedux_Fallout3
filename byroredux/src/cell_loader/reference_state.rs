@@ -1177,32 +1177,9 @@ mod script_kill_tests {
             let cell = CellData {
                 form_id: 0x0001_2345,
                 editor_id: "Cell".to_owned(),
-                display_name: None,
                 references: vec![placed(0x0000_6001, 0x0000_A001, Some(0x0000_5001))],
                 is_interior: true,
-                show_sky: None,
-                grid: None,
-                lighting: None,
-                landscape: None,
-                water_height: None,
-                water_height_is_explicit: false,
-                image_space_form: None,
-                water_type_form: None,
-                acoustic_space_form: None,
-                music_type_form: None,
-                music_type_enum: None,
-                climate_override: None,
-                location_form: None,
-                encounter_zone_form: None,
-                regions: Vec::new(),
-                lighting_template_form: None,
-                ownership: None,
-                regional_color_override: None,
-                precombined_mesh_hashes: Vec::new(),
-                absorbed_ref_bakes: Vec::new(),
-                navmeshes: Vec::new(),
-                pathgrids: Vec::new(),
-                deleted_refs: Vec::new(),
+                ..Default::default()
             };
             index.cells.cells.insert("cell".to_owned(), cell);
             index

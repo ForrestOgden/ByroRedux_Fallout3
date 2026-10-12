@@ -203,32 +203,9 @@ mod tests {
         let cell = CellData {
             form_id: 0x0001_2345,
             editor_id: "WhiterunBanneredMare".to_string(),
-            display_name: None,
-            references: Vec::new(),
             is_interior: true,
-            show_sky: None,
-            grid: None,
-            lighting: None,
-            landscape: None,
-            water_height: None,
-            water_height_is_explicit: false,
-            image_space_form: None,
-            water_type_form: None,
-            acoustic_space_form: None,
-            music_type_form: None,
-            music_type_enum: None,
-            climate_override: None,
             location_form: Some(0x0001_0A0B),
-            encounter_zone_form: None,
-            regions: Vec::new(),
-            lighting_template_form: None,
-            ownership: None,
-            regional_color_override: None,
-            precombined_mesh_hashes: Vec::new(),
-            absorbed_ref_bakes: Vec::new(),
-            navmeshes: Vec::new(),
-            pathgrids: Vec::new(),
-            deleted_refs: Vec::new(),
+            ..Default::default()
         };
         let mut loaded = byroredux_plugin::esm::records::EsmIndex::default();
         loaded.cells.cells.insert("whiterunbanneredmare".to_string(), cell);

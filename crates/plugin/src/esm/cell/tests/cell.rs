@@ -1569,3 +1569,30 @@ fn parse_cell_xclw_sentinel_is_explicit_no_water() {
         "but the tri-state must still record that XCLW was present and explicit"
     );
 }
+
+/// #5581 — `CellData::default()` is the absent-everything cell every test
+/// fixture now builds from. Pin the semantics a fixture relies on when it
+/// omits a field: exterior-unflagged, no XCLW (so a worldspace fallback
+/// applies), DATA-absent `show_sky`, and nothing placed or linked.
+#[test]
+fn cell_data_default_is_the_absent_everything_cell() {
+    let cell = CellData::default();
+    assert_eq!(cell.form_id, 0);
+    assert!(cell.editor_id.is_empty());
+    assert!(cell.display_name.is_none());
+    assert!(!cell.is_interior);
+    assert_eq!(cell.show_sky, None, "absent DATA must inherit, not force a flag");
+    assert!(cell.grid.is_none());
+    assert!(cell.lighting.is_none() && cell.lighting_template_form.is_none());
+    assert!(cell.landscape.is_none());
+    assert_eq!(cell.water_height, None);
+    assert!(
+        !cell.water_height_is_explicit,
+        "an omitted XCLW must not read as an authored dry-cell sentinel"
+    );
+    assert!(cell.references.is_empty() && cell.deleted_refs.is_empty());
+    assert!(cell.regions.is_empty());
+    assert!(cell.precombined_mesh_hashes.is_empty() && cell.absorbed_ref_bakes.is_empty());
+    assert!(cell.navmeshes.is_empty() && cell.pathgrids.is_empty());
+    assert!(cell.ownership.is_none() && cell.regional_color_override.is_none());
+}
