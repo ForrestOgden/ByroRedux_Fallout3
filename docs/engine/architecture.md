@@ -132,7 +132,7 @@ opt in via `Access::new().reads::<T>().writes::<U>()`, registered through
 `Scheduler::add_to_with_access`. `Scheduler::access_report()` walks the
 per-stage conflict graph (`None` / `Conflict { pairs }` / `Unknown`) and is
 surfaced through the `sys.accesses` console command. After the M27 migration the
-12 parallel-stage systems report **0 unknown / 0 conflicts**; runtime-mutually-
+nine parallel-stage systems (`PARALLEL_SYSTEMS` in `boot/schedule/mod.rs`) report **0 unknown / 0 conflicts**; runtime-mutually-
 exclusive systems (audio, spin, the character-mode dispatcher, the
 `player_controller_system` PlayerMode branch) were re-staged as exclusive.
 

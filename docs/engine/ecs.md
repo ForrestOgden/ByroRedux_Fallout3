@@ -500,7 +500,8 @@ do; it makes contention diagnosable. Three states per system:
 `undeclared_count()`, `known_conflict_count()`, `unknown_pair_count()`. The
 engine binary snapshots this into the `SchedulerAccessReport` resource and
 surfaces it via the `sys.accesses` console command. After the M27 migration
-the engine's 12 parallel-stage systems report 0 unknown / 0 conflicts; the
+the engine's nine parallel-stage systems (`PARALLEL_SYSTEMS` in
+`boot/schedule/mod.rs`) report 0 unknown / 0 conflicts; the
 remaining undeclared systems are tracked as incremental migration work.
 
 ## Built-in Components
