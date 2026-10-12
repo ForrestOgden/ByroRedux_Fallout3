@@ -176,6 +176,25 @@ vec3 traceShadowTransmittance(
     );
 }
 
+// #5565 — the glass leg of whatever is left of a segment after
+// `traceShadowTransmittanceSkippingInstance`'s self-skip walk. Defined ABOVE
+// that function (and its docblock) so the block stays attached to the walk it
+// describes (#5702). Returns lit when the light carries no glass layer or
+// nothing remains.
+vec3 traceShadowGlassLegRemaining(
+    vec3 at, vec3 direction, float remaining, float emitterRadius,
+    uint visibilityMask
+) {
+    uint glassOnly = visibilityMask & VISIBILITY_LAYER_GLASS;
+    if (glassOnly == 0u || remaining <= 0.0) return vec3(1.0);
+    // With ONLY the glass bit the shared transport's opaque loop sees an
+    // empty mask and exits at once, and its glass loop runs — the same
+    // interface-by-interface tint/absorption/Fresnel the reflection half and
+    // water.frag already apply.
+    return traceShadowTransmittance(
+        at, direction, remaining, emitterRadius, glassOnly);
+}
+
 // #5249 — visibility of a light segment that ignores the receiver's OWN
 // instance: the transmission lobes' shadow ray. #5018's light-side origin
 // starts that ray just inside a closed body, so the body's own surfaces
@@ -203,20 +222,6 @@ vec3 traceShadowTransmittance(
 // segment lit, which is #5455's own repro. Every lit-returning exit now
 // finishes with the glass leg of the remaining segment instead of a bare
 // `vec3(1.0)`.
-vec3 traceShadowGlassLegRemaining(
-    vec3 at, vec3 direction, float remaining, float emitterRadius,
-    uint visibilityMask
-) {
-    uint glassOnly = visibilityMask & VISIBILITY_LAYER_GLASS;
-    if (glassOnly == 0u || remaining <= 0.0) return vec3(1.0);
-    // With ONLY the glass bit the shared transport's opaque loop sees an
-    // empty mask and exits at once, and its glass loop runs — the same
-    // interface-by-interface tint/absorption/Fresnel the reflection half and
-    // water.frag already apply.
-    return traceShadowTransmittance(
-        at, direction, remaining, emitterRadius, glassOnly);
-}
-
 vec3 traceShadowTransmittanceSkippingInstance(
     vec3 origin, vec3 direction, float maxDist,
     float emitterRadius, uint visibilityMask, int skipInstance
