@@ -274,12 +274,8 @@ pub struct PerkRecord {
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
-    /// First byte of DATA. On FO3/FNV this is the `trait` flag (0 or
-    /// 1; trait perks are non-removable). On Skyrim+ the layout is
-    /// the same first byte. Kept for backwards-compat with the prior
-    /// stub; new code should prefer [`Self::is_trait`].
-    pub perk_flags: u8,
-    /// True when the DATA `trait` byte is set — perk is a permanent
+    /// True when the DATA `trait` byte (the first byte, on FO3/FNV and
+    /// Skyrim+ alike) is set — perk is a permanent
     /// trait, can't be removed by the perk pool.
     pub is_trait: bool,
     /// DATA num_ranks (count of multi-rank steps). 1 for most perks;
@@ -340,8 +336,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             // present.
             b"DATA" if matches!(block, PerkBlock::None) && !sub.data.is_empty() => {
                 let mut r = SubReader::new(&sub.data);
-                out.perk_flags = r.u8_or_default();
-                out.is_trait = out.perk_flags != 0;
+                out.is_trait = r.u8_or_default() != 0;
                 // FO3/FNV layout: trait + level + num_ranks + playable + hidden.
                 // Skyrim layout:   trait + num_ranks + playable + hidden + level.
                 // The schemas overlap on `trait` and disagree past that.
@@ -1139,7 +1134,6 @@ mod tests {
         ];
         let p = parse_perk(0xE5E5, &subs, &None);
         assert_eq!(p.editor_id, "IntenseTraining");
-        assert_eq!(p.perk_flags, 0x01);
         assert!(p.is_trait, "byte 0 = 0x01 → trait set");
     }
 
