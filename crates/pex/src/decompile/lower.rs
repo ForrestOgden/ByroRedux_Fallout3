@@ -365,7 +365,7 @@ fn build_named_function(
 }
 
 fn lower_property(
-    pex: &Pex,
+    masks: &UserFlagMasks,
     object: &Object,
     prop: &crate::model::Property,
 ) -> Result<Property, DecompileError> {
@@ -394,13 +394,13 @@ fn lower_property(
     // frontend parses all four — lowering without them made the two
     // frontends disagree on any flagged property (`Const Auto Hidden`
     // lowered as plain `Auto`).
-    for (name, flag) in [
-        ("const", PropertyFlags::CONST),
-        ("mandatory", PropertyFlags::MANDATORY),
-        ("hidden", PropertyFlags::HIDDEN),
-        ("conditional", PropertyFlags::CONDITIONAL),
+    for (mask, flag) in [
+        (masks.constant, PropertyFlags::CONST),
+        (masks.mandatory, PropertyFlags::MANDATORY),
+        (masks.hidden, PropertyFlags::HIDDEN),
+        (masks.conditional, PropertyFlags::CONDITIONAL),
     ] {
-        if has_user_flag(pex, prop.user_flags, name) {
+        if prop.user_flags & mask != 0 {
             flags |= flag;
         }
     }
@@ -442,18 +442,54 @@ pub fn is_auto_state(object: &crate::model::Object, state: &crate::model::State)
     state.name.eq_ignore_ascii_case(&object.auto_state_name)
 }
 
-/// #5398 — whether `user_flags` has the bit the file's user-flag table
-/// assigns to `name` (case-insensitive; Champollion `Pex::UserFlag`).
-fn has_user_flag(pex: &Pex, user_flags: u32, name: &str) -> bool {
-    pex.user_flags.iter().any(|flag| {
-        flag.name.eq_ignore_ascii_case(name)
-            && flag.flag_index < 32
-            && user_flags & (1 << flag.flag_index) != 0
-    })
+/// #5398 — the bits the file's user-flag table assigns to the flag names
+/// the `.psc` frontend also parses (case-insensitive; Champollion
+/// `Pex::UserFlag`). A name may be listed more than once, so a mask is the
+/// OR of every matching entry's bit; entries with `flag_index >= 32` carry
+/// no bit in a `u32` and are ignored.
+///
+/// #5683 — resolved ONCE per `Pex` in a single pass over the table. The
+/// first form rescanned the whole table per variable, property and flag
+/// name: O(F × V) on a hostile `.pex` whose `u16` counts are both 65,535
+/// (an 852 KB file stalled `decompile_script` for ~18 s, well inside the
+/// parse budget). Now O(F + V).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct UserFlagMasks {
+    conditional: u32,
+    hidden: u32,
+    default: u32,
+    constant: u32,
+    mandatory: u32,
+}
+
+impl UserFlagMasks {
+    fn from_pex(pex: &Pex) -> Self {
+        let mut masks = Self::default();
+        for flag in &pex.user_flags {
+            if flag.flag_index >= 32 {
+                continue;
+            }
+            let bit = 1u32 << flag.flag_index;
+            let name = flag.name.as_str();
+            if name.eq_ignore_ascii_case("conditional") {
+                masks.conditional |= bit;
+            } else if name.eq_ignore_ascii_case("hidden") {
+                masks.hidden |= bit;
+            } else if name.eq_ignore_ascii_case("default") {
+                masks.default |= bit;
+            } else if name.eq_ignore_ascii_case("const") {
+                masks.constant |= bit;
+            } else if name.eq_ignore_ascii_case("mandatory") {
+                masks.mandatory |= bit;
+            }
+        }
+        masks
+    }
 }
 
 pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     let object = pex.main_object().ok_or(DecompileError::EmptyPex)?;
+    let masks = UserFlagMasks::from_pex(pex);
     let mut body: Vec<Spanned<ScriptItem>> = Vec::new();
 
     for v in &object.variables {
@@ -466,7 +502,7 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
             initial_value: None,
             // #5398 — `Int x Conditional` round-trips through the same
             // user-flag table as the object's own flags.
-            is_conditional: has_user_flag(pex, v.user_flags, "conditional"),
+            is_conditional: v.user_flags & masks.conditional != 0,
             is_const: v.const_flag != 0,
             is_hidden: false,
         })));
@@ -474,7 +510,7 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
 
     for p in &object.properties {
         body.push(sp(ScriptItem::Property(Box::new(lower_property(
-            pex, object, p,
+            &masks, object, p,
         )?))));
     }
 
@@ -539,12 +575,12 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     // #5398 — the object's user flags are bit indices named by the file's
     // own user-flag table; map the ones the `.psc` frontend also parses,
     // so both frontends produce the same `ScriptFlags`.
-    for (name, flag) in [
-        ("conditional", ScriptFlags::CONDITIONAL),
-        ("hidden", ScriptFlags::HIDDEN),
-        ("default", ScriptFlags::DEFAULT),
+    for (mask, flag) in [
+        (masks.conditional, ScriptFlags::CONDITIONAL),
+        (masks.hidden, ScriptFlags::HIDDEN),
+        (masks.default, ScriptFlags::DEFAULT),
     ] {
-        if has_user_flag(pex, object.user_flags, name) {
+        if object.user_flags & mask != 0 {
             flags |= flag;
         }
     }
@@ -672,6 +708,66 @@ mod tests {
             PropertyFlags::AUTO | PropertyFlags::HIDDEN | PropertyFlags::MANDATORY
                 | PropertyFlags::CONST,
             "every mapped user flag rides along with the auto bit"
+        );
+    }
+
+    /// #5683 — the user-flag masks are one pass over the table: entries
+    /// match case-insensitively, a repeated name ORs its bits, and an entry
+    /// with `flag_index >= 32` (a hostile table — it names a bit a `u32`
+    /// cannot hold) contributes nothing and must not shift-overflow.
+    #[test]
+    fn user_flag_masks_or_repeated_names_and_ignore_wide_indices() {
+        use crate::model::UserFlag;
+        let mut pex = pex_with_function(PexFunction::default());
+        pex.user_flags = vec![
+            UserFlag { name: "Conditional".into(), flag_index: 1 },
+            UserFlag { name: "conditional".into(), flag_index: 5 },
+            UserFlag { name: "HIDDEN".into(), flag_index: 31 },
+            UserFlag { name: "hidden".into(), flag_index: 32 },
+            UserFlag { name: "default".into(), flag_index: 255 },
+            UserFlag { name: "conditionaX".into(), flag_index: 2 },
+        ];
+        let masks = UserFlagMasks::from_pex(&pex);
+        assert_eq!(masks.conditional, (1 << 1) | (1 << 5));
+        assert_eq!(masks.hidden, 1 << 31);
+        assert_eq!(masks.default, 0, "flag_index >= 32 carries no bit");
+        assert_eq!(masks.constant | masks.mandatory, 0);
+    }
+
+    /// #5683 — a hostile table (every flag name a same-length near-miss, 65,535
+    /// flags × 65,535 variables, the 852 KB `.pex` of the report) decompiles in
+    /// linear time. The pre-fix O(F × V) form took ~18 s here; a quadratic
+    /// regression blows far past the generous bound.
+    #[test]
+    fn a_hostile_user_flag_table_decompiles_in_linear_time() {
+        use crate::model::{UserFlag, Variable as PexVariable};
+        let mut pex = pex_with_function(PexFunction {
+            name: "F".into(),
+            return_type_name: "None".into(),
+            ..PexFunction::default()
+        });
+        pex.user_flags = (0..65_535u32)
+            .map(|i| UserFlag { name: "conditionaX".into(), flag_index: (i % 256) as u8 })
+            .collect();
+        pex.objects[0].variables = (0..65_535u32)
+            .map(|i| PexVariable {
+                name: format!("v{i}"),
+                type_name: "Int".into(),
+                user_flags: u32::MAX,
+                ..PexVariable::default()
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let script = decompile_script(&pex).expect("decompiles");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "decompile of a 65,535 × 65,535 user-flag table took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            script.body.iter().all(|item| !matches!(
+                &item.node, ScriptItem::Variable(v) if v.is_conditional)),
+            "no table entry is named `conditional`"
         );
     }
 
