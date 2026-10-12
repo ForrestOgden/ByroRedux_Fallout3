@@ -489,7 +489,7 @@ fn sample_wthr_colors(
 /// Sample cloud PNAM/JNAM tables and attach them to the static weather
 /// controls. The renderer receives only the current four-layer result, while
 /// WeatherDataRes retains all TOD samples for deterministic transitions.
-fn sample_weather_sky(
+pub(crate) fn sample_weather_sky(
     weather: &WeatherDataRes,
     slot_a: usize,
     slot_b: usize,

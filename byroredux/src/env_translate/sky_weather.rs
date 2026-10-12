@@ -274,6 +274,8 @@ fn weather_sky_state(wthr: &WeatherRecord, tod_slot: usize) -> WeatherSkyState {
             color.r as f32 / 255.0,
             color.g as f32 / 255.0,
             color.b as f32 / 255.0,
+            // #5344 — same clamp the carried table gets below, so the
+            // first frame and every later frame read one quantity one way.
             wthr.cloud_layer_alphas[layer][slot].clamp(0.0, 1.0),
         ];
     }
@@ -459,7 +461,17 @@ pub(crate) fn translate_weather(
         cloud_layer_velocities,
         cloud_layer_velocities_authored: wthr.cloud_layer_velocities_authored,
         cloud_layer_colors,
-        cloud_layer_alphas: wthr.cloud_layer_alphas,
+        // #5344 — the table carries canonical [0, 1] alphas: the per-frame
+        // sampler (`sample_weather_sky`) lerps this array as-is, so a JNAM
+        // outside the unit range (mod or corrupt data) used to give every
+        // later frame a different cloud alpha than the clamped first-frame
+        // seed below. Clamping here — the one place the table is built —
+        // makes seed and sampler agree by construction; the transition
+        // completion promotes these tables verbatim from another
+        // `WeatherDataRes`, so it inherits the clamp.
+        cloud_layer_alphas: std::array::from_fn(|layer| {
+            std::array::from_fn(|slot| wthr.cloud_layer_alphas[layer][slot].clamp(0.0, 1.0))
+        }),
         // #5178 — the named constant, not a bare literal: both seed callers
         // seed at DAY, and a magic index is how the third TOD reduction
         // beside `fold_to_four_tod_slots` grew in the first place.
@@ -1204,14 +1216,23 @@ mod tests {
             (seeded.cloud_tints[0][3] - 0.75).abs() < 1e-6,
             "HIGH_NOON must read DAY's JNAM alpha (#5178)"
         );
-        // The steady-state sampler and the seed now agree by construction:
-        // for the same slot, translating at DAY and sampling at DAY give the
-        // same tint.
-        let wd = translate_weather(&w, None, &ImageSpaceSources::empty());
+        // #5344 — the REAL parity check: the per-frame sampler over the
+        // translated table must reproduce the seed, including for a JNAM
+        // outside the unit range (the old test compared `wd.weather` with
+        // `seeded` — seed@DAY vs seed@HIGH_NOON, a second fold check that
+        // never ran the sampler, while the seed clamped and the sampler
+        // did not).
+        let mut out_of_range = w.clone();
+        out_of_range.cloud_layer_alphas[0][TOD_DAY] = 1.5;
+        let wd = translate_weather(&out_of_range, None, &ImageSpaceSources::empty());
+        let sampled = crate::systems::weather::sample_weather_sky(&wd, TOD_DAY, TOD_DAY, 0.0);
         assert_eq!(
-            wd.weather.cloud_tints[0],
-            seeded.cloud_tints[0],
+            sampled.cloud_tints[0], wd.weather.cloud_tints[0],
             "the seed and the per-frame sampler must derive one quantity one way"
+        );
+        assert_eq!(
+            wd.weather.cloud_tints[0][3], 1.0,
+            "an out-of-range JNAM clamps in both the seed and the carried table"
         );
     }
 
