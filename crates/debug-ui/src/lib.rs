@@ -226,7 +226,6 @@ impl DebugUiState {
         self.set_visible(!self.visible);
     }
 
-    /// Show or hide the overlay explicitly (scripted captures).
     /// Drop a stashed `FullOutput` the way egui 0.36 requires: textures
     /// discarded without being applied. egui debug-asserts that a dropped
     /// `TexturesDelta` was drained. In practice these paths run with no
@@ -239,6 +238,7 @@ impl DebugUiState {
         }
     }
 
+    /// Show or hide the overlay explicitly (scripted captures).
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
         if !self.visible {

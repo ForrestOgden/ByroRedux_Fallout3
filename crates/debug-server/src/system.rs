@@ -220,9 +220,8 @@ impl System for DebugDrainSystem {
     }
 }
 
-/// Save debug screenshots under the working directory's `screenshots/` folder.
-/// Only a single relative filename is accepted, so absolute paths and `..`
-/// cannot escape the debug output directory.
+/// The default `screenshots/` filename for a bare `screenshot` command
+/// at unix second `secs`.
 /// #5147 — `screenshot_<secs>.png`, `screenshot_<secs>_2.png`, … — the
 /// first name not already present under `screenshots/`. `create_new` still
 /// guards the final race; this only keeps two same-second bare
@@ -245,6 +244,9 @@ fn unique_screenshot_name_in(root: &std::path::Path, secs: u64) -> String {
     unreachable!("u32 suffix space exhausted")
 }
 
+/// Save debug screenshots under the working directory's `screenshots/` folder.
+/// Only a single relative filename is accepted, so absolute paths and `..`
+/// cannot escape the debug output directory.
 fn write_screenshot(name: &str, bytes: &[u8]) -> Result<String, String> {
     use std::path::{Component, Path};
     let path = Path::new(name);
