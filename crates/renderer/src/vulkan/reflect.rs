@@ -331,7 +331,7 @@ pub fn uniform_block_member_offsets_by_name(
 ) -> Result<Option<Vec<(String, u32)>>> {
     let module = parse_module(spirv_bytes)?;
 
-    let Some((struct_id, struct_inst, types)) = named_struct(&module, name)? else {
+    let Some((struct_id, struct_inst, _types)) = named_struct(&module, name)? else {
         return Ok(None);
     };
     let member_count = struct_inst.operands.len();
