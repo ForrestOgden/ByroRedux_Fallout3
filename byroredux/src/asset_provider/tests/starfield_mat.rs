@@ -692,3 +692,31 @@ fn unresolvable_bgsm_still_falls_back_to_cdb_pbr() {
         "the fallback must not claim BGSM provenance it never parsed"
     );
 }
+
+/// #5284 — the CDB resolve tail lives in ONE place. Four sites used to
+/// hand-copy `lookup_cdb_material` → `apply_cdb_material` →
+/// outcome-from-`touched` → miss-`apply_cdb_pbr_fallback`, and the BGSM and
+/// BGEM copies skipped `trace_merge_outcome` — the exact drift shape the
+/// audit flagged (a future CDB-arm change would land four times, or three).
+/// Pin: exactly one production call each of `lookup_cdb_material` and
+/// `apply_cdb_pbr_fallback` in merge.rs — the ones inside
+/// `resolve_through_cdb`. merge.rs interleaves test modules, so the scan
+/// strips them (#5650's lesson).
+#[test]
+fn the_cdb_resolve_tail_has_one_home() {
+    let merge_src = byroredux_core::source_scan::strip_test_modules(include_str!(
+        "../material/merge.rs"
+    ));
+    for needle in ["lookup_cdb_material(", "apply_cdb_pbr_fallback(material"] {
+        let needle = format!("{}{}", needle.split('(').next().unwrap_or(needle), {
+            // rebuild the full needle verbatim without a self-match literal
+            if needle.ends_with('(') { "(" } else { "(material" }
+        });
+        let count = merge_src.matches(&needle).count();
+        assert_eq!(
+            count, 1,
+            "merge.rs production carries {count} copies of `{needle}` — the CDB \
+             resolve tail must live only in resolve_through_cdb (#5284)"
+        );
+    }
+}

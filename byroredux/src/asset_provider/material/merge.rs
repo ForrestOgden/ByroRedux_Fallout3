@@ -110,6 +110,49 @@ fn trace_merge_outcome(path: &str, outcome: MergeOutcome) {
 /// by the type system rather than by a test that has to be remembered. The
 /// `decals` array rides along through `zip_map_ref`'s `from_fn`, which is
 /// where the old loop's separate index walk lived.
+/// #5284 — the CDB resolve tail, once. Four sites used to hand-copy this
+/// block (`.mat` gate, unknown-kind fallthrough, BGSM miss, BGEM miss), and
+/// the BGSM/BGEM copies returned without `trace_merge_outcome` — so a CDB
+/// resolution on a sidecar miss was invisible to the merge telemetry the
+/// other two sites emit. The tail now lives here and every site routes
+/// through it; the next CDB-arm change (blend forwarding, provenance
+/// recording) lands once.
+///
+/// `source` is `Some(Mat)` only for the `.mat` arm, whose fill is a `.mat`
+/// source and records its texture provenance (#3906); the sidecar-miss
+/// arms resolve nothing to record and pass `None`.
+fn resolve_through_cdb(
+    material: &mut ImportedMaterial,
+    provider: &mut MaterialProvider,
+    pool: &mut byroredux_core::string::StringPool,
+    path: &str,
+    touched: &mut bool,
+    texture_exists: &dyn Fn(&str) -> bool,
+    source: Option<ImportedTextureSource>,
+) -> MergeOutcome {
+    if let Some(cdb_mat) = provider.lookup_cdb_material(path) {
+        let textures_before_cdb = material.textures;
+        apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
+        if source.is_some() {
+            record_external_texture_sources(
+                material,
+                &textures_before_cdb,
+                ImportedTextureSource::Mat,
+            );
+        }
+        let outcome = if *touched {
+            MergeOutcome::Merged
+        } else {
+            MergeOutcome::PresenceOnly
+        };
+        trace_merge_outcome(path, outcome);
+        return outcome;
+    }
+    let outcome = apply_cdb_pbr_fallback(material, path);
+    trace_merge_outcome(path, outcome);
+    outcome
+}
+
 fn record_external_texture_sources(
     material: &mut ImportedMaterial,
     before: &MaterialTextureSet<Option<byroredux_core::string::FixedString>>,
@@ -554,26 +597,17 @@ pub(crate) fn merge_external_material(
         }
         // #3398 Phase 2 — resolve through the CDB material index next;
         // the Phase-1 PBR-routing flip is now the lookup-MISS fallback.
-        if let Some(cdb_mat) = provider.lookup_cdb_material(&path) {
-            let textures_before_cdb = material.textures;
-            apply_cdb_material(material, &cdb_mat, pool, &mut touched, texture_exists);
-            // The CDB fill is a `.mat` source — record its provenance so
-            // `mat.dump`'s src=mat label means what it says (#3906's rule).
-            record_external_texture_sources(
-                material,
-                &textures_before_cdb,
-                ImportedTextureSource::Mat,
-            );
-            let outcome = if touched {
-                MergeOutcome::Merged
-            } else {
-                MergeOutcome::PresenceOnly
-            };
-            trace_merge_outcome(&path, outcome);
-            return outcome;
-        }
-        let outcome = apply_cdb_pbr_fallback(material, &path);
-        trace_merge_outcome(&path, outcome);
+        // #5284 — the shared tail; this arm records its fill as a `.mat`
+        // texture source (#3906).
+        let outcome = resolve_through_cdb(
+            material,
+            provider,
+            pool,
+            &path,
+            &mut touched,
+            texture_exists,
+            Some(ImportedTextureSource::Mat),
+        );
         return outcome;
     }
 
@@ -669,19 +703,15 @@ pub(crate) fn merge_external_material(
         // for a Starfield session would be the same as the two arms above,
         // so wire it now rather than leave a hole for that change to fall in.
         if cdb_pbr_fallback {
-            if let Some(cdb_mat) = provider.lookup_cdb_material(&path) {
-                apply_cdb_material(material, &cdb_mat, pool, &mut touched, texture_exists);
-                let outcome = if touched {
-                    MergeOutcome::Merged
-                } else {
-                    MergeOutcome::PresenceOnly
-                };
-                trace_merge_outcome(&path, outcome);
-                return outcome;
-            }
-            let outcome = apply_cdb_pbr_fallback(material, &path);
-            trace_merge_outcome(&path, outcome);
-            return outcome;
+            return resolve_through_cdb(
+                material,
+                provider,
+                pool,
+                &path,
+                &mut touched,
+                texture_exists,
+                None,
+            );
         }
         return MergeOutcome::Unresolved;
     }
@@ -780,15 +810,10 @@ fn merge_bgsm_arm(
         // warning's whole premise ("keeps its NIF-native keyword-
         // classified material") is false once the flip runs.
         if cdb_pbr_fallback {
-            if let Some(cdb_mat) = provider.lookup_cdb_material(path) {
-                apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
-                return Some(if *touched {
-                    MergeOutcome::Merged
-                } else {
-                    MergeOutcome::PresenceOnly
-                });
-            }
-            return Some(apply_cdb_pbr_fallback(material, path));
+            // #5284 — the shared tail (this hand copy skipped the trace).
+            return Some(resolve_through_cdb(
+                material, provider, pool, path, touched, texture_exists, None,
+            ));
         }
         // #2601 — `resolve_bgsm` already logged WHY the resolve failed
         // (missing archive entry, parse error, template-cycle recovery
@@ -1452,15 +1477,10 @@ fn merge_bgem_arm(
     let Some(bgem) = provider.resolve_bgem(path) else {
         // #3230 — sibling of the BGSM arm's fallback above.
         if cdb_pbr_fallback {
-            if let Some(cdb_mat) = provider.lookup_cdb_material(path) {
-                apply_cdb_material(material, &cdb_mat, pool, touched, texture_exists);
-                return Some(if *touched {
-                    MergeOutcome::Merged
-                } else {
-                    MergeOutcome::PresenceOnly
-                });
-            }
-            return Some(apply_cdb_pbr_fallback(material, path));
+            // #5284 — the shared tail (the trace the hand copy skipped).
+            return Some(resolve_through_cdb(
+                material, provider, pool, path, touched, texture_exists, None,
+            ));
         }
         // #2601 — sibling of the BGSM arm's diagnostic above. Same
         // consequence: this mesh keeps the NIF-native keyword-
