@@ -20,17 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 97, 2026-10-10, HEAD `455b473a1`. Workspace
+**Last session close:** Session 98, 2026-10-12, HEAD `bc29e8923`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
-bin crate's MSRV since wasmtime 49. On it, `cargo clippy --workspace
---all-targets` is clean (re-run at this close); CI gates only the
-non-`--all-targets` form. Hosted CI is **red at HEAD on the ABBA lock-order
-lane alone** (see Known Issues); the main test job is green again since
-`a123b173a` (#5477). The bench-of-record below was taken at
-`a37fcba3c`, 616 commits before this close (R6a-stale-27). Its one open
+bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
+--workspace -- -D warnings` is **red** (5 lints, re-run at this close), and
+hosted CI is **red at HEAD on two jobs**: Test + Check + Clippy and the
+ABBA lock-order lane (both in Known Issues). All 9724 tests themselves pass.
+The bench-of-record below was taken at
+`a37fcba3c`, 812 commits before this close (R6a-stale-28). Its one open
 regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open — the
@@ -574,13 +574,13 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-27 — bench-of-record `a37fcba3c` is 616 commits stale**
-  (2026-10-10 close). Frame-path changes since include #5154, #5018/#5191,
+- [ ] **R6a-stale-28 — bench-of-record `a37fcba3c` is 812 commits stale**
+  (2026-10-12 close). Frame-path changes since include #5154, #5018/#5191,
   #5062, #5064, #4902/#4909/#4915, #5055/#4784, #5158's exposure retune
   (`7d99ba7f0`), #5243, #5192, #5204, #5245, the sun-disc / sunset-palette
-  changes (`c60405083`, `56786698b`), and in Session 97 #5482's shadow-toe
-  contrast grade (`3bcf6c8e8`), the #5369/#5507 light-rig EMA key, #5211,
-  and the 2026-10 dependency refresh (wgpu 30, egui 0.36, image 0.25). Re-run
+  changes (`c60405083`, `56786698b`), Session 97's #5482 shadow toe, #5507 EMA
+  key, #5211 and the 2026-10 dependency refresh, and in Session 98 #5369's
+  dithered shadow rays + 1024-deep tail (`4d991bad7`, `48bed0504`) and #5565. Re-run
   `scripts/fsr-bench-matrix.sh 3 300` with a
   same-machine control; no HEAD frame-time claim is current until then.
   The harness pair has moved twice since the record
@@ -588,7 +588,7 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   both edits carry a recorded disposition (#5451, incl. the 2026-10-11
   one-binary interleaved control — identical state_hash/entities/draws/
   lights/TLAS, 12.03 vs 12.06 ms — so neither changes the Prospector row).
-  The 616-commit staleness above is what remains.
+  The 812-commit staleness above is what remains.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -686,18 +686,18 @@ performance finding. The measured knob table is in
   `merge_external_material` (`18fce7e43`): a hit forwards texture slots and
   flat-colour replacements as `Merged`, a miss keeps the Phase-1 PBR flip;
   per-slot replacements, scalars and flags translate honestly (#5190, #5196,
-  #5197), and authored blend state and emissive settings are captured (#5277,
-  #5283). Owed before closing: the issue's definition of done and a live Cydonia render.
+  #5197); `ObjectInfo.Parent` inheritance resolves (`5c14ebdf8`, #5502 open), blend
+  state is captured (#5277), emissive is parked (#5503). Owed: definition of done + a live Cydonia render.
 
 ### Infrastructure and tooling
 
-- [ ] **ABBA lock-order lane red since the `7ef007898` push** (2026-10-10,
-  #5535). `BYRO_LOCK_ORDER_CHECK=1` fails 15 `-p byroredux` tests on four
-  cycles: `Furniture`↔`GlobalTransform` (eat_sleep / sandbox, 6),
-  `AnimationPlayer`↔`Transform` (walk_anim, 5), `Children`↔`MeshHandle`
-  (hair head-mount, 3) and `Transform`↔`ActorCinematicState` (cinematic, 1).
-  Not yet triaged: production acquisition order vs test-body guard overlap
-  (the #5032 shape).
+- [ ] **Hosted CI red at HEAD on two jobs** (2026-10-12). ABBA lane: green at
+  `1cb12fb3d` (#5535), red again since `6709eb65e` (#5734). Dialogue INFO
+  selection holds `QuestStageState` then `DialogueQuestConditions`, and its
+  `evaluate()` re-reads `QuestStageState` for `GetQuestRunning` under both
+  (`crates/scripting/src/dialogue.rs`, a production nest; 1 scripting test).
+  Clippy: 5 lints (`physics/world/mod.rs`, `texture_registry/dynamic_rgba.rs`,
+  `vulkan/reflect.rs`) that were red all of Session 98. Neither is filed yet.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -708,17 +708,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-10 (session close, HEAD `455b473a1`). Every
+Ground-truth as of 2026-10-12 (session close, HEAD `bc29e8923`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~714 182                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~765 573                 |
-| Source files (`.rs`, excl. `target/`)   | 1237 total · 1146 outside `tests/` dirs (+2 / +2 since the 2026-10-09 close) |
+| Rust source lines (`src/` dirs)         | ~725 871                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~778 307                 |
+| Source files (`.rs`, excl. `target/`)   | 1244 total · 1153 outside `tests/` dirs (+7 / +7 since the 2026-10-10 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **9522 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-10; 289 ignored; the lock-order detector is off in this count — see the ABBA Known Issue). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 5487 (`.claude/issues/`)     |
+| Tests                                   | **9724 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-12; 299 ignored; the lock-order detector is off in this count — see the hosted-CI Known Issue). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 5720 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 057** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-09-29 re-measure swept 102 968 over 4 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 968 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
