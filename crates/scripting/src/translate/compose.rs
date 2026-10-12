@@ -119,8 +119,14 @@ pub fn as_num(e: &Expr) -> Option<f32> {
 /// [`QuestRef`]. `Self.GetOwningQuest()` → [`QuestRef::OwningQuest`]; a
 /// bare identifier (a `Quest Property`) → [`QuestRef::Property`].
 pub fn quest_via(object: &Expr) -> Option<QuestRef> {
-    if method_call(object, "GetOwningQuest").is_some() {
-        Some(QuestRef::OwningQuest)
+    if let Some((receiver, args)) = method_call(object, "GetOwningQuest") {
+        // `OwningQuest` is the quest that owns THIS script's alias, so the
+        // receiver must be `Self` and the call argless. `OtherAlias
+        // .GetOwningQuest()` — an alias property bound to another quest's
+        // alias — names a different quest, and lowering it onto the context
+        // quest would stage the wrong one (#5634). Decline instead.
+        let on_self = matches!(receiver, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self"));
+        (on_self && args.is_empty()).then_some(QuestRef::OwningQuest)
     } else if let Expr::Ident(name) = object {
         if name.0.eq_ignore_ascii_case("self") {
             Some(QuestRef::SelfRef)

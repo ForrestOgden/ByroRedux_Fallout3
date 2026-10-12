@@ -2194,6 +2194,45 @@ mod tests {
         );
     }
 
+    /// #5634: `OwningQuest` is the quest owning THIS script's alias, so only
+    /// `Self.GetOwningQuest()` may map to it. `OtherAlias.GetOwningQuest()`
+    /// names another alias's quest and used to stage / gate on the context
+    /// quest — in a guard atom the mixed-quest check passed because both
+    /// sides resolved to `OwningQuest`.
+    #[test]
+    fn get_owning_quest_lowers_only_on_self() {
+        let on_self = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Self.GetOwningQuest().SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&on_self),
+            Some(vec![Effect::SetStage { quest: QuestRef::OwningQuest, stage: 10 }])
+        );
+
+        let foreign_effect = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             ReferenceAlias Property OtherAlias Auto\n\
+             Function Fragment_1()\n\
+             OtherAlias.GetOwningQuest().SetStage(10)\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&foreign_effect), None, "foreign receiver, effect");
+
+        let foreign_guard = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             ReferenceAlias Property OtherAlias Auto\n\
+             Function Fragment_1()\n\
+             If OtherAlias.GetOwningQuest().GetStageDone(5) == 0\n\
+               Self.GetOwningQuest().SetStage(10)\n\
+             EndIf\n\
+             EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&foreign_guard), None, "foreign receiver, guard atom");
+    }
+
     #[test]
     fn lowers_objective_pair() {
         // `{self.setobjectivecompleted(#,#);self.setobjectivedisplayed(#,#,#)}`.
