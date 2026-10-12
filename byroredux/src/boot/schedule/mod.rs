@@ -623,6 +623,11 @@ mod system_access_declaration_tests {
                 (PHYSICS_SYNC_SRC, "set_kinematic_translation"),
                 (PHYSICS_SYNC_SRC, "set_linear_velocity"),
                 (WATER_SRC, "weather_wave_adjustment"),
+                // #5641 — the drowning death (`character.rs`) raises the KILL
+                // story event (#5434): the `StoryEvent` write plus the
+                // `resolve_current_lctn` cell-context reads live in
+                // story_events.rs, a different file from the callee walk.
+                (STORY_EVENTS_SRC, "raise_kill_story_event"),
             ],
         ),
         ("timer_tick_system", &[(TIMER_SRC, "timer_tick_system")]),

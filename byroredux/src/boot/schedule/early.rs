@@ -65,6 +65,15 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::water::WaterContact>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
+            // #5641 — the drowning death raises the KILL story event
+            // (#5434, `raise_kill_story_event`): the `StoryEvent` marker
+            // write plus the `resolve_current_lctn` reads of the cell
+            // index / current cell context. Declared so the access analyzer
+            // sees them against `npc_dialogue`'s and the dispatcher's rows.
+            .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            .reads_resource::<crate::cell_loader::LoadedCellIndex>()
+            .reads_resource::<crate::cell_loader::CurrentCellContext>()
+            .reads_resource::<crate::cell_loader::CurrentExteriorContext>()
             .reads::<Transform>()
             .writes::<Transform>()
             // `fly_camera_system` publishes its pose to `GlobalTransform`
