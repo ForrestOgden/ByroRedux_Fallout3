@@ -400,6 +400,23 @@ mod tests {
     use std::io::Read;
     use std::time::Instant;
 
+    /// #5149 — the whole trust model rests on the bind literal: no
+    /// authentication, and the path confinement assumes a local caller. A
+    /// change to `0.0.0.0` ("to reach it from a VM") would pass every
+    /// existing guard and silently expose world mutation to the network —
+    /// the severity table floors that at HIGH. This pins the listener to
+    /// loopback at the socket level, whatever the bind line says.
+    #[test]
+    fn the_listener_binds_loopback_only() {
+        let (_drain, handle) = spawn(0).expect("spawn on port 0");
+        let addr = handle.local_addr();
+        assert!(
+            addr.ip().is_loopback(),
+            "the debug server must stay loopback-bound, got {addr} — a non-loopback \
+             bind exposes unauthenticated world mutation"
+        );
+    }
+
     /// Regression for #855 / C6-NEW-02. Dropping a [`DebugServerHandle`]
     /// signals shutdown to the listener thread and joins it cleanly
     /// within the listener's 50 ms `WouldBlock` poll cadence. Pre-fix
