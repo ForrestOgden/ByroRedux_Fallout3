@@ -766,7 +766,22 @@ pub(crate) fn execute_statements(
     locals: &mut BTreeMap<String, ScriptValue>,
     registrations: &mut Vec<PapyrusModEventRegistrationAction>,
 ) -> Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String> {
-    for (index, statement) in statements.iter().enumerate() {
+    // Explicit cursor stack (#5635, the #3935 shape `apply_effects` already
+    // uses): `pending` holds the slices still to run, innermost on top. An
+    // executed `If` pushes the rest of the current slice and then the
+    // chosen branch — borrowed, never cloned — so N sequential `If`s cost
+    // O(1) stack and no tail copies. It used to rebuild `branch ++ tail`
+    // and recurse per executed `If`: N `If`s meant N stack frames and
+    // O(N^2) live statement clones, and `MAX_PROVIDER_HANDLER_NESTING`
+    // only bounds nesting, not the sequential count.
+    let mut pending: Vec<&[PapyrusProviderStatement]> = vec![statements];
+    while let Some(slice) = pending.pop() {
+        let Some((statement, rest)) = slice.split_first() else {
+            continue;
+        };
+        if !rest.is_empty() {
+            pending.push(rest);
+        }
         match statement {
             PapyrusProviderStatement::Declare { name, value } => {
                 locals.insert(name.clone(), value.clone());
@@ -868,7 +883,13 @@ pub(crate) fn execute_statements(
                 publisher(principal, command)?;
             }
             PapyrusProviderStatement::Wait { seconds } => {
-                return Ok(Some((*seconds, statements[index + 1..].to_vec())));
+                // The one place an owned program is built: everything still
+                // pending, in execution order (top of the stack first).
+                let mut tail = Vec::with_capacity(pending.iter().map(|slice| slice.len()).sum());
+                for slice in pending.iter().rev() {
+                    tail.extend_from_slice(slice);
+                }
+                return Ok(Some((*seconds, tail)));
             }
             PapyrusProviderStatement::If {
                 condition,
@@ -880,18 +901,9 @@ pub(crate) fn execute_statements(
                 } else {
                     else_branch
                 };
-                let mut ordered_tail =
-                    Vec::with_capacity(selected.len() + statements.len().saturating_sub(index + 1));
-                ordered_tail.extend_from_slice(selected);
-                ordered_tail.extend_from_slice(&statements[index + 1..]);
-                return execute_statements(
-                    &ordered_tail,
-                    callback,
-                    mod_event_publisher,
-                    principal,
-                    locals,
-                    registrations,
-                );
+                if !selected.is_empty() {
+                    pending.push(selected);
+                }
             }
         }
     }

@@ -1287,3 +1287,147 @@ fn trigger_enter_and_update_events_dispatch_provider_handlers() {
     );
     assert_eq!(calls[2].1[0], ScriptValue::Integer(8));
 }
+
+// ── execute_statements: explicit cursor stack (#5635) ─────────────────────
+
+/// Drive `execute_statements` directly and report the event names it
+/// registered (the ordered, observable side effect a `RegisterModEvent`
+/// leaves) plus its outcome.
+fn run_statements(
+    statements: &[PapyrusProviderStatement],
+) -> (
+    Result<Option<(f32, Vec<PapyrusProviderStatement>)>, String>,
+    Vec<String>,
+) {
+    let callback = Arc::new(
+        |_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+            Ok(ScriptValue::None)
+        },
+    ) as Arc<PapyrusProviderCallback>;
+    let mut locals = BTreeMap::new();
+    let mut registrations = Vec::new();
+    let outcome = super::super::execute::execute_statements(
+        statements,
+        callback.as_ref(),
+        None,
+        None,
+        &mut locals,
+        &mut registrations,
+    );
+    let names = registrations
+        .into_iter()
+        .map(|action| match action {
+            PapyrusModEventRegistrationAction::Register { event_name, .. } => event_name,
+            other => panic!("unexpected registration action {other:?}"),
+        })
+        .collect();
+    (outcome, names)
+}
+
+fn register(name: &str) -> PapyrusProviderStatement {
+    PapyrusProviderStatement::RegisterModEvent {
+        event_name: name.to_owned(),
+        callback: "cb".to_owned(),
+    }
+}
+
+fn registered(name: &str) -> String {
+    name.to_owned()
+}
+
+fn if_literal(
+    condition: bool,
+    then_branch: Vec<PapyrusProviderStatement>,
+    else_branch: Vec<PapyrusProviderStatement>,
+) -> PapyrusProviderStatement {
+    PapyrusProviderStatement::If {
+        condition: Box::new(PapyrusProviderCondition::Literal(condition)),
+        then_branch,
+        else_branch,
+    }
+}
+
+/// N sequential `If`s used to cost N stack frames and O(N^2) live statement
+/// clones (`branch ++ tail` rebuilt and recursed into per executed `If`) —
+/// 20 000 of them on a small stack overflowed or ran out of memory long
+/// before finishing. They must now run in linear time on O(1) stack, in
+/// authored order.
+#[test]
+fn sequential_ifs_execute_without_recursion_or_tail_clones() {
+    const N: usize = 20_000;
+    let handle = std::thread::Builder::new()
+        // Far below what 20 000 recursive frames need.
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let statements: Vec<_> = (0..N)
+                .map(|i| if_literal(true, vec![register(&format!("e{i}"))], Vec::new()))
+                .collect();
+            let (outcome, registrations) = run_statements(&statements);
+            assert_eq!(outcome, Ok(None));
+            assert_eq!(registrations.len(), N);
+            assert_eq!(registrations[0], registered("e0"));
+            assert_eq!(registrations[N - 1], registered(&format!("e{}", N - 1)));
+        })
+        .unwrap();
+    handle.join().expect("sequential Ifs executed on a small stack");
+}
+
+/// A `Wait` nested two `If`s deep suspends with everything still pending —
+/// the rest of the innermost branch, then of each enclosing branch, then
+/// the handler tail — in execution order, and the untaken `else` never runs.
+#[test]
+fn wait_inside_nested_ifs_suspends_with_the_remaining_program_in_order() {
+    let statements = vec![
+        register("a"),
+        if_literal(
+            true,
+            vec![
+                register("b"),
+                if_literal(
+                    true,
+                    vec![
+                        register("c"),
+                        PapyrusProviderStatement::Wait { seconds: 1.5 },
+                        register("d"),
+                    ],
+                    vec![register("never-inner")],
+                ),
+                register("e"),
+            ],
+            vec![register("never-outer")],
+        ),
+        register("f"),
+    ];
+    let (outcome, registrations) = run_statements(&statements);
+    assert_eq!(
+        registrations,
+        vec![registered("a"), registered("b"), registered("c")]
+    );
+    assert_eq!(
+        outcome,
+        Ok(Some((1.5, vec![register("d"), register("e"), register("f")])))
+    );
+
+    // The same handler resumed from the suspended tail finishes in order.
+    let (_, tail) = outcome.unwrap().unwrap();
+    let (resumed, resumed_registrations) = run_statements(&tail);
+    assert_eq!(resumed, Ok(None));
+    assert_eq!(
+        resumed_registrations,
+        vec![registered("d"), registered("e"), registered("f")]
+    );
+}
+
+/// The false arm runs instead, and an empty chosen branch falls through to
+/// the rest of the slice.
+#[test]
+fn if_takes_the_selected_branch_and_falls_through_when_it_is_empty() {
+    let statements = vec![
+        if_literal(false, vec![register("then")], vec![register("else")]),
+        if_literal(true, Vec::new(), vec![register("unreached")]),
+        register("after"),
+    ];
+    let (outcome, registrations) = run_statements(&statements);
+    assert_eq!(outcome, Ok(None));
+    assert_eq!(registrations, vec![registered("else"), registered("after")]);
+}
