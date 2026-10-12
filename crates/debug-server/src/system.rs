@@ -101,12 +101,15 @@ impl System for DebugDrainSystem {
                         },
                         None => {
                             // No path specified — save to timestamped file.
-                            let auto_path = format!(
-                                "screenshot_{}.png",
+                            // #5147 — two bare `screenshot` commands in the
+                            // same wall-clock second used to name the same
+                            // file, and the second failed under `create_new`;
+                            // the default now takes the first free suffix.
+                            let auto_path = unique_screenshot_name(
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
-                                    .as_secs()
+                                    .as_secs(),
                             );
                             match write_screenshot(&auto_path, &png_bytes) {
                                 Ok(path) => DebugResponse::ScreenshotSaved { path },
@@ -220,6 +223,28 @@ impl System for DebugDrainSystem {
 /// Save debug screenshots under the working directory's `screenshots/` folder.
 /// Only a single relative filename is accepted, so absolute paths and `..`
 /// cannot escape the debug output directory.
+/// #5147 — `screenshot_<secs>.png`, `screenshot_<secs>_2.png`, … — the
+/// first name not already present under `screenshots/`. `create_new` still
+/// guards the final race; this only keeps two same-second bare
+/// `screenshot` commands from colliding with each other.
+fn unique_screenshot_name(secs: u64) -> String {
+    unique_screenshot_name_in(std::path::Path::new("screenshots"), secs)
+}
+
+fn unique_screenshot_name_in(root: &std::path::Path, secs: u64) -> String {
+    for n in 1u32.. {
+        let name = if n == 1 {
+            format!("screenshot_{secs}.png")
+        } else {
+            format!("screenshot_{secs}_{n}.png")
+        };
+        if !root.join(&name).exists() {
+            return name;
+        }
+    }
+    unreachable!("u32 suffix space exhausted")
+}
+
 fn write_screenshot(name: &str, bytes: &[u8]) -> Result<String, String> {
     use std::path::{Component, Path};
     let path = Path::new(name);
@@ -254,7 +279,23 @@ fn write_screenshot(name: &str, bytes: &[u8]) -> Result<String, String> {
 
 #[cfg(test)]
 mod screenshot_path_tests {
-    use super::write_screenshot;
+    use super::{unique_screenshot_name_in, write_screenshot};
+
+    /// #5147 — two bare `screenshot` commands in the same wall-clock second
+    /// used to derive the same default name and the second failed under
+    /// `create_new`; the default now walks to the first free suffix.
+    #[test]
+    fn same_second_bare_screenshots_take_free_suffixes() {
+        let root = std::env::temp_dir().join(format!("byro-shot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(unique_screenshot_name_in(&root, 7), "screenshot_7.png");
+        std::fs::write(root.join("screenshot_7.png"), b"").unwrap();
+        assert_eq!(unique_screenshot_name_in(&root, 7), "screenshot_7_2.png");
+        std::fs::write(root.join("screenshot_7_2.png"), b"").unwrap();
+        assert_eq!(unique_screenshot_name_in(&root, 7), "screenshot_7_3.png");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn rejects_absolute_and_parent_paths() {

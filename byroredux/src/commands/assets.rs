@@ -246,10 +246,15 @@ impl ConsoleCommand for TexDumpCommand {
                  (quote paths containing spaces)",
             );
         };
+        // #5147 — `create_new` refuses to overwrite, but the old default
+        // name was not unique: a second bare `tex.dump` failed with
+        // "File exists" until the user cleaned texture-dumps/. The default
+        // now takes the first free suffix; an explicitly named output keeps
+        // the fail-rather-than-clobber contract.
         let out_path = parts
             .get(2)
             .cloned()
-            .unwrap_or_else(|| "tex_dump.png".to_string());
+            .unwrap_or_else(unique_default_dump_name);
 
         if !configured_debug_archive(archive_path) {
             return CommandOutput::error(
@@ -341,6 +346,27 @@ fn configured_debug_archive(path: &str) -> bool {
         ) && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
             && requested.is_some()
     })
+}
+
+/// #5147 — `tex_dump.png`, `tex_dump_2.png`, … — the first name not
+/// already present under `texture-dumps/`. `create_new` still guards the
+/// final race; this only keeps the default from colliding with itself.
+fn unique_default_dump_name() -> String {
+    unique_default_dump_name_in(std::path::Path::new("texture-dumps"))
+}
+
+fn unique_default_dump_name_in(root: &std::path::Path) -> String {
+    for n in 1u32.. {
+        let name = if n == 1 {
+            "tex_dump.png".to_string()
+        } else {
+            format!("tex_dump_{n}.png")
+        };
+        if !root.join(&name).exists() {
+            return name;
+        }
+    }
+    unreachable!("u32 suffix space exhausted")
 }
 
 fn safe_tex_dump_path(name: &str) -> Option<std::path::PathBuf> {
@@ -1360,5 +1386,27 @@ mod tex_missing_tests {
             out.contains("2x  textures/setdressing/wallconsoles/wallconsole01_sm_d_n.dds"),
             "the collapsed bucket must carry both entities' count; got:\n{out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tex_dump_default_name_tests {
+    use super::unique_default_dump_name_in;
+
+    /// #5147 — the default output name used to be the constant
+    /// `tex_dump.png`, so with `create_new` a second bare `tex.dump` always
+    /// failed with "File exists" until the user cleaned `texture-dumps/`.
+    /// The default now walks to the first free suffix.
+    #[test]
+    fn repeated_bare_tex_dumps_take_free_suffixes() {
+        let root = std::env::temp_dir().join(format!("byro-texdump-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        assert_eq!(unique_default_dump_name_in(&root), "tex_dump.png");
+        std::fs::write(root.join("tex_dump.png"), b"").unwrap();
+        assert_eq!(unique_default_dump_name_in(&root), "tex_dump_2.png");
+        std::fs::write(root.join("tex_dump_2.png"), b"").unwrap();
+        assert_eq!(unique_default_dump_name_in(&root), "tex_dump_3.png");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
