@@ -101,8 +101,8 @@ SWF file bytes
         ▼  extraction, and the from_data call below (each used to redo this)
 PreparedMovie
         │
-        ▼  ruffle_core::tag_utils::SwfMovie::from_data
-parsed SwfMovie
+        ▼  ruffle_core::tag_utils::SwfMovieData::from_data(…, None)
+parsed SwfMovieData
         │
         ├── ImportAssets URL → navigator → BSA/BA2 resource provider
         │                         → local future executor → continued preload
@@ -182,7 +182,7 @@ impl SwfPlayer {
 }
 ```
 
-`new()` parses the SWF (`SwfMovie::from_data`), spins up a headless
+`new()` parses the SWF (`SwfMovieData::from_data`, the Ruffle b91e82160 rename of `SwfMovie`), spins up a headless
 wgpu/Vulkan device, builds an offscreen `TextureTarget` of the requested
 size, wires it into a `WgpuRenderBackend`, attaches a software video
 backend (`ruffle_video_software`), selects blocking preload for the
@@ -750,8 +750,9 @@ notes for the format-string system menus rely on.
 
 ## Tests
 
-The UI crate has **99 default tests plus 3 ignored** installed-corpus smokes
-(measured 2026-10-09 with `cargo test -p byroredux-ui` after #5274's
+The UI crate has **103 default tests plus 3 ignored** installed-corpus smokes
+(measured 2026-10-12 with `cargo test -p byroredux-ui`; the four extra over
+the 2026-10-09 count are the #5456/#5479 dialect-shim pins). #5274's
 provenance rework — the lib target's own summary. `-- --list` includes the
 ignored tests in its count, which is how this line's predecessor
 double-counted them as "101 default plus 3 ignored". Re-measure rather than
@@ -875,6 +876,20 @@ profile with a ninth font slot).
   (wrap a rootless prefab like the ops-driven
   `menus\prefabs\meter.xml` as a named child rect, so
   `parent()`/`sibling()` ops resolve against the wrapper).
+- `prepare.rs` (Scaleform profiles) — `normalize_scaleform_dialect`
+  (#4470, #5456, #5479): the one choke point every shipped SWF passes
+  through before Ruffle sees it, owning the vanilla dialect patches
+  (the #5456/#5479 PlaceObject3 family) on the uncompressed/freshly
+  inflated stream; conforming FWS/ZWS containers return `None` and take
+  the stock path. Whatever this shim accepts is the dialect contract —
+  its pins are the four extra ui tests.
+- `menu.rs` (MenuXml) — `MAX_DECODED_TEXTURE_BYTES` (#5658): the
+  1 GiB budget `MenuRenderer` holds decoded menu textures under, sized
+  from the vanilla census (979.9 MiB total for Oblivion's 6,111 files
+  across all three resolution sets — a renderer only decodes the
+  handful its document names, so the budget cannot refuse vanilla art),
+  one decode per resolved archive path shared by the
+  `Menus\`/`Menus80\`/`textures\menus\` spellings.
 - `profile.rs` — `MenuProfile`: the per-game corpus facts in one
   place. Oblivion: 5 `[Fonts]` slots in the Misc BSA, atlas
   `fonts\<name>.tex`, strings from `menus\strings.xml`. FO3/FNV:
