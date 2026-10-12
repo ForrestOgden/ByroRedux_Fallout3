@@ -597,6 +597,15 @@ impl<'a> Vm<'a> {
         if start == end {
             return Some(args);
         }
+        // #5655 — every read below is bounded by the *argument region*
+        // `[start, end)`, not by the script buffer: the `le_u16_at` family
+        // only knows the buffer, so an argument whose declared payload
+        // straddles `end` would otherwise decode the next statement's bytes
+        // as its own and hand the host a garbage argument instead of
+        // reporting `Malformed`.
+        if start + 2 > end {
+            return None;
+        }
         let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
         let mut o = start + 2;
         for _ in 0..count {
@@ -606,12 +615,18 @@ impl<'a> Vm<'a> {
             let tag = self.bytes[o];
             match tag {
                 b'r' => {
+                    if o + 3 > end {
+                        return None;
+                    }
                     let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     let form = self.resolve_ref_var(idx).unwrap_or(0);
                     args.push(ObScriptValue::Ref(form));
                     o += 3;
                 }
                 b's' | b'f' => {
+                    if o + 3 > end {
+                        return None;
+                    }
                     let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     args.push(ObScriptValue::Num(
                         self.state.locals.get(&idx).copied().unwrap_or(0.0),
@@ -619,6 +634,9 @@ impl<'a> Vm<'a> {
                     o += 3;
                 }
                 b'G' => {
+                    if o + 3 > end {
+                        return None;
+                    }
                     let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     let form = self.resolve_ref_var(idx).unwrap_or(0);
                     let value = self
@@ -657,6 +675,9 @@ impl<'a> Vm<'a> {
                     o += 1;
                 }
                 b'X' => {
+                    if o + 5 > end {
+                        return None;
+                    }
                     let cmd = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
                     let inner_len = byroredux_core::bytes::le_u16_at(self.bytes, o + 3)? as usize;
                     let inner_start = o + 5;
@@ -671,6 +692,9 @@ impl<'a> Vm<'a> {
                 }
                 _ => {
                     // u16 integer literal.
+                    if o + 2 > end {
+                        return None;
+                    }
                     let v = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
                     args.push(ObScriptValue::Num(v as f32));
                     o += 2;
@@ -1287,5 +1311,67 @@ mod tests {
             program.run_block(BLOCK_GAME_MODE, &mut state, &mut host),
             BlockOutcome::Malformed(0)
         );
+    }
+
+    /// #5655 — argument payload reads must be bounded by the statement's
+    /// argument *region*, not by the script buffer: before the fix, an
+    /// argument whose declared payload straddled the region end decoded
+    /// the following statement's bytes as its own and dispatched the
+    /// command with a garbage argument instead of reporting `Malformed`.
+    /// Each leg truncates one argument shape mid-payload, with the bytes
+    /// the old decode would have consumed present in the next statement.
+    #[test]
+    fn straddling_argument_payloads_report_malformed_not_next_statement_bytes() {
+        struct Leg {
+            name: &'static str,
+            // The argument blob as declared (its own length is the region).
+            args: Vec<u8>,
+        }
+        let legs = [
+            // count=2: one complete i32 literal, then a tag-'s' local whose
+            // u16 payload lies past the region end. (Hand-built count —
+            // `args_blob` would declare only the literal.)
+            Leg {
+                name: "tag-s local",
+                args: [vec![2u8, 0], na(5), vec![b's']].concat(),
+            },
+            // count=1: an X-call header tag with both u16s past the end.
+            Leg {
+                name: "tag-X header",
+                args: [vec![1u16.to_le_bytes()[0], 1u16.to_le_bytes()[1]], vec![b'X']].concat(),
+            },
+            // count=1: a u16-literal tag byte with its payload past the end.
+            Leg {
+                name: "u16 literal",
+                args: [vec![1u16.to_le_bytes()[0], 1u16.to_le_bytes()[1]], vec![b'Q']].concat(),
+            },
+            // The region cannot even hold the count header.
+            Leg {
+                name: "count header",
+                args: vec![0x02],
+            },
+        ];
+        for leg in legs {
+            // A following statement supplies the bytes the buffer-bounded
+            // decode used to read as payload — the End opcode (0x11 0x00),
+            // which decodes as local index 0x0011 if the region bound is
+            // missing.
+            let body = [stmt_call(SETSTAGE, &leg.args), simple_stmt(0x11)].concat();
+            let script = script(wrap_body(body), vec![], vec![]);
+            let program = ObScriptProgram::new(&script);
+            let mut state = VmState::default();
+            let mut host = Recorder::default();
+            let outcome = program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+            assert!(
+                matches!(outcome, BlockOutcome::Malformed(_)),
+                "{}: a straddling argument payload must be Malformed, got {outcome:?}",
+                leg.name
+            );
+            assert!(
+                !host.calls.iter().any(|(cmd, _, _)| *cmd == SETSTAGE),
+                "{}: the command must not run with decoded next-statement bytes",
+                leg.name
+            );
+        }
     }
 }
