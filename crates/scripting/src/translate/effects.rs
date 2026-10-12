@@ -3982,6 +3982,44 @@ mod tests {
         );
     }
 
+    /// #5068 — a named call argument binds nothing: the whole translate
+    /// chain indexes `CallArg`s positionally, so a named argument
+    /// (`Self.SetObjectiveDisplayed(objective = 10, true)`, or the issue's
+    /// `SetEnemy(other, abOtherIsNeutralToSelf = true)` inverting the flag
+    /// direction) would have lowered into the wrong parameter slot instead
+    /// of declining. `.pex` never produces the shape (the decompiler emits
+    /// `name: None`); hand-authored `.psc` can, and `method_call` now
+    /// declines any named argument — the same discipline the provider seam
+    /// applies.
+    #[test]
+    fn named_call_arguments_decline_instead_of_binding_positionally() {
+        let named = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Self.SetObjectiveDisplayed(objective = 10, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&named),
+            None,
+            "a named argument must decline, not bind positionally"
+        );
+
+        let positional = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Self.SetObjectiveDisplayed(10, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&positional),
+            Some(vec![Effect::SetObjectiveDisplayed {
+                quest: QuestRef::SelfRef,
+                objective: 10,
+                displayed: true,
+            }]),
+            "the equivalent positional shape still lowers"
+        );
+    }
+
     /// #3496's completeness check, mechanized: every effect primitive must
     /// bound its argument count, directly or through the primitive it
     /// delegates to. The finding came out of a hand sweep of all 31

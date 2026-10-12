@@ -78,10 +78,21 @@ impl ObjectRef {
 }
 
 /// If `e` is `<object>.<method>(args)`, return `(&object, args)`.
+///
+/// #5068 — declines any argument that carries a `name`: the helpers below
+/// all index positionally, so a named argument (`SetEnemy(other, abOther =
+/// true)`) would silently bind to the wrong parameter instead of being
+/// rejected. Unreachable from `.pex` (the decompiler always emits
+/// `name: None`); only hand-authored `.psc` can produce the shape, and this
+/// is the same decline the provider seam applies
+/// (`papyrus_provider/lower_call.rs`).
 pub fn method_call<'a>(e: &'a Expr, method: &str) -> Option<(&'a Expr, &'a [CallArg])> {
     let Expr::Call { callee, args } = e else {
         return None;
     };
+    if args.iter().any(|arg| arg.name.is_some()) {
+        return None;
+    }
     let Expr::MemberAccess { object, member } = &callee.node else {
         return None;
     };
