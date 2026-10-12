@@ -609,16 +609,21 @@ impl PhysicsWorld {
     /// `(awake dynamic bodies, active kinematic bodies)` from the last step's
     /// island state — diagnostic for the static-scene fast path.
     ///
-    /// **The second element is not an awake count** (#3975). Rapier's active
-    /// set holds the awake *island* — every dynamic body that failed the
-    /// sleep test — plus the kinematic bodies, which rapier does not put to
-    /// sleep on a sleep test the way it does dynamics. So the first element
-    /// is exactly "awake", while the second counts kinematic bodies whether
-    /// or not anything moved them — see the static-scene fast path's own
-    /// rationale a few hundred lines below, which already knew this and
-    /// deliberately does not gate on kinematics for exactly that reason.
-    /// Named `active_island_counts`, not `awake_counts`, so the name stops
-    /// implying a claim the second half doesn't make.
+    /// **The second element is the *active* kinematic count, not the live
+    /// total** (#3975, corrected by #5563). Under rapier 0.22 kinematic
+    /// bodies sat in a set that was only pruned on removal or a type change,
+    /// so the count was every live kinematic body. Rapier 0.36 gives them a
+    /// real sleep test: "platforms only sleep if both velocities are exactly
+    /// zero" (`rigid_body_components.rs`, `RigidBodyActivation`), and an idle
+    /// keyframed body hits exactly that — `push_kinematic` skips no-op
+    /// targets, so its interpolated velocity is 0 — so it leaves the active
+    /// set about half a second (≈30 ticks) after its last move. In a settled
+    /// cell this reads 0 with hundreds of live kinematic bodies in the
+    /// world (pinned by
+    /// `idle_kinematic_bodies_leave_the_active_set_after_the_sleep_window`).
+    /// The first element is exactly "awake dynamic". Named
+    /// `active_island_counts`, not `awake_counts`: "active" is the island
+    /// manager's word and both halves mean it.
     pub fn active_island_counts(&self) -> (usize, usize) {
         self.islands
             .active_bodies()
@@ -632,12 +637,27 @@ impl PhysicsWorld {
             })
     }
 
-    /// `(contact pairs, contacts, constraints)` from the last
-    /// `pipeline.step`. rapier 0.36 fills `PhysicsPipeline::counters` by
-    /// default (`Counters::new(true)`), so this reads the live solve —
-    /// zeroes only before the very first step. Surfaced through
-    /// `phys.stats` so a contact explosion is readable next to the
-    /// recovery counters it tends to precede.
+    /// `(narrow-phase pairs, awake-island contacts, awake-island
+    /// constraints)` from the last `pipeline.step` (#5564). rapier 0.36
+    /// fills `PhysicsPipeline::counters` by default (`Counters::new(true)`),
+    /// but the three numbers do NOT share a population:
+    ///
+    /// - **pairs** = `narrow_phase.contact_graph().graph.edges.len()`
+    ///   (`solve.rs`): every pair the narrow phase holds — touching or
+    ///   merely AABB-overlapping, awake or in a sleeping island. On a loaded
+    ///   exterior it tracks the amount of resting clutter, not solver load.
+    /// - **contacts** and **constraints** are summed inside `init_and_solve`
+    ///   over the awake island only. `constraints` is active contact
+    ///   manifolds plus impulse joints; a multibody joint — every engine
+    ///   ragdoll — is solved as a generic constraint and never enters it, so
+    ///   an exploding articulation shows no growth here
+    ///   ([`multibody_joint_count`](Self::multibody_joint_count) is the
+    ///   counter that sees it).
+    ///
+    /// Any step with no awake island zeroes `contacts` and `constraints`
+    /// (not just the very first one), and the static-scene fast path then
+    /// leaves that value in place. Surfaced through `phys.stats`, labelled
+    /// by scope.
     pub fn contact_counts(&self) -> (usize, usize, usize) {
         let counters = &self.pipeline.counters;
         (
@@ -645,6 +665,17 @@ impl PhysicsWorld {
             counters.solver.ncontacts,
             counters.solver.nconstraints,
         )
+    }
+
+    /// Live multibody (articulation) joints — the ragdoll joints that
+    /// [`contact_counts`](Self::contact_counts)' `constraints` never counts
+    /// (#5564). Counted by lookup, so a joint removed since the last
+    /// articulation sweep is not reported.
+    pub fn multibody_joint_count(&self) -> usize {
+        self.articulation_joints
+            .iter()
+            .filter(|&&joint| self.multibody_joints.get(joint).is_some())
+            .count()
     }
 
     /// The `started` contact-force crossings of the last `step` frame —
@@ -684,9 +715,22 @@ impl PhysicsWorld {
         ))
     }
 
+    /// Every live kinematic body, awake or asleep (#5563) — the total
+    /// [`active_island_counts`](Self::active_island_counts) used to report
+    /// under rapier 0.22. O(bodies): for on-demand diagnostics (`phys.stats`),
+    /// never a per-frame path.
+    pub fn live_kinematic_count(&self) -> usize {
+        self.bodies
+            .iter()
+            .filter(|(_, body)| body.is_kinematic())
+            .count()
+    }
+
     /// Whether the last step left any dynamic body awake. Rapier's active set
-    /// mixes dynamics with kinematics (which never leave it), so emptiness of
-    /// the set itself says nothing — only its dynamic members do.
+    /// mixes dynamics with kinematics that moved recently (an idle one leaves
+    /// it after ≈30 ticks, see [`active_island_counts`](Self::active_island_counts)),
+    /// so emptiness of the set itself says nothing about dynamics — only its
+    /// dynamic members do.
     fn has_awake_dynamics(&self) -> bool {
         self.islands
             .active_bodies()
@@ -1110,13 +1154,15 @@ impl PhysicsWorld {
         //     HERE, in the fast path, and is served by the queued-leaf
         //     insertion just below rather than by a pipeline step (#3969).
         //
-        // NOTE: we deliberately do NOT gate on kinematic bodies. Rapier keeps
-        // kinematic bodies in its active set without a sleep test (idle ones
-        // are just skipped in the solver via a zero-velocity check), so the
-        // set is never empty in a cell with authored-keyframed clutter —
-        // testing it would defeat the fast path entirely.
-        // Real kinematic *motion* is captured by `pending_wake` instead
-        // (`push_kinematic` / `set_kinematic_translation` call `wake()`).
+        // NOTE: we deliberately do NOT gate on kinematic bodies. Rapier 0.36
+        // does sleep an idle kinematic body — it needs exactly-zero
+        // velocities for ≈30 ticks, which `push_kinematic`'s skipped no-op
+        // targets provide — but a kinematic body that was just moved stays
+        // in the active set for that window, so testing the set would hold
+        // the fast path off for an extra half second after every push and
+        // after every settled door. Real kinematic *motion* is captured by
+        // `pending_wake` instead (`push_kinematic` /
+        // `set_kinematic_translation` call `wake()`).
         self.bodies_restored_last_frame = 0;
         self.recover_pre_broken_bodies();
         // Frame-entry clear for the impact events: substeps append, and the
@@ -3338,14 +3384,17 @@ mod tests {
         );
     }
 
-    /// Regression for #3975. `active_island_counts`'s doc and the
-    /// static-scene fast path's own rationale (the "deliberately do NOT
-    /// gate on kinematic bodies" note) must keep making the
-    /// same claim about what the kinematic count means — the accessor's
-    /// doc drifted from that rationale once already (it called the count
-    /// "awake" for a set Rapier never drains). Source-inspection guard,
-    /// since the two are hundreds of lines apart and nothing else keeps
-    /// them in sync.
+    /// Regression for #3975, re-pinned for rapier 0.36 by #5563.
+    /// `active_island_counts`'s doc and the static-scene fast path's own
+    /// rationale (the "deliberately do NOT gate on kinematic bodies" note)
+    /// must keep making the same claim about what the kinematic count means.
+    /// They drifted twice: first the accessor called the count "awake", then
+    /// (#5563) both kept the rapier 0.22 premise — a kinematic set that is
+    /// never drained — after 0.36 gave kinematics a sleep test. The measured
+    /// behaviour itself is pinned by
+    /// `idle_kinematic_bodies_leave_the_active_set_after_the_sleep_window`;
+    /// this source-inspection guard keeps the two statements in sync, since
+    /// they are hundreds of lines apart.
     #[test]
     fn kinematic_count_doc_agrees_with_the_fast_paths_own_rationale() {
         let src = crate::source_scan::production_text(include_str!("mod.rs"));
@@ -3359,9 +3408,15 @@ mod tests {
         let doc = &src[doc_start..accessor_start];
 
         assert!(
-            doc.contains("not an awake count"),
-            "the accessor's own doc must state the kinematic half is not \
-             an awake count, not just the fast-path rationale below it"
+            doc.contains("*active* kinematic count, not the live"),
+            "the accessor's own doc must state the kinematic half is the \
+             active count, not the live total, not just the fast-path \
+             rationale below it"
+        );
+        assert!(
+            !doc.contains("not an awake count") && !doc.contains("never drained"),
+            "the rapier 0.22 premise (a kinematic set that is never drained) \
+             must not come back (#5563)"
         );
 
         let rationale_start = src
@@ -3369,10 +3424,144 @@ mod tests {
             .expect("the fast-path rationale is still here");
         let rationale = &src[rationale_start..rationale_start + 500];
         assert!(
-            rationale.contains("never empty"),
-            "the fast-path rationale must still explain why the kinematic \
-             set can't be used as an awake signal"
+            rationale.contains("does sleep an idle kinematic body")
+                && !rationale.contains("never empty")
+                && !rationale.contains("without a sleep test"),
+            "the fast-path rationale must state the rapier 0.36 behaviour \
+             (idle kinematics sleep) and still explain why the kinematic set \
+             can't be used as an awake signal (#5563)"
         );
+    }
+
+    /// #5563 — rapier 0.36 gives kinematic bodies a real sleep test
+    /// (`rigid_body_components.rs`: "platforms only sleep if both velocities
+    /// are exactly zero"), and idle keyframed bodies meet it, so
+    /// `active_island_counts().1` is an ACTIVE count: 0 about half a second
+    /// after the last move even though every kinematic body is still live.
+    /// The docs, the `phys.stats` label and the follow-ups plan used to say
+    /// the opposite (the rapier 0.22 behaviour); this measures it.
+    #[test]
+    fn idle_kinematic_bodies_leave_the_active_set_after_the_sleep_window() {
+        let mut w = PhysicsWorld::new();
+        // A free-falling dynamic body keeps `step` out of the static-scene
+        // fast path, so the island manager runs every tick.
+        let _faller = spawn_ball(&mut w, 1.0e6);
+        for i in 0..5 {
+            let shape = single_shape(&CollisionShape::Ball { radius: 10.0 });
+            let h = w.bodies.insert(
+                RigidBodyBuilder::kinematic_position_based()
+                    .pose(pose_from_trs(Vec3::new(100.0 * i as f32, 0.0, 0.0), Quat::IDENTITY))
+                    .build(),
+            );
+            w.colliders
+                .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
+        }
+        w.step(PHYSICS_DT);
+        assert_eq!(w.active_island_counts(), (1, 5), "fresh kinematics are active");
+        assert_eq!(w.live_kinematic_count(), 5);
+
+        for _ in 0..90 {
+            w.step(PHYSICS_DT);
+        }
+        assert_eq!(
+            w.active_island_counts(),
+            (1, 0),
+            "idle kinematics sleep: the active count is 0, not the live total"
+        );
+        assert_eq!(w.live_kinematic_count(), 5, "all five are still live");
+    }
+
+    /// #5564 — `contact_counts`' three numbers come from different sources
+    /// and populations. `pairs` is the whole narrow-phase graph (resting
+    /// clutter in sleeping islands included); `contacts` and `constraints`
+    /// are summed over the awake island alone.
+    #[test]
+    fn contact_counts_mix_populations_as_documented() {
+        let mut w = PhysicsWorld::new();
+        let floor = w.bodies.insert(RigidBodyBuilder::fixed().build());
+        w.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(5000.0, 10.0, 5000.0)
+                .translation(Vector::new(0.0, -10.0, 0.0))
+                .build(),
+            floor,
+            &mut w.bodies,
+        );
+        let mut boxes = Vec::new();
+        for i in 0..10 {
+            let h = w.bodies.insert(
+                RigidBodyBuilder::dynamic()
+                    .pose(pose_from_trs(Vec3::new(100.0 * i as f32, 10.0, 0.0), Quat::IDENTITY))
+                    .build(),
+            );
+            w.colliders.insert_with_parent(
+                ColliderBuilder::cuboid(10.0, 10.0, 10.0).build(),
+                h,
+                &mut w.bodies,
+            );
+            boxes.push(h);
+        }
+        for _ in 0..600 {
+            if w.step(PHYSICS_DT) == 0 {
+                break;
+            }
+        }
+        assert_eq!(w.active_island_counts().0, 0, "fixture: every box asleep");
+        assert_eq!(
+            w.contact_counts(),
+            (10, 0, 0),
+            "ten resting pairs are in the graph; none is in the awake island"
+        );
+
+        w.bodies.get_mut(boxes[0]).unwrap().wake_up(true);
+        w.wake();
+        w.step(PHYSICS_DT);
+        let (pairs, contacts, constraints) = w.contact_counts();
+        assert_eq!(pairs, 10, "sleeping pairs stay in the narrow-phase graph");
+        assert!(
+            contacts > 0 && constraints > 0 && contacts < pairs * 4,
+            "only the woken box's island is solved: got {contacts} contacts / \
+             {constraints} constraints"
+        );
+    }
+
+    /// #5564 — a multibody joint (every engine ragdoll) is solved as a
+    /// generic constraint and never enters `nconstraints`, while an impulse
+    /// joint does; `multibody_joint_count` is the counter that sees it.
+    #[test]
+    fn multibody_joints_are_absent_from_the_constraint_count() {
+        let link = |w: &mut PhysicsWorld, x: f32| {
+            let h = w.bodies.insert(
+                RigidBodyBuilder::dynamic()
+                    .translation(Vector::new(x, 0.0, 0.0))
+                    .build(),
+            );
+            w.colliders
+                .insert_with_parent(ColliderBuilder::ball(1.0).build(), h, &mut w.bodies);
+            h
+        };
+        let joint = || {
+            SphericalJointBuilder::new()
+                .local_anchor1(Vector::new(25.0, 0.0, 0.0))
+                .local_anchor2(Vector::new(-25.0, 0.0, 0.0))
+        };
+
+        let mut multibody = PhysicsWorld::new();
+        let (a, b) = (link(&mut multibody, 0.0), link(&mut multibody, 50.0));
+        let handle = multibody
+            .multibody_joints
+            .insert(a, b, joint(), true)
+            .expect("multibody joint inserts");
+        multibody.articulation_joints.push(handle);
+        multibody.step(PHYSICS_DT);
+        assert_eq!(multibody.contact_counts(), (0, 0, 0));
+        assert_eq!(multibody.multibody_joint_count(), 1);
+
+        let mut impulse = PhysicsWorld::new();
+        let (a, b) = (link(&mut impulse, 0.0), link(&mut impulse, 50.0));
+        impulse.impulse_joints.insert(a, b, joint(), true);
+        impulse.step(PHYSICS_DT);
+        assert_eq!(impulse.contact_counts(), (0, 0, 1));
+        assert_eq!(impulse.multibody_joint_count(), 0);
     }
 
     /// Regression for #2889. The three force wrappers hard-coded

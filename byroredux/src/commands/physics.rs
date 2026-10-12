@@ -186,12 +186,14 @@ impl ConsoleCommand for PhysStatsCommand {
             return CommandOutput::error("phys.stats: no PhysicsWorld resource");
         };
         let bodies = pw.body_count();
-        // #3975 — the kinematic half is not an awake count: Rapier's
-        // kinematic active set is never drained, so this is every *live*
-        // kinematic body (asleep or not), not the awake subset. Labelled
-        // accordingly below rather than under the same "awake:" header as
-        // the dynamic count, which genuinely is awake.
-        let (awake_dynamic, live_kinematic) = pw.active_island_counts();
+        // #3975 / #5563 — the kinematic half is the ACTIVE count, not the
+        // live total: rapier 0.36 sleeps a kinematic body whose velocities
+        // are exactly zero, so an idle keyframed body (a door, clutter, an
+        // idle player capsule) drops out about half a second after its last
+        // move. The live total is printed beside it so the two cannot be
+        // mistaken for each other (O(bodies), fine for an on-demand command).
+        let (awake_dynamic, active_kinematic) = pw.active_island_counts();
+        let live_kinematic = pw.live_kinematic_count();
         let statics = pw.static_colliders_aabb();
         let pending = pw.pending_wake();
         // #4683 — solver-explosion recovery is invisible in post-recovery
@@ -213,17 +215,21 @@ impl ConsoleCommand for PhysStatsCommand {
         // #5246 — third-offence articulation detaches: the escalation end
         // of the clamp ladder, one line per persistently exploding rig.
         let explosive_detaches = pw.explosive_detaches_total();
-        // rapier 0.36 fills PhysicsPipeline::counters by default; the
-        // contact trio is the live solve's shape (a runaway count is what
-        // the recovery counters below it usually precede).
+        // rapier 0.36 fills PhysicsPipeline::counters by default, but the
+        // trio mixes populations (#5564): `pairs` is the whole narrow-phase
+        // graph (sleeping and non-touching pairs included), `contacts` and
+        // `constraints` are the awake island only, and `constraints` never
+        // counts a multibody (ragdoll) joint — so the live multibody count
+        // is printed beside them.
         let (contact_pairs, contacts, constraints) = pw.contact_counts();
+        let multibody_joints = pw.multibody_joint_count();
         drop(pw);
 
         let mut lines = vec![
             format!("Physics stats: bodies={bodies}"),
             format!(
-                "  awake dynamic={awake_dynamic} · kinematic bodies={live_kinematic} \
-                 pending_wake={pending}"
+                "  awake dynamic={awake_dynamic} · active kinematic={active_kinematic} \
+                 (live kinematic={live_kinematic}) · pending_wake={pending}"
             ),
             format!(
                 "  recoveries: total={recoveries_total} bodies_restored_last_frame={bodies_restored_last_frame} \
@@ -234,8 +240,10 @@ impl ConsoleCommand for PhysStatsCommand {
             format!("  velocity clamps: total={velocity_clamps}"),
             format!("  explosive detaches: total={explosive_detaches}"),
             format!(
-                "  contacts (last step): pairs={contact_pairs} contacts={contacts} \
-                 constraints={constraints}"
+                "  contacts (last step): narrow-phase pairs (all)={contact_pairs} · \
+                 awake-island contacts={contacts} · \
+                 constraints (manifolds + impulse joints)={constraints} · \
+                 multibody joints (live)={multibody_joints}"
             ),
         ];
         // `awake_dynamic == 0 && !pending_wake` is exactly the static-scene

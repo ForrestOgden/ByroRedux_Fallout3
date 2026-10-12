@@ -169,11 +169,12 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     let ms4 = ms(s4);
 
     if profile {
-        // #3975 — `kin` here is every live kinematic body, not an awake
-        // count; Rapier's kinematic active set is never drained.
+        // #3975 / #5563 — `kin` here is the ACTIVE kinematic count, not the
+        // live total: rapier 0.36 sleeps idle kinematics (exactly-zero
+        // velocities for ~0.5 s), so it reads 0 in a settled cell.
         let (awake_dyn, kin) = world.resource::<PhysicsWorld>().active_island_counts();
         log::info!(
-            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms buoyancy={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} kinematic bodies={}",
+            "physics_sync phases: collect/register={:.2}ms (new={}) push_kin={:.2}ms buoyancy={:.2}ms step={:.2}ms({} substeps) pull_dyn={:.2}ms | awake dyn={} active kinematic={}",
             ms1.unwrap_or(0.0),
             n_new,
             ms2.unwrap_or(0.0),

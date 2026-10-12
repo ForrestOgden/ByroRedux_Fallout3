@@ -532,8 +532,15 @@ These are larger. Each needs its own plan and has a prerequisite on our side.
   so they don't apply.
 - **Sleep workarounds**: none exist to remove. rapier 0.35 honours `sleep()` right
   after a reposition, and we never worked around the old behaviour.
-- **Kinematic label in `phys.stats`**: still correct. Kinematic bodies never sleep in
-  rapier 0.36 (*rapier3d-0.36.1/src/dynamics/island_manager/sleep.rs:30*).
+- **Kinematic label in `phys.stats`**: *was* listed here as "still correct", on the
+  strength of `island_manager/sleep.rs:30` ("kinematic and fixed bodies don't
+  sleep"). That line is the doc of `wake_up`, not the sleep decision. The decision is
+  `rigid_body_components.rs` (rapier3d-0.36.1, ~L1488): "platforms only sleep if both
+  velocities are exactly zero", and idle keyframed bodies meet it (`push_kinematic`
+  skips no-op targets). So the count is an *active* count, 0 about half a second
+  after the last move; `phys.stats` now prints `active kinematic` beside
+  `live kinematic`, and `idle_kinematic_bodies_leave_the_active_set_after_the_sleep_window`
+  pins it (#5563).
 - **logos 0.16, lz4_flex 0.14, string-interner 0.20, nvml-wrapper 0.13,
   tracing-tracy 0.12**: nothing to adopt.
   - Keep `fixed_string_serde`: string-interner's own symbol serde writes a usize
