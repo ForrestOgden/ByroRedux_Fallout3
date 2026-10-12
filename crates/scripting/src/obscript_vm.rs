@@ -37,13 +37,24 @@
 //! [`ObScriptHost`], so tests drive it with a stub and the ECS runtime
 //! (`crate::obscript_quests`) supplies the real quest-state host.
 
-use byroredux_plugin::esm::records::ScriptRecord;
+use byroredux_plugin::esm::records::{ScriptRecord, ScriptRef};
 
 /// Synthetic host command for global reads — real global accesses arrive
 /// as `' G<n>'` escapes, never as bytecode command ids.
 pub const CMD_GET_GLOBAL: u16 = u16::MAX - 1;
 /// Synthetic host command for global writes (`set GameHour to …`).
 pub const CMD_SET_GLOBAL: u16 = u16::MAX;
+
+/// Synthetic host command for a statement the VM declined to run because a
+/// reference it needs cannot be resolved or a write it cannot model (an
+/// unresolved explicit caller, a remote-variable `Set`). `args[0]` carries
+/// the opcode / command id that was declined, so the host can count it
+/// under the same census as any other unmodeled command (#5629 / #5630).
+pub const CMD_DECLINED: u16 = u16::MAX - 2;
+
+/// The `Set` statement opcode, reported as the declined id for an
+/// unmodeled remote-variable assignment.
+const OP_SET: u16 = 0x15;
 
 /// Block type of `Begin GameMode` in the compiled block enum (empirical:
 /// every quest-script GameMode block carries `0x0000`).
@@ -101,8 +112,6 @@ pub struct VmState {
     /// Local variable storage keyed by the 1-based `SLSD` index — compiled
     /// references are 1-based over that table.
     pub locals: std::collections::HashMap<u16, f32>,
-    /// Reference variables assigned by `set RefVar to <ref>`.
-    pub ref_vars: std::collections::HashMap<u16, u32>,
 }
 
 /// One compiled script prepared for execution. Borrows the parsed SCPT;
@@ -126,10 +135,9 @@ impl<'a> ObScriptProgram<'a> {
     ) -> BlockOutcome {
         let mut vm = Vm {
             bytes: &self.script.compiled,
-            refs: &self.script.ref_form_ids,
+            refs: &self.script.refs,
             state,
             host,
-            last_ref: None,
             returned: false,
         };
         let bytes = vm.bytes;
@@ -171,12 +179,11 @@ impl<'a> ObScriptProgram<'a> {
 
 struct Vm<'a> {
     bytes: &'a [u8],
-    refs: &'a [u32],
+    /// The script's reference list: `SCRO` and `SCRV` interleaved in
+    /// subrecord order, which is what compiled reference indices address.
+    refs: &'a [ScriptRef],
     state: &'a mut VmState,
     host: &'a mut dyn ObScriptHost,
-    /// The most recent ref value pushed by an `' r<n>'` escape — what
-    /// `set RefVar to SomeRef` stores.
-    last_ref: Option<u32>,
     /// Set by a `Return` hit anywhere in the block (including inside
     /// if-arms — the standard early-exit idiom in vanilla scripts); every
     /// executor loop unwinds when it sees this.
@@ -266,9 +273,18 @@ impl<'a> Vm<'a> {
                 return None;
             }
             if run {
-                let caller = self.resolve_ref_var(caller_ref);
+                // An explicit caller that does not resolve (a reference
+                // variable the VM never assigns, or an out-of-range slot)
+                // must not run as an implicit-caller command: `None` means
+                // "the script's own owner" to the host, which would apply
+                // `<unresolved>.Cmd` to the owning quest.
+                let Some(caller) = self.resolve_ref_var(caller_ref) else {
+                    self.host
+                        .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(cmd))], None);
+                    return Some(args_end);
+                };
                 let args = self.decode_args(args_start, args_end)?;
-                self.host.call(cmd, &args, caller);
+                self.host.call(cmd, &args, Some(caller));
             }
             return Some(args_end);
         }
@@ -413,21 +429,33 @@ impl<'a> Vm<'a> {
     }
 
     /// `Set` payload: `[target escape][u16 expr_len][expr]`. Targets:
-    /// `' s<n>'`/`' f<n>'` locals (narrowed per declared type), `' G<n>'`
-    /// globals (routed to the host as a global write), `' r<n>'` ref
-    /// variables (6-byte escape; the trailing u16 is a secondary index the
-    /// corpus always zeroes).
+    /// `' s<n>'`/`' f<n>'` locals (narrowed per declared type) and
+    /// `' G<n>'` globals (routed to the host as a global write).
+    ///
+    /// A tag-`r` target is NOT a reference variable: the 6-byte escape is
+    /// `r<ref u16> <s|f><variable ordinal u16>` — a **remote variable**,
+    /// `set Quest.var to expr`. In all 1 646 Oblivion / 4 240 FNV / 1 290
+    /// FO3 vanilla `Set`s of that shape the trailing bytes are `s`/`f` plus
+    /// a nonzero ordinal (not the zeroed "secondary index" this doc once
+    /// claimed). The variable lives in another script, which the VM does
+    /// not model, so the statement is declined and counted (#5630) —
+    /// storing the value as the object's identity, as this used to, made
+    /// every later `' r<n>'` naming that object resolve to a small integer.
     fn exec_set(&mut self, start: usize, end: usize) {
         let Some(&tag) = self.bytes.get(start) else {
             return;
         };
-        // Target escape: `'s'+idx` is 3 bytes, `'r'+idx+secondary` is 6
-        // (the leading space of the *expression* escapes is absent here —
-        // corpus: `73 07 00 | 05 00 | " 1200"`), then `[u16 expr_len][expr]`.
+        if tag == b'r' {
+            self.host
+                .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(OP_SET))], None);
+            return;
+        }
+        // Target escape: `'s'+idx` is 3 bytes (the leading space of the
+        // *expression* escapes is absent here — corpus: `73 07 00 | 05 00 |
+        // " 1200"`), then `[u16 expr_len][expr]`.
         let idx = read_u16(self.bytes, start + 1).unwrap_or(0);
         let expr_len_at = match tag {
             b's' | b'f' | b'G' => start + 3,
-            b'r' => start + 6,
             _ => return,
         };
         if expr_len_at + 2 > end {
@@ -439,7 +467,6 @@ impl<'a> Vm<'a> {
         if expr_end > end {
             return;
         }
-        self.last_ref = None;
         let value = self.eval_expr(expr_start, expr_end);
         match tag {
             b's' => {
@@ -455,10 +482,6 @@ impl<'a> Vm<'a> {
                         .call(CMD_SET_GLOBAL, &[ObScriptValue::Num(value)], Some(form));
                 }
             }
-            b'r' => {
-                let form = self.last_ref.unwrap_or(value as u32);
-                self.state.ref_vars.insert(idx, form);
-            }
             _ => {}
         }
     }
@@ -467,7 +490,6 @@ impl<'a> Vm<'a> {
     /// result (nonzero = true for conditions).
     fn eval_expr(&mut self, start: usize, end: usize) -> f32 {
         let mut stack: Vec<ObScriptValue> = Vec::with_capacity(8);
-        self.last_ref = None;
         let bytes = &self.bytes[start..end];
         let mut i = 0usize;
         while i < bytes.len() {
@@ -477,7 +499,6 @@ impl<'a> Vm<'a> {
                     b'r' if i + 4 <= bytes.len() => {
                         let idx = read_u16(bytes, i + 2).unwrap_or(0);
                         let resolved = self.resolve_ref_var(idx).unwrap_or(0);
-                        self.last_ref = Some(resolved);
                         stack.push(ObScriptValue::Ref(resolved));
                         Some(4)
                     }
@@ -663,16 +684,17 @@ impl<'a> Vm<'a> {
         Some(args)
     }
 
-    /// Resolve a 1-based reference index against the script's `SCRO` table,
-    /// with script-assigned ref variables shadowing it.
+    /// Resolve a 1-based reference index against the script's reference
+    /// list (`SCRO` and `SCRV` interleaved, #5629). An object entry yields
+    /// its form; a reference-variable entry yields `None` — the VM models
+    /// no ref-valued command, so a ref local is never assigned a real
+    /// reference and resolving it to anything would be a guess. So does an
+    /// out-of-range index. Callers decline or read the null reference.
     fn resolve_ref_var(&self, index: u16) -> Option<u32> {
-        if index == 0 {
-            return None;
+        match self.refs.get(usize::from(index).checked_sub(1)?)? {
+            ScriptRef::Object(form) => Some(*form),
+            ScriptRef::Variable(_) => None,
         }
-        if let Some(form) = self.state.ref_vars.get(&index) {
-            return Some(*form);
-        }
-        self.refs.get(index as usize - 1).copied()
     }
 }
 
@@ -747,7 +769,7 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRecord, ScriptType};
+    use byroredux_plugin::esm::records::{ScriptLocalVar, ScriptRecord, ScriptRef, ScriptType};
 
     /// Recording host stub — captures every dispatched call.
     #[derive(Default)]
@@ -793,6 +815,7 @@ mod tests {
             compiled,
             source: None,
             locals,
+            refs: refs.iter().copied().map(ScriptRef::Object).collect(),
             ref_form_ids: refs,
             ref_var_indices: Vec::new(),
         }
@@ -957,7 +980,6 @@ mod tests {
             let program = ObScriptProgram::new(&script);
             let mut state = VmState {
                 locals: [(1u16, local_value)].into_iter().collect(),
-                ref_vars: Default::default(),
             };
             let mut host = Recorder::default();
             program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
@@ -1003,7 +1025,6 @@ mod tests {
             let program = ObScriptProgram::new(&script);
             let mut state = VmState {
                 locals: [(1u16, local_value)].into_iter().collect(),
-                ref_vars: Default::default(),
             };
             let mut host = Recorder::default();
             program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
@@ -1110,6 +1131,136 @@ mod tests {
             .collect();
         assert_eq!(global_writes.len(), 1);
         assert!(matches!(global_writes[0].1[0], ObScriptValue::Num(7.0)));
+    }
+
+    /// Explicit-caller statement bytes: `[1c][caller u16][cmd u16][len u16][args]`.
+    fn caller_stmt(caller: u16, cmd: u16, args: &[u8]) -> Vec<u8> {
+        let mut stmt = (0x1cu16).to_le_bytes().to_vec();
+        stmt.extend_from_slice(&caller.to_le_bytes());
+        stmt.extend_from_slice(&cmd.to_le_bytes());
+        stmt.extend_from_slice(&(args.len() as u16).to_le_bytes());
+        stmt.extend_from_slice(args);
+        stmt
+    }
+
+    /// A script whose reference list is `[Object, Variable, Object]`, the
+    /// FNV `Patch04Quest00SCRIPT` shape: a reference variable sits between
+    /// two literal objects.
+    fn interleaved_script(body: Vec<u8>) -> ScriptRecord {
+        let mut script = script(wrap_body(body), vec![], vec![0xA, 0xB]);
+        script.refs = vec![
+            ScriptRef::Object(0xA),
+            ScriptRef::Variable(1),
+            ScriptRef::Object(0xB),
+        ];
+        script.num_refs = 3;
+        script
+    }
+
+    /// #5629: compiled reference indices address `SCRO` and `SCRV` entries
+    /// interleaved in subrecord order. With the list `[A, var, B]`, index 3
+    /// is B — the SCRO-only table (`[A, B]`) called it out of range — and
+    /// index 2, the variable slot, resolves to nothing (a null reference),
+    /// never to a neighbouring object.
+    #[test]
+    fn reference_indices_address_the_interleaved_scro_scrv_list() {
+        let body = [
+            stmt_call(SETSTAGE, &args_blob(&[ra(1), na(10)])),
+            stmt_call(SETSTAGE, &args_blob(&[ra(2), na(20)])),
+            stmt_call(SETSTAGE, &args_blob(&[ra(3), na(30)])),
+        ]
+        .concat();
+        let script = interleaved_script(body);
+        let mut host = Recorder::default();
+        ObScriptProgram::new(&script).run_block(
+            BLOCK_GAME_MODE,
+            &mut VmState::default(),
+            &mut host,
+        );
+        let quests: Vec<ObScriptValue> = host
+            .calls
+            .iter()
+            .filter(|(cmd, _, _)| *cmd == SETSTAGE)
+            .map(|(_, args, _)| args[0])
+            .collect();
+        assert_eq!(
+            quests,
+            vec![
+                ObScriptValue::Ref(0xA),
+                ObScriptValue::Ref(0), // the variable slot: unresolved, never B
+                ObScriptValue::Ref(0xB),
+            ]
+        );
+    }
+
+    /// #5629: an explicit caller that does not resolve must not run as an
+    /// implicit-caller command (the host reads `None` as "the script's own
+    /// owner"). It is declined, carrying the command id for the census.
+    #[test]
+    fn an_unresolved_explicit_caller_is_declined_not_run_on_the_owner() {
+        let enable = 0x1021u16;
+        let body = [
+            caller_stmt(2, enable, &args_blob(&[])), // the variable slot
+            caller_stmt(9, enable, &args_blob(&[])), // out of range
+            caller_stmt(3, enable, &args_blob(&[])), // resolves to B
+        ]
+        .concat();
+        let script = interleaved_script(body);
+        let mut host = Recorder::default();
+        ObScriptProgram::new(&script).run_block(
+            BLOCK_GAME_MODE,
+            &mut VmState::default(),
+            &mut host,
+        );
+        assert_eq!(
+            host.calls,
+            vec![
+                (CMD_DECLINED, vec![ObScriptValue::Num(f32::from(enable))], None),
+                (CMD_DECLINED, vec![ObScriptValue::Num(f32::from(enable))], None),
+                (enable, vec![], Some(0xB)),
+            ]
+        );
+    }
+
+    /// #5630: a tag-`r` `Set` is `set <ref>.<remote var> to expr`, a write
+    /// into another script's variable. It used to be stored as `ref_vars[idx]
+    /// = value`, so after `set Q.iFlag to 1` every later `' r<idx>'` naming
+    /// `Q` resolved to form 1. It is declined instead (counted under the
+    /// `Set` opcode), and the object still resolves to itself.
+    #[test]
+    fn a_remote_variable_set_is_declined_and_does_not_shadow_the_object() {
+        // `r<ref 1> s<ordinal 1>` — the 6-byte target, then `[len][expr]`.
+        let mut remote = vec![b'r'];
+        remote.extend_from_slice(&1u16.to_le_bytes());
+        remote.push(b's');
+        remote.extend_from_slice(&1u16.to_le_bytes());
+        let expr = b"1";
+        remote.extend_from_slice(&(expr.len() as u16).to_le_bytes());
+        remote.extend_from_slice(expr);
+        let mut set = (0x15u16).to_le_bytes().to_vec();
+        set.extend_from_slice(&(remote.len() as u16).to_le_bytes());
+        set.extend_from_slice(&remote);
+
+        let body = [set, stmt_call(SETSTAGE, &args_blob(&[ra(1), na(10)]))].concat();
+        let script = interleaved_script(body);
+        let mut host = Recorder::default();
+        ObScriptProgram::new(&script).run_block(
+            BLOCK_GAME_MODE,
+            &mut VmState::default(),
+            &mut host,
+        );
+        assert_eq!(
+            host.calls,
+            vec![
+                (CMD_DECLINED, vec![ObScriptValue::Num(f32::from(OP_SET))], None),
+                (
+                    SETSTAGE,
+                    vec![ObScriptValue::Ref(0xA), ObScriptValue::Num(10.0)],
+                    None
+                ),
+            ],
+            "the later SetStage still targets the object, not the value written"
+        );
     }
 
     #[test]

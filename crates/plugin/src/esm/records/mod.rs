@@ -112,7 +112,7 @@ pub use misc::{
     QUEST_STAGE_FLAG_START_UP, SCENE_BEGIN_ON_QUEST_START, SCENE_INTERRUPTIBLE,
     SCENE_REPEAT_CONDITIONS, SCENE_SHOW_ALL_TEXT, SCENE_STOP_QUEST_ON_END,
 };
-pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptType};
+pub use script::{parse_scpt, ScriptLocalVar, ScriptRecord, ScriptRef, ScriptType};
 pub use tree::{parse_tree, TreeRecord};
 pub use weather::{parse_wthr, OblivionHdrLighting, SkyColor, WeatherRecord};
 pub use weather_settings::{

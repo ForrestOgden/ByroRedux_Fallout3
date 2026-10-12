@@ -51,6 +51,24 @@ impl ScriptType {
     }
 }
 
+/// One entry of a script's compiled reference list, in subrecord order.
+///
+/// The bytecode's reference indices (the `u16` after an `r`/`G` tag and the
+/// caller of a `0x1c` statement) are 1-based into the list of `SCRO` **and**
+/// `SCRV` sub-records interleaved as they sit in the record — `SCHR.num_refs`
+/// counts both, verified `num_refs == #SCRO + #SCRV` on every script of
+/// vanilla Oblivion (2 393) and FalloutNV (2 576) (#5629). Indexing the
+/// `SCRO` entries alone, as `ref_form_ids` is, shifts every reference after
+/// the first `SCRV`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptRef {
+    /// `SCRO`: an object / global / quest form, already in global space.
+    Object(u32),
+    /// `SCRV`: a reference-**variable** slot — the script-local ordinal
+    /// (never a FormID, never remapped).
+    Variable(u32),
+}
+
 /// Per-script local variable metadata — one per `SCVR` sub-record.
 #[derive(Debug, Clone)]
 pub struct ScriptLocalVar {
@@ -110,6 +128,10 @@ pub struct ScriptRecord {
     /// Reference-variable indices from `SCRV` — script-local ordinals,
     /// **not** FormIDs and never remapped. See `ref_form_ids`.
     pub ref_var_indices: Vec<u32>,
+    /// `SCRO` and `SCRV` entries interleaved in subrecord order — the list
+    /// compiled reference indices actually address (see [`ScriptRef`]).
+    /// `refs.len()` should equal `num_refs`.
+    pub refs: Vec<ScriptRef>,
 }
 
 /// Parse a SCPT record from its sub-records.
@@ -198,6 +220,7 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"SCRV" if sub.data.len() >= 4 => {
                 if let Ok(idx) = SubReader::new(&sub.data).u32() {
                     record.ref_var_indices.push(idx);
+                    record.refs.push(ScriptRef::Variable(idx));
                 }
             }
             // SCRO: object cross-record refs (bytecode literal). A real
@@ -205,7 +228,9 @@ pub fn parse_scpt(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             // (#4069).
             b"SCRO" if sub.data.len() >= 4 => {
                 if let Ok(fid) = SubReader::new(&sub.data).u32() {
-                    record.ref_form_ids.push(remap_fid(fid, remap));
+                    let fid = remap_fid(fid, remap);
+                    record.ref_form_ids.push(fid);
+                    record.refs.push(ScriptRef::Object(fid));
                 }
             }
             _ => {}
@@ -323,6 +348,38 @@ mod tests {
             vec![0x0000_0018],
             "SCRV is a variable index and must never be remapped"
         );
+    }
+
+    /// #5629 — compiled reference indices address the `SCRO` and `SCRV`
+    /// entries INTERLEAVED in subrecord order (`SCHR.num_refs` counts both).
+    /// The shape is FNV `Patch04Quest00SCRIPT`'s: two objects, a reference
+    /// variable, then more objects — an index-4 reference is the FIRST
+    /// object after the variable, which the SCRO-only vectors would call
+    /// index 3.
+    #[test]
+    fn parse_scpt_keeps_scro_and_scrv_interleaved_in_subrecord_order() {
+        let remap = crate::esm::reader::FormIdRemap::regular(2, vec![0]);
+        let subs = vec![
+            sub(b"SCRO", 0x0014_DF03u32.to_le_bytes()),
+            sub(b"SCRO", 0x000E_6188u32.to_le_bytes()),
+            sub(b"SCRV", 0x0000_0001u32.to_le_bytes()),
+            sub(b"SCRO", 0x0100_0ABCu32.to_le_bytes()), // self-referencing: remapped
+            sub(b"SCRO", 0x0016_3427u32.to_le_bytes()),
+        ];
+        let rec = parse_scpt(0x0200_0001, &subs, &Some(remap));
+        assert_eq!(
+            rec.refs,
+            vec![
+                ScriptRef::Object(0x0014_DF03),
+                ScriptRef::Object(0x000E_6188),
+                ScriptRef::Variable(0x1),
+                ScriptRef::Object(0x0200_0ABC),
+                ScriptRef::Object(0x0016_3427),
+            ]
+        );
+        // The split vectors still hold their own spaces.
+        assert_eq!(rec.ref_form_ids.len(), 4);
+        assert_eq!(rec.ref_var_indices, vec![0x1]);
     }
 
     /// Missing `SCDA` / `SCTX` / `SCVR` sub-records must not crash the

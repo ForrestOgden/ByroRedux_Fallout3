@@ -181,6 +181,17 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             Some(ObScriptValue::Num(n)) if *n > 0.0 => Some(*n as u32),
             _ => None,
         };
+        // The quest a quest command targets: the explicit reference argument,
+        // or the script's own quest when none was written. A reference that
+        // IS written but is null — the VM hands over `Ref(0)` for an
+        // unresolved slot or the `Z` null tag — has no quest to act on, so
+        // the command is declined: defaulting it to the own quest, or acting
+        // on form 0, would stage a quest the script never named (#5629).
+        let own_quest = self.quest;
+        let quest_target = |i: usize| match args.get(i) {
+            Some(ObScriptValue::Ref(0)) => None,
+            _ => Some(ref_arg(i).unwrap_or(own_quest)),
+        };
         let effect = |host: &mut Self, text: String| {
             if let Some(mut log) = host.world.try_resource_mut::<ObScriptEffectLog>() {
                 log.push(format!("{:08X}", host.quest), text);
@@ -191,7 +202,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             // slot may carry the quest when authored as `<quest>.SetStage`;
             // the first ref argument is the quest in the flat form.
             0x1039 => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 let stage = num(1) as u16;
                 if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
                     stages.set_stage(QuestFormId(target), stage);
@@ -201,7 +214,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // StartQuest / StopQuest
             0x1036 => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
                     stages.start_quest(QuestFormId(target), None);
                 }
@@ -209,7 +224,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                 Some(ObScriptValue::Num(1.0))
             }
             0x1037 => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 if let Some(mut stages) = self.world.try_resource_mut::<QuestStageState>() {
                     stages.stop(QuestFormId(target));
                 }
@@ -218,7 +235,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // GetStage <quest>
             0x103a => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 let stage = self
                     .world
                     .try_resource::<QuestStageState>()
@@ -228,7 +247,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // GetStageDone <quest> <stage>
             0x103b => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 let stage = num(1) as u16;
                 let done = self
                     .world
@@ -239,7 +260,9 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // GetQuestRunning <quest>
             0x1038 => {
-                let target = ref_arg(0).unwrap_or(self.quest);
+                let Some(target) = quest_target(0) else {
+                    return self.decline(cmd);
+                };
                 let running = self
                     .world
                     .try_resource::<QuestStageState>()
@@ -279,6 +302,14 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     .unwrap_or(0.0);
                 Some(ObScriptValue::Num(value))
             }
+            // The VM declined a statement it could not model (unresolved
+            // explicit caller, remote-variable `Set`): count it with the
+            // other unmodeled commands under the id it carries.
+            crate::obscript_vm::CMD_DECLINED => {
+                let declined = args.first().map_or(0.0, |v| v.as_num()) as u16;
+                self.decline(declined);
+                None
+            }
             crate::obscript_vm::CMD_SET_GLOBAL => {
                 let form = caller.unwrap_or(0);
                 let value = num(0);
@@ -290,22 +321,31 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             _ => {
                 // Traced no-op. The census counter keeps phase-1 honest about
                 // coverage instead of silently faking behavior.
-                if let Some(mut timers) = self.world.try_resource_mut::<ObScriptQuestTimers>() {
-                    *timers
-                        .unknown_commands
-                        .entry(self.quest)
-                        .or_default()
-                        .entry(cmd)
-                        .or_insert(0) += 1;
-                }
                 log::trace!(
                     "ObScript {:08X}: unknown command {cmd:#06x} ({} args) — no-op",
                     self.quest,
                     args.len(),
                 );
-                Some(ObScriptValue::Num(0.0))
+                self.decline(cmd)
             }
         }
+    }
+}
+
+impl QuestCommandHost<'_> {
+    /// Record `cmd` as not executed — an unknown command, or a known one
+    /// whose reference could not be resolved — under the per-quest census,
+    /// and answer like an unknown command (value 0). Never faked.
+    fn decline(&self, cmd: u16) -> Option<ObScriptValue> {
+        if let Some(mut timers) = self.world.try_resource_mut::<ObScriptQuestTimers>() {
+            *timers
+                .unknown_commands
+                .entry(self.quest)
+                .or_default()
+                .entry(cmd)
+                .or_insert(0) += 1;
+        }
+        Some(ObScriptValue::Num(0.0))
     }
 }
 
@@ -358,6 +398,100 @@ pub fn obscript_quest_tick_system(world: &World, dt: f32) {
         if let Some(BlockOutcome::Malformed(at)) = outcome {
             log::warn!("ObScript quest {id:08X}: malformed bytecode at {at:#06x}");
         }
+    }
+}
+
+/// Host-level behaviour of [`QuestCommandHost`] on synthetic calls.
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use crate::obscript_vm::{ObScriptHost, ObScriptValue, CMD_DECLINED};
+
+    const OWN: u32 = 0x00AA_0001;
+    const OTHER: u32 = 0x00BB_0002;
+    const SET_STAGE: u16 = 0x1039;
+    const START_QUEST: u16 = 0x1036;
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.insert_resource(QuestStageState::default());
+        world.insert_resource(ObScriptQuestTimers::default());
+        world
+    }
+
+    fn call(
+        world: &World,
+        cmd: u16,
+        args: &[ObScriptValue],
+    ) -> Option<ObScriptValue> {
+        let script = ScriptRecord::default();
+        let mut host = QuestCommandHost {
+            world,
+            quest: OWN,
+            elapsed: 0.0,
+            script: &script,
+        };
+        host.call(cmd, args, None)
+    }
+
+    fn declined(world: &World, cmd: u16) -> u32 {
+        world
+            .try_resource::<ObScriptQuestTimers>()
+            .unwrap()
+            .unknown_commands
+            .get(&OWN)
+            .and_then(|commands| commands.get(&cmd))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// #5629: a quest argument that IS written but is null (the VM's
+    /// `Ref(0)` for an unresolved slot or the `Z` tag) has no quest to act
+    /// on. It used to stage form 0 — or, once absent-defaulting is applied
+    /// carelessly, the script's own quest. It is declined and counted.
+    #[test]
+    fn a_null_quest_reference_declines_instead_of_staging_form_zero_or_the_owner() {
+        let world = world();
+        for cmd in [SET_STAGE, START_QUEST, 0x1037, 0x103a, 0x103b, 0x1038] {
+            let args = [ObScriptValue::Ref(0), ObScriptValue::Num(10.0)];
+            assert_eq!(
+                call(&world, cmd, &args),
+                Some(ObScriptValue::Num(0.0)),
+                "{cmd:#06x} answers like an unknown command"
+            );
+            assert_eq!(declined(&world, cmd), 1, "{cmd:#06x} counted");
+        }
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert!(!stages.is_started(QuestFormId(0)), "form 0 never staged");
+        assert!(!stages.is_started(QuestFormId(OWN)), "own quest never staged");
+    }
+
+    /// The decline must not disturb the resolved and defaulted forms.
+    #[test]
+    fn a_resolved_quest_still_stages_and_an_absent_one_defaults_to_the_owner() {
+        let world = world();
+        call(
+            &world,
+            SET_STAGE,
+            &[ObScriptValue::Ref(OTHER), ObScriptValue::Num(10.0)],
+        );
+        call(&world, START_QUEST, &[]); // no argument written → own quest
+        let stages = world.try_resource::<QuestStageState>().unwrap();
+        assert_eq!(stages.get_stage(QuestFormId(OTHER)), 10);
+        assert!(stages.is_started(QuestFormId(OWN)));
+        assert_eq!(declined(&world, SET_STAGE), 0);
+        assert_eq!(declined(&world, START_QUEST), 0);
+    }
+
+    /// The VM's `CMD_DECLINED` is counted under the id it carries.
+    #[test]
+    fn the_vm_decline_command_is_counted_under_the_declined_id() {
+        let world = world();
+        assert_eq!(
+            call(&world, CMD_DECLINED, &[ObScriptValue::Num(0x15 as f32)]),
+            None
+        );
+        assert_eq!(declined(&world, 0x15), 1, "a remote-variable Set (0x15)");
     }
 }
 
@@ -493,6 +627,65 @@ mod real_data_tests {
         assert!(
             host.calls.iter().any(|(cmd, ..)| *cmd == 0x1039),
             "MS23 must issue SetStage under a zeroed world"
+        );
+    }
+
+    /// #5629 — the gate above only checks that a `SetStage` was *issued*,
+    /// not which quest it named, so it was blind to references resolving
+    /// against the SCRO-only list. FNV `Patch04Quest00SCRIPT` has a
+    /// reference variable (`rCountryRadio`, an SCRV entry) between literal
+    /// objects, which shifted every later reference: with the interleaved
+    /// list it must start exactly the five quests its source names and stop
+    /// its own quest, and the `.Enable` on the never-assigned reference
+    /// variable must be declined rather than run on the owner.
+    #[test]
+    #[ignore = "needs FalloutNV.esm on disk"]
+    fn fnv_patch04_quest_script_targets_its_own_scro_quests() {
+        let path = byroredux_plugin::esm::test_paths::fnv_esm();
+        if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but FalloutNV.esm was not found at {path:?}");
+            }
+            return;
+        }
+        let esm = std::fs::read(&path).unwrap();
+        let index = byroredux_plugin::esm::parse_esm(&esm).unwrap();
+        let script = index
+            .scripts
+            .values()
+            .find(|s| s.editor_id.eq_ignore_ascii_case("Patch04Quest00SCRIPT"))
+            .expect("Patch04Quest00SCRIPT present in vanilla FalloutNV.esm");
+        let mut state = crate::obscript_vm::VmState::default();
+        let mut host = Recorder::default();
+        let outcome =
+            ObScriptProgram::new(script).run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        assert_eq!(outcome, BlockOutcome::Completed);
+
+        let targets = |cmd: u16| -> Vec<u32> {
+            host.calls
+                .iter()
+                .filter(|(c, _)| *c == cmd)
+                .map(|(_, args)| match args.first() {
+                    Some(ObScriptValue::Ref(form)) => *form,
+                    other => panic!("quest command {cmd:#06x} without a ref arg: {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            targets(0x1036),
+            [0x0016_3427, 0x0016_3429, 0x0016_3428, 0x0015_FB7D, 0x0015_F4FF],
+            "the five StartQuests name the five SCRO quests that follow the SCRV slot"
+        );
+        assert_eq!(
+            targets(0x1037),
+            [0x0017_BA15],
+            "StopQuest names the script's own quest, not form 0"
+        );
+        assert!(
+            host.calls.iter().any(|(c, args)| *c
+                == crate::obscript_vm::CMD_DECLINED
+                && args.first() == Some(&ObScriptValue::Num(f32::from(0x1021u16)))),
+            "`rCountryRadio.Enable` (caller = the SCRV slot) is declined, not run on the owner"
         );
     }
 }
