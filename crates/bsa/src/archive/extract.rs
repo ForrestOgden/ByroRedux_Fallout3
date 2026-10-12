@@ -153,6 +153,28 @@ impl BsaArchive {
             // `MAX_CHUNK_BYTES` ceiling used elsewhere, not merely a
             // restatement of the mask). #586.
             let compressed_len = checked_chunk_size_usize(compressed_len, "BSA compressed_len")?;
+            // #5073 / #5660 — a compressed record with no stream after its
+            // size header. Vanilla ships these as zero-byte `.txt`
+            // placeholders (35 in Oblivion, 1 each in FO3 and FNV, all
+            // declaring original size 0). flate2 1.1.10 reports an empty
+            // zlib stream as `UnexpectedEof` where 1.1.9 returned `Ok(0)`, so
+            // this edge is decided here, codec-independently, rather than
+            // left to whichever decoder version the lock resolves: an empty
+            // file is `Ok(empty)` (matching `declared_size`), and a non-zero
+            // declared size with nothing to inflate is corrupt.
+            if compressed_len == 0 {
+                if original_size == 0 {
+                    return Ok(Vec::new());
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "BSA file '{}' declares {} uncompressed bytes but \
+                         carries no compressed stream",
+                        path, original_size
+                    ),
+                ));
+            }
             let mut compressed = vec![0u8; compressed_len];
             file.read_exact_at(&mut compressed, pos)?;
 

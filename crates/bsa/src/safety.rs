@@ -121,10 +121,15 @@ pub fn checked_chunk_size_usize(size: usize, label: &str) -> io::Result<usize> {
 ///
 /// This reads at most `declared + 1` bytes. Landing on that extra byte proves
 /// the stream had more to give, which is rejected as `InvalidData` rather than
-/// silently truncated. A *short* decode is deliberately still `Ok` — several
-/// shipped archives carry known padding deltas where the payload reads a
-/// handful of bytes under its declared size (#622 / #812), and callers log
-/// that themselves.
+/// silently truncated. A *short* decode of a *complete* stream is deliberately
+/// still `Ok` — several shipped archives carry known padding deltas where the
+/// payload reads a handful of bytes under its declared size (#622 / #812), and
+/// callers log that themselves. A *truncated* stream (one that ends before its
+/// final block) is an error: flate2 1.1.10 reports it as `UnexpectedEof` where
+/// 1.1.9 returned the bytes it had (#5660). An extract sweep of every vanilla
+/// archive across the eight supported installs (3,928,089 entries, 2026-10-12)
+/// found no truncated stream; the only casualties were the empty placeholder
+/// streams `BsaArchive::extract` now answers before inflating (#5073).
 ///
 /// See #3410 (SKY-2026-08-27b-D5-01).
 pub fn inflate_bounded<R: io::Read>(
@@ -507,5 +512,33 @@ mod inflate_bounded_zlib_tests {
         let compressed = zlib(data);
         let out = inflate_bounded_zlib(&compressed, data.len(), "test").expect("clean decode");
         assert_eq!(out, data);
+    }
+
+    /// #5660 — pins the decoder's truncated-stream semantics in the default
+    /// lane. flate2 1.1.9 returned whatever a stream cut mid-block had
+    /// produced as a short `Ok`; 1.1.10 (lock refresh 317d4b7a9) reports
+    /// `UnexpectedEof`. The change reached the engine with nothing but an
+    /// `--ignored` real-data sweep able to notice, so a future decoder bump
+    /// that flips this again must fail here instead. The raw-DEFLATE retry
+    /// must not paper over it either: the cut stream cannot reproduce
+    /// `declared` bytes.
+    #[test]
+    fn truncated_stream_is_an_error_not_a_short_decode() {
+        let data: Vec<u8> = (0..=255u8).cycle().take(4000).collect();
+        let compressed = zlib(&data);
+        let cut = &compressed[..compressed.len() / 2];
+        assert!(
+            inflate_bounded_zlib(cut, data.len(), "test").is_err(),
+            "a stream cut mid-block must be an error, not a silent short decode"
+        );
+    }
+
+    /// #5660 / #5073 — the empty stream is an error at this layer under the
+    /// pinned flate2 (1.1.9 returned `Ok(empty)`). `BsaArchive::extract`
+    /// answers a zero-size empty record itself before calling in here, so
+    /// this pins the helper's contract and makes a decoder flip visible.
+    #[test]
+    fn empty_stream_is_an_error_at_the_helper() {
+        assert!(inflate_bounded_zlib(&[], 0, "test").is_err());
     }
 }

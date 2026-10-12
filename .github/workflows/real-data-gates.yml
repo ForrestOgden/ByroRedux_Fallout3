@@ -135,7 +135,9 @@ jobs:
           log="target/real-data-gates/${GAME}.log"
           # FILTER is a space-separated list; libtest ORs positional filters.
           read -r -a filters <<<"${FILTER}"
-          cargo test --release -p byroredux-nif \
+          # #5660 — --no-fail-fast: a red binary must not stop the ones after
+          # it (cargo otherwise skips the remaining test targets silently).
+          cargo test --release --no-fail-fast -p byroredux-nif \
             --test parse_real_nifs \
             --test per_block_baselines \
             --test block_coverage_baselines \
@@ -204,7 +206,10 @@ jobs:
           failed=0
           for crate in bsa bgsm sfmaterial hkx facegen menuxml; do
             log="target/real-data-gates/parsers-${crate}.log"
-            if ! cargo test --release -p "byroredux-${crate}" \
+            # #5660 — --no-fail-fast: without it a failing test binary stops
+            # cargo before the crate's later ones (a red bsa_real hid
+            # csg_real), and a known failure masks every regression behind it.
+            if ! cargo test --release --no-fail-fast -p "byroredux-${crate}" \
                 -- --ignored --test-threads=1 --nocapture "${skip[@]}" 2>&1 | tee "${log}"; then
               echo "::error::byroredux-${crate} real-data suite failed"
               failed=1

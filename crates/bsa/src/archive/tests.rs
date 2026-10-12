@@ -411,6 +411,73 @@ fn extract_rejects_compressed_payload_too_short() {
     );
 }
 
+/// #5073 / #5660 — the vanilla zero-byte placeholder shape: a compressed
+/// record of exactly 4 bytes (an original-size header of 0, no stream).
+/// It must extract as an empty file, agreeing with `declared_size`, on
+/// both the zlib (v103/v104) and LZ4-frame (v105) arms — never via the
+/// decoder, whose empty-input behaviour changed between flate2 1.1.9
+/// (`Ok(0)`) and 1.1.10 (`UnexpectedEof`).
+#[test]
+fn extract_returns_empty_for_a_zero_size_compressed_placeholder() {
+    for version in [103u32, 104, 105] {
+        let entry_path = format!("placeholder_{version}.txt");
+        let archive = archive_with_payload(
+            &[0u8, 0, 0, 0],
+            false,
+            true, // compressed-by-default ON
+            version,
+            &entry_path,
+            FileEntry {
+                offset: 0,
+                size: 4, // the size header alone
+                compression_toggle: false,
+                unknown_size_flag: false,
+            },
+        );
+        assert_eq!(
+            archive.declared_size(&entry_path).expect("declared size"),
+            0,
+            "v{version}"
+        );
+        let bytes = archive
+            .extract(&entry_path)
+            .unwrap_or_else(|e| panic!("v{version}: empty placeholder must extract: {e}"));
+        assert!(bytes.is_empty(), "v{version}: got {} bytes", bytes.len());
+    }
+}
+
+/// #5660 — the same 4-byte shape whose header claims a non-zero size has
+/// nothing to inflate: that is a corrupt record, reported with the entry
+/// name, not an empty or short success.
+#[test]
+fn extract_rejects_a_nonzero_size_with_no_compressed_stream() {
+    for version in [104u32, 105] {
+        let entry_path = format!("liar_{version}.txt");
+        let archive = archive_with_payload(
+            &5u32.to_le_bytes(),
+            false,
+            true,
+            version,
+            &entry_path,
+            FileEntry {
+                offset: 0,
+                size: 4,
+                compression_toggle: false,
+                unknown_size_flag: false,
+            },
+        );
+        let err = archive
+            .extract(&entry_path)
+            .expect_err("a declared size with no stream must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "v{version}: {err}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("carries no compressed stream") && msg.contains(&entry_path),
+            "v{version}: expected the empty-stream error naming the entry, got: {msg}"
+        );
+    }
+}
+
 /// Embedded name prefix + compressed body: `extract` reads positionally, so
 /// the bstring skip and the 4-byte original-size header are pure offset
 /// arithmetic. A one-byte slip here returns a garbage inflate, not a short
