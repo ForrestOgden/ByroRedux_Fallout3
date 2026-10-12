@@ -550,9 +550,20 @@ mod tests {
 
     #[test]
     fn tick_system_is_a_noop_without_config() {
-        let world = World::new();
-        // No PoolRegenConfig inserted — must not panic.
-        pool_regen_tick_system(&world, POOL_REGEN_DT);
+        let mut world = World::new();
+        let entity = world.spawn();
+        let mut avs = ActorValues::from_pairs([(0x01, 100.0), (0x10, 80.0)]);
+        avs.apply_damage(0x01, 50.0);
+        avs.apply_damage(0x10, 40.0);
+        world.insert(entity, avs);
+        // No PoolRegenConfig inserted — must neither panic nor regenerate.
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+        let q = world.query::<ActorValues>().unwrap();
+        let avs = q.get(entity).unwrap();
+        assert_eq!(avs.current(0x01), 50.0);
+        assert_eq!(avs.current(0x10), 40.0);
     }
 
     /// Regression for #3483. `CharacterRuleset` used to be acquired as a

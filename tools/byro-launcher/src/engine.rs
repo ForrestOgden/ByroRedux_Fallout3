@@ -151,7 +151,11 @@ mod tests {
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(dir.path().join(ENGINE_EXE), b"#!/bin/sh\n").unwrap();
-        assert!(locate_engine(&bin).is_some());
+        assert_eq!(
+            locate_engine(&bin),
+            Some(bin.join("..").join(ENGINE_EXE)),
+            "the hit must be the parent directory's executable"
+        );
     }
 
     /// A missing engine must be reported, never guessed at — the launcher has

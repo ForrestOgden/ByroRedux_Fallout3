@@ -704,8 +704,14 @@ mod tests {
 
     #[test]
     fn no_combat_states_is_a_cheap_no_op() {
-        let world = fixture();
-        // Must not panic even with no AiCombatState storage populated.
+        let mut world = fixture();
+        let bystander = world.spawn();
+        world.insert(bystander, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+        // Must not panic even with no AiCombatState storage populated, and
+        // must leave the bystander where it was.
         npc_combat_ai_system(&world, 1.0 / 60.0);
+        assert_eq!(world.count::<AiCombatState>(), 0);
+        let q = world.query::<Transform>().unwrap();
+        assert_eq!(q.get(bystander).unwrap().translation, Vec3::new(1.0, 2.0, 3.0));
     }
 }

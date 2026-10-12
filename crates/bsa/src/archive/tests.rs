@@ -150,8 +150,11 @@ fn genhash_file_splits_on_last_dot() {
 
 #[test]
 fn genhash_file_handles_no_extension() {
-    // A name without `.` shouldn't panic. Falls back to empty ext.
-    let _ = genhash_file(b"noextension");
+    // A name without `.` has an empty extension: no XOR constant, a zero
+    // extension rolling hash — so the file hash is the bare stem hash. A
+    // trailing dot is a (one-byte) extension and must therefore differ.
+    assert_eq!(genhash_file(b"noextension"), genhash_folder(b"noextension"));
+    assert_ne!(genhash_file(b"noextension"), genhash_file(b"noextension."));
 }
 
 /// Regression: #449 — `genhash_file` must produce the same hash the

@@ -1168,21 +1168,22 @@ mod tests {
         assert!(main_body_bit(GameKind::Fallout4).is_some());
     }
 
+    /// No game has a `None` bit here except TES3-era titles the equip path
+    /// never sees, so every supported arm returns a bit position — `None` is
+    /// the "this game has no ARMO through this codepath" answer, kept
+    /// distinct from "the bitmask is empty". The positions themselves are the
+    /// "Upper Body" / "BODY" bits cited on `main_body_bit`.
     #[test]
-    fn empty_flags_never_cover_body() {
-        // No game has a `None` bit here except TES3-era titles the equip
-        // path never sees, so every supported arm returns a bit position —
-        // `None` is the "this game has no ARMO through this codepath"
-        // answer, kept distinct from "the bitmask is empty".
-        for game in [
-            GameKind::Oblivion,
-            GameKind::Fallout3NV,
-            GameKind::Skyrim,
-            GameKind::Fallout4,
-            GameKind::Fallout76,
-            GameKind::Starfield,
+    fn every_supported_game_has_its_documented_main_body_bit() {
+        for (game, bit) in [
+            (GameKind::Oblivion, 2),
+            (GameKind::Fallout3NV, 2),
+            (GameKind::Skyrim, 2),
+            (GameKind::Fallout4, 3),
+            (GameKind::Fallout76, 3),
+            (GameKind::Starfield, 3),
         ] {
-            assert!(main_body_bit(game).is_some());
+            assert_eq!(main_body_bit(game), Some(bit), "{game:?}");
         }
     }
 

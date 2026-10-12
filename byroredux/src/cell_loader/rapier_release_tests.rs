@@ -138,7 +138,12 @@ fn release_is_noop_when_physics_resource_absent() {
     // Fabricate a handle row without a backing body — the resource miss
     // is hit before any handle is dereferenced.
     world.register::<CollisionShape>();
+    world.insert(e, CollisionShape::Ball { radius: 16.0 });
     release_victim_rapier_bodies(&mut world, &[e]);
+    // The miss is a pure no-op: the helper neither conjures a
+    // `PhysicsWorld` nor touches the victim's other components.
+    assert!(world.try_resource::<PhysicsWorld>().is_none());
+    assert!(world.has::<CollisionShape>(e));
 }
 
 // ── #1531 — Ragdoll bodies/colliders/joints must also be swept ─────────

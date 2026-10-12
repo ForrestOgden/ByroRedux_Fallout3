@@ -170,14 +170,29 @@ mod tests {
 
     #[test]
     fn no_timers_is_safe() {
-        let world = setup_world();
-        // Should not panic with empty world
+        let mut world = setup_world();
+        let bystander = world.spawn();
         timer_tick_system(&world, 0.016);
+        // Nothing to tick: no marker appears anywhere.
+        assert_eq!(world.count::<TimerExpired>(), 0);
+        assert_eq!(world.count::<ScriptTimer>(), 0);
+        assert!(!world.has::<TimerExpired>(bystander));
     }
 
     #[test]
     fn cleanup_with_no_events_is_safe() {
-        let world = setup_world();
+        let mut world = setup_world();
+        let e = world.spawn();
+        world.insert(
+            e,
+            ScriptTimer {
+                id: 7,
+                remaining: 5.0,
+            },
+        );
         crate::cleanup::event_cleanup_system(&world, 0.0);
+        // A live timer is not an event: cleanup leaves it alone.
+        assert_eq!(world.count::<ScriptTimer>(), 1);
+        assert_eq!(world.count::<TimerExpired>(), 0);
     }
 }
