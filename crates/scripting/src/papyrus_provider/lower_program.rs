@@ -468,6 +468,9 @@ pub(crate) fn lower_statements(
                     mod_event_sender,
                     depth + 1,
                 )?;
+                // The trailing `else` body executes inside the outer `If`
+                // *and* every `elseif` wrapper, so it runs at the runtime
+                // depth of the last clause's body (#5656).
                 let mut else_branch = if let Some(body) = else_body {
                     let mut branch_locals = locals.clone();
                     lower_statements(
@@ -475,12 +478,22 @@ pub(crate) fn lower_statements(
                         catalog,
                         &mut branch_locals,
                         mod_event_sender,
-                        depth + 1,
+                        depth + 1 + elseif_clauses.len(),
                     )?
                 } else {
                     Vec::new()
                 };
-                for (condition, body) in elseif_clauses.iter().rev() {
+                // #5656 — each `elseif` clause lowers to one more wrapper
+                // `If` nested inside the outer `If`, so the k-th clause's
+                // body executes (and is re-validated by
+                // `validate_provider_statements`) at depth + k + 2, not
+                // depth + 1. Lowering at the runtime depth makes the
+                // lowering bound and the dispatch-time validator agree:
+                // a chain deeper than `MAX_PROVIDER_HANDLER_NESTING` is
+                // rejected here, up front, instead of lowering fine and
+                // being re-rejected with a warn on every dispatch.
+                for (reverse_index, (condition, body)) in elseif_clauses.iter().rev().enumerate() {
+                    let clause_index = elseif_clauses.len() - 1 - reverse_index;
                     let condition = lower_condition(&condition.node, catalog, locals)?;
                     let mut branch_locals = locals.clone();
                     let then_branch = lower_statements(
@@ -488,7 +501,7 @@ pub(crate) fn lower_statements(
                         catalog,
                         &mut branch_locals,
                         mod_event_sender,
-                        depth + 1,
+                        depth + 2 + clause_index,
                     )?;
                     else_branch = vec![PapyrusProviderStatement::If {
                         condition: Box::new(condition),
@@ -684,6 +697,14 @@ pub(crate) fn lower_wait(expression: &Expr) -> Result<Option<f32>, PapyrusProvid
         _ => return Err(PapyrusProviderProgramError::UnsupportedStatement),
     };
     if !seconds.is_finite() || seconds < 0.0 {
+        return Err(PapyrusProviderProgramError::UnsupportedStatement);
+    }
+    // #5657 — `3.0e38` is a finite f32, so the checks above alone let an
+    // effectively-infinite wait lower into an immortal continuation
+    // (see `MAX_PROVIDER_WAIT_SECONDS`). Declining the handler here is
+    // the decline-safe outcome: a Wait the session can never satisfy is
+    // dead code in any correct handler.
+    if seconds > MAX_PROVIDER_WAIT_SECONDS {
         return Err(PapyrusProviderProgramError::UnsupportedStatement);
     }
     Ok(Some(seconds))

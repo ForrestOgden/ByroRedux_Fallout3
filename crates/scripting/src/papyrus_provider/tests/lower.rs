@@ -844,3 +844,97 @@ fn byte_level_pex_instance_send_mod_event_lowers_with_defaults() {
     );
     assert_eq!(sender, &PapyrusModEventSender::Owner);
 }
+
+/// #5656 — an `elseif` chain lowers to one wrapper `If` per clause, so
+/// the k-th clause body executes (and is re-validated by
+/// `validate_provider_statements` on every dispatch) at nesting depth
+/// k + 2. Lowering used to pass every clause `depth + 1`, so a chain
+/// deeper than `MAX_PROVIDER_HANDLER_NESTING` lowered fine and was then
+/// rejected with a warn on every dispatch — the handler never ran.
+/// Lowering now counts the chain: the too-deep chain is declined up
+/// front, and a chain just inside the bound both lowers and validates.
+#[test]
+fn elseif_chains_count_into_the_nesting_bound_at_lowering() {
+    let source = |clauses: usize, else_body: bool| {
+        let mut source = String::from(
+            "ScriptName Fixture\nEvent OnLoad()\nIf true\nWeatherNative.WeatherAt(1)\n",
+        );
+        for _ in 0..clauses {
+            source.push_str("ElseIf true\nWeatherNative.WeatherAt(2)\n");
+        }
+        if else_body {
+            source.push_str("Else\nWeatherNative.WeatherAt(3)\n");
+        }
+        source.push_str("EndIf\nEndEvent");
+        source
+    };
+    let lower = |clauses: usize, else_body: bool| {
+        let (script, errors) = parse_script(&source(clauses, else_body)).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        lower_provider_program(&script, &catalog())
+    };
+
+    // Clause k runs at depth k + 2, so `MAX - 1` clauses (k ≤ MAX - 2)
+    // fit the bound with or without a trailing `Else` (depth MAX).
+    for else_body in [false, true] {
+        let program = lower(MAX_PROVIDER_HANDLER_NESTING - 1, else_body)
+            .unwrap_or_else(|error| panic!("chain inside the bound must lower: {error:?}"))
+            .expect("a provider-bearing handler");
+        let statements = program.handler(PapyrusProviderEvent::OnLoad);
+        assert!(
+            super::super::execute::validate_provider_statements(statements, &catalog(), 0).is_ok(),
+            "a chain that lowers within the bound must also pass the dispatch-time validator"
+        );
+    }
+
+    // One clause more puts the last body at depth MAX + 1: lowering must
+    // refuse it, not hand the runtime a program it would reject forever.
+    assert_eq!(
+        lower(MAX_PROVIDER_HANDLER_NESTING, false),
+        Err(PapyrusProviderProgramError::NestingTooDeep)
+    );
+    // The trailing `Else` runs inside every wrapper — same bound.
+    assert_eq!(
+        lower(MAX_PROVIDER_HANDLER_NESTING, true),
+        Err(PapyrusProviderProgramError::NestingTooDeep)
+    );
+}
+
+/// #5657 — `Utility.Wait` is capped at lowering: `3.0e38` is a finite
+/// `f32`, so it used to lower into a continuation that can never expire,
+/// holding one of the 4 096 queue slots (which persist with the save and
+/// whose overflow drops the *newest* entry) for the rest of the session.
+/// A wait over one game day now declines the handler — the decline-safe
+/// outcome, since no session can satisfy it.
+#[test]
+fn unbounded_utility_waits_decline_at_lowering() {
+    let lower = |wait: &str| {
+        let source = format!(
+            "ScriptName Fixture\nEvent OnLoad()\nWeatherNative.WeatherAt(1)\nUtility.Wait({wait})\nEndEvent"
+        );
+        let (script, errors) = parse_script(&source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        lower_provider_program(&script, &catalog())
+    };
+
+    // One game day exactly — the documented ceiling — still lowers.
+    assert!(
+        lower("86400.0").unwrap().is_some(),
+        "the cap is inclusive: a one-game-day wait is the ceiling, not over it"
+    );
+    // The `.psc` lexer has no exponent form, but the PEX decompiler's
+    // float printing reaches any f32 bit pattern with full decimal
+    // expansion, and plain integer literals reach i64::MAX — both far
+    // over the cap.
+    for over in [
+        "86400.1",
+        "340000000000000000000000000000000000000.0",
+        "9223372036854775807",
+    ] {
+        assert_eq!(
+            lower(over),
+            Err(PapyrusProviderProgramError::UnsupportedStatement),
+            "Utility.Wait({over}) must decline at lowering"
+        );
+    }
+}

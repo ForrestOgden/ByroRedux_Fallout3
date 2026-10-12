@@ -64,6 +64,14 @@ const MAX_PROVIDER_HANDLER_NESTING: usize = 32;
 const MAX_PROVIDER_CONTINUATIONS: usize = 4_096;
 const MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS: usize = 4_096;
 const MAX_PENDING_PAPYRUS_MOD_EVENTS: usize = 256;
+/// #5657 — the largest `Utility.Wait` a handler may lower. Continuations
+/// park in the bounded [`MAX_PROVIDER_CONTINUATIONS`] queue whose overflow
+/// drops the *newest* entry, so an effectively-infinite literal wait
+/// (`3.0e38` is a perfectly finite `f32`) would hold a slot for the rest
+/// of the session — and, persisted with the save, across sessions —
+/// letting one mod starve every other latent handler. One game day is
+/// far above every legitimate wait in the vanilla corpus.
+const MAX_PROVIDER_WAIT_SECONDS: f32 = 86_400.0;
 const PAPYRUS_SELF_PROVIDER: &str = "Self";
 const PAPYRUS_SELF_LOCAL: &str = "self";
 
