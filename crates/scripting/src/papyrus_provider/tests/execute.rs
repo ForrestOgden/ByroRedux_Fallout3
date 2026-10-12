@@ -330,6 +330,103 @@ fn dynamic_mod_event_registration_delivers_typed_callback_and_unregisters() {
     assert_eq!(calls.lock().unwrap().len(), 1);
 }
 
+/// #5640: delivery indexes the registrations by owning entity once per
+/// frame instead of walking the whole map for every program entity × every
+/// pending event. Routing must be unchanged: a pending event reaches only
+/// the entities registered for that event, a frame with registrations but
+/// nothing pending delivers nothing, and an event nobody registered for is
+/// ignored.
+#[test]
+fn mod_event_delivery_routes_each_event_to_its_own_registrants() {
+    let script_for = |event: &str, callback: &str, tag: &str| {
+        let source = format!(
+            r#"
+            ScriptName Fixture
+            Event OnInit()
+                RegisterForModEvent("{event}", "{callback}")
+            EndEvent
+            Event {callback}(String status, Int count)
+                WeatherNative.WeatherAt(count, "{tag}")
+            EndEvent
+        "#
+        );
+        let (script, errors) = parse_script(&source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        lower_provider_program(&script, &catalog())
+            .unwrap()
+            .unwrap()
+    };
+    let mut world = World::new();
+    crate::register(&mut world);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let callback = Arc::new(
+        move |_principal: Option<&PrincipalId>, _route: &str, arguments: &[ScriptValue]| {
+            observed.lock().unwrap().push(arguments.to_vec());
+            Ok(ScriptValue::String("clear".to_owned()))
+        },
+    ) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+
+    let entity_a = world.spawn();
+    let entity_b = world.spawn();
+    // Program-less bystanders: they must cost nothing and receive nothing.
+    for _ in 0..50 {
+        world.spawn();
+    }
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        entity_a,
+        script_for("EventA", "OnA", "a"),
+        PrincipalId::new("legacy.scripts.a").unwrap(),
+    );
+    attach_owned_papyrus_provider_program(
+        &mut world,
+        entity_b,
+        script_for("EventB", "OnB", "b"),
+        PrincipalId::new("legacy.scripts.b").unwrap(),
+    );
+    papyrus_provider_system(&world, 0.0); // OnInit registers both
+    crate::event_cleanup_system(&world, 0.0);
+
+    let send = |name: &str, count: i32| {
+        let mut builders = byroredux_sdk::event::LegacySkseModEventBuilders::new();
+        let handle = builders.create(name);
+        builders.push(handle, LegacySkseModEventValue::String("s".to_owned()));
+        builders.push(handle, LegacySkseModEventValue::Int(count));
+        let command = builders.send(handle).unwrap();
+        queue_papyrus_mod_event(
+            &world,
+            CustomEvent {
+                event: command.event,
+                sender: PrincipalId::new("legacy.scripts.sender").unwrap(),
+                payload: command.payload,
+            },
+        );
+        papyrus_provider_system(&world, 0.0);
+    };
+    let delivered = |tag: &str, count: i32| {
+        vec![ScriptValue::Integer(i64::from(count)), ScriptValue::String(tag.to_owned())]
+    };
+
+    // Registrations exist, nothing pending: nothing is delivered.
+    papyrus_provider_system(&world, 0.0);
+    assert!(calls.lock().unwrap().is_empty());
+
+    send("EventA", 1);
+    assert_eq!(*calls.lock().unwrap(), vec![delivered("a", 1)]);
+
+    send("EventB", 2);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![delivered("a", 1), delivered("b", 2)]
+    );
+
+    // An event with no registrants is ignored.
+    send("EventC", 3);
+    assert_eq!(calls.lock().unwrap().len(), 2);
+}
+
 #[test]
 fn form_send_mod_event_preserves_stable_sender_across_wait() {
     use byroredux_core::ecs::components::FormIdComponent;

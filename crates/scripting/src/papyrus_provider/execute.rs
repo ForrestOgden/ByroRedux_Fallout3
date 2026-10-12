@@ -31,12 +31,33 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         let mut queue = world.resource_mut::<PapyrusProviderContinuationQueue>();
         std::mem::take(&mut queue.pending)
     };
-    let (mod_event_registrations, pending_mod_events) = {
+    // #5640 — the registration map is only read to deliver pending events,
+    // so it is neither cloned wholesale nor walked per program entity: the
+    // relevant registrations (those naming a pending event) are grouped by
+    // owning entity once, under the lock, and only when something is
+    // pending. A frame with no ModEvents costs nothing here, however many
+    // registrations a mod has filled the map with.
+    let (registrations_by_entity, pending_mod_events) = {
         let mut runtime = world.resource_mut::<PapyrusModEventRuntime>();
-        (
-            runtime.registrations.clone(),
-            std::mem::take(&mut runtime.pending),
-        )
+        let pending = std::mem::take(&mut runtime.pending);
+        let mut by_entity: BTreeMap<EntityId, Vec<(PrincipalId, byroredux_sdk::identity::EventId, String)>> =
+            BTreeMap::new();
+        if !pending.is_empty() {
+            let pending_events: BTreeSet<&byroredux_sdk::identity::EventId> =
+                pending.iter().map(|event| &event.event).collect();
+            // BTreeMap order (entity, principal, event) is kept within each
+            // entity, so delivery order is unchanged.
+            for ((entity, principal, event), callback_name) in &runtime.registrations {
+                if pending_events.contains(event) {
+                    by_entity.entry(*entity).or_default().push((
+                        principal.clone(),
+                        event.clone(),
+                        callback_name.clone(),
+                    ));
+                }
+            }
+        }
+        (by_entity, pending)
     };
     let pending_mod_events = pending_mod_events
         .into_iter()
@@ -218,11 +239,12 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
         if updated.contains(&entity) {
             enqueue(PapyrusProviderEvent::OnUpdate, None, None, None);
         }
+        let entity_registrations = registrations_by_entity
+            .get(&entity)
+            .map_or(&[][..], Vec::as_slice);
         for (event, payload) in &pending_mod_events {
-            for ((registered_entity, principal, registered_event), callback_name) in
-                &mod_event_registrations
-            {
-                if *registered_entity != entity || registered_event != &event.event {
+            for (principal, registered_event, callback_name) in entity_registrations {
+                if registered_event != &event.event {
                     continue;
                 }
                 let Some(custom_handlers) = program.custom_handlers.get(callback_name) else {
