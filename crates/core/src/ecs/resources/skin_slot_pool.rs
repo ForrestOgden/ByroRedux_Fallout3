@@ -317,8 +317,9 @@ impl SkinSlotPool {
             // back on the free list, so any pending `bind_inverses` write
             // aimed at it is by definition stale.
             //
-            // Unreachable before #3569: `drain_pending`'s cap (1366)
-            // exceeds the pool's capacity (1364), so an entry never
+            // Unreachable before #3569: `drain_pending`'s cap (the
+            // renderer passes `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME`,
+            // which is the pool's capacity, #5583), so an entry never
             // survived the frame it was queued in. The requeue path is the
             // first thing that can hold one across frames, and once it
             // does, a persistent upload failure lasting >= `min_idle`

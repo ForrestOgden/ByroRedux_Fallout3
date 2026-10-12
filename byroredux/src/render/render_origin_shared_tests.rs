@@ -14,9 +14,7 @@ fn run_view(world: &World) -> RenderFrameView {
     let mut gpu_lights = Vec::new();
     let mut bone_world = Vec::new();
     let mut skin_offsets = rustc_hash::FxHashMap::default();
-    let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
-        / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
-        - 1) as u32;
+    let max_skinned = byroredux_renderer::vulkan::scene_buffer::MAX_SKIN_SLOTS as u32;
     let mut skin_slot_pool = byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();

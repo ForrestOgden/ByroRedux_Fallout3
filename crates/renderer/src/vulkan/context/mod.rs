@@ -43,8 +43,9 @@ use std::sync::{Arc, Mutex, Once, Weak};
 /// pre-skin + BLAS refit pool can hold simultaneously. Each slot costs
 /// `3 × MAX_FRAMES_IN_FLIGHT = 6` storage-buffer descriptors. Pinned
 /// to the bone-palette pool's architectural ceiling
-/// (`(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1 = (196608 / 144) - 1 = 1364`
-/// after #1284 step-2) so the descriptor pool never becomes the
+/// (`scene_buffer::MAX_SKIN_SLOTS` =
+/// `(MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1 = (196608 / 144) - 1 = 1364`
+/// after #1284 step-2; one shared constant since #5583) so the descriptor pool never becomes the
 /// dominant bottleneck — if you only bump one, the other becomes the
 /// invisible cap and a fraction of skinned NPCs silently lose RT
 /// shadows. Variable-stride packing (M29.5) is the proper structural
@@ -78,9 +79,7 @@ use std::sync::{Arc, Mutex, Once, Weak};
 /// (1364 × 2 × 3 = 8184 storage-buffer descs) is paid up-front, and
 /// that's still well below typical Vulkan limits (~1 M storage-buffer
 /// descs per pool on modern desktop drivers).
-pub const SKIN_MAX_SLOTS: u32 = ((crate::vulkan::scene_buffer::MAX_TOTAL_BONES
-    / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
-    - 1) as u32;
+pub const SKIN_MAX_SLOTS: u32 = crate::vulkan::scene_buffer::MAX_SKIN_SLOTS as u32;
 
 /// Parse the `BYROREDUX_RENDER_DEBUG` env var into a fragment-shader
 /// debug-bypass bitmask. Accepts plain decimal (`3`) or hex (`0x3`).

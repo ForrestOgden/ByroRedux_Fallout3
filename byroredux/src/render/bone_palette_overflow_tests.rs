@@ -1,7 +1,7 @@
 use super::*;
 use byroredux_core::ecs::{GlobalTransform, SkinnedMesh, World, MAX_BONES_PER_MESH};
 use byroredux_core::math::Mat4;
-use byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES;
+use byroredux_renderer::vulkan::scene_buffer::{MAX_SKIN_SLOTS, MAX_TOTAL_BONES};
 
 fn make_skinned_world(num_meshes: usize) -> World {
     let mut world = World::new();
@@ -92,10 +92,8 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<Entity
     let mut material_table = byroredux_renderer::MaterialTable::new();
     let mut water_commands = Vec::new();
     // M29.6 — capacity matches main.rs's `App::new` construction:
-    // (MAX_TOTAL_BONES / MBPM) - 1, with slot 0 reserved.
-    let max_skinned = ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
-        / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
-        - 1) as u32;
+    // `MAX_SKIN_SLOTS`, with slot 0 reserved.
+    let max_skinned = MAX_SKIN_SLOTS as u32;
     let mut skin_slot_pool = byroredux_core::ecs::resources::SkinSlotPool::new(max_skinned);
     let _ = build_render_data(
         world,
@@ -117,12 +115,13 @@ fn run_build(world: &World) -> (Vec<[[f32; 4]; 4]>, rustc_hash::FxHashMap<Entity
 
 #[test]
 fn at_capacity_fills_palette_completely() {
-    // M29.6 — slot pool capacity is `(MAX_TOTAL_BONES / MBPM) - 1`
-    // (slot 0 reserved for global identity). Spawning exactly that
-    // many entities fills every allocatable slot; the persistent
+    // M29.6 — slot pool capacity is `MAX_SKIN_SLOTS`
+    // (`(MAX_TOTAL_BONES / MBPM) - 1`, slot 0 reserved for global
+    // identity). Spawning exactly that many entities fills every
+    // allocatable slot; the persistent
     // bone_world array reaches `(max_used_slot + 1) × MBPM =
     // MAX_TOTAL_BONES_rounded_down` entries.
-    let max_skinned = (MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1;
+    let max_skinned = MAX_SKIN_SLOTS;
     let world = make_skinned_world(max_skinned);
     let (palette, offsets) = run_build(&world);
     assert_eq!(
@@ -150,7 +149,7 @@ fn over_capacity_breaks_loop_and_truncates_offsets() {
     // entity. That entity gets no slot, no `skin_offsets` entry,
     // and renders in bind pose (bone_offset = 0 = identity slot).
     // The palette stays bounded at the at-capacity ceiling.
-    let max_skinned = (MAX_TOTAL_BONES / MAX_BONES_PER_MESH) - 1;
+    let max_skinned = MAX_SKIN_SLOTS;
     let world = make_skinned_world(max_skinned + 1);
     let (palette, offsets) = run_build(&world);
     assert!(

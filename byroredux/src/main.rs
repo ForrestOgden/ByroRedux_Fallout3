@@ -1148,13 +1148,11 @@ impl App {
             // #1284 step-2 bump, 12 MB target). Each pool slot occupies
             // MBPM (currently 144) bones, and slot 0 is reserved for
             // the global identity. So allocatable slot count =
-            // (MAX_TOTAL_BONES / MBPM) - 1 = floor(196608 / 144) - 1 =
-            // 1364. Allocating one slot beyond would push the palette
-            // past the SSBO boundary.
+            // `MAX_SKIN_SLOTS` = (MAX_TOTAL_BONES / MBPM) - 1 =
+            // floor(196608 / 144) - 1 = 1364. Allocating one slot beyond
+            // would push the palette past the SSBO boundary.
             skin_slot_pool: byroredux_core::ecs::resources::SkinSlotPool::new(
-                ((byroredux_renderer::vulkan::scene_buffer::MAX_TOTAL_BONES
-                    / byroredux_core::ecs::components::MAX_BONES_PER_MESH)
-                    - 1) as u32,
+                byroredux_renderer::vulkan::scene_buffer::MAX_SKIN_SLOTS as u32,
             ),
             skin_offsets: rustc_hash::FxHashMap::default(),
             material_table: byroredux_renderer::MaterialTable::new(),

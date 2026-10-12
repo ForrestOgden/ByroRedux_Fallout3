@@ -5,6 +5,7 @@
 //! up as a single diff.
 
 use ash::vk;
+use byroredux_core::ecs::components::MAX_BONES_PER_MESH;
 
 /// Maximum lights we can upload per frame. The SSBO is pre-allocated to this size.
 /// 1023 lights × 64 bytes plus the 4112-byte remap header is about 68 KiB
@@ -71,6 +72,16 @@ pub const MAX_TOTAL_BONES: usize = 196608;
 /// Slot 0 of the bone palette is always the identity matrix.
 pub const IDENTITY_BONE_SLOT: u32 = 0;
 
+/// M29.6 — allocatable skin-slot count of the persistent bone palette:
+/// `MAX_TOTAL_BONES / MAX_BONES_PER_MESH` slots of `MAX_BONES_PER_MESH`
+/// bones each, minus slot 0 (the global identity, [`IDENTITY_BONE_SLOT`]).
+/// `floor(196608 / 144) - 1 = 1364` today. The single source of the
+/// slot-pool capacity (#5583): `SkinSlotPool::new` in `main.rs`,
+/// `context::SKIN_MAX_SLOTS` and the per-frame first-sight upload cap
+/// below all derive from it, so a `MAX_TOTAL_BONES` /
+/// `MAX_BONES_PER_MESH` change moves every one of them together.
+pub const MAX_SKIN_SLOTS: usize = MAX_TOTAL_BONES / MAX_BONES_PER_MESH - 1;
+
 /// M29.6 — maximum number of `bind_inverses` first-sight uploads
 /// scheduled per frame. The HOST_VISIBLE staging buffer for these
 /// uploads is sized for this many concurrent slots; if more skinned
@@ -78,30 +89,33 @@ pub const IDENTITY_BONE_SLOT: u32 = 0;
 /// uploads at this count and defers the excess to the next frame.
 ///
 /// Pre-#1198 this was 16 (matching the typical heavy-cell-load count).
-/// Bumped to 227 (= `MAX_TOTAL_BONES (32768) / MAX_BONES_PER_MESH (144)`)
-/// to match the then slot-pool capacity (#1198). Re-bumped to 1366
-/// (= `MAX_TOTAL_BONES (196608) / MAX_BONES_PER_MESH (144)`) after the
-/// `MAX_TOTAL_BONES` bump (#1284); see the follow-up paragraph below. The pre-fix cap produced a
-/// one-frame bind-pose glitch when more than 16 skinned NPCs
-/// first-sighted in a single frame (FO4 MedTek: 23 SkinnedMesh
-/// entities; FO3 Megaton REFR spill on first entry). Per #1191's
-/// identity-fallback contract the deferred entities rendered in bind
-/// pose for one frame, then snapped to skinned pose on frame N+1.
+/// Bumped to 227 to match the then slot-pool capacity (#1198), then
+/// hand-re-bumped to 1366 after the `MAX_TOTAL_BONES` bump (#1284). The
+/// pre-fix cap produced a one-frame bind-pose glitch when more than 16
+/// skinned NPCs first-sighted in a single frame (FO4 MedTek: 23
+/// SkinnedMesh entities; FO3 Megaton REFR spill on first entry). Per
+/// #1191's identity-fallback contract the deferred entities rendered in
+/// bind pose for one frame, then snapped to skinned pose on frame N+1.
 ///
-/// #1284 follow-up: re-bumped to 1366 (= `196608 / 144`) so the
-/// per-frame upload cap continues to match the slot-pool capacity
-/// after the `MAX_TOTAL_BONES` bump. FNV `FreesideAtomicWrangler` is
-/// the densest first-sight workload (~1040 over-cap `allocate()` calls
+/// #5583: the hand-typed 1366 matched neither `196608 / 144` (1365) nor
+/// the real pool (1364), and nothing tied it to the pool, so the
+/// documented lever (bump `MAX_TOTAL_BONES`) would have left it stale.
+/// It is now [`MAX_SKIN_SLOTS`] itself, so the per-frame upload cap is
+/// the slot pool's capacity by construction. FNV `FreesideAtomicWrangler`
+/// is the densest first-sight workload (~1040 over-cap `allocate()` calls
 /// at Atomic Wrangler peak per the
-/// `DebugStats::skin_pool_overflow_attempts` counter added in the same
-/// change — a monotonic per-call spill count, an upper bound on demand
-/// rather than a per-frame distinct-entity headcount; see #1296).
+/// `DebugStats::skin_pool_overflow_attempts` counter — a monotonic
+/// per-call spill count, an upper bound on demand rather than a
+/// per-frame distinct-entity headcount; see #1296).
 ///
-/// Staging buffer size at this value is
-/// `1366 × MAX_BONES_PER_MESH (144) × 64 B ≈ 12 MB` — < 1 % of the
-/// 6 GB VRAM target. With the bump the per-frame upload cap matches
-/// the slot pool's actual capacity, eliminating the one-frame glitch.
-pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = 1366;
+/// Staging buffer size is
+/// `MAX_SKIN_SLOTS (1364) × MAX_BONES_PER_MESH (144) × 64 B ≈ 12 MB` —
+/// < 1 % of the 6 GB VRAM target.
+pub const MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME: usize = MAX_SKIN_SLOTS;
+
+// A cap below the pool capacity brings back the #1198 one-frame
+// bind-pose glitch when every slot first-sights in one frame.
+const _: () = assert!(MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME >= MAX_SKIN_SLOTS);
 
 /// Maximum instances per frame — `0x40000` (262144). Sized to
 /// absorb the densest observed Skyrim/FO4 city cells (Solitude,

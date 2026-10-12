@@ -93,7 +93,8 @@ pub struct SceneBuffers {
     /// `bind_inverses` uploads. Sized for
     /// `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME × MAX_BONES_PER_MESH
     /// × mat4 ≈ 12.6 MB` (#2791 — was stale at "144 KB", 87× too small,
-    /// from before the constant's #1284 re-bump to 1366). The renderer
+    /// from before the constant's #1284 re-bump; since #5583 the cap is
+    /// `MAX_SKIN_SLOTS`, 1364). The renderer
     /// writes up to this many pending uploads into consecutive slots
     /// here, then records one `cmd_copy_buffer` per upload (each
     /// targeting a different slot offset in
@@ -685,9 +686,10 @@ fn allocate_scene_render_buffers(
     // MAX_BONES_PER_MESH × mat4 bytes of pending first-sight uploads.
     // #2791 (REN-D5-04) — this was stale at "16 × 144 × 64 ≈ 144 KB", from
     // before `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME`'s #1284 re-bump.
-    // At the current constant (1366): 1366 × 144 × 64 B ≈ 12.6 MB — the
-    // second-largest host-visible allocation this function makes. See the
-    // constant's own doc in `constants.rs` for the sizing history.
+    // At the current constant (`MAX_SKIN_SLOTS` = 1364, #5583):
+    // 1364 × 144 × 64 B ≈ 12.6 MB — the second-largest host-visible
+    // allocation this function makes. See the constant's own doc in
+    // `constants.rs` for the sizing history.
     let bind_inverse_staging_size = (MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME
         * MAX_BONES_PER_MESH
         * std::mem::size_of::<[[f32; 4]; 4]>())
