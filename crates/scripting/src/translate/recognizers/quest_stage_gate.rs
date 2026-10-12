@@ -262,11 +262,19 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
 }
 
 /// The script's quest-advance handler — an `OnActivate` (use-key) or
-/// `OnTriggerEnter` (volume-crossing) event, searched at top level and
-/// inside any `State`. Returns the [`Event`] (not just its body) so the
-/// activator/triggerer parameter name is available for player-gate
+/// `OnTriggerEnter` (volume-crossing) event that is in effect **in the
+/// state the script boots into**. Returns the [`Event`] (not just its body)
+/// so the activator/triggerer parameter name is available for player-gate
 /// detection. Both handlers take the entering reference as their first
 /// parameter (`akActionRef`), so the same extraction serves both.
+///
+/// "Armed from spawn" is only true of the boot state's handler: the
+/// `Auto State`'s own definition when it has one, otherwise the script-scope
+/// (empty default state) definition the auto state inherits. A handler that
+/// lives only in a non-auto state is dead until a `GotoState` the recognizer
+/// never models, so it must not arm the trigger at spawn (#5639) — the
+/// decompiler keys script scope on the empty state and marks the boot state
+/// `is_auto` (#4319), which is the distinction used here.
 ///
 /// `OnActivate` is preferred when a script declares both — the
 /// interactive path is the more common authored intent; a script with
@@ -287,22 +295,27 @@ fn find_advance_event(script: &Script) -> Option<&Event> {
     const PREFERENCE: [CanonicalEvent; 2] =
         [CanonicalEvent::Activate, CanonicalEvent::TriggerEnter];
     for wanted in PREFERENCE {
-        for item in &script.body {
-            match &item.node {
-                ScriptItem::Event(e) if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted => {
-                    return Some(e);
+        // The auto state overrides the script-scope definition at boot.
+        let in_auto_state = script.body.iter().find_map(|item| match &item.node {
+            ScriptItem::State(st) if st.is_auto => st.body.iter().find_map(|si| match &si.node {
+                StateItem::Event(e) if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted => {
+                    Some(e)
                 }
-                ScriptItem::State(st) => {
-                    for si in &st.body {
-                        if let StateItem::Event(e) = &si.node {
-                            if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted {
-                                return Some(e);
-                            }
-                        }
-                    }
-                }
-                _ => {}
+                _ => None,
+            }),
+            _ => None,
+        });
+        if in_auto_state.is_some() {
+            return in_auto_state;
+        }
+        let at_script_scope = script.body.iter().find_map(|item| match &item.node {
+            ScriptItem::Event(e) if CanonicalEvent::from_papyrus(&e.name.node.0) == wanted => {
+                Some(e)
             }
+            _ => None,
+        });
+        if at_script_scope.is_some() {
+            return at_script_scope;
         }
     }
     None
@@ -1213,6 +1226,90 @@ mod tests {
             q.get(entity).unwrap().target_stage,
             10,
             "OnActivate's SetStage(10) must win over OnTriggerEnter's SetStage(99)",
+        );
+    }
+
+    /// #5639: the advance handler must be the one in effect in the state the
+    /// script boots into. A handler that exists only in a non-auto state is
+    /// dead until a `GotoState` the recognizer does not model, so it must not
+    /// arm the trigger at spawn; the `Auto State`'s own handler (the shipped
+    /// `default*` shape) still does, and overrides a script-scope definition.
+    #[test]
+    fn advance_handler_must_be_in_the_boot_state() {
+        let recognize = |src: &str| {
+            let (script, errors) = parse_script(src).expect("parses");
+            assert!(errors.is_empty(), "{errors:?}");
+            let source = ScriptSource::PapyrusSource(&script);
+            let instance = quest_property_instance("StateScript", 0x0000_7777);
+            let recognized =
+                translate_script(&source, GameKind::Skyrim, Some(&instance), None)?;
+            let mut world = byroredux_core::ecs::world::World::new();
+            crate::register(&mut world);
+            let entity = world.spawn();
+            (recognized.spawn)(&mut world, entity);
+            let q = world.query::<QuestAdvanceOnActivate>().unwrap();
+            Some(q.get(entity).unwrap().target_stage)
+        };
+
+        // The only OnActivate lives in a state the script never boots into.
+        assert_eq!(
+            recognize(
+                "ScriptName StateScript extends ObjectReference\n\
+                 Quest Property MyQuest Auto\n\
+                 Auto State Waiting\n\
+                 EndState\n\
+                 State Armed\n\
+                 Event OnActivate(ObjectReference akActionRef)\n\
+                 MyQuest.SetStage(10)\n\
+                 EndEvent\n\
+                 EndState\n"
+            ),
+            None,
+            "a non-auto state's handler is not armed from spawn"
+        );
+
+        // The Auto State's own handler is the boot-state one.
+        assert_eq!(
+            recognize(
+                "ScriptName StateScript extends ObjectReference\n\
+                 Quest Property MyQuest Auto\n\
+                 Auto State Waiting\n\
+                 Event OnActivate(ObjectReference akActionRef)\n\
+                 MyQuest.SetStage(10)\n\
+                 EndEvent\n\
+                 EndState\n"
+            ),
+            Some(10)
+        );
+
+        // ... and it overrides a script-scope definition of the same event.
+        assert_eq!(
+            recognize(
+                "ScriptName StateScript extends ObjectReference\n\
+                 Quest Property MyQuest Auto\n\
+                 Event OnActivate(ObjectReference akActionRef)\n\
+                 MyQuest.SetStage(99)\n\
+                 EndEvent\n\
+                 Auto State Waiting\n\
+                 Event OnActivate(ObjectReference akActionRef)\n\
+                 MyQuest.SetStage(10)\n\
+                 EndEvent\n\
+                 EndState\n"
+            ),
+            Some(10),
+            "the auto state's handler overrides the script-scope one at boot"
+        );
+
+        // A script-scope handler (no auto state) is the boot handler.
+        assert_eq!(
+            recognize(
+                "ScriptName StateScript extends ObjectReference\n\
+                 Quest Property MyQuest Auto\n\
+                 Event OnActivate(ObjectReference akActionRef)\n\
+                 MyQuest.SetStage(10)\n\
+                 EndEvent\n"
+            ),
+            Some(10)
         );
     }
 
