@@ -40,7 +40,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         bsx_flags: 0,
         phantom_bounds: None,
         root_flags: 0,
-        flame_attach_offset: None,
+        attach_light_offset: None,
         attach_points: None,
         child_attach_connections: None,
         furniture: None,
@@ -553,7 +553,7 @@ fn furniture_and_flame_scene() -> NifScene {
         }
     }
 
-    let mut flame_av = av("AttachFire");
+    let mut flame_av = av("AttachLight");
     flame_av.transform = NiTransform {
         translation: NiPoint3 {
             x: 1.0,
@@ -597,12 +597,12 @@ fn furniture_and_flame_scene() -> NifScene {
 }
 
 /// #3072 / #3074 — the streaming-partial path used to hardcode both
-/// `furniture` and `flame_attach_offset` to `None`, one citing a false
+/// `furniture` and the light-attach offset to `None`, one citing a false
 /// blocker (the helper needs `&ImportedScene`, when it actually takes
 /// `&NifScene`) and the other citing that blocker as precedent. Both are
 /// available from the `&NifScene` `finish_partial_import` already holds.
 #[test]
-fn finish_partial_import_populates_furniture_and_flame_offset() {
+fn finish_partial_import_populates_furniture_and_attach_light_offset() {
     let mut world = world_with_registries();
     let partial = crate::streaming::PartialNifImport {
         scene: furniture_and_flame_scene(),
@@ -637,8 +637,8 @@ fn finish_partial_import_populates_furniture_and_flame_offset() {
     );
 
     let offset = cached
-        .flame_attach_offset
-        .expect("flame-marker offset must survive the streaming-partial path (#3074)");
+        .attach_light_offset
+        .expect("AttachLight offset must survive the streaming-partial path (#3074)");
     // zup_to_yup_pos([1,2,3]) = [1,3,-2].
     assert_eq!(offset, [1.0, 3.0, -2.0]);
 }

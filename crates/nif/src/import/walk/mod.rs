@@ -160,7 +160,7 @@ pub(super) fn as_ni_node(block: &dyn NiObject) -> Option<&NiNode> {
 /// NiLODNode: walk child 0 only (highest LOD). Proper distance-based
 /// selection requires camera distance, which isn't available at import
 /// time. LOD 0 is always the most detailed mesh. See #212.
-fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)> {
+pub(super) fn switch_active_children(block: &dyn NiObject) -> Option<(&NiNode, Vec<usize>)> {
     let any = block.as_any();
     // NiLODNode check first (it wraps NiSwitchNode).
     if let Some(lod) = any.downcast_ref::<NiLODNode>() {

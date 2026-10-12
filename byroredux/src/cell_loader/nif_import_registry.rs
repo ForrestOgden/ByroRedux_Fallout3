@@ -282,22 +282,16 @@ pub(crate) struct CachedNifImport {
     /// clear. See #1235 / LC-D1-NEW-01. `0` when the NIF has no scene
     /// graph (SpeedTree placeholder, generated content).
     pub(super) root_flags: u32,
-    /// NIF-local position of the "flame attach" node — the marker
-    /// most candles + chandeliers + torches author as a child of
-    /// the root NiNode (`Flame01`, `AttachFire`, `AttachLight`,
-    /// etc.) to mark where the actual point light should sit. The
-    /// importer walks `ImportedScene.nodes` for this marker and
-    /// composes the world position relative to the root at parse
-    /// time, dropping the per-node detail before this struct is
-    /// cached. Phase 18.
+    /// Root-local (Y-up) position of the model's `AttachLight` node —
+    /// where a LIGH-with-model's light belongs (barrel fires, torches,
+    /// lamps), as opposed to the model's base where the REFR sits.
+    /// Composed through the whole node chain at parse time by
+    /// `byroredux_nif::import::find_attach_light_offset`, because the node
+    /// array does not survive into this struct.
     ///
-    /// `None` when no flame marker is authored — the spawn path
-    /// then falls back to placing the ESM light at the REFR root,
-    /// matching pre-Phase-18 behaviour. Most simple LIGH-only
-    /// records (no mesh) skip this entirely; the offset only
-    /// matters for mesh-attached lights (candles + chandeliers +
-    /// torches).
-    pub(super) flame_attach_offset: Option<[f32; 3]>,
+    /// `None` when the model authors no `AttachLight` — the spawn path then
+    /// keeps the ESM light on the placement's first mesh entity.
+    pub(super) attach_light_offset: Option<[f32; 3]>,
     /// FO4+ weapon-mod / power-armor attach points the NIF *exposes*
     /// (`BSConnectPoint::Parents`). Interned to the `AttachPoints` ECS
     /// component at parse time (the node array doesn't survive into this

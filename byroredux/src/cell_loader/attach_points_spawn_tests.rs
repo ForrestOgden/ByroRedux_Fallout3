@@ -33,7 +33,7 @@ fn cached_with_attach(
         bsx_flags: 0,
         phantom_bounds: None,
         root_flags: 0,
-        flame_attach_offset: None,
+        attach_light_offset: None,
         attach_points,
         child_attach_connections,
         furniture: None,

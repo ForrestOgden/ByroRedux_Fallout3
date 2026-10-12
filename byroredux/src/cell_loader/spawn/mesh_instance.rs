@@ -1569,27 +1569,35 @@ pub(super) fn spawn_mesh_instance(
     // agreed there should be a light. Track real spawns instead.
     if let Some(ld) = light_data {
         if spawned_nif_lights == 0 && count == 0 {
-            // Phase 18 (reverted in Phase 19.7) — the
-            // flame-node offset spawn lived here, but the
-            // substring-based pattern match
-            // (`flame` / `fire` / `attachlight`) hit
-            // false-positives on at least one Skyrim candle
-            // NIF (upper shelf in Sleeping Giant Inn — visible
-            // as "no light emitted at all" from that REFR's
-            // light placement). Restoring the pre-Phase-18
-            // attach-to-mesh-entity-at-ref_pos behaviour.
-            //
-            // The Phase 18 *capture* path stays — every cached
-            // NIF still records `flame_attach_offset` at parse
-            // time. A future re-enable with tighter pattern
-            // matching (e.g. `^Flame[0-9]+$` regex, or
-            // requiring an `AttachFire` block specifically)
-            // can consume the captured offset without
-            // re-walking the NIF.
-            let _ = cached.flame_attach_offset;
-
+            // The light belongs at the model's `AttachLight` node, not at
+            // its base: `barrel02firelight.nif` authors it 102 units above
+            // the REFR, which sits on the floor. Placing the light at the
+            // base lit every nearby surface from floor level at grazing
+            // incidence, and the shadow rays off bumpy upholstery then hit
+            // their own geometry at random — standing speckle that never
+            // converged (Rivet City market). The anchor is an exact-name,
+            // full-chain lookup (`find_attach_light_offset`); the Phase 18
+            // substring rule that was reverted in Phase 19.7 picked the
+            // wrong node in 24 vanilla files. A child of the placement root,
+            // so propagation composes the REFR rotation + scale and the
+            // light rides the root's subtree like the meshes do. No anchor
+            // → the first mesh entity, as before.
+            let light_entity = match cached.attach_light_offset {
+                Some(offset) => {
+                    let local = Vec3::from_array(offset);
+                    let world_pos =
+                        GlobalTransform::compose_translation(ref_pos, ref_rot, ref_scale, local);
+                    let e = world.spawn();
+                    world.insert(e, Transform::from_translation(local));
+                    world.insert(e, GlobalTransform::new(world_pos, ref_rot, ref_scale));
+                    world.insert(e, Parent(placement_root));
+                    crate::helpers::add_child(world, placement_root, e);
+                    e
+                }
+                None => entity,
+            };
             world.insert(
-                entity,
+                light_entity,
                 LightSource::from_legacy_world_units(
                     light_radius_or_default(ld.radius),
                     ld.color,
@@ -1607,10 +1615,19 @@ pub(super) fn spawn_mesh_instance(
                     light_shadow_flags,
                 ),
             );
-            // Phase 17 — animation companion at the placement root,
-            // same position as the mesh entity. The caller has already
-            // decoded source-game LIGH flags into shared behavior.
-            attach_light_flicker_if_needed(world, entity, ld, ref_pos, light_animation_flags);
+            // Phase 17 — animation companion on the light's own entity.
+            // `base_translation` is that entity's LOCAL translation, the
+            // value a position-jitter pass would restore `Transform` to.
+            let light_local = world
+                .get::<Transform>(light_entity)
+                .map_or(Vec3::ZERO, |t| t.translation);
+            attach_light_flicker_if_needed(
+                world,
+                light_entity,
+                ld,
+                light_local,
+                light_animation_flags,
+            );
         }
     }
     true

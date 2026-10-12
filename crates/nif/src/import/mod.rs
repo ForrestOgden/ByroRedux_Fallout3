@@ -7,6 +7,7 @@
 //! The output is GPU-agnostic: `ImportedMesh` contains plain `Vec<Vertex>`
 //! and `Vec<u32>` data ready for upload via `MeshRegistry::upload()`.
 
+mod attach_light;
 pub mod collision;
 mod coord;
 mod material;
@@ -19,6 +20,7 @@ mod walk;
 // Re-export the public material capture types so `ImportedMesh`'s
 // `effect_shader` field can name `BsEffectShaderData` without leaking
 // the internal module path.
+pub use attach_light::{find_attach_light_offset, ATTACH_LIGHT_NODE};
 pub use material::{
     canonical_shader_type, slot_to_colocated_role, slot_to_role, unrouted_texture_slot_bindings,
     BsEffectShaderData, NoLightingFalloff, ShaderTypeFields, TextureRole, TextureSlotContext,

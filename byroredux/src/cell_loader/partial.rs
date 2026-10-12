@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::asset_provider::MaterialProvider;
 
 use super::nif_import_registry::{canonical_model_path_key, CachedNifImport, NifImportRegistry};
-use super::references::{find_flame_attach_offset, furniture_component};
+use super::references::furniture_component;
 
 pub(crate) fn finish_partial_import(
     world: &mut World,
@@ -126,17 +126,17 @@ pub(crate) fn finish_partial_import(
         clip_reg.add(clip)
     });
 
-    // Phase 18 — flame-marker offset, computed the same way the
+    // The model's `AttachLight` anchor, computed the same way the
     // synchronous `parse_and_import_nif` path does. #3074: the stated
     // blocker for leaving this `None` here was that the helper needs
     // `&ImportedScene` — false, it takes `&NifScene`, which `scene`
     // (destructured above) already is.
-    let flame_attach_offset = find_flame_attach_offset(&scene);
+    let attach_light_offset = byroredux_nif::import::find_attach_light_offset(&scene);
 
     // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
     // to the `Furniture` ECS component, mirroring the synchronous path
     // (`references/import.rs`). #3072: this used to hardcode `None`,
-    // citing the same (false) blocker as `flame_attach_offset` above —
+    // citing the same (false) blocker as `attach_light_offset` above —
     // `scene` is a `&NifScene` here too.
     let furniture = {
         let markers = byroredux_nif::import::extract_furniture_markers(&scene);
@@ -169,10 +169,10 @@ pub(crate) fn finish_partial_import(
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,
-        flame_attach_offset,
+        attach_light_offset,
         // #1594 — the streaming-partial path keeps the FO4+ weapon-mod
         // attach graph `None`; the sync `parse_and_import_nif` path
-        // materializes it. Unlike `flame_attach_offset` / `furniture`
+        // materializes it. Unlike `attach_light_offset` / `furniture`
         // above (#3072 / #3074, both blocked on nothing — the data was
         // sitting in `scene` the whole time), this one is a deliberate
         // scope decision: cell-streamed REFRs are architecture / clutter,
