@@ -688,8 +688,13 @@ fn index_resolves_to_cell(index: &esm::cell::EsmCellIndex, form_id: u32) -> bool
 ///
 /// Vanilla FO4 ships 2616 / 2617 SCOLs with a cached `CM*.NIF` in
 /// `statics[base].model_path`, so the normal path runs for those.
-/// Mod-added SCOLs (and vanilla SCOLs whose CM file is absent under a
-/// previsibine-bypass loadout) hit the expansion branch. SCOL-of-SCOL
+/// Mod-added SCOLs hit the expansion branch. The gate is `model_path`
+/// emptiness only: a SCOL whose `MODL` is set but whose CM file is absent
+/// from the archives (13 vanilla placements) or sits under a different
+/// name (114 DLCRobot SCOLs author dev-plugin `MODL` paths; the shipped CM
+/// is `scol\<owner>\cm<local id>.nif`) is an `extract_mesh` miss at spawn
+/// and renders nothing — it does NOT fall back to expansion (#5523, open).
+/// SCOL-of-SCOL
 /// nesting is resolved recursively up to [`MAX_PKIN_DEPTH`] levels
 /// (#1182 / FO4-D4-005) so a child SCOL's placements fan out instead
 /// of being silently dropped at the caller's `index.statics.get`
