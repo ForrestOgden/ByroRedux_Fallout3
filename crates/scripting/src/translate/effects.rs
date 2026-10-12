@@ -406,6 +406,16 @@ struct Scope {
     /// every call site that doesn't have script-level property metadata
     /// available — matches the pre-fix behavior for those.
     known_quest_properties: HashSet<String>,
+    /// #5407 — lowercased names of the containing script's own ARGLESS
+    /// functions, threaded from `&Script` the way
+    /// [`Self::known_quest_properties`] is. `AddRaceSpells` /
+    /// `RemoveRaceSpells` are script-defined helpers (MQ101QuestScript
+    /// authors both), not `actor.psc` natives: the race-spells
+    /// primitives accept the call only when the calling script itself
+    /// defines that name with zero parameters, so a mod's same-named
+    /// helper with other semantics never lowers onto the player. Empty
+    /// for call sites without script metadata — pre-fix behavior.
+    own_argless_functions: HashSet<String>,
 }
 
 /// What a declared local currently means to the lowerer — the identity
@@ -501,8 +511,24 @@ pub fn lower_fragment_with_quest_properties_and_providers(
     quest_property_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Vec<Effect>> {
+    lower_fragment_with_script_metadata(body, quest_property_names, &HashSet::new(), providers)
+}
+
+/// [`lower_fragment_with_quest_properties_and_providers`] with the
+/// containing script's own function table available (#5407): the
+/// lowercased names of its argless functions, built by
+/// [`crate::fragment::populate::argless_function_names`]. Production
+/// (quest/scene/alias fragment population) passes it; bare harnesses
+/// keep the empty-set behavior.
+pub fn lower_fragment_with_script_metadata(
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+    own_argless_function_names: &HashSet<String>,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
     let mut scope = Scope {
         known_quest_properties: quest_property_names.clone(),
+        own_argless_functions: own_argless_function_names.clone(),
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
@@ -1539,16 +1565,19 @@ fn prim_remove_spell(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `actor.psc` methods — the translator sees an unqualified call to the
 /// own script's function. Lowering by name is sound without inlining the
 /// helper's body because the semantic is stateless: re-apply / clear the
-/// actor's race `SPLO` set, which spawn pre-stamped as `RaceSpells`. A
-/// member-call spelling with an actor receiver is accepted too; a
-/// non-actor receiver (the script itself) means the player, the only
-/// object vanilla's helpers touch.
-fn lower_race_spells(e: &Expr, method: &str, adding: bool) -> Option<Effect> {
-    if !prim_race_spells_arity_ok(e, method) {
+/// actor's race `SPLO` set, which spawn pre-stamped as `RaceSpells`.
+/// #5407 — that soundness extends ONLY to the vanilla shape: the
+/// unqualified call, in a script that itself defines the function
+/// ARGLESS. A member-call spelling (`x.AddRaceSpells()` on any object)
+/// and a same-named helper some other script defines with different
+/// semantics are declined — both used to lower onto the player
+/// unconditionally.
+fn lower_race_spells(e: &Expr, method: &str, adding: bool, scope: &Scope) -> Option<Effect> {
+    if !prim_race_spells_arity_ok(e, method, scope) {
         return None;
     }
-    // Vanilla's helpers act on the player; a receiver is either the script
-    // itself or a player expression, and both mean the player here.
+    // The vanilla helpers act on the player, and the accepted spelling
+    // (unqualified, own-script-defined) is exactly how they call it.
     Some(if adding {
         Effect::AddRaceSpells {
             actor: ActorRef::Player,
@@ -1560,31 +1589,37 @@ fn lower_race_spells(e: &Expr, method: &str, adding: bool) -> Option<Effect> {
     })
 }
 
-/// `Name()` or `<object>.Name()` — argless; anything else declines. The
-/// receiver is NOT distinguished: vanilla's script-defined helpers act on
-/// the player regardless of spelling, so both shapes lower to the player.
-fn prim_race_spells_arity_ok(e: &Expr, method: &str) -> bool {
+/// Only the UNQUALIFIED, ARGLESS call to a function the calling script
+/// itself defines (`ScriptName`-level function table via
+/// [`Scope::own_argless_functions`]). Member-call spellings are declined
+/// outright — the receiver is NOT distinguished, because no receiver is
+/// accepted at all (#5407).
+fn prim_race_spells_arity_ok(e: &Expr, method: &str, scope: &Scope) -> bool {
     let Expr::Call { callee, args } = e else {
         return false;
     };
     if !args.is_empty() {
         return false;
     }
-    match &callee.node {
-        Expr::Ident(name) => name.0.eq_ignore_ascii_case(method),
-        Expr::MemberAccess { member, .. } => member.node.0.eq_ignore_ascii_case(method),
-        _ => false,
-    }
+    let Expr::Ident(name) = &callee.node else {
+        return false;
+    };
+    name.0.eq_ignore_ascii_case(method)
+        && scope
+            .own_argless_functions
+            .contains(&name.0.to_ascii_lowercase())
 }
 
-fn prim_add_race_spells(e: &Expr, _scope: &Scope) -> Option<Effect> {
-    // Arity (zero args) is bounded by `prim_race_spells_arity_ok` inside.
-    lower_race_spells(e, "AddRaceSpells", true)
+fn prim_add_race_spells(e: &Expr, scope: &Scope) -> Option<Effect> {
+    // Arity, spelling, and own-script definition are bounded by
+    // `prim_race_spells_arity_ok` inside.
+    lower_race_spells(e, "AddRaceSpells", true, scope)
 }
 
-fn prim_remove_race_spells(e: &Expr, _scope: &Scope) -> Option<Effect> {
-    // Arity (zero args) is bounded by `prim_race_spells_arity_ok` inside.
-    lower_race_spells(e, "RemoveRaceSpells", false)
+fn prim_remove_race_spells(e: &Expr, scope: &Scope) -> Option<Effect> {
+    // Arity, spelling, and own-script definition are bounded by
+    // `prim_race_spells_arity_ok` inside.
+    lower_race_spells(e, "RemoveRaceSpells", false, scope)
 }
 
 fn prim_play_idle(e: &Expr, scope: &Scope) -> Option<Effect> {
@@ -3283,6 +3318,89 @@ mod tests {
                 )),
                 target: ActorRef::Player,
             }])
+        );
+    }
+
+    /// #5407 — `AddRaceSpells`/`RemoveRaceSpells` lower ONLY as the
+    /// unqualified call in a script that itself defines the helper
+    /// argless (MQ101QuestScript's shape). The member-call spelling and
+    /// a script that doesn't define the name (another script's
+    /// same-named helper, or one with parameters) must decline: both
+    /// used to lower onto the player unconditionally.
+    #[test]
+    fn race_spells_lower_only_when_the_script_defines_the_helper() {
+        let unqualified = first_fn_body(
+            "ScriptName MQ101QuestScript extends Quest\n\
+             Function Fragment_11()\n\
+             AddRaceSpells()\n\
+             RemoveRaceSpells()\n\
+             EndFunction\n\
+             Function AddRaceSpells()\n\
+             EndFunction\n\
+             Function RemoveRaceSpells()\n\
+             EndFunction\n",
+        );
+        let own = std::collections::HashSet::from([
+            "addracespells".to_string(),
+            "removeracespells".to_string(),
+        ]);
+        assert_eq!(
+            lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &own, None),
+            Some(vec![
+                Effect::AddRaceSpells {
+                    actor: ActorRef::Player
+                },
+                Effect::RemoveRaceSpells {
+                    actor: ActorRef::Player
+                },
+            ]),
+            "the vanilla shape (unqualified, own-script, argless) lowers"
+        );
+
+        // No function table: the same call declines — a script that does
+        // not define the helper has no contract to lower by.
+        assert_eq!(
+            lower_fragment_with_script_metadata(&unqualified, &HashSet::new(), &HashSet::new(), None),
+            None,
+            "an undefined helper name declines"
+        );
+
+        // Member-call spelling: declined even when the script defines
+        // the name — `x.AddRaceSpells()` on any object used to lower
+        // onto the player.
+        let member = first_fn_body(
+            "ScriptName MQ101QuestScript extends Quest\n\
+             Function Fragment_11()\n\
+             SomeAlias.AddRaceSpells()\n\
+             EndFunction\n\
+             Function AddRaceSpells()\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment_with_script_metadata(&member, &HashSet::new(), &own, None),
+            None,
+            "a member-call receiver is never accepted"
+        );
+
+        // The helper exists but takes parameters: same-named, different
+        // contract — decline.
+        let parameterized = first_fn_body(
+            "ScriptName ModScript extends Quest\n\
+             Function Fragment_0()\n\
+             AddRaceSpells()\n\
+             EndFunction\n\
+             Function AddRaceSpells(Bool abLoud)\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment_with_script_metadata(
+                &parameterized,
+                &HashSet::new(),
+                &HashSet::new(),
+                None
+            ),
+            None,
+            "a parameterized same-named helper is not the vanilla helper"
         );
     }
 

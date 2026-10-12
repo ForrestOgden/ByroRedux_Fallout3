@@ -58,6 +58,36 @@ pub fn quest_property_names(script: &Script) -> std::collections::HashSet<String
         .collect()
 }
 
+/// #5407 — lowercased names of `script`'s own ARGLESS functions
+/// (top-level and state, matching [`function_body`]'s lookup). Feeds
+/// `lower_fragment_with_script_metadata` so script-defined-helper
+/// primitives (`AddRaceSpells` / `RemoveRaceSpells`) fire only in a
+/// script that actually defines the helper with zero parameters — a
+/// same-named function on another script, or with other arity and
+/// semantics, never lowers.
+pub fn argless_function_names(script: &Script) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut visit = |f: &byroredux_papyrus::ast::Function| {
+        if f.params.is_empty() {
+            out.insert(f.name.node.0.to_ascii_lowercase());
+        }
+    };
+    for item in &script.body {
+        match &item.node {
+            ScriptItem::Function(f) => visit(f),
+            ScriptItem::State(st) => {
+                for si in &st.body {
+                    if let StateItem::Function(f) = &si.node {
+                        visit(f);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn function_body<'a>(script: &'a Script, name: &str) -> Option<&'a [Spanned<Stmt>]> {
     for item in &script.body {
         match &item.node {
@@ -270,6 +300,9 @@ fn populate_quest_fragments_from_script_internal(
     // fragment; every fragment in the same script shares the same
     // property declarations.
     let quest_properties = quest_property_names(script);
+    // #5407 — the script's own argless helpers, for the race-spells
+    // primitives' script-defined check.
+    let argless_functions = argless_function_names(script);
     for (stage, fragment_name) in bindings {
         let Some(body) = function_body(script, fragment_name) else {
             log::debug!(
@@ -283,9 +316,10 @@ fn populate_quest_fragments_from_script_internal(
         // fully-lowered fragment carries no effects, so it needn't occupy
         // the map (a lookup miss is equivalent to an empty entry).
         if let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+            crate::translate::effects::lower_fragment_with_script_metadata(
                 body,
                 &quest_properties,
+                &argless_functions,
                 providers.map(|scope| scope.catalog),
             )
         {
@@ -497,6 +531,9 @@ fn populate_scene_fragments_from_script_internal(
     providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
     let quest_properties = quest_property_names(script);
+    // #5407 — the script's own argless helpers, for the race-spells
+    // primitives' script-defined check.
+    let argless_functions = argless_function_names(script);
     let mut inserted = 0;
     for (event, fragment_name) in bindings {
         let Some(body) = function_body(script, fragment_name) else {
@@ -506,9 +543,10 @@ fn populate_scene_fragments_from_script_internal(
             continue;
         };
         if let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+            crate::translate::effects::lower_fragment_with_script_metadata(
                 body,
                 &quest_properties,
+                &argless_functions,
                 providers.map(|scope| scope.catalog),
             )
         {
@@ -588,6 +626,9 @@ fn populate_info_fragments_from_script_internal(
     providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
     let quest_properties = quest_property_names(script);
+    // #5407 — the script's own argless helpers, for the race-spells
+    // primitives' script-defined check.
+    let argless_functions = argless_function_names(script);
     let mut begin: Option<Vec<Effect>> = None;
     let mut end: Option<Vec<Effect>> = None;
     for (on_begin, fragment_name) in bindings {
@@ -598,9 +639,10 @@ fn populate_info_fragments_from_script_internal(
             continue;
         };
         let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_quest_properties_and_providers(
+            crate::translate::effects::lower_fragment_with_script_metadata(
                 body,
                 &quest_properties,
+                &argless_functions,
                 providers.map(|scope| scope.catalog),
             )
         else {
