@@ -677,8 +677,9 @@ impl Parser {
     }
 
     /// `Struct IDENT NEWLINE variable* EndStruct NEWLINE`.
-    /// Struct members are typed fields (no flag annotations beyond
-    /// what `Variable` carries).
+    /// Struct members are typed fields; `Hidden` (#5398, the FO4 CK
+    /// *Flag Reference*) is the one member-level flag annotation, set
+    /// onto `Variable::is_hidden` here.
     fn parse_struct(&mut self) -> Result<Struct, ParseError> {
         self.expect(&Token::KwStruct, "Struct")?;
         let name = self.expect_ident_raw("struct name")?;

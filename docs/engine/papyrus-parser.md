@@ -75,9 +75,13 @@ Two public entry points in `lib.rs`:
 ## Papyrus Grammar Summary
 
 ```
-ScriptName <id> [Extends <id>] [Native] [Const] [DebugOnly] [Hidden]
+ScriptName <id> [Extends <id>] [Native] [Const] [DebugOnly] [Hidden] [Conditional] [BetaOnly] [Default]
 Body: (Import | Variable | Property | Function | Event | State | Struct | CustomEvent | Group)*
 ```
+
+`Default` on the header (and `Collapsed` on groups) is matched contextually — it is
+not a lexer keyword, so a variable named `Default` stays an identifier everywhere
+else (#5398).
 
 **Types:** `Bool`, `Int`, `Float`, `String`, `Var` (FO4+), object types (`Actor`, `Quest`...),
 arrays (`Int[]`, `Actor[]`), structs (FO4+). An array type is *only* `Base[]` with empty
@@ -125,7 +129,7 @@ Every node carries a `Span` (byte offset range, in `span.rs`) for diagnostics, w
 | `Script` | `name`, `parent` (Extends), `flags: ScriptFlags`, `body: Vec<Spanned<ScriptItem>>` |
 | `ScriptItem` | `Import` / `Variable` / `Property` / `Function` / `Event` / `State` / `Struct` / `CustomEvent` / `Group` |
 | `Type` | `Bool`, `Int`, `Float`, `String`, `Var`, `Object(Identifier)`, `Array(Box<Type>)` |
-| `Variable` | typed field: `ty`, `name`, `initial_value`, `is_conditional`, `is_const` |
+| `Variable` | typed field: `ty`, `name`, `initial_value`, `is_conditional`, `is_const`, `is_hidden` (FO4 struct members) |
 | `Property` | typed field, `flags: PropertyFlags`, `initial_value`, optional `getter`/`setter`, `doc_comment` |
 | `Function` | `return_type`, `name`, `params: Vec<Param>`, `flags: FunctionFlags`, `body: Vec<Spanned<Stmt>>`, `doc_comment` |
 | `Event` | like `Function` but no return type |
@@ -145,13 +149,16 @@ Every node carries a `Span` (byte offset range, in `span.rs`) for diagnostics, w
 
 | Bitset | Flags |
 |--------|-------|
-| `ScriptFlags` | `NATIVE`, `CONST`, `DEBUG_ONLY`, `HIDDEN` |
+| `ScriptFlags` | `NATIVE`, `CONST`, `DEBUG_ONLY`, `HIDDEN`, `CONDITIONAL`, `BETA_ONLY`, `DEFAULT` |
 | `PropertyFlags` | `AUTO`, `AUTO_READ_ONLY`, `CONST`, `MANDATORY`, `HIDDEN`, `CONDITIONAL` |
 | `FunctionFlags` | `GLOBAL`, `NATIVE`, `DEBUG_ONLY`, `BETA_ONLY` |
-| `GroupFlags` | `COLLAPSED_ON_REF`, `COLLAPSED_ON_BASE` |
+| `GroupFlags` | `COLLAPSED_ON_REF`, `COLLAPSED_ON_BASE`, `COLLAPSED` |
 
-The FO4 extensions (`Const`, `Hidden`, `Mandatory`, `BetaOnly`, `DebugOnly`) land as flag
-tokens decorating existing item forms — there is no separate FO4 grammar. `Self` lexes to
+The FO4 extensions (`Const`, `Hidden`, `Mandatory`, `BetaOnly`, `DebugOnly`,
+`Conditional`, `Default`, `Collapsed`) land as flag decorations on existing item
+forms — there is no separate FO4 grammar; `Default` and `Collapsed` are matched
+contextually (identifier tokens in flag position), the rest are lexer keywords.
+`Self` lexes to
 `Token::KwSelf` and parses to `Expr::Ident("self")`; `Parent` to `Expr::ParentAccess`;
 `None` to `Expr::NoneLit`. (`Expr::ArrayLit` is declared but the grammar has no array-literal
 syntax in scope yet — only `new Type[size]` via `Expr::New` is parsed.)
