@@ -354,6 +354,24 @@ pub struct PendingSaveLoadSlot {
 
 impl Resource for PendingSaveLoadSlot {}
 
+/// #5686 — the live-load overlay hook for `RigidBodyData`
+/// (`register_component_preserving`): `part_surface_materials` is
+/// `serde(skip)` — derived from the NIF collision tree at import, the
+/// #3470 class — so applying a saved row wholesale used to wipe the
+/// freshly re-imported slice and collapse every compound collider part
+/// onto the body-level material. Keep the live slice when the
+/// deserialized row carries none (always, today — forward-compatible if
+/// the field ever joins the snapshot). `restore_world` never runs this
+/// hook; there is no live row to preserve.
+fn keep_reimported_part_surface_materials(
+    incoming: &mut byroredux_core::ecs::components::RigidBodyData,
+    live: &byroredux_core::ecs::components::RigidBodyData,
+) {
+    if incoming.part_surface_materials.is_empty() && !live.part_surface_materials.is_empty() {
+        incoming.part_surface_materials = live.part_surface_materials.clone();
+    }
+}
+
 /// Build the curated game-state save registry.
 ///
 /// Only types that carry *player-visible game state* are registered —
@@ -476,7 +494,15 @@ pub fn build_save_registry() -> SaveRegistry {
         // import data. Flat enum + f32s, delta-safe. Pre-fix a scripted
         // motion-type change (e.g. making a prop dynamic for a scripted
         // sequence) silently reverted to the ESM-derived default on reload.
-        .register_component::<RigidBodyData>("RigidBodyData")
+        // #5686 — preserving, not plain: `part_surface_materials` is
+        // `serde(skip)` (re-derived from the NIF collision tree at
+        // import), so the live-load overlay must keep the freshly
+        // re-imported slice instead of overwriting it with the row's
+        // empty default.
+        .register_component_preserving::<RigidBodyData>(
+            "RigidBodyData",
+            keep_reimported_part_surface_materials,
+        )
         // #2378 / SAVE-D1-13 — the `mat.set` debug console command
         // live-mutates a Material's PBR scalars/colors/material_kind at
         // runtime, the same class of gap #1834 fixed for `ActorValues`

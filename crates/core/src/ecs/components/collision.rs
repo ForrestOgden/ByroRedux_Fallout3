@@ -143,7 +143,11 @@ pub struct RigidBodyData {
     /// (`shape_leaf_materials`) and NOT saved: the tree is re-parsed from
     /// content on load and re-derived at import, so a snapshot never
     /// carries it (`serde(skip)` — the #3470 class; the save-shape
-    /// fingerprint moves without a FORMAT_MAJOR bump). Consumers treat a
+    /// fingerprint moves without a FORMAT_MAJOR bump). The live-load
+    /// overlay registers this component *preserving* — the apply hook
+    /// (`keep_reimported_part_surface_materials`, #5686) carries the
+    /// freshly re-imported slice across instead of letting the
+    /// deserialized row's empty default wipe it. Consumers treat a
     /// short or empty slice as "fall back to [`Self::surface_material`]"
     /// for every part beyond it.
     #[cfg_attr(feature = "inspect", serde(skip))]

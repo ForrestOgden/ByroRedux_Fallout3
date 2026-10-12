@@ -93,7 +93,7 @@ impl SaveRegistry {
     where
         T: Component + Serialize + DeserializeOwned,
     {
-        self.register_component_impl::<T>(name, false)
+        self.register_component_impl::<T>(name, false, None)
     }
 
     /// Register a complete-state column whose saved absence is authoritative
@@ -105,10 +105,35 @@ impl SaveRegistry {
     where
         T: Component + Serialize + DeserializeOwned,
     {
-        self.register_component_impl::<T>(name, true)
+        self.register_component_impl::<T>(name, true, None)
     }
 
-    fn register_component_impl<T>(&mut self, name: &'static str, replace_missing: bool) -> &mut Self
+    /// Register a component whose saved rows omit fields that only the
+    /// asset-import path can derive — `serde(skip)` fields, the #3470
+    /// class. The live-load overlay replaces each matched entity's
+    /// component with the deserialized row, which would wipe those fields
+    /// back to their serde default; `preserve` runs first (when the live
+    /// entity carries a `T`) so the freshly re-imported values survive
+    /// (#5686: `RigidBodyData::part_surface_materials`). The
+    /// `restore_world` path never applies deltas, so the hook is
+    /// overlay-only.
+    pub fn register_component_preserving<T>(
+        &mut self,
+        name: &'static str,
+        preserve: fn(&mut T, &T),
+    ) -> &mut Self
+    where
+        T: Component + Serialize + DeserializeOwned,
+    {
+        self.register_component_impl::<T>(name, false, Some(preserve))
+    }
+
+    fn register_component_impl<T>(
+        &mut self,
+        name: &'static str,
+        replace_missing: bool,
+        preserve: Option<fn(&mut T, &T)>,
+    ) -> &mut Self
     where
         T: Component + Serialize + DeserializeOwned,
     {
@@ -163,10 +188,21 @@ impl SaveRegistry {
                         })?;
                     // Remap saved id → live id; drop rows whose entity
                     // isn't present in the reloaded world.
-                    let remapped: Vec<(u32, T)> = rows
+                    let mut remapped: Vec<(u32, T)> = rows
                         .into_iter()
                         .filter_map(|(old, comp)| remap.get(&old).map(|&live| (live, comp)))
                         .collect();
+                    // #5686 — `serde(skip)` fields never ride the
+                    // snapshot; before overwriting the live row, carry
+                    // the freshly re-imported values across so the
+                    // overlay doesn't wipe what only the import derives.
+                    if let Some(preserve) = preserve {
+                        for (live_entity, comp) in &mut remapped {
+                            if let Some(live_row) = world.get::<T>(*live_entity) {
+                                preserve(comp, &live_row);
+                            }
+                        }
+                    }
                     let n = remapped.len();
                     if replace_missing {
                         // Decode the whole column before mutation. Remove only
@@ -514,6 +550,48 @@ mod tests {
         )
         .unwrap();
         assert!(world.get::<Transform>(entity).is_some());
+    }
+
+    /// #5686 — the preserving registration: applying a saved row onto a
+    /// live entity runs the `preserve` hook first, so fields the snapshot
+    /// can't carry (`serde(skip)`, re-derived at import) survive the
+    /// overlay instead of being wiped by the deserialized default. An
+    /// applied row with no live `T` inserts unchanged.
+    #[test]
+    fn preserving_registration_carries_skip_fields_through_the_overlay() {
+        fn keep_live_translation(incoming: &mut Transform, live: &Transform) {
+            incoming.translation = live.translation;
+        }
+        let mut registry = SaveRegistry::new();
+        registry
+            .register_component_preserving::<Transform>("Transform", keep_live_translation);
+        let mut world = World::new();
+        let live_entity = world.spawn();
+        let fresh_entity = world.spawn();
+        let mut live_row = Transform::default();
+        live_row.translation = byroredux_core::math::Vec3::new(9.0, 8.0, 7.0);
+        world.insert(live_entity, live_row);
+        let remap = HashMap::from([(11, live_entity), (12, fresh_entity)]);
+        let apply = registry.component_apply("Transform").unwrap();
+        // Saved rows: both identity — the deserialized translation (the
+        // "skip field" stand-in) would overwrite 9/8/7 on the live entity.
+        let n = apply(
+            &mut world,
+            serde_json::json!([[11, Transform::default()], [12, Transform::default()]]),
+            &remap,
+        )
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(
+            world.get::<Transform>(live_entity).unwrap().translation,
+            live_row.translation,
+            "the hook's live value wins over the deserialized row"
+        );
+        assert_eq!(
+            world.get::<Transform>(fresh_entity).unwrap().translation,
+            Transform::default().translation,
+            "a row with no live component applies unchanged"
+        );
     }
 
     /// Regression for #1845 / SAVE-02: `form_id_column()` must resolve

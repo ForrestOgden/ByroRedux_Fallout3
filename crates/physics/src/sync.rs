@@ -1168,7 +1168,9 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
                 // The authored Havok surface material rides the collider
                 // (user-data dies with it) for the surface-aware footstep
                 // query — `surface_material_under`. Rapier's user-data is
-                // u128; the material keeps the low byte. Per-part: each
+                // u128; the material rides it whole as a u32 (the full
+                // per-game Havok id since #5542 — Skyrim's are CRC32s,
+                // not byte-sized). Per-part: each
                 // part carries its own leaf's material when the NIF authored
                 // per-child materials, else the body-level value.
                 .user_data(u128::from(surface_material))

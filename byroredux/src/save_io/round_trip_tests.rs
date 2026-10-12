@@ -678,6 +678,73 @@ fn rigid_body_data_survives_save_load_round_trip() {
     assert_eq!(restored.angular_damping, 0.05);
 }
 
+/// Regression: #5686 — `RigidBodyData::part_surface_materials` is
+/// `serde(skip)` (re-derived from the NIF collision tree at import, the
+/// #3470 class). The live-load overlay replaces matched entities'
+/// components wholesale, so pre-fix the freshly re-imported slice was
+/// wiped by the deserialized row's empty default and every compound
+/// collider part collapsed onto the body-level material. The column is
+/// registered *preserving*: the apply hook keeps the live slice while
+/// the saved row still restores the scripted `motion_type` (#2379).
+#[test]
+fn rigid_body_part_materials_survive_live_delta_overlay() {
+    use byroredux_core::ecs::components::{FormIdComponent, MotionType, RigidBodyData};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+    let pair = FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0001_0BF2),
+    };
+    let reg = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    let old = saved.spawn();
+    let fid = saved.resource_mut::<FormIdPool>().intern(pair);
+    saved.insert(old, FormIdComponent(fid));
+    saved.insert(
+        old,
+        RigidBodyData {
+            motion_type: MotionType::Dynamic,
+            ..RigidBodyData::static_body()
+        },
+    );
+    let snapshot = save_world(&saved, &reg).unwrap();
+
+    // The reload has re-imported the NIF: the live row carries the
+    // authored per-part Havok materials but the ESM-default (static)
+    // motion type the save must override.
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    let current = live.spawn();
+    let fid = live.resource_mut::<FormIdPool>().intern(pair);
+    live.insert(current, FormIdComponent(fid));
+    live.insert(
+        current,
+        RigidBodyData {
+            part_surface_materials: Box::new([7, 9, 0xDF3A_9B3F]),
+            ..RigidBodyData::static_body()
+        },
+    );
+
+    let remap = byroredux_save::build_form_id_remap(&live, &reg, &snapshot);
+    byroredux_save::apply_deltas(&mut live, &reg, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
+        .unwrap();
+    let restored = live
+        .get::<RigidBodyData>(current)
+        .expect("the overlay applied the saved row");
+    assert_eq!(
+        restored.motion_type,
+        MotionType::Dynamic,
+        "the scripted motion type still crosses via the saved row"
+    );
+    assert_eq!(
+        restored.part_surface_materials.as_ref(),
+        [7, 9, 0xDF3A_9B3F],
+        "the freshly re-imported per-part materials survive the overlay"
+    );
+}
+
 /// Regression: #2382 (SAVE-D1-17) — a `defaultRumbleOnActivate` lever
 /// mid-wait (or already one-shot-fired) must survive a save/load round
 /// trip instead of silently resetting to `Active`.

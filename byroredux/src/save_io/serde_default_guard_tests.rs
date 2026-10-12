@@ -724,7 +724,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // colliding material pairs and made unjoinable to MATT records. A
     // registered column's serialized shape changed; pre-v37 saves are
     // rejected, per the blanket rule.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xce67_b0dd_d0b0_f5b3;
+    // 2026-10-12 (#5686) — refreshed WITHOUT a bump: the
+    // `part_surface_materials` field doc in collision.rs gained the
+    // live-overlay preserve-hook note (registration switched to
+    // `register_component_preserving`). Comment-only, same file-scope
+    // rule as #3332/#3762 — no on-disk shape changed.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2d5d_d81d_898b_1b3a;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
