@@ -180,7 +180,7 @@ the class layout**. Real values, verbatim from the spike:
 | `is_decal` | `BSMaterial::DecalSettingsComponent` | `.IsDecal`, `.IsProjected`, `.IsPlanet`, `.BlendMode`, `.MaterialOverallAlpha`, `.WriteMask`, `.ProjectedDecalSetting` |
 | emissive | `BSMaterial::EmissiveSettingsComponent` | `.Enabled` + `.Settings` → `EmittanceSettings { LuminousEmittance, EmissiveTint, EmissiveClipThreshold, EmissiveSourceLayer, ExposureOffset, AdaptiveEmittance, … }` |
 | glass / effect optics | `BSMaterial::EffectSettingsComponent` | `.IsGlass`, `.IsAlphaTested`, `.AlphaTestThreshold`, `.BlendingMode` (`"AlphaBlend"`), `.MaterialOverallAlpha`, `.Frosting*`, `.SoftEffect`, `.Backlighting*`, `.UseFallOff` / `.FalloffStart*` / `.FalloffStop*` |
-| translucency / SSS | `BSMaterial::TranslucencySettings` | `.Thin`, `.UseSSS`, `.SSSStrength`, `.SSSWidth`, `.TransmissiveScale`, `.SpecLobe0RoughnessScale`, `.SpecLobe1RoughnessScale` |
+| translucency / SSS | `BSMaterial::TranslucencySettingsComponent` (the component; the listed fields live on its inline `Settings` → `TranslucencySettings` — #5673) | `.Enabled` + `.Settings` → `.Thin`, `.UseSSS`, `.SSSStrength`, `.SSSWidth`, `.TransmissiveScale`, `.SpecLobe0RoughnessScale`, `.SpecLobe1RoughnessScale` |
 | layer opacity mixing | `BSMaterial::OpacityComponent` | `.First/Second/ThirdLayerIndex`, `.First/SecondBlenderMode`, `.SpecularOpacityOverride` |
 | shader routing | `BSMaterial::ShaderRouteComponent`, `BSMaterial::ShaderModelComponent` | `.Route` (`"Deferred"`), `.FileName` (`"BaseMaterial"`) — **the material-kind discriminator** |
 | UV transform | `BSMaterial::Offset`, `BSMaterial::Scale`, `BSMaterial::Channel` | `.Value` (`XMFLOAT2` / `String`) |

@@ -96,9 +96,10 @@ pub struct CdbMaterial {
     pub has_opacity: Option<bool>,
     /// `EffectSettingsComponent.IsGlass`.
     pub is_glass: Option<bool>,
-    /// `TranslucencySettings.UseSSS`.
+    /// `TranslucencySettingsComponent.Settings.UseSSS` (#5673 — the
+    /// component, not the nested struct's class).
     pub use_sss: Option<bool>,
-    /// `TranslucencySettings.TransmissiveScale`.
+    /// `TranslucencySettingsComponent.Settings.TransmissiveScale`.
     pub transmissive_scale: Option<f32>,
     /// `EffectSettingsComponent.BlendingMode` — the authored blend-state
     /// enum string ("AlphaBlend", "None", …). #5277 — the alpha side's
@@ -568,15 +569,26 @@ impl MaterialIndex {
                     .entry(row.object)
                     .or_insert((enabled, tint, emittance));
             }
-            "BSMaterial::TranslucencySettings" => {
-                let sss = match o.fields.get("UseSSS") {
-                    Some(Value::Bool(v)) => Some(*v),
-                    _ => None,
-                };
-                let scale = match o.fields.get("TransmissiveScale") {
-                    Some(Value::Float(v)) => Some(*v),
-                    _ => None,
-                };
+            // #5673 — Enabled + the nested TranslucencySettings (UseSSS /
+            // TransmissiveScale), the same inline-`Settings` shape the
+            // emissive arm above reads (#5283). The pre-fix arm matched
+            // the nested struct's own class name
+            // (`BSMaterial::TranslucencySettings`), which never occurs as
+            // a top-level component — all 19,768 vanilla instances arrive
+            // as `…Component` — so the capture never fired and `use_sss`
+            // / `transmissive_scale` were always `None`. `Enabled` is not
+            // kept: the fields stay parked downstream (#5196).
+            "BSMaterial::TranslucencySettingsComponent" => {
+                let mut sss = None;
+                let mut scale = None;
+                if let Some(Value::Object(settings)) = o.fields.get("Settings") {
+                    if let Some(Value::Bool(v)) = settings.fields.get("UseSSS") {
+                        sss = Some(*v);
+                    }
+                    if let Some(Value::Float(v)) = settings.fields.get("TransmissiveScale") {
+                        scale = Some(*v);
+                    }
+                }
                 self.translucency
                     .entry(row.object)
                     .and_modify(|e| {
@@ -894,10 +906,11 @@ pub mod test_support {
         synthetic_cdb_chunks_with(color_path, false)
     }
 
-    /// #5277/#5283 — the base graph plus the Effect (glass + AlphaBlend)
-    /// and Emissive settings components on the layer material, for tests
-    /// that pin those captures. Opt-in: the shared fixtures (the #5197
-    /// neutral-scalars pin among them) must not silently become glass.
+    /// #5277/#5283/#5673 — the base graph plus the Effect (glass +
+    /// AlphaBlend), Emissive, and Translucency settings components on
+    /// the layer material, for tests that pin those captures. Opt-in:
+    /// the shared fixtures (the #5197 neutral-scalars pin among them)
+    /// must not silently become glass.
     pub fn synthetic_material_cdb_with_effect_settings() -> Vec<u8> {
         assemble_synthetic_cdb(&synthetic_cdb_chunks_with(
             "Data\\Textures\\widget_color.DDS",
@@ -958,6 +971,10 @@ pub mod test_support {
         "BSMaterial::EmittanceSettings",
         "EmissiveTint",
         "LuminousEmittance",
+        "BSMaterial::TranslucencySettingsComponent",
+        "BSMaterial::TranslucencySettings",
+        "UseSSS",
+        "TransmissiveScale",
     ];
     // STRT offsets (index into the STRT chunk's own table; name i sits
     // at table slot i). parse_class resolves `strings.get(name_offset)`
@@ -1065,6 +1082,21 @@ pub mod test_support {
             is_struct,
             &[(g("Enabled"), T_BOOL, 0, 1), (g("Settings"), g("BSMaterial::EmittanceSettings"), 4, 20)],
         ),
+        // #5673 — the translucency pair, same nested-Settings shape:
+        //   TranslucencySettings { UseSSS, TransmissiveScale }
+        //   TranslucencySettingsComponent { Enabled, Settings }
+        clas(
+            g("BSMaterial::TranslucencySettings"),
+            17,
+            is_struct,
+            &[(g("UseSSS"), T_BOOL, 0, 1), (g("TransmissiveScale"), T_FLOAT, 4, 4)],
+        ),
+        clas(
+            g("BSMaterial::TranslucencySettingsComponent"),
+            18,
+            is_struct,
+            &[(g("Enabled"), T_BOOL, 0, 1), (g("Settings"), g("BSMaterial::TranslucencySettings"), 4, 8)],
+        ),
     ];
 
     let strt_payload = strt(&names);
@@ -1127,6 +1159,7 @@ pub mod test_support {
     if effect_components {
         component_rows.push((12, 14, 0));
         component_rows.push((12, 16, 0));
+        component_rows.push((12, 18, 0));
     }
     let mut components = Vec::new();
     components.extend_from_slice(&t_cinfo.to_le_bytes());
@@ -1205,6 +1238,14 @@ pub mod test_support {
         emissive_objt.extend_from_slice(&f.to_le_bytes());
     }
     emissive_objt.extend_from_slice(&432.0f32.to_le_bytes());
+    // #5673 — TranslucencySettingsComponent: enabled with SSS on and a
+    // transmissive scale, both inside the nested Settings.
+    let mut translucency_objt = Vec::new();
+    translucency_objt
+        .extend_from_slice(&g("BSMaterial::TranslucencySettingsComponent").to_le_bytes());
+    translucency_objt.push(1u8); // Enabled = true
+    translucency_objt.push(1u8); // Settings.UseSSS = true
+    translucency_objt.extend_from_slice(&1.5f32.to_le_bytes()); // Settings.TransmissiveScale
 
     let mut chunks: SyntheticCdbChunks = vec![
         (b"STRT", strt_payload),
@@ -1227,6 +1268,7 @@ pub mod test_support {
     if effect_components {
         chunks.push((b"OBJT", effect_objt));
         chunks.push((b"OBJT", emissive_objt));
+        chunks.push((b"OBJT", translucency_objt));
     }
     // One CLAS per class, right after TYPE.
     chunks.splice(
@@ -1341,10 +1383,11 @@ mod tests {
             let objects = &mut chunks[dbfile + 1].1;
             objects[13..17].copy_from_slice(&parent.to_le_bytes());
             // Components LIST: type ref (4) + count (4) + 8-byte rows; the
-            // last two rows are the Effect + Emissive settings components.
+            // last three rows are the Effect / Emissive / Translucency
+            // settings components.
             let comps = &mut chunks[dbfile + 2].1;
             let rows = (comps.len() - 8) / 8;
-            for r in rows - 2..rows {
+            for r in rows - 3..rows {
                 let at = 8 + r * 8;
                 comps[at..at + 4].copy_from_slice(&99u32.to_le_bytes());
             }
@@ -1502,6 +1545,12 @@ mod tests {
         assert_eq!(mat.emissive_enabled, Some(true));
         assert_eq!(mat.emissive_tint, Some([1.0, 0.8, 0.6]));
         assert_eq!(mat.luminous_emittance, Some(432.0));
+        // #5673 — the nested TranslucencySettings capture: the arm keys
+        // on the `…Component` class, so the component's inline `Settings`
+        // actually resolves (pre-fix this arm never fired and both
+        // fields stayed `None`).
+        assert_eq!(mat.use_sss, Some(true));
+        assert_eq!(mat.transmissive_scale, Some(1.5));
     }
 
     #[test]

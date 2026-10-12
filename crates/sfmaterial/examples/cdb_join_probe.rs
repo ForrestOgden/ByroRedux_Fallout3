@@ -128,6 +128,7 @@ const NEEDED_CLASSES: &[&str] = &[
     "BSMaterial::AlphaBlenderSettings",
     "BSMaterial::EffectSettingsComponent",
     "BSMaterial::TranslucencySettings",
+    "BSMaterial::TranslucencySettingsComponent",
     "BSMaterial::DecalSettingsComponent",
     "BSMaterial::EmissiveSettingsComponent",
     "BSMaterial::EmittanceSettings",
