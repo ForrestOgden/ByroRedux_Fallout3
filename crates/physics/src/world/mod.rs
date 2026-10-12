@@ -921,6 +921,56 @@ impl PhysicsWorld {
         self.multibody_joints.rigid_body_link(body).is_some()
     }
 
+    /// #5544 — re-sleep the spawned-asleep newcomers a stepping frame has
+    /// now processed. Rapier 0.36 strong-wakes a brand-new collider on every
+    /// begin-touch of its first narrow phase (contacts.rs
+    /// `strong_wake_sleeping_side`), so without this the first real step
+    /// after a streaming frame wakes all resting dynamic clutter of the new
+    /// cells for rapier's ~1 s sleep timer — solver cost on every cell
+    /// crossing, and (once impact audio has content) a burst of
+    /// settle-impulse crossings per streamed item. A manual `sleep()` pins
+    /// sleep eligibility, so the island settles on the next update. Bodies
+    /// that drifted off their spawn pose (a genuine push, a real fall
+    /// through missing collision) keep rapier's verdict. The force-event
+    /// crossings of the re-slept bodies' colliders are dropped from this
+    /// frame's batch: the settle impulse of an authored-resting item is not
+    /// an impact.
+    pub(crate) fn resleep_spawned_newcomers(&mut self) {
+        let pending = std::mem::take(&mut self.spawn_sleep_pending);
+        // #5700 — a set, not a Vec: every buffered event is tested
+        // against it, and on a large grid load events ≈ newcomers.
+        let mut settled_colliders: std::collections::HashSet<
+            rapier3d::prelude::ColliderHandle,
+        > = std::collections::HashSet::new();
+        for (handle, spawn_pos) in pending {
+            // The water pass's deliberate dry→wet / current wakes are
+            // not the begin-touch strong-wake — those bodies must
+            // integrate their buoyancy/flow force, not re-sleep.
+            if self.water_force_targets.contains(&handle) {
+                continue;
+            }
+            let Some(body) = self.bodies.get_mut(handle) else {
+                continue;
+            };
+            let drifted =
+                (body.translation() - spawn_pos).length() > SPAWN_SLEEP_DRIFT_BU;
+            if !drifted && body.is_dynamic() && !body.is_sleeping() {
+                body.sleep();
+                // #5700 — only the bodies actually re-slept have their
+                // settle impulse dropped; a newcomer that drifted (a real
+                // push, an unsupported item falling) keeps rapier's
+                // verdict AND its first-impact event.
+                settled_colliders.extend(body.colliders().iter().copied());
+            }
+        }
+        if !settled_colliders.is_empty() {
+            self.pending_force_events.retain(|event| {
+                !settled_colliders.contains(&event.collider1)
+                    && !settled_colliders.contains(&event.collider2)
+            });
+        }
+    }
+
     /// #5540 — record that the water pass owns `body`'s user force this
     /// frame (buoyancy + drag), so the dry-link damping pass below leaves
     /// it alone.
@@ -938,24 +988,43 @@ impl PhysicsWorld {
     /// second reset would discard it. Called once per stepping frame
     /// from [`Self::step`]; like the buoyancy force, the drag persists
     /// across the frame's substeps and is re-derived next frame.
+    ///
+    /// **Force ownership (#5698).** The reset-then-add means an awake,
+    /// damped, dry link's user force is OWNED by this pass: anything else
+    /// added to it (`add_force`) is replaced each stepping frame. The water
+    /// pass is the one legitimate co-owner, so it must register every body
+    /// it puts a force on through [`Self::note_water_force_target`] — the
+    /// surface arm, and a placed current marker's force, which a marker that
+    /// overlaps no water plane applies without ever entering the surface arm.
+    ///
+    /// **Cost (#5699).** Walks the multibody links (the target set — a
+    /// handful of ragdolls), not the whole body arena; the arena holds
+    /// every fixed and dynamic body of the loaded cells (95 k in a
+    /// Commonwealth-class exterior).
     pub(crate) fn apply_multibody_link_damping(&mut self) {
         // Collect the plan first: applying needs `&mut self` per body.
         let mut plan: Vec<(RigidBodyHandle, Vector, AngVector, f32, f32, f32)> =
             Vec::new();
-        for (handle, body) in self.bodies.iter() {
-            if !body.is_dynamic()
-                || body.is_sleeping()
-                || self.water_force_targets.contains(&handle)
-                || self.multibody_joints.rigid_body_link(handle).is_none()
-            {
-                continue;
+        for multibody in self.multibody_joints.multibodies() {
+            for link in multibody.links() {
+                let handle = link.rigid_body_handle();
+                let Some(body) = self.bodies.get(handle) else {
+                    continue;
+                };
+                // Cheap body flags before the SipHash set lookup.
+                if !body.is_dynamic()
+                    || body.is_sleeping()
+                    || self.water_force_targets.contains(&handle)
+                {
+                    continue;
+                }
+                let lin = body.linear_damping();
+                let ang = body.angular_damping();
+                if lin <= 0.0 && ang <= 0.0 {
+                    continue;
+                }
+                plan.push((handle, body.linvel(), body.angvel(), lin, ang, body.mass()));
             }
-            let lin = body.linear_damping();
-            let ang = body.angular_damping();
-            if lin <= 0.0 && ang <= 0.0 {
-                continue;
-            }
-            plan.push((handle, body.linvel(), body.angvel(), lin, ang, body.mass()));
         }
         for (handle, v, w, lin, ang, mass) in plan {
             self.reset_forces(handle, false);
@@ -1291,46 +1360,10 @@ impl PhysicsWorld {
             }
         }
 
-        // #5544 — re-sleep the spawned-asleep newcomers a stepping frame
-        // has now processed. Rapier 0.36 strong-wakes a brand-new collider
-        // on every begin-touch of its first narrow phase (contacts.rs
-        // `strong_wake_sleeping_side`), so without this the first real step
-        // after a streaming frame wakes all resting dynamic clutter of the
-        // new cells for rapier's ~1 s sleep timer — solver cost on every
-        // cell crossing, and (once impact audio has content) a burst of
-        // settle-impulse crossings per streamed item. A manual `sleep()`
-        // pins sleep eligibility, so the island settles on the next
-        // update. Bodies that drifted off their spawn pose (a genuine
-        // push, a real fall through missing collision) keep rapier's
-        // verdict. Their colliders' force-event crossings are dropped from
-        // this frame's batch: the settle impulse of an authored-resting
-        // item is not an impact.
+        // #5544 — re-sleep the spawned-asleep newcomers this stepping frame
+        // processed; see `resleep_spawned_newcomers`.
         if steps > 0 && !self.spawn_sleep_pending.is_empty() {
-            let pending = std::mem::take(&mut self.spawn_sleep_pending);
-            let mut settled_colliders: Vec<rapier3d::prelude::ColliderHandle> = Vec::new();
-            for (handle, spawn_pos) in pending {
-                // The water pass's deliberate dry→wet / current wakes are
-                // not the begin-touch strong-wake — those bodies must
-                // integrate their buoyancy/flow force, not re-sleep.
-                if self.water_force_targets.contains(&handle) {
-                    continue;
-                }
-                let Some(body) = self.bodies.get_mut(handle) else {
-                    continue;
-                };
-                settled_colliders.extend(body.colliders().iter().copied());
-                let drifted =
-                    (body.translation() - spawn_pos).length() > SPAWN_SLEEP_DRIFT_BU;
-                if !drifted && body.is_dynamic() && !body.is_sleeping() {
-                    body.sleep();
-                }
-            }
-            if !settled_colliders.is_empty() {
-                self.pending_force_events.retain(|event| {
-                    !settled_colliders.contains(&event.collider1)
-                        && !settled_colliders.contains(&event.collider2)
-                });
-            }
+            self.resleep_spawned_newcomers();
         }
 
         // Scene-query refresh, post-substeps. A frame that stepped needs
@@ -3684,6 +3717,90 @@ mod tests {
         w.colliders
             .insert_with_parent(ColliderBuilder::new(shape).build(), h, &mut w.bodies);
         h
+    }
+
+    fn force_event(
+        c1: rapier3d::prelude::ColliderHandle,
+        c2: rapier3d::prelude::ColliderHandle,
+    ) -> ContactForceEvent {
+        ContactForceEvent {
+            collider1: c1,
+            collider2: c2,
+            total_force: Vector::ZERO,
+            total_force_magnitude: 1.0,
+            max_force_direction: Vector::Y,
+            max_force_magnitude: 1.0,
+            started: true,
+        }
+    }
+
+    /// #5700 — the spawn re-sleep drops the settle crossings of the bodies it
+    /// actually re-slept, and ONLY those: a newcomer that drifted off its
+    /// spawn pose (a real push, an unsupported item falling) keeps rapier's
+    /// verdict AND its first-impact event. Pre-fix the colliders were
+    /// collected before the drift test, so a drifted newcomer's impact was
+    /// dropped too (and the filter was a quadratic `Vec::contains`).
+    #[test]
+    fn spawn_resleep_drops_only_settled_newcomers_force_events() {
+        let mut w = PhysicsWorld::new();
+        let settled = spawn_ball(&mut w, 100.0);
+        let drifted = spawn_ball(&mut w, 100.0);
+        let bystander = spawn_ball(&mut w, 100.0);
+        let collider_of = |w: &PhysicsWorld, h: RigidBodyHandle| w.bodies[h].colliders()[0];
+        let (cs, cd, cb) = (
+            collider_of(&w, settled),
+            collider_of(&w, drifted),
+            collider_of(&w, bystander),
+        );
+        // Both newcomers are awake (the begin-touch strong-wake); the second
+        // sits far from the pose it spawned at.
+        let spawn = Vector::new(0.0, 100.0, 0.0);
+        let far = Vector::new(0.0, 100.0 + 10.0 * SPAWN_SLEEP_DRIFT_BU, 0.0);
+        w.spawn_sleep_pending = vec![(settled, spawn), (drifted, far)];
+        w.pending_force_events = vec![
+            force_event(cs, cb),
+            force_event(cd, cb),
+            force_event(cb, cb),
+        ];
+
+        w.resleep_spawned_newcomers();
+
+        assert!(w.bodies[settled].is_sleeping(), "the settled newcomer re-sleeps");
+        assert!(
+            !w.bodies[drifted].is_sleeping(),
+            "a drifted newcomer keeps rapier's verdict"
+        );
+        let kept: Vec<_> = w
+            .pending_force_events
+            .iter()
+            .map(|e| (e.collider1, e.collider2))
+            .collect();
+        assert_eq!(
+            kept,
+            vec![(cd, cb), (cb, cb)],
+            "only the re-slept body's crossing is dropped; the drifted newcomer's \
+             first impact and unrelated events survive"
+        );
+        assert!(w.spawn_sleep_pending.is_empty(), "the pending list is consumed");
+    }
+
+    /// #5699 — the dry-link damping pass reads the multibody LINKS, not the
+    /// body arena: a world of thousands of unjointed dynamic bodies costs it
+    /// nothing, and an unjointed body never receives damping force (it has
+    /// its writeback damping). The jointed fixture's decay is pinned by
+    /// `dry_multibody_link_damping_decays_drift_velocity` in `water.rs`.
+    #[test]
+    fn link_damping_pass_leaves_unjointed_bodies_alone() {
+        let mut w = PhysicsWorld::new();
+        let ball = spawn_ball(&mut w, 100.0);
+        w.bodies[ball].set_linear_damping(5.0);
+        w.bodies[ball].set_linvel(Vector::new(30.0, 0.0, 0.0), true);
+        w.apply_multibody_link_damping();
+        assert_eq!(
+            w.bodies[ball].user_force(),
+            Vector::ZERO,
+            "an unjointed body's damping rides rapier's writeback, never this pass"
+        );
     }
 
     /// A sustained upward force greater than gravity must lift a body that

@@ -742,7 +742,17 @@ fn apply_buoyancy_with_scratch(
     }
     // #5547 — last frame's per-tick lift registrations are stale by
     // definition (water may have streamed out, the scan may early-return).
-    world.resource_mut::<PhysicsWorld>().water_lift.clear();
+    // #5698 — likewise the dry-link damping pass's skip set
+    // (`water_force_targets`): it is cleared HERE, before the early returns
+    // below, not only once a full scan reaches the body loop. After a plane
+    // streams out (or the scene quiesces) the scan returns early, and a set
+    // left over from the last full scan would keep ex-wet links "owned by
+    // the water pass" — losing their dry damping until another full scan.
+    {
+        let mut pw = world.resource_mut::<PhysicsWorld>();
+        pw.water_lift.clear();
+        pw.water_force_targets.clear();
+    }
     let consts = world
         .try_resource::<PhysicsWaterConstants>()
         .map(|r| *r)
@@ -891,9 +901,8 @@ fn apply_buoyancy_with_scratch(
     // writes to apply after the lock drops.
     {
         let mut pw = world.resource_mut::<PhysicsWorld>();
-        // #5540 — the per-step dry-link damping pass skips whatever this
-        // run targets; last run's set is stale by definition.
-        pw.water_force_targets.clear();
+        // #5540/#5698 — `water_force_targets` was cleared at the top of the
+        // scan (before the early returns); this run refills it below.
         let gravity_y = pw.gravity.y;
         // Set once if any body is woken on a dry→wet transition this frame
         // (see the `pw.wake()` after the loop).
@@ -1302,6 +1311,12 @@ fn apply_buoyancy_with_scratch(
                 if let Some(f) = current {
                     // Per-frame term, so no wake — see the surface branch.
                     pw.add_force(t.handles.body, f, false);
+                    // #5698 — this pass owns the body's user force this
+                    // frame, exactly like the surface arm: without the note
+                    // the dry-link damping pass `reset_forces` the placed
+                    // current away on an awake damped ragdoll link whose
+                    // marker overlaps no water plane.
+                    pw.note_water_force_target(t.handles.body);
                 }
             }
         }
@@ -3542,6 +3557,144 @@ mod ragdoll_stale_contact_tests {
             settled_worst < 60.0,
             "the jointed rig must settle near the surface (last-100-ticks worst |y| \
              {settled_worst:.1}); a growing limit cycle is the #5540 divergence"
+        );
+    }
+
+    /// Two jointed damped balls at rest in zero gravity, with the
+    /// `WaterCurrentVolume` marker (no water plane anywhere) around them.
+    fn damped_ragdoll_in_marker_only_current() -> (
+        byroredux_core::ecs::World,
+        Vec<rapier3d::prelude::RigidBodyHandle>,
+    ) {
+        use crate::ragdoll::{
+            build_ragdoll, RagdollBodySpec, RagdollConstraintSpec, RagdollJointSpec, RagdollSpec,
+        };
+        use crate::ContactConfig;
+        use byroredux_core::ecs::components::collision::{CollisionShape, RigidBodyData};
+        use byroredux_core::ecs::World;
+
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.insert_resource(PhysicsWaterConstants::default());
+        world.register::<WaterContact>();
+        world.register::<crate::Ragdoll>();
+        world.register::<crate::RapierHandles>();
+        world.register::<RigidBodyData>();
+        world.resource_mut::<PhysicsWorld>().gravity.y = 0.0;
+
+        let marker = world.spawn();
+        world.insert(
+            marker,
+            WaterCurrentVolume {
+                volume: WaterVolume {
+                    min: [-500.0, -500.0, -500.0],
+                    max: [500.0, 500.0, 500.0],
+                },
+                flow: WaterFlow::new([1.0, 0.0, 0.0], 8.0),
+            },
+        );
+        assert!(world.query::<WaterPlane>().is_none(), "no water surface anywhere");
+
+        let bone_a = world.spawn();
+        let bone_b = world.spawn();
+        let bone = |entity, y| RagdollBodySpec {
+            entity,
+            translation: Vec3::new(0.0, y, 0.0),
+            rotation: byroredux_core::math::Quat::IDENTITY,
+            scale: 1.0,
+            shape: CollisionShape::Ball { radius: 8.0 },
+            mass: 10.0,
+            linear_damping: 1.0,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.0,
+        };
+        let spec = RagdollSpec {
+            bodies: vec![bone(bone_a, 0.0), bone(bone_b, 16.0)],
+            constraints: vec![RagdollConstraintSpec {
+                body_a: 0,
+                body_b: 1,
+                joint: RagdollJointSpec::Ragdoll {
+                    twist_a: Vec3::X,
+                    plane_a: Vec3::Y,
+                    pivot_a: Vec3::new(0.0, 15.0, 0.0),
+                    twist_b: Vec3::X,
+                    plane_b: Vec3::Y,
+                    pivot_b: Vec3::new(0.0, -15.0, 0.0),
+                    cone_max: std::f32::consts::PI,
+                    twist_min: -std::f32::consts::PI,
+                    twist_max: std::f32::consts::PI,
+                },
+            }],
+        };
+        let rag = {
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            build_ragdoll(&mut pw, &spec, &ContactConfig::DEFAULT).expect("sane seed")
+        };
+        let handles: Vec<_> = rag.bodies.iter().map(|(_, h, _)| *h).collect();
+        assert!(world.resource::<PhysicsWorld>().is_multibody_link(handles[0]));
+        {
+            // Awake: a ragdoll built asleep would hide the bug (the
+            // `current` arm only forces an awake body).
+            let mut pw = world.resource_mut::<PhysicsWorld>();
+            for h in &handles {
+                pw.bodies[*h].wake_up(true);
+            }
+        }
+        world.insert(bone_a, rag);
+        (world, handles)
+    }
+
+    /// #5698 — a placed `WaterCurrentVolume` that overlaps no water plane
+    /// must push an awake, damped ragdoll link. Pre-fix the current arm added
+    /// its force without registering the body in `water_force_targets`, and
+    /// the dry-link damping pass `reset_forces`d it away every stepping frame:
+    /// the placed current did nothing to an awake ragdoll.
+    #[test]
+    fn marker_only_current_pushes_an_awake_damped_ragdoll_link() {
+        use crate::physics_sync_system;
+        use crate::world::PHYSICS_DT;
+        let (world, handles) = damped_ragdoll_in_marker_only_current();
+        for _ in 0..60 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+        let pw = world.resource::<PhysicsWorld>();
+        let vx = pw.bodies[handles[0]].linvel().x;
+        assert!(
+            vx > 1.0,
+            "the +X current must accelerate the damped link (vx = {vx}); pre-fix the \
+             damping pass wiped the current's force and vx stayed ~0"
+        );
+    }
+
+    /// #5698 — `water_force_targets` is cleared at the TOP of the scan, so an
+    /// early-returning scan (here: every marker and plane gone) cannot leave
+    /// the last full scan's set behind to exclude ex-wet links from dry
+    /// damping.
+    #[test]
+    fn an_early_returning_scan_clears_the_water_force_target_set() {
+        use crate::physics_sync_system;
+        use crate::world::PHYSICS_DT;
+        let (mut world, handles) = damped_ragdoll_in_marker_only_current();
+        for _ in 0..3 {
+            physics_sync_system(&world, PHYSICS_DT);
+        }
+        assert!(
+            world.resource::<PhysicsWorld>().water_force_targets.contains(&handles[0]),
+            "premise: a full scan registered the link while the marker was present"
+        );
+        // The marker streams out: no surfaces, no current volumes.
+        let markers: Vec<_> = world
+            .query::<WaterCurrentVolume>()
+            .map(|q| q.iter().map(|(e, _)| e).collect())
+            .unwrap_or_default();
+        for marker in markers {
+            world.despawn(marker);
+        }
+        physics_sync_system(&world, PHYSICS_DT);
+        assert!(
+            world.resource::<PhysicsWorld>().water_force_targets.is_empty(),
+            "the early-returning scan must not leave stale water ownership behind"
         );
     }
 
