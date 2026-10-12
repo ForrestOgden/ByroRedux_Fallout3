@@ -409,6 +409,27 @@ fn convert_hkx_clip(
     one_shot: bool,
     accum_root: Option<&str>,
 ) -> AnimationClip {
+    // #5662 — tracks the decoder dropped for a non-finite translation/scale
+    // scalar (vanilla: NaN bounds on a prop-attachment bone). Their bones
+    // keep the bind pose; say which, with the path the decoder never sees.
+    if !animation.dropped_bones.is_empty() {
+        let names: Vec<&str> = animation
+            .dropped_bones
+            .iter()
+            .map(|&bone| {
+                skeleton
+                    .bones
+                    .get(bone as usize)
+                    .map_or("<out of range>", |b| b.name.as_str())
+            })
+            .collect();
+        log::warn!(
+            "HKX '{path}' (event '{idle_event}'): {} track(s) dropped at decode for a \
+             non-finite translation/scale value — bone(s) {:?} {names:?} keep their bind pose",
+            animation.dropped_bones.len(),
+            animation.dropped_bones,
+        );
+    }
     let mut channels =
         FxHashMap::with_capacity_and_hasher(animation.tracks.len(), Default::default());
     for (track_index, samples) in animation.tracks.iter().enumerate() {
@@ -632,6 +653,7 @@ mod tests {
             tracks: vec![sample.clone(), sample],
             track_to_bone: vec![0, 5],
             annotations: Vec::<HkxAnnotation>::new(),
+            dropped_bones: Vec::new(),
         };
 
         let mut pool = StringPool::new();
@@ -695,6 +717,7 @@ mod tests {
                 time: 0.25,
                 text: "sound: footstep".to_string(),
             }],
+            dropped_bones: Vec::new(),
         };
 
         let mut pool = StringPool::new();
@@ -796,6 +819,7 @@ mod tests {
             tracks: vec![vec![HkxTransform::IDENTITY]],
             track_to_bone: vec![0],
             annotations: Vec::<HkxAnnotation>::new(),
+            dropped_bones: Vec::new(),
         };
 
         let mut pool = StringPool::new();
@@ -868,6 +892,7 @@ mod tests {
             tracks: vec![vec![HkxTransform::IDENTITY]],
             track_to_bone: vec![0],
             annotations: Vec::new(),
+            dropped_bones: Vec::new(),
         };
         let mut pool = StringPool::new();
 

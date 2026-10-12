@@ -43,6 +43,12 @@ pub struct HkxAnimation {
     pub track_to_bone: Vec<u16>,
     /// Authored Havok annotation events across every annotation track.
     pub annotations: Vec<HkxAnnotation>,
+    /// Skeleton bone indices whose transform track was dropped at decode
+    /// because its translation or scale curve stores a non-finite scalar
+    /// (#5662). Those tracks are absent from `tracks` / `track_to_bone`, so
+    /// the bone keeps its bind pose; a consumer reports the list with the
+    /// clip path, which this decoder never sees.
+    pub dropped_bones: Vec<u16>,
 }
 
 /// Bound the decoded transform sample matrix before allocating one `Vec` per
@@ -426,6 +432,9 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     let data_len = pack.u32(object + layout.spline_data.count, "spline data size")? as usize;
     let data = pack.data_slice(data_offset, data_len, "spline data")?;
     let mut blocks = Vec::with_capacity(num_blocks);
+    // #5662 — tracks whose translation or scale stores a non-finite scalar
+    // in any block; dropped from the clip below instead of failing it.
+    let mut non_finite_tracks = vec![false; transform_count];
     for block_index in 0..num_blocks {
         let block_start = block_offsets[block_index] as usize;
         let block_end = block_offsets
@@ -461,17 +470,25 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
                 return Err(HkxError::InvalidData("invalid spline quantization type"));
             }
 
+            let non_finite = &mut non_finite_tracks[track];
             let translation = read_vector_curve(
                 data,
                 &mut cursor,
                 translation_mask,
                 scalar_quantization,
                 [0.0; 3],
+                non_finite,
             )?;
             let rotation =
                 read_quaternion_curve(data, &mut cursor, rotation_mask, rotation_quantization)?;
-            let scale =
-                read_vector_curve(data, &mut cursor, scale_mask, scale_quantization, [1.0; 3])?;
+            let scale = read_vector_curve(
+                data,
+                &mut cursor,
+                scale_mask,
+                scale_quantization,
+                [1.0; 3],
+                non_finite,
+            )?;
             block_tracks.push(BlockTrack {
                 translation,
                 rotation,
@@ -485,6 +502,11 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         }
         blocks.push(block_tracks);
     }
+    if non_finite_tracks.iter().all(|bad| *bad) {
+        return Err(HkxError::InvalidData(
+            "every transform track stores a non-finite spline scalar",
+        ));
+    }
 
     let block_stride = max_frames_per_block - 1;
     let mut tracks = vec![Vec::with_capacity(frame_count); transform_count];
@@ -493,7 +515,9 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         let first_frame = block_index as u32 * block_stride;
         let local_frame = frame.saturating_sub(first_frame) as f32;
         for (track_index, track) in blocks[block_index].iter().enumerate() {
-            tracks[track_index].push(track.sample(local_frame)?);
+            if !non_finite_tracks[track_index] {
+                tracks[track_index].push(track.sample(local_frame)?);
+            }
         }
     }
 
@@ -525,13 +549,32 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     };
     let annotations = read_annotations(&pack, &layout, object, duration)?;
 
+    // #5662 — drop the flagged tracks (samples were never taken for them)
+    // and report their bones, so the clip keeps every valid track.
+    let mut dropped_bones = Vec::new();
+    let mut kept_tracks = Vec::with_capacity(tracks.len());
+    let mut kept_bones = Vec::with_capacity(track_to_bone.len());
+    for ((samples, bone), bad) in tracks
+        .into_iter()
+        .zip(track_to_bone)
+        .zip(&non_finite_tracks)
+    {
+        if *bad {
+            dropped_bones.push(bone);
+        } else {
+            kept_tracks.push(samples);
+            kept_bones.push(bone);
+        }
+    }
+
     Ok(HkxAnimation {
         duration,
         num_frames,
         frame_duration,
-        tracks,
-        track_to_bone,
+        tracks: kept_tracks,
+        track_to_bone: kept_bones,
         annotations,
+        dropped_bones,
     })
 }
 
@@ -744,17 +787,26 @@ fn read_pack_u32_array(
         .collect())
 }
 
+/// Read one translation or scale curve. A non-finite stored scalar (a
+/// static value or a dynamic component's min/max) does not fail the read:
+/// it sets `non_finite`, the curve keeps a finite placeholder, and every
+/// byte is still consumed so the tracks after it land correctly (#5662).
+/// Vanilla Skyrim stores NaN bounds on one prop-attachment bone
+/// (`AnimObjectR` / `AnimObjectL`) in 59 SE clips whose other tracks are
+/// valid; the caller drops the flagged track instead of the whole clip.
 fn read_vector_curve(
     data: &[u8],
     cursor: &mut usize,
     mask: u8,
     quantization: u8,
     identity: [f32; 3],
+    non_finite: &mut bool,
 ) -> Result<VectorCurve> {
     validate_vector_mask(mask)?;
     *cursor = align_up(*cursor, 4)?;
     if mask & 0x70 == 0 {
-        return read_static_vector(data, cursor, mask, identity).map(VectorCurve::Static);
+        return read_static_vector(data, cursor, mask, identity, non_finite)
+            .map(VectorCurve::Static);
     }
 
     let (degree, knots, control_count) = read_spline_header(data, cursor)?;
@@ -767,14 +819,26 @@ fn read_vector_curve(
         if mask & dynamic_bit != 0 {
             let min = read_f32(data, cursor, "spline scalar minimum")?;
             let max = read_f32(data, cursor, "spline scalar maximum")?;
-            if !min.is_finite() || !max.is_finite() || min > max {
+            if !min.is_finite() || !max.is_finite() {
+                // Placeholder bounds keep the decoded control points finite;
+                // the flagged track is dropped before anything samples it.
+                *non_finite = true;
+            } else if min > max {
                 return Err(HkxError::InvalidData("invalid spline scalar bounds"));
+            } else {
+                bounds[component] = (min, max);
             }
-            bounds[component] = (min, max);
             components[component] = ScalarCurve::Dynamic(Vec::with_capacity(control_count));
         } else if mask & static_bit != 0 {
-            components[component] =
-                ScalarCurve::Constant(read_f32(data, cursor, "static spline scalar")?);
+            let value = read_f32(data, cursor, "static spline scalar")?;
+            if !value.is_finite() {
+                *non_finite = true;
+            }
+            components[component] = ScalarCurve::Constant(if value.is_finite() {
+                value
+            } else {
+                identity[component]
+            });
         }
     }
     for _ in 0..control_count {
@@ -856,15 +920,17 @@ fn read_static_vector(
     cursor: &mut usize,
     mask: u8,
     identity: [f32; 3],
+    non_finite: &mut bool,
 ) -> Result<[f32; 3]> {
     *cursor = align_up(*cursor, 4)?;
     let mut value = identity;
     for (component, output) in value.iter_mut().enumerate() {
         if mask & (1 << component) != 0 {
-            let bytes = take(data, cursor, 4, "static spline scalar")?;
-            *output = f32::from_le_bytes(bytes.try_into().unwrap());
-            if !output.is_finite() {
-                return Err(HkxError::InvalidData("non-finite spline scalar"));
+            let stored = read_f32(data, cursor, "static spline scalar")?;
+            if stored.is_finite() {
+                *output = stored;
+            } else {
+                *non_finite = true;
             }
         }
     }
@@ -952,13 +1018,11 @@ fn validate_quaternion_mask(mask: u8) -> Result<()> {
     Ok(())
 }
 
+/// One stored `f32`, as written. Finiteness is the caller's policy: the
+/// vector-curve readers flag a non-finite value per track (#5662).
 fn read_f32(data: &[u8], cursor: &mut usize, label: &'static str) -> Result<f32> {
     let bytes = take(data, cursor, 4, label)?;
-    let value = f32::from_le_bytes(bytes.try_into().unwrap());
-    if !value.is_finite() {
-        return Err(HkxError::InvalidData("non-finite spline scalar"));
-    }
-    Ok(value)
+    Ok(f32::from_le_bytes(bytes.try_into().unwrap()))
 }
 
 fn sample_bspline(values: &[f32], degree: usize, knots: &[u8], time: f32) -> Result<f32> {
@@ -1271,6 +1335,8 @@ mod tests {
         // block-chain and dimension gates the raw-field reads below never
         // run). Vanilla must have none.
         let mut rejects: Vec<String> = Vec::new();
+        // #5662 — clips that decode with a non-finite track dropped.
+        let mut partial = 0usize;
         let mut worst = String::new();
         for path in archive.list_files() {
             if !path.ends_with(".hkx") {
@@ -1307,8 +1373,10 @@ mod tests {
                 .u32(object + layout.transform_tracks, "census tracks")
                 .unwrap();
             clips += 1;
-            if let Err(error) = decode_spline_animation(&bytes) {
-                rejects.push(format!("{path}: {error:?}"));
+            match decode_spline_animation(&bytes) {
+                Ok(animation) if !animation.dropped_bones.is_empty() => partial += 1,
+                Ok(_) => {}
+                Err(error) => rejects.push(format!("{path}: {error:?}")),
             }
             max_mfpb = max_mfpb.max(mfpb);
             max_frames = max_frames.max(frames);
@@ -1334,15 +1402,13 @@ mod tests {
             "{skipped} files skipped — a parse/extract regression turns clips into skips"
         );
         // The real decoder rejected 288 of the 6,126 vanilla clips on
-        // 2026-10-11: 229 were the unpadded `mask_size` equality (fixed by
-        // #5659 — Havok pads the mask table to 4 bytes) and 59 are
-        // "non-finite spline scalar" (#5662: NaN bounds on one prop-
-        // attachment bone). The remainder is pinned as an upper bound, so
-        // growth fails here; making it exact (and naming the clips) is
-        // #5671. The gap itself is an open decoder finding (a vanilla clip
-        // that fails to decode never animates), not something this gate
-        // may bless.
-        const KNOWN_VANILLA_REJECTS: usize = 59;
+        // 2026-10-11: 229 on the unpadded `mask_size` equality (#5659 —
+        // Havok pads the mask table to 4 bytes) and 59 on NaN translation/
+        // scale bounds on one prop-attachment bone (#5662 — that track is
+        // now dropped, the clip kept). Every vanilla clip decodes since
+        // (measured 2026-10-12). The baseline is still an upper bound —
+        // making it exact and naming the clips is #5671.
+        const KNOWN_VANILLA_REJECTS: usize = 0;
         assert!(
             rejects.len() <= KNOWN_VANILLA_REJECTS,
             "{} vanilla clips rejected by decode_spline_animation (baseline \
@@ -1350,7 +1416,18 @@ mod tests {
             rejects.len(),
             &rejects[..rejects.len().min(20)]
         );
-        eprintln!("census: {} clips rejected by the real decoder", rejects.len());
+        eprintln!(
+            "census: {} clips rejected by the real decoder, {partial} decoded with a \
+             non-finite track dropped",
+            rejects.len()
+        );
+        // #5662 — measured 2026-10-12: the 59 clips that used to be rejected
+        // (one `AnimObjectR`/`AnimObjectL` track each, or its paired-rig
+        // slot). More means a decoder change started flagging valid tracks.
+        assert!(
+            partial <= 59,
+            "{partial} vanilla clips decode with a dropped track (baseline 59)"
+        );
         // The dimension maxima, asserted against the gate constants the
         // decoder enforces (measured: frames 1,471, blocks 15).
         assert!(max_frames > 0 && max_blocks > 0, "census read no dimensions");
@@ -1767,6 +1844,25 @@ mod tests {
     /// bytes, followed at the next 4-byte boundary by a static translation.
     /// Float-track data is empty — the decoder never reads it.
     fn synthetic_static_clip(float_count: u32, mask_size: u32, translation: [f32; 3]) -> Vec<u8> {
+        let mut curves = Vec::new();
+        for component in translation {
+            curves.extend_from_slice(&component.to_le_bytes());
+        }
+        // 8-bit scalars; static x/y/z translation, identity rotation/scale.
+        synthetic_clip(float_count, mask_size, &[[0, 0x07, 0, 0]], &curves)
+    }
+
+    /// The general form of [`synthetic_static_clip`]: one block, one track
+    /// per `masks` entry (quantization, translation, rotation, scale), and
+    /// `curves` — every track's curve bytes, laid out by the caller exactly
+    /// as the decoder walks them — starting at the 4-byte boundary after
+    /// the `mask_size`-byte mask table.
+    fn synthetic_clip(
+        float_count: u32,
+        mask_size: u32,
+        masks: &[[u8; 4]],
+        curves: &[u8],
+    ) -> Vec<u8> {
         use crate::packfile::fixtures::PackfileBuilder;
 
         const CLIP: usize = 0;
@@ -1780,12 +1876,10 @@ mod tests {
             "clip object overlaps the binding"
         );
 
-        let mut spline = vec![0u8, 0x07, 0, 0]; // 8-bit scalars; static x/y/z translation
-        spline.resize(4 + float_count as usize, 0); // float-track masks
+        let mut spline: Vec<u8> = masks.iter().flatten().copied().collect();
+        spline.resize(spline.len() + float_count as usize, 0); // float-track masks
         spline.resize(pad(mask_size as usize, 4), 0); // padding up to the curve data
-        for component in translation {
-            spline.extend_from_slice(&component.to_le_bytes());
-        }
+        spline.extend_from_slice(curves);
         let float_start = spline.len() as u32;
 
         let mut data = vec![0u8; SPLINE + spline.len()];
@@ -1795,7 +1889,11 @@ mod tests {
         put_u32(&mut data, CLIP + layout.animation_type, 5); // spline-compressed
         data[CLIP + layout.animation_duration..CLIP + layout.animation_duration + 4]
             .copy_from_slice(&(1.0f32 / 30.0).to_le_bytes());
-        put_u32(&mut data, CLIP + layout.transform_tracks, 1);
+        put_u32(
+            &mut data,
+            CLIP + layout.transform_tracks,
+            masks.len() as u32,
+        );
         put_u32(&mut data, CLIP + layout.float_tracks, float_count);
         put_u32(&mut data, CLIP + layout.num_frames, 2);
         put_u32(&mut data, CLIP + layout.num_blocks, 1);
@@ -1876,6 +1974,94 @@ mod tests {
                 "mask_size={mask_size}"
             );
         }
+    }
+
+    /// Curve bytes for a translation whose X component is dynamic with the
+    /// given bounds: spline header (2 control points, degree 1, 4 knots),
+    /// padding, min/max, two 8-bit control points, padding — the vanilla
+    /// `AnimObjectR` shape when `bounds` are NaN.
+    fn dynamic_x_translation(bounds: (f32, f32)) -> Vec<u8> {
+        let mut curve = vec![1, 0, 1, 0, 0, 1, 1, 0]; // last=1, degree=1, knots, pad
+        curve.extend_from_slice(&bounds.0.to_le_bytes());
+        curve.extend_from_slice(&bounds.1.to_le_bytes());
+        curve.extend_from_slice(&[0, 255, 0, 0]); // control points, pad
+        curve
+    }
+
+    /// #5662 (PAR-D2-2026-10-12-02) — vanilla Skyrim stores NaN translation
+    /// bounds on one prop-attachment bone in 59 SE clips whose other tracks
+    /// are valid. The decoder must drop that one track (reporting its bone)
+    /// and keep the clip, and the tracks after it must still land, which
+    /// proves the NaN curve's bytes are consumed in full.
+    #[test]
+    fn non_finite_translation_bounds_drop_only_that_track() {
+        let finite = [1.0f32, 2.0, 3.0];
+        let mut curves = Vec::new();
+        curves.extend_from_slice(&dynamic_x_translation((f32::NAN, f32::NAN)));
+        for component in finite {
+            curves.extend_from_slice(&component.to_le_bytes());
+        }
+        let clip = decode_spline_animation(&synthetic_clip(
+            0,
+            8,
+            &[[0, 0x10, 0, 0], [0, 0x07, 0, 0]],
+            &curves,
+        ))
+        .expect("one bad prop-bone channel must not reject the clip");
+        assert_eq!(clip.dropped_bones, vec![0]);
+        assert_eq!(
+            clip.track_to_bone,
+            vec![1],
+            "the valid track keeps its binding"
+        );
+        assert_eq!(clip.tracks.len(), 1);
+        assert!(clip.tracks[0].iter().all(|pose| pose.translation == finite));
+
+        // A static NaN component is the same class and gets the same policy.
+        let mut curves = Vec::new();
+        for component in finite {
+            curves.extend_from_slice(&component.to_le_bytes());
+        }
+        for component in [0.5f32, f32::INFINITY, 0.5] {
+            curves.extend_from_slice(&component.to_le_bytes());
+        }
+        let clip = decode_spline_animation(&synthetic_clip(
+            0,
+            8,
+            &[[0, 0x07, 0, 0], [0, 0x07, 0, 0]],
+            &curves,
+        ))
+        .expect("a static non-finite scalar drops its track, not the clip");
+        assert_eq!(clip.dropped_bones, vec![1]);
+        assert_eq!(clip.track_to_bone, vec![0]);
+    }
+
+    /// #5662 — a clip with nothing usable is still an error, and finite but
+    /// inverted bounds stay a format error rather than a dropped track.
+    #[test]
+    fn non_finite_scalars_on_every_track_or_inverted_bounds_still_fail() {
+        let all_bad = decode_spline_animation(&synthetic_clip(
+            0,
+            4,
+            &[[0, 0x10, 0, 0]],
+            &dynamic_x_translation((f32::NAN, f32::NAN)),
+        ))
+        .expect_err("a clip whose every track is non-finite has nothing to keep");
+        assert_eq!(
+            all_bad,
+            HkxError::InvalidData("every transform track stores a non-finite spline scalar")
+        );
+        let inverted = decode_spline_animation(&synthetic_clip(
+            0,
+            4,
+            &[[0, 0x10, 0, 0]],
+            &dynamic_x_translation((2.0, 1.0)),
+        ))
+        .expect_err("min > max is a malformed curve");
+        assert_eq!(
+            inverted,
+            HkxError::InvalidData("invalid spline scalar bounds")
+        );
     }
 
     /// #3018 (SCR-D8-2026-08-16-03) — an out-of-range annotation timestamp
