@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 46;
+    const BASELINE_MAJOR: u16 = 47;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -851,7 +851,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `QuestCompleted`, `ScenePlaying`, `LocationKeyword`). Enums serialize
     // tagged by name, so no older save can carry them and every older one
     // still reads.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x04f5_198a_2923_e108;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v46 -> v47): the new
+    // `AliasOverrides` resource column and `Effect::ForceAlias`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe5af_a15e_7c97_42c5;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

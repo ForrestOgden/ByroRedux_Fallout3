@@ -595,6 +595,9 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — Created Object "At" references: identity, base and
         // placement, so a quest's created reference respawns in its cell.
         .register_resource::<byroredux_scripting::CreatedReferences>("CreatedReferences")
+        // M47.2 — scripted ForceRefTo / Clear alias overrides, by reference
+        // FormID; dropped when their quest stops.
+        .register_resource::<byroredux_scripting::AliasOverrides>("AliasOverrides")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

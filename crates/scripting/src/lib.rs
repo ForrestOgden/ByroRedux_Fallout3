@@ -9,6 +9,7 @@
 //! The core lifecycle: event marker appears → systems process it →
 //! cleanup removes it at end of frame.
 
+pub mod alias_overrides;
 pub mod cinematic;
 pub mod cleanup;
 pub mod combat;
@@ -103,6 +104,7 @@ pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
+pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
     CreatedCell, CreatedPlacement, CreatedReference, CreatedReferences, CREATED_FORM_ID_BASE,
 };
@@ -201,6 +203,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
+    if world.try_resource::<AliasOverrides>().is_none() {
+        world.insert_resource(AliasOverrides::default());
     }
     // M47.2 — created-object references (saved, like the ledger above).
     if world.try_resource::<CreatedReferences>().is_none() {

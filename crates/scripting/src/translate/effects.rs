@@ -813,6 +813,13 @@ pub enum Effect {
         actor_value: ObjectRef,
         value: f32,
     },
+    /// M47.2 — `<alias>.ForceRefTo(akRef)` (`target` = the reference) or
+    /// `<alias>.Clear()` (`target` = `None`): a scripted alias override,
+    /// recorded in [`crate::AliasOverrides`] for the alias refresh.
+    ForceAlias {
+        alias: ObjectRef,
+        target: Option<ActorRef>,
+    },
     /// M47.2 — `<actor>.AddPerk(akPerk[, abNotify])` / `RemovePerk(akPerk)`:
     /// the CK's "adds the specified perk to this actor" (rank 1 when not
     /// owned, else unchanged) and its removal, on the actor's `Perks`.
@@ -1549,6 +1556,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_change_faction,
     prim_set_actor_value,
     prim_change_perk,
+    prim_force_alias,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2051,6 +2059,34 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
 /// value setter (`GlobalVariable.SetValue` takes one argument and is
 /// [`prim_set_global_value`]'s). The value must be a numeric literal.
+/// `<alias>.ForceRefTo(akRef)` / `<alias>.Clear()` — the CK's *ReferenceAlias*
+/// (and *Alias*) script functions. The receiver is the alias property itself.
+fn prim_force_alias(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, target) = if let Some((object, args)) = method_call(e, "ForceRefTo") {
+        if args.len() != 1 {
+            return None;
+        }
+        let mut target = &args[0].value.node;
+        while let Expr::Cast { expr, .. } = target {
+            target = &expr.node;
+        }
+        (object, Some(receiver_actor(target, scope)?))
+    } else {
+        let (object, args) = method_call(e, "Clear")?;
+        if !args.is_empty() {
+            return None;
+        }
+        (object, None)
+    };
+    if !matches!(object, Expr::Ident(_)) {
+        return None;
+    }
+    Some(Effect::ForceAlias {
+        alias: receiver_object(object, scope)?,
+        target,
+    })
+}
+
 /// `AddPerk(akPerk)` (Skyrim) / `AddPerk(akPerk, abNotify = false)` (FO4,
 /// Starfield) and `RemovePerk(akPerk)`. The notify flag is a literal-only UI
 /// hint.
@@ -3532,6 +3568,36 @@ mod tests {
                     item: ObjectRef::Property("Gold001".into()),
                     count: ItemCount::Global(ObjectRef::Property("Ransom".into())),
                     destination: None,
+                }]),
+                "{call}"
+            );
+        }
+    }
+
+    /// M47.2 — `ForceRefTo` with the player, an alias's reference or a
+    /// property, and `Clear`, on an alias property receiver.
+    #[test]
+    fn alias_overrides_lower() {
+        let alias = || ObjectRef::Property("Alias_Giver".into());
+        for (call, target) in [
+            (
+                "Alias_Giver.ForceRefTo(Game.GetPlayer() as ObjectReference)",
+                Some(ActorRef::Player),
+            ),
+            (
+                "Alias_Giver.ForceRefTo(Alias_Other.GetReference())",
+                Some(ActorRef::Object(ObjectRef::Property("Alias_Other".into()))),
+            ),
+            ("Alias_Giver.Clear()", None),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                Some(vec![Effect::ForceAlias {
+                    alias: alias(),
+                    target,
                 }]),
                 "{call}"
             );

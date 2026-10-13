@@ -855,6 +855,11 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         .try_resource::<crate::created_references::CreatedReferences>()
         .map(|created| created.clone());
     let mut creations: Vec<(QuestFormId, i32, u32, u32, u32)> = Vec::new();
+    // M47.2 — scripted ForceRefTo / Clear overrides, applied in each alias's
+    // place in the fill order.
+    let overrides = world
+        .try_resource::<crate::alias_overrides::AliasOverrides>()
+        .map(|overrides| overrides.clone());
     // The location aliases flagged "Reserves Location".
     let location_reservers: HashSet<(QuestFormId, i32)> = quests
         .iter()
@@ -869,6 +874,34 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     for (quest, aliases) in &quests {
         let mut used = HashSet::new();
         for alias in aliases.iter().filter(|alias| !alias.is_collection) {
+            use crate::alias_overrides::AliasOverride;
+            let scripted = overrides
+                .as_ref()
+                .and_then(|overrides| overrides.get(*quest, alias.alias_id));
+            if scripted == Some(AliasOverride::Cleared) {
+                if let Some(locations) = locations.as_mut() {
+                    locations.remove(&(*quest, alias.alias_id));
+                }
+                continue;
+            }
+            if let (Some(AliasOverride::Forced(reference)), false) = (scripted, alias.is_location) {
+                let entity = if reference == crate::story_manager::PLAYER_REF_FORM_ID {
+                    story_player
+                } else {
+                    index
+                        .by_reference
+                        .get(&reference)
+                        .and_then(|positions| positions.first())
+                        .map(|&position| candidates[position].0)
+                };
+                if let Some(entity) = entity {
+                    resolved.insert((*quest, alias.alias_id), entity);
+                    if let Some(target) = alias.force_into_alias {
+                        resolved.insert((*quest, target), entity);
+                    }
+                }
+                continue;
+            }
             // M47.2 — location aliases fill in list order with the reference
             // aliases, so either kind can depend on one above it.
             if alias.is_location {
@@ -1181,6 +1214,12 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
             .replace(locations);
     }
 
+    if let Some(mut overrides) =
+        world.try_resource_mut::<crate::alias_overrides::AliasOverrides>()
+    {
+        let running: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
+        overrides.retain_quests(|quest| running.contains(&quest));
+    }
     if let Some(mut created) =
         world.try_resource_mut::<crate::created_references::CreatedReferences>()
     {

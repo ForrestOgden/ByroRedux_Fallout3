@@ -583,7 +583,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // location aliases and the player's published location.
             .reads_resource::<byroredux_scripting::LocationTable>()
             .reads_resource::<byroredux_scripting::LocationAliasBindings>()
-            .reads_resource::<byroredux_scripting::PlayerLocation>(),
+            .reads_resource::<byroredux_scripting::PlayerLocation>()
+            // M47.2 — a spoken line's ForceRefTo / Clear records an alias
+            // override (after the quest-state guards drop).
+            .writes_resource::<byroredux_scripting::AliasOverrides>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -139,6 +139,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::MovePlayerTo { .. } => "MovePlayerTo",
         Effect::SetGlobalRelative { .. } => "SetGlobalRelative",
         Effect::ChangePerk { .. } => "ChangePerk",
+        Effect::ForceAlias { .. } => "ForceAlias",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

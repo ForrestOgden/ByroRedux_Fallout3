@@ -2122,3 +2122,70 @@ fn created_at_alias_records_binds_and_drops_with_its_quest() {
         .get(QuestFormId(QUEST), 1)
         .is_none());
 }
+
+/// M47.2 — a scripted `ForceRefTo` binds its reference over the authored
+/// fill, `Clear` unbinds, and both drop when the quest stops.
+#[test]
+fn scripted_alias_overrides_apply_in_the_refresh() {
+    use crate::alias_overrides::{AliasOverride, AliasOverrides};
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let candidate = |reference_form_id| SceneAliasCandidate {
+        reference_form_id,
+        base_form_id: 0xB1,
+        linked_refs: Vec::new(),
+        location_ref_types: Vec::new(),
+    };
+    let authored = world.spawn();
+    world.insert(authored, candidate(0xA1));
+    let forced = world.spawn();
+    world.insert(forced, candidate(0xA2));
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 0,
+                fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+    let bound = |world: &World| {
+        world
+            .resource::<SceneActorBindings>()
+            .resolve(QuestFormId(QUEST), 0)
+    };
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world), Some(authored));
+
+    world
+        .resource_mut::<AliasOverrides>()
+        .set(QuestFormId(QUEST), 0, AliasOverride::Forced(0xA2));
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world), Some(forced), "ForceRefTo wins over the fill");
+
+    world
+        .resource_mut::<AliasOverrides>()
+        .set(QuestFormId(QUEST), 0, AliasOverride::Cleared);
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world), None, "Clear empties the alias");
+
+    world
+        .resource_mut::<QuestStageState>()
+        .stop(QuestFormId(QUEST));
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        world.resource::<AliasOverrides>().get(QuestFormId(QUEST), 0),
+        None,
+        "a stopped quest's overrides drop"
+    );
+}

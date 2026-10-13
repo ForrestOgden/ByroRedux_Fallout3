@@ -340,6 +340,14 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::ChangeFaction` calls, applied to `FactionRanks` and
     /// recorded in [`crate::ScriptedFactionChanges`] after the guards drop.
     faction_changes: Vec<(EntityId, u32, crate::FactionChange)>,
+    /// M47.2 — `Effect::ForceAlias` overrides, recorded in
+    /// [`crate::AliasOverrides`] after the quest-state guards drop (the alias
+    /// refresh takes `SceneActorBindings` before `QuestStageState`).
+    alias_overrides: Vec<(QuestFormId, i32, crate::AliasOverride)>,
+    /// M47.2 — the scenes playing when the fragment started, for
+    /// `FragmentGuard::ScenePlaying`: snapshotted before the quest-state
+    /// guards (scene playback takes `ScenePlayer` before `QuestStageState`).
+    running_scenes: std::collections::HashSet<u32>,
     /// M47.2 — `Effect::SetQuestVariable` writes, applied to
     /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
     quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
@@ -383,6 +391,17 @@ impl DeferredFragmentEffects {
             faction_relations: Vec::new(),
             quest_variables: Vec::new(),
             faction_changes: Vec::new(),
+            alias_overrides: Vec::new(),
+            running_scenes: world
+                .query::<crate::scene::ScenePlayer>()
+                .map(|players| {
+                    players
+                        .iter()
+                        .filter(|(_, player)| player.is_running())
+                        .map(|(_, player)| player.scene_form_id)
+                        .collect()
+                })
+                .unwrap_or_default(),
             provider_steps: Vec::new(),
         }
     }
@@ -409,6 +428,13 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.alias_overrides.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
+                for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
+                    overrides.set(quest, alias_id, value);
+                }
+            }
+        }
         if self.scene_actor_bindings_dirty {
             crate::scene::mark_scene_actor_bindings_dirty(world);
         }
@@ -861,6 +887,37 @@ pub(crate) fn apply_effect(
         | Effect::SetMotionType { .. }
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::ForceAlias { alias, target } => {
+            let name = alias.property_name();
+            let Some((quest, alias_id)) = vmad.and_then(|vmad| {
+                vmad.scripts
+                    .iter()
+                    .find_map(|script| script.property(name))
+                    .and_then(|property| match property.value {
+                        PropertyValue::Object { form_id, alias } if alias >= 0 => Some((
+                            if form_id != 0 {
+                                QuestFormId(form_id)
+                            } else {
+                                context
+                            },
+                            i32::from(alias),
+                        )),
+                        _ => None,
+                    })
+            }) else {
+                log::debug!("fragment ForceRefTo/Clear skipped: '{name}' is not an alias property");
+                return None;
+            };
+            let value = match target {
+                None => crate::AliasOverride::Cleared,
+                Some(target) => {
+                    crate::AliasOverride::Forced(actor_reference_form_id(target, context, vmad, world, deferred)?)
+                }
+            };
+            deferred.alias_overrides.push((quest, alias_id, value));
+            deferred.scene_actor_bindings_dirty = true;
+            None
         }
         Effect::SetActorValue {
             actor,
@@ -2197,6 +2254,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetQuestVariable { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
+        | Effect::ForceAlias { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
@@ -2335,13 +2393,7 @@ fn evaluate_guard(
         }
         FragmentGuard::ScenePlaying { scene, playing } => {
             let scene = resolve_property_form_id(vmad, scene.property_name())?;
-            let entity = world
-                .try_resource::<crate::SceneRegistry>()
-                .and_then(|registry| registry.scene_entity(scene))?;
-            let running = world
-                .get::<crate::scene::ScenePlayer>(entity)
-                .is_some_and(|player| player.is_running());
-            running == *playing
+            deferred.running_scenes.contains(&scene) == *playing
         }
         FragmentGuard::LocationKeyword {
             actor,
@@ -2370,6 +2422,32 @@ fn evaluate_guard(
             }
             any
         }
+    })
+}
+
+/// The reference FormID an [`ActorRef`] names: `0x14` for the player, else the
+/// reference's own FormID (a resident entity's identity, or a remote alias
+/// stub's candidate FormID).
+fn actor_reference_form_id(
+    actor: &ActorRef,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &DeferredFragmentEffects,
+) -> Option<u32> {
+    if matches!(actor, ActorRef::Player) {
+        return Some(crate::PLAYER_REFERENCE);
+    }
+    if let ActorRef::Object(object) = actor {
+        if let Some(form_id) = resolve_property_form_id(vmad, object.property_name()) {
+            return Some(form_id);
+        }
+    }
+    let entity = guard_actor(actor, context, vmad, world, deferred)?;
+    entity_global_form_id(world, entity).or_else(|| {
+        world
+            .get::<crate::scene::SceneAliasCandidate>(entity)
+            .map(|candidate| candidate.reference_form_id)
     })
 }
 

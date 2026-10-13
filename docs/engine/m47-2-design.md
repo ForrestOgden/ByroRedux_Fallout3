@@ -367,7 +367,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 **Phase 3**
 - [x] top-N script families by corpus frequency have generic recognizers — measured by `refr_script_coverage` (Skyrim.esm: 19,412 scripted references, 7.2% covered after `defaultSetStageTrigScript` joined `default2StateActivator` / `defaultSetStageTRIGSpecificActor` / the quest-stage-gate family). The rest of the top 40 are bespoke subsystems — critter spawners, ambushes, ore veins, physics traps, weapon racks — each its own runtime, not a recognizer
 - [x] condition-function catalog expanded to cover recognized scripts' CTDAs (34 functions, incl. `GetVMQuestVariable` and the location family)
-- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 55.3% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
+- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 55.8% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
@@ -396,9 +396,10 @@ that does not exist yet:
   reports a failing `If` by its branch statement, `If>shape`, or as
   `If(condition)`): bespoke script functions,
   `If`s over unmodelled reads, map markers (`AddToMap`), barter/UI menus,
-  alias overrides (`ForceRefTo` / `Clear`), and script-filled reference
+  and script-filled reference
   collections (FO4's 554 `ALCS` aliases carry no fill data; scripts `AddRef`
-  them). The player's `MoveTo` (teleport) shipped 2026-10-12.
+  them). The player's `MoveTo` (teleport) shipped 2026-10-12, alias
+  `ForceRefTo` / `Clear` 2026-10-13.
 - **Perk hooks beyond strike damage:** damage threshold shipped 2026-10-12
   (New Vegas DT, hooks 56 / 58 — [scripting.md §Perk entry points](scripting.md#perk-entry-points-m472)).
   Kill experience (hook 9) shipped the same day. Skill points (no level-up

@@ -334,7 +334,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v45 -> v46 (M47.2): a new component column, `CharacterLevel` — level and
 /// XP toward the next, now accumulated by Fallout kill experience (#2947's
 /// re-derived exemption ended). A pre-v46 save carries none.
-pub const FORMAT_MAJOR: u16 = 46;
+///
+/// v46 -> v47 (M47.2): a new resource column, `AliasOverrides` (scripted
+/// `ForceRefTo` / `Clear`). A pre-v47 save has none, so a forced alias would
+/// fall back to its authored fill; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 47;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

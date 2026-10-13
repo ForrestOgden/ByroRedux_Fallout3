@@ -4796,6 +4796,62 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("AnyFails"), Some(-1.0));
 }
 
+/// M47.2 — `ForceRefTo` records the target's reference FormID against the
+/// alias the property names (quest + alias index), and `Clear` records the
+/// clear.
+#[test]
+fn force_ref_to_and_clear_record_alias_overrides() {
+    use crate::translate::effects::ActorRef;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    const OTHER_QUEST: u32 = 0x0000_7777;
+    let world = fixture();
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_Test".into(),
+            status: 0,
+            properties: vec![
+                ScriptProperty {
+                    name: "Alias_Giver".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: OTHER_QUEST,
+                        alias: 3,
+                    },
+                },
+                ScriptProperty {
+                    name: "Alias_Own".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: 0, alias: 4 },
+                },
+            ],
+        }],
+    };
+    run_stage_effects(
+        &world,
+        vmad,
+        vec![
+            Effect::ForceAlias {
+                alias: ObjectRef::Property("Alias_Giver".into()),
+                target: Some(ActorRef::Player),
+            },
+            Effect::ForceAlias {
+                alias: ObjectRef::Property("Alias_Own".into()),
+                target: None,
+            },
+        ],
+    );
+    let overrides = world.resource::<crate::AliasOverrides>();
+    assert_eq!(
+        overrides.get(QuestFormId(OTHER_QUEST), 3),
+        Some(crate::AliasOverride::Forced(0x14))
+    );
+    assert_eq!(overrides.get(Q, 4), Some(crate::AliasOverride::Cleared));
+}
+
 /// M47.2 — guards over actor state (death, perks, items), scene playback
 /// and the player's current location read the live world.
 #[test]
