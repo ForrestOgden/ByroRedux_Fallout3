@@ -15,37 +15,7 @@ pub(crate) fn placed(
     position: [f32; 3],
     rotation: [f32; 3],
 ) -> PlacedRef {
-    PlacedRef {
-        form_id,
-        base_form_id,
-        group_type: 0xFF,
-        position,
-        rotation,
-        scale: 1.0,
-        enable_parent: None,
-        teleport: None,
-        reputation_ref: None,
-        primitive: None,
-        linked_refs: Vec::new(),
-        location_ref_types: Vec::new(),
-        rooms: Vec::new(),
-        portals: Vec::new(),
-        radius_override: None,
-        alt_texture_ref: None,
-        land_texture_ref: None,
-        texture_slot_swaps: Vec::new(),
-        emissive_light_ref: None,
-        material_swap_ref: None,
-        ownership: None,
-        script_instance: None,
-        lock: None,
-        water_velocity: None,
-        item_count: None,
-        initially_disabled: false,
-        starts_dead: false,
-        starts_unconscious: false,
-        ragdoll_pose: Vec::new(),
-    }
+    PlacedRef::at(form_id, base_form_id, position, rotation)
 }
 
 fn door(form_id: u32, position: [f32; 3], destination: u32, arrival: [f32; 3]) -> PlacedRef {

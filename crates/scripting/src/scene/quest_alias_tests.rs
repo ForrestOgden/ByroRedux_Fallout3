@@ -145,7 +145,8 @@ fn quest_alias_diagnostics_classify_runtime_boundaries_and_dependencies() {
     );
     assert_eq!(
         state(2),
-        &QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
+        &QuestAliasResolutionState::DependencyAliasUnbound(1),
+        "a created-At alias waits on its target alias"
     );
     assert_eq!(
         state(3),
@@ -2025,4 +2026,99 @@ fn location_aliases_fill_by_each_authored_mechanism_and_hold_until_stop() {
         None,
         "a stopped quest's location aliases clear"
     );
+}
+
+/// M47.2 — a Created Object "At" alias records its reference once the target
+/// alias binds, binds to the spawned reference, and its record is dropped
+/// when the quest stops.
+#[test]
+fn created_at_alias_records_binds_and_drops_with_its_quest() {
+    use crate::created_references::{CreatedReferences, CREATED_FORM_ID_BASE};
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world
+        .resource_mut::<QuestStageState>()
+        .start_quest(QuestFormId(QUEST), None);
+    let marker = world.spawn();
+    world.insert(
+        marker,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0x32,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 0,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                },
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::CreatedObject {
+                        base: 0xB1,
+                        target_alias: 0,
+                        create_mode: 0,
+                        level: 1,
+                    }),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    );
+    refresh_scene_actor_bindings(&world);
+    let record = world
+        .resource::<CreatedReferences>()
+        .get(QuestFormId(QUEST), 1)
+        .cloned()
+        .expect("created once the target bound");
+    assert_eq!(record.form_id, CREATED_FORM_ID_BASE);
+    assert_eq!((record.base, record.level, record.at_reference), (0xB1, 1, 0xA1));
+    assert_eq!(
+        quest_alias_diagnostics(&world, QuestFormId(QUEST)).unwrap()[1].state,
+        QuestAliasResolutionState::CreatedReferenceNotSpawned(record.form_id)
+    );
+
+    // The engine spawns it as an ordinary reference candidate.
+    let spawned = world.spawn();
+    world.insert(
+        spawned,
+        SceneAliasCandidate {
+            reference_form_id: record.form_id,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(bindings.resolve(QuestFormId(QUEST), 1), Some(spawned));
+    drop(bindings);
+    assert_eq!(
+        world
+            .resource::<CreatedReferences>()
+            .get(QuestFormId(QUEST), 1)
+            .map(|record| record.form_id),
+        Some(record.form_id),
+        "a bound creation is not created again"
+    );
+
+    world
+        .resource_mut::<QuestStageState>()
+        .stop(QuestFormId(QUEST));
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert!(world
+        .resource::<CreatedReferences>()
+        .get(QuestFormId(QUEST), 1)
+        .is_none());
 }

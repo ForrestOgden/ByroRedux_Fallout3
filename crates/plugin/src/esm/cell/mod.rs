@@ -676,6 +676,45 @@ pub struct PlacedRef {
     pub ragdoll_pose: Vec<RagdollPoseBone>,
 }
 
+impl PlacedRef {
+    /// A bare placement of `base_form_id` at a Z-up pose: unit scale and no
+    /// flags, links, ownership or scripts — what a runtime-created reference
+    /// (M47.2's Created Object aliases) and test fixtures start from.
+    pub fn at(form_id: u32, base_form_id: u32, position: [f32; 3], rotation: [f32; 3]) -> Self {
+        Self {
+            form_id,
+            base_form_id,
+            group_type: 0xFF,
+            position,
+            rotation,
+            scale: 1.0,
+            enable_parent: None,
+            teleport: None,
+            reputation_ref: None,
+            primitive: None,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+            rooms: Vec::new(),
+            portals: Vec::new(),
+            radius_override: None,
+            alt_texture_ref: None,
+            land_texture_ref: None,
+            texture_slot_swaps: Vec::new(),
+            emissive_light_ref: None,
+            material_swap_ref: None,
+            ownership: None,
+            script_instance: None,
+            lock: None,
+            water_velocity: None,
+            item_count: None,
+            initially_disabled: false,
+            starts_dead: false,
+            starts_unconscious: false,
+            ragdoll_pose: Vec::new(),
+        }
+    }
+}
+
 /// One 28-byte entry of a placement's `XRGD` ragdoll pose (#5015).
 ///
 /// Wire layout from xEdit's shared `wbRagdoll` (`wbDefinitionsCommon.pas`),

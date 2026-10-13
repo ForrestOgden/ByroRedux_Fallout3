@@ -5929,3 +5929,4 @@ fn skyrim_location_hierarchy_resolves() {
     assert!(!whiterun.ref_type_refs.is_empty());
     assert!(index.cells.cells.values().any(|cell| cell.location_form.is_some()));
 }
+

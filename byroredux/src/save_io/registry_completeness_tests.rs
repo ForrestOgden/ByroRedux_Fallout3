@@ -505,6 +505,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── Story Manager (#5366) ───────────────────────────────────
         ("StoryEvent", "one-frame Pattern-B marker drained by story_manager_dispatch_system at its head; carries session-local EntityIds only (#2672)"),
         ("InventoryItemForms", "the load order's inventory item base FormIDs (ALCH/AMMO/ARMO/BOOK/INGR/KEYM/MISC/NOTE/SLGM/WEAP); rebuilt from record_types at load-order install every boot. The created-object grants it gates are saved through QuestAliasInjectionState's inventory_grants ledger"),
+        ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
+        ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),
         ("PlayerMoveRequest", "a fragment's player MoveTo destination, drained by step_player_move_request the frame it is written"),
         ("LocationTable", "the load order's LCTN hierarchy, keywords and cell / editor-location maps; rebuilt by install_location_table every boot"),
         ("PlayerLocation", "the location of the cell the player occupies; republished from the loaded cell every frame by story_change_location_system"),

@@ -401,7 +401,9 @@ that does not exist yet:
   damage threshold have no consuming systems; weapon-tab subjects need
   equipped weapons as entities.
 - **Created Object "At"** (1,389 Skyrim + FO4 aliases, mostly NPC spawns):
-  needs runtime reference creation with a saved identity.
+  shipped 2026-10-12 — see [m47-3-quest-alias-design.md](m47-3-quest-alias-design.md)
+  §Phase 4+. Still open: applying `ALCL`'s encounter level, and targets in
+  unloaded cells, whose reference aliases do not bind yet.
 - **LCTN aliases and location run-on conditions:** shipped 2026-10-12 — see
   [scripting.md §Locations](scripting.md#locations-and-location-aliases-m472).
   Still open: script-raised story events (`SCPT`, 223 Skyrim location aliases

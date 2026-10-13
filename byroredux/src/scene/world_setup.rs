@@ -1126,6 +1126,7 @@ pub(crate) fn assemble_exterior_streaming(
             &wctx.record_index.record_types,
             &wctx.record_index.factions,
         ),
+        std::sync::Arc::clone(&wctx.load_order),
     );
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_idle_clip_runtime(world, &wctx.record_index, &tex_provider);

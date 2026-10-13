@@ -46,6 +46,9 @@ pub enum QuestAliasResolutionState {
     LocationUnfilled,
     ReferenceCollectionRuntimeUnavailable,
     CreatedObjectRuntimeUnavailable,
+    /// A Created Object "At" alias whose reference (this FormID) is recorded
+    /// but not spawned — its cell is not loaded, or not yet placed.
+    CreatedReferenceNotSpawned(u32),
     StoryManagerEventUnavailable,
     ExternalSourceUnbound {
         quest: QuestFormId,
@@ -204,6 +207,7 @@ pub fn quest_alias_diagnostics(
         .is_none_or(|stages| stages.is_running(quest));
     let bindings = world.try_resource::<SceneActorBindings>();
     let location_bindings = world.try_resource::<crate::location::LocationAliasBindings>();
+    let created = world.try_resource::<crate::created_references::CreatedReferences>();
 
     let mut force_sources: HashMap<i32, Vec<i32>> = HashMap::new();
     for alias in &aliases {
@@ -238,8 +242,23 @@ pub fn quest_alias_diagnostics(
                     || matches!(alias.fill_type, Some(AliasFillType::ForcedLocation(_)))
                 {
                     QuestAliasResolutionState::LocationUnfilled
-                } else if matches!(alias.fill_type, Some(AliasFillType::CreatedObject { .. })) {
-                    QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
+                } else if let Some(AliasFillType::CreatedObject {
+                    target_alias,
+                    create_mode,
+                    ..
+                }) = alias.fill_type
+                {
+                    if create_mode & CREATE_IN != 0 {
+                        // An item grant: no entity to bind.
+                        QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
+                    } else if let Some(record) = created
+                        .as_ref()
+                        .and_then(|created| created.get(quest, alias.alias_id))
+                    {
+                        QuestAliasResolutionState::CreatedReferenceNotSpawned(record.form_id)
+                    } else {
+                        QuestAliasResolutionState::DependencyAliasUnbound(i32::from(target_alias))
+                    }
                 } else if matches!(alias.fill_type, Some(AliasFillType::FromEvent { .. })) {
                     QuestAliasResolutionState::StoryManagerEventUnavailable
                 } else if let Some(AliasFillType::ExternalAlias {
@@ -830,6 +849,12 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                 .filter(|((quest, _), _)| running.contains(quest))
                 .collect()
         });
+    // M47.2 — Created Object "At" aliases: the records so far, and the
+    // creations this refresh asks for (applied after the loop).
+    let created = world
+        .try_resource::<crate::created_references::CreatedReferences>()
+        .map(|created| created.clone());
+    let mut creations: Vec<(QuestFormId, i32, u32, u32, u32)> = Vec::new();
     // The location aliases flagged "Reserves Location".
     let location_reservers: HashSet<(QuestFormId, i32)> = quests
         .iter()
@@ -866,6 +891,55 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
             }) = alias.fill_type
             {
                 external_aliases.push((*quest, alias.clone(), source_quest, source_alias));
+                continue;
+            }
+
+            // M47.2 — a Created Object alias created *At* its target: bound to
+            // the spawned reference once it exists, otherwise recorded for
+            // creation as soon as the target alias is bound. ("In" creations
+            // are item grants, see `apply_alias_injections`.)
+            if let Some(AliasFillType::CreatedObject {
+                base,
+                target_alias,
+                create_mode,
+                level,
+            }) = alias.fill_type
+            {
+                let Some(created) = created.as_ref().filter(|_| create_mode & CREATE_IN == 0)
+                else {
+                    continue;
+                };
+                match created.get(*quest, alias.alias_id) {
+                    Some(record) => {
+                        if let Some(&position) = index
+                            .by_reference
+                            .get(&record.form_id)
+                            .and_then(|positions| positions.first())
+                        {
+                            let entity = candidates[position].0;
+                            resolved.insert((*quest, alias.alias_id), entity);
+                            if let Some(target) = alias.force_into_alias {
+                                resolved.insert((*quest, target), entity);
+                            }
+                        }
+                    }
+                    None => {
+                        let at = resolved
+                            .get(&(*quest, i32::from(target_alias)))
+                            .and_then(|&target| {
+                                if story_player == Some(target) {
+                                    return Some(crate::story_manager::PLAYER_REF_FORM_ID);
+                                }
+                                index
+                                    .by_entity
+                                    .get(&target)
+                                    .map(|&position| candidates[position].1.reference_form_id)
+                            });
+                        if let Some(at) = at {
+                            creations.push((*quest, alias.alias_id, base, level, at));
+                        }
+                    }
+                }
                 continue;
             }
 
@@ -1105,6 +1179,16 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         world
             .resource_mut::<crate::location::LocationAliasBindings>()
             .replace(locations);
+    }
+
+    if let Some(mut created) =
+        world.try_resource_mut::<crate::created_references::CreatedReferences>()
+    {
+        let running: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
+        created.retain_quests(|quest| running.contains(&quest));
+        for (quest, alias_id, base, level, at) in creations {
+            created.create(quest, alias_id, base, level, at);
+        }
     }
 
     let count = resolved

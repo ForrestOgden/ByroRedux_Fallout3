@@ -343,8 +343,23 @@ refresh or a load never grants it twice); the created alias itself stays
 unbound, an item in an inventory being no entity here. Census
 (`alias_created_object_census` example): Skyrim.esm 189 "In" (55 BOOK,
 53 MISC, 20 ARMO, 18 KEYM, 18 WEAP, 17 LVLI…) and 441 "At" (365 NPC_);
-Fallout4.esm 165 "In" and 1,175 "At" (1,024 NPC_). Leveled-list bases and
-every "At" creation (a spawn at the target alias's location) remain open.
+Fallout4.esm 165 "In" and 1,175 "At" (1,024 NPC_). Leveled-list "In" bases
+remain open.
+
+**Created Object, "At" mode — done (M47.2).** Once the target alias is bound,
+the refresh records a `CreatedReference` (`crates/scripting/src/created_references.rs`):
+a FormID in the created-object slot `0xFF` (UESP *Skyrim Mod:Save File
+Format*: "Created (ie, plugin index of 0xFF)"), the base, the authored level
+and the target reference. The app (`cell_loader/created.rs`,
+`step_created_references`) places it at the target's placement (the player's
+position for the player) and spawns it through the ordinary reference loader
+whenever its cell is loaded and its entity is gone — the first creation, and
+every reload of the cell — so the alias then binds it like any other
+reference. Records are saved (v45) and dropped when their quest stops. Live:
+MQ104's `Messenger` spawns at `MessengerStartMarker` in Dragonsreach and binds
+with its alias packages, and comes back after a quickload. `ALCL`'s encounter
+level is recorded but not applied (the reference loader's leveled-actor
+resolution does not take it).
 
 Story Manager event fills, true LCTN aliases, unloaded-world
 search, reference collections, and components/consumers for the remaining

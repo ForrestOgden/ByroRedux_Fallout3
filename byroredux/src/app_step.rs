@@ -982,10 +982,85 @@ impl App {
         }
     }
 
+    /// M47.2 — place new Created Object "At" references and spawn every
+    /// placed one whose cell is loaded but whose entity is gone (first
+    /// creation, or its cell reloaded). Idle — one resource read — while no
+    /// quest has created anything.
+    pub(crate) fn step_created_references(&mut self) {
+        if self.interior_transition.is_some()
+            || !self
+                .world
+                .try_resource::<byroredux_scripting::CreatedReferences>()
+                .is_some_and(|created| created.iter().next().is_some())
+        {
+            return;
+        }
+        cell_loader::created::place_created_references(&self.world);
+        let Some(ctx) = self.renderer.as_mut() else {
+            return;
+        };
+        let interior = self
+            .world
+            .try_resource::<cell_loader::CurrentCellRoot>()
+            .and_then(|root| root.0)
+            .zip(
+                self.world
+                    .try_resource::<cell_loader::CurrentCellContext>()
+                    .map(|cell| cell.cell_editor_id.clone()),
+            );
+        if let Some((cell_root, editor_id)) = interior {
+            let refs = cell_loader::created::unspawned_in(
+                &self.world,
+                &byroredux_scripting::CreatedCell::Interior { editor_id },
+            );
+            if !refs.is_empty() {
+                let args: Vec<String> = crate::cli_args::effective_args();
+                let tex_provider = crate::asset_provider::build_texture_provider(&args);
+                let mut mat_provider = crate::asset_provider::build_material_provider(&args);
+                cell_loader::created::spawn_created_references(
+                    &mut self.world,
+                    ctx,
+                    &tex_provider,
+                    Some(&mut mat_provider),
+                    cell_root,
+                    &refs,
+                );
+            }
+        }
+        if let Some(state) = self.streaming.as_mut() {
+            let worldspace = state.wctx.worldspace_key.clone();
+            let loaded: Vec<((i32, i32), byroredux_core::ecs::storage::EntityId)> = state
+                .loaded
+                .iter()
+                .map(|(grid, cell)| (*grid, cell.cell_root))
+                .collect();
+            for (grid, cell_root) in loaded {
+                let refs = cell_loader::created::unspawned_in(
+                    &self.world,
+                    &byroredux_scripting::CreatedCell::Exterior {
+                        worldspace: worldspace.clone(),
+                        grid,
+                    },
+                );
+                if !refs.is_empty() {
+                    cell_loader::created::spawn_created_references(
+                        &mut self.world,
+                        ctx,
+                        &state.tex_provider,
+                        Some(&mut state.mat_provider),
+                        cell_root,
+                        &refs,
+                    );
+                }
+            }
+        }
+    }
+
     pub(crate) fn step_cell_transition(&mut self) {
         // M47.2 — a fragment's player `MoveTo` becomes an in-place move or
         // a queued transition this same call dispatches.
         self.step_player_move_request();
+        self.step_created_references();
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }

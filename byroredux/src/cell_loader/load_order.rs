@@ -314,10 +314,20 @@ impl Resource for GlobalFormIdResolver {}
 pub(crate) fn install_form_resolver(
     world: &mut byroredux_core::ecs::World,
     resolver: GlobalFormIdResolver,
+    load_order: std::sync::Arc<LoadOrder>,
 ) {
     world.insert_resource(resolver.identity().clone());
     world.insert_resource(resolver);
+    world.insert_resource(ActiveLoadOrder(load_order));
 }
+
+/// The load order of the cell-load entry point that ran last, published with
+/// its [`GlobalFormIdResolver`] so a reference spawned outside a cell load —
+/// a quest's created reference (M47.2) — resolves its plugins (identity,
+/// FaceGen sidecars) exactly as the loader does.
+pub(crate) struct ActiveLoadOrder(pub std::sync::Arc<LoadOrder>);
+
+impl byroredux_core::ecs::Resource for ActiveLoadOrder {}
 
 /// Resolve a global FormID to the owning plugin's basename.
 /// Used by the loud-fail diagnostic when a REFR's `base_form_id` is

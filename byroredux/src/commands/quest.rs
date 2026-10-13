@@ -163,6 +163,9 @@ fn alias_state(world: &World, diagnostic: &QuestAliasDiagnostic) -> String {
         QuestAliasResolutionState::CreatedObjectRuntimeUnavailable => {
             "unbound reason=created-object-runtime-unavailable".to_string()
         }
+        QuestAliasResolutionState::CreatedReferenceNotSpawned(form_id) => {
+            format!("unbound reason=created-reference-not-spawned ref=0x{form_id:08X}")
+        }
         QuestAliasResolutionState::StoryManagerEventUnavailable => {
             "unbound reason=story-manager-event-unavailable".to_string()
         }

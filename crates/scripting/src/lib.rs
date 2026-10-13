@@ -14,6 +14,7 @@ pub mod cleanup;
 pub mod combat;
 pub mod compatibility;
 pub mod condition;
+pub mod created_references;
 pub mod dialogue;
 pub mod equipment;
 pub mod events;
@@ -102,6 +103,9 @@ pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
+pub use created_references::{
+    CreatedCell, CreatedPlacement, CreatedReference, CreatedReferences, CREATED_FORM_ID_BASE,
+};
 pub use load_order::LoadOrderIdentity;
 pub use location::{
     current_location, editor_location, install_location_table, LocationAliasBindings,
@@ -197,6 +201,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — created-object references (saved, like the ledger above).
+    if world.try_resource::<CreatedReferences>().is_none() {
+        world.insert_resource(CreatedReferences::default());
     }
     // M47.2 — quest location-alias bindings (saved, like the ledger above).
     if world.try_resource::<LocationAliasBindings>().is_none() {

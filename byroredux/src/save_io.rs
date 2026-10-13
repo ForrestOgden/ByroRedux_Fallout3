@@ -583,6 +583,9 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::LocationAliasBindings>(
             "LocationAliasBindings",
         )
+        // M47.2 — Created Object "At" references: identity, base and
+        // placement, so a quest's created reference respawns in its cell.
+        .register_resource::<byroredux_scripting::CreatedReferences>("CreatedReferences")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

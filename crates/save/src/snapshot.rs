@@ -325,7 +325,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// with a queued item transfer cannot be re-read and is rejected. The parked
 /// reference state also gained the actor's `Perks` (scripted `AddPerk` /
 /// `RemovePerk` survive eviction).
-pub const FORMAT_MAJOR: u16 = 44;
+///
+/// v44 -> v45 (M47.2): a new resource column, `CreatedReferences` (quests'
+/// Created Object "At" references). A pre-v45 save has none, so a running
+/// quest's created actors would be lost; rejected like the other column
+/// additions.
+pub const FORMAT_MAJOR: u16 = 45;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
