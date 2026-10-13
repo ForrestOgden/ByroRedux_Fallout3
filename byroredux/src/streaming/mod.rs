@@ -249,6 +249,20 @@ pub struct PartialNifImport {
     pub precombine_geometry: Option<Vec<u32>>,
 }
 
+// #1171 / CONC-D6-NEW-05 (restored, #5442) — compile-time guarantee that
+// `PartialNifImport: Send`. The cell-stream worker emits these across
+// `mpsc::Sender<LoadCellPayload>`, which requires `Send`. If a future
+// contributor adds a non-`Send` field to `NifScene` (e.g. an `Rc<…>`
+// for some compositional reason) or to any nested type, this fires at
+// the struct's declaration site rather than at the distant channel-
+// send call deep inside `cell_pre_parse_worker` (`pre_parse.rs`). The #5092
+// split of `streaming.rs` dropped it; it is the only item of that kind the
+// pre-split file carried.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<PartialNifImport>();
+};
+
 /// World-streaming state. Owned by `App` (not an ECS resource — needs
 /// to coexist on the same struct as `VulkanContext` and the texture /
 /// material providers, all of which the streaming driver borrows
