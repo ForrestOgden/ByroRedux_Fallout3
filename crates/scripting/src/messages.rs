@@ -126,6 +126,56 @@ pub struct ScriptMessage {
     pub text: String,
     pub message_box: bool,
     pub buttons: Vec<String>,
+    /// The quest whose script raised a box and reads its answer with
+    /// `GetButtonPressed` (ObScript); `None` when nothing reads it.
+    pub source: Option<QuestFormId>,
+}
+
+/// Each ObScript quest's last answered message-box button, consumed by its
+/// `GetButtonPressed`. `NOT_SAVED_BY_DESIGN`: an answer the script has not
+/// yet read is UI state, gone with the box (the CS wiki: it returns the
+/// button "the first time this is called after a MessageBox button has
+/// been pressed").
+#[derive(Debug, Default)]
+pub struct ButtonPresses(pub HashMap<QuestFormId, i32>);
+
+impl Resource for ButtonPresses {}
+
+/// The player answered `source`'s box with `button`.
+pub fn record_button(world: &World, source: QuestFormId, button: usize) {
+    if let Some(mut presses) = world.try_resource_mut::<ButtonPresses>() {
+        presses.0.insert(source, button as i32);
+    }
+}
+
+/// `GetButtonPressed`: the answer once, then -1.
+pub fn take_button(world: &World, source: QuestFormId) -> i32 {
+    world
+        .try_resource_mut::<ButtonPresses>()
+        .and_then(|mut presses| presses.0.remove(&source))
+        .unwrap_or(-1)
+}
+
+/// Queue an ObScript `Message` / `MessageBox` for `quest`: numbers
+/// substituted; a box without buttons gets the CS wiki's default "Done".
+pub fn show_obscript_message(
+    world: &World,
+    quest: QuestFormId,
+    message: crate::obscript_vm::ObScriptMessage,
+) {
+    let mut buttons = message.buttons;
+    if message.message_box && buttons.is_empty() {
+        buttons.push("Done".to_owned());
+    }
+    if let Some(mut pending) = world.try_resource_mut::<PendingScriptMessages>() {
+        pending.0.push(ScriptMessage {
+            title: String::new(),
+            text: substitute_numbers(&message.text, &message.values),
+            message_box: message.message_box,
+            buttons,
+            source: message.message_box.then_some(quest),
+        });
+    }
 }
 
 /// Script messages for the engine's presentation (notifications, the
@@ -293,6 +343,7 @@ pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
         text,
         message_box: definition.message_box,
         buttons: definition.buttons,
+        source: None,
     };
     match world.try_resource_mut::<PendingScriptMessages>() {
         Some(mut pending) => {
@@ -311,6 +362,7 @@ pub fn notify(world: &World, text: String) {
             text,
             message_box: false,
             buttons: Vec::new(),
+            source: None,
         });
     }
 }
@@ -318,6 +370,9 @@ pub fn notify(world: &World, text: String) {
 pub fn register(world: &mut World) {
     if world.try_resource::<PendingScriptMessages>().is_none() {
         world.insert_resource(PendingScriptMessages::default());
+    }
+    if world.try_resource::<ButtonPresses>().is_none() {
+        world.insert_resource(ButtonPresses::default());
     }
 }
 

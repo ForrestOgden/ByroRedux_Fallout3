@@ -83,6 +83,34 @@ fn text_replacement_fills_globals_aliases_and_leaves_the_rest() {
             text: "Prisoner found 7/20 at 1.50; [...] <Alias.Race=Player>".into(),
             message_box: true,
             buttons: vec!["Ok".into()],
+            source: None,
         }]
     );
+}
+
+/// M47.3 — an ObScript `MessageBox` is formatted, gets the CS wiki's "Done"
+/// when it names no button, and its answer reaches `GetButtonPressed` once.
+#[test]
+fn obscript_message_boxes_answer_get_button_pressed_once() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    let quest = QuestFormId(0x0001_C3D0);
+    show_obscript_message(
+        &world,
+        quest,
+        crate::obscript_vm::ObScriptMessage {
+            text: "Erected by the Grateful Citizens of Bruma, 3E %.0f.".into(),
+            values: vec![433.0],
+            buttons: Vec::new(),
+            message_box: true,
+        },
+    );
+    let shown = world.resource::<PendingScriptMessages>().0.clone();
+    assert_eq!(shown[0].text, "Erected by the Grateful Citizens of Bruma, 3E 433.");
+    assert_eq!(shown[0].buttons, vec!["Done".to_owned()]);
+    assert_eq!(shown[0].source, Some(quest));
+    assert_eq!(take_button(&world, quest), -1, "not answered yet");
+    record_button(&world, quest, 0);
+    assert_eq!(take_button(&world, quest), 0);
+    assert_eq!(take_button(&world, quest), -1, "only the first call after the press");
 }

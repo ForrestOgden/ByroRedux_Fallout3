@@ -642,6 +642,18 @@ when there are none. Answering a box pops it, and the page stays open until
 the last box is answered. Escape doesn't dismiss a box: the page reopens the
 next frame.
 
+ObScript (M47.3) uses the same pipeline. The VM decodes `Message` (`0x1059`)
+and `MessageBox` (`0x1000`) payloads using the layout in UESP *Oblivion
+Mod:Mod File Format/SCPT* §SCDA, checked against vanilla `Oblivion.esm`. The
+payload is the text as a `[u16 length]` string, the variables in the set/if
+variable format, and the buttons. `Message` ends with display seconds instead
+of buttons.
+
+The quest host substitutes the variables into the text and queues the
+result. A box with no buttons gets the CS wiki's default "Done". The answer
+reaches the quest's `GetButtonPressed`, which returns it the first time it is
+called after the press and -1 otherwise.
+
 Not modelled:
 - `Show`'s return value (the chosen button), since fragments that branch on it
   still decline.

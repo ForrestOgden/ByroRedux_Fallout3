@@ -64,13 +64,21 @@ pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::Mes
     })
 }
 
-/// The player answered the front box; returns whether another is waiting.
-pub(crate) fn answer_message_box(world: &World) -> bool {
-    let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() else {
-        return false;
+/// The front box is answered with `choice` (`None`: dismissed without one,
+/// as with no UI); an ObScript box's answer reaches its quest's
+/// `GetButtonPressed`. Returns whether another box is waiting.
+pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
+    let (answered, more) = {
+        let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() else {
+            return false;
+        };
+        let answered = boxes.0.pop_front();
+        (answered, !boxes.0.is_empty())
     };
-    boxes.0.pop_front();
-    !boxes.0.is_empty()
+    if let (Some(source), Some(choice)) = (answered.and_then(|answered| answered.source), choice) {
+        byroredux_scripting::messages::record_button(world, source, choice);
+    }
+    more
 }
 
 #[cfg(test)]
@@ -101,6 +109,7 @@ mod tests {
             text: text.to_owned(),
             message_box,
             buttons: Vec::new(),
+            source: None,
         };
         world.insert_resource(PendingScriptMessages(vec![
             message("Current Bounty: 40", false),
@@ -110,9 +119,9 @@ mod tests {
         assert!(route_script_messages(&world));
         assert_eq!(drain(&world), vec!["Current Bounty: 40".to_owned()]);
         assert_eq!(front_message_box(&world).unwrap().text, "Rest here?");
-        assert!(answer_message_box(&world), "a second box waits");
+        assert!(answer_message_box(&world, Some(0)), "a second box waits");
         assert_eq!(front_message_box(&world).unwrap().text, "Leave?");
-        assert!(!answer_message_box(&world));
+        assert!(!answer_message_box(&world, Some(0)));
         assert!(!route_script_messages(&world), "raised once");
     }
 }

@@ -169,6 +169,12 @@ pub struct QuestCommandHost<'a> {
 }
 
 impl<'a> ObScriptHost for QuestCommandHost<'a> {
+    fn message(&mut self, message: crate::obscript_vm::ObScriptMessage) {
+        let kind = if message.message_box { "MessageBox" } else { "Message" };
+        log::debug!("quest {:08X} {kind}: {:?}", self.quest, message.text);
+        crate::messages::show_obscript_message(self.world, QuestFormId(self.quest), message);
+    }
+
     fn call(
         &mut self,
         cmd: u16,
@@ -270,9 +276,8 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
                     .unwrap_or(false);
                 Some(ObScriptValue::Num(running as i32 as f32))
             }
-            // Message "text" / MessageBox … — phase 1 records the effect;
-            // string payloads are decoded from the script's own bytes by a
-            // later phase, so these log the invocation shape only.
+            // Message / MessageBox arrive through `message` once decoded; a
+            // payload the VM could not decode lands here and is logged.
             0x1059 | 0x1000 => {
                 effect(
                     self,
@@ -287,8 +292,10 @@ impl<'a> ObScriptHost for QuestCommandHost<'a> {
             }
             // GetSecondsPassed
             0x100c => Some(ObScriptValue::Num(self.elapsed)),
-            // GetButtonPressed — no message menu exists yet.
-            0x101f => Some(ObScriptValue::Num(-1.0)),
+            // GetButtonPressed — the quest's answered box, once (M47.3).
+            0x101f => Some(ObScriptValue::Num(
+                crate::messages::take_button(self.world, QuestFormId(self.quest)) as f32,
+            )),
             // GetSelf — the owning quest's form id (quest scripts).
             0x10ce => Some(ObScriptValue::Ref(self.quest)),
             // GetGlobalValue-style global reads arrive via the ' G<n>' escape

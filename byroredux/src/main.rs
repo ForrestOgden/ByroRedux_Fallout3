@@ -1585,8 +1585,9 @@ fn apply_debug_ui_outputs(
     // M47.2 — the answered message box leaves the queue; the page stays up
     // for the next one, and the last answer closes it back to the world.
     let resume_game = outputs.resume_game
-        || (outputs.message_box_choice.is_some()
-            && !crate::notifications::answer_message_box(world));
+        || outputs
+            .message_box_choice
+            .is_some_and(|choice| !crate::notifications::answer_message_box(world, Some(choice)));
     let quit_game = outputs.quit_game;
     for command in outputs.studio_commands {
         studio_host::apply_command(world, command);

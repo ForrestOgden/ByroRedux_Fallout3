@@ -897,7 +897,7 @@ impl App {
             }
             Some(_) => {}
             // No native UI to answer on: the boxes are dismissed.
-            None => while crate::notifications::answer_message_box(&self.world) {},
+            None => while crate::notifications::answer_message_box(&self.world, None) {},
         }
     }
 

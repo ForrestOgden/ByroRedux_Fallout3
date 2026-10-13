@@ -517,6 +517,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingBarterMenu", "a script's ShowBarterMenu request, consumed by the app the frame it is raised"),
         ("BarterRules", "the load order's vendor factions, merchant containers, buy/sell lists and barter GMSTs; rebuilt by install_barter_rules every boot"),
         ("ActiveBarter", "the open barter session; the menu pauses the game and every page-leave path ends it (parking a stand-in chest's stock) before a save can run"),
+        ("ButtonPresses", "an ObScript quest's answered message-box button until its GetButtonPressed reads it; UI state, gone with the box"),
         ("PendingScriptMessages", "script Message.Show / Debug.Notification output, routed to notifications and the message-box queue the frame it is raised"),
         ("QuestScriptInstances", "every quest's VMAD, for quest-script bodies inlined into INFO and scene fragments; rebuilt from the QUST records by install_quest_script_instances every boot"),
         ("AuthoredDisabledReferences", "the load order's initially-disabled references (the cell loader's own rule); rebuilt from the REFRs by install_authored_disabled_references every boot"),

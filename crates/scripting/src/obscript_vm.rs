@@ -104,6 +104,30 @@ pub trait ObScriptHost {
         args: &[ObScriptValue],
         caller: Option<u32>,
     ) -> Option<ObScriptValue>;
+
+    /// `Message` / `MessageBox` with their decoded text, variables and
+    /// buttons (M47.3 phase 2). A host without a message surface ignores it.
+    fn message(&mut self, _message: ObScriptMessage) {}
+}
+
+/// `MessageBox` (`0x1000`).
+pub const CMD_MESSAGE_BOX: u16 = 0x1000;
+/// `Message` (`0x1059`).
+pub const CMD_MESSAGE: u16 = 0x1059;
+
+/// A decoded `Message` / `MessageBox` statement. UESP *Oblivion Mod:Mod File
+/// Format/SCPT* §SCDA: `01 00`, the text as a `[u16 length][bytes]` string
+/// parameter, `[u16 count]` variables in the set/if variable format, then for
+/// `MessageBox` `[u16 count]` buttons, each `01 00` + a string parameter
+/// (`Message` instead ends with its display seconds). Checked against
+/// vanilla `Oblivion.esm` (`message "Rank %.0f Fireball", SpellRank, 10`,
+/// `messageBox "…obelisk?", "Yes", "No"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObScriptMessage {
+    pub text: String,
+    pub values: Vec<f32>,
+    pub buttons: Vec<String>,
+    pub message_box: bool,
 }
 
 /// Mutable per-script state that outlives one block execution.
@@ -288,6 +312,13 @@ impl<'a> Vm<'a> {
         if run {
             match op {
                 0x15 => self.exec_set(start, end),
+                CMD_MESSAGE | CMD_MESSAGE_BOX => match self.decode_message(start, end, op) {
+                    Some(message) => self.host.message(message),
+                    None => {
+                        self.host
+                            .call(CMD_DECLINED, &[ObScriptValue::Num(f32::from(op))], None);
+                    }
+                },
                 op if !is_flow_op(op) => {
                     // Implicit-caller statement call: the line opcode is
                     // the command id.
@@ -609,99 +640,161 @@ impl<'a> Vm<'a> {
         let count = byroredux_core::bytes::le_u16_at(self.bytes, start)?;
         let mut o = start + 2;
         for _ in 0..count {
-            if o >= end {
-                return None;
-            }
-            let tag = self.bytes[o];
-            match tag {
-                b'r' => {
-                    if o + 3 > end {
-                        return None;
-                    }
-                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
-                    let form = self.resolve_ref_var(idx).unwrap_or(0);
-                    args.push(ObScriptValue::Ref(form));
-                    o += 3;
-                }
-                b's' | b'f' => {
-                    if o + 3 > end {
-                        return None;
-                    }
-                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
-                    args.push(ObScriptValue::Num(
-                        self.state.locals.get(&idx).copied().unwrap_or(0.0),
-                    ));
-                    o += 3;
-                }
-                b'G' => {
-                    if o + 3 > end {
-                        return None;
-                    }
-                    let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
-                    let form = self.resolve_ref_var(idx).unwrap_or(0);
-                    let value = self
-                        .host
-                        .call(CMD_GET_GLOBAL, &[ObScriptValue::Ref(form)], Some(form))
-                        .map(|v| v.as_num())
-                        .unwrap_or(0.0);
-                    args.push(ObScriptValue::Num(value));
-                    o += 3;
-                }
-                b'n' => {
-                    if o + 5 > end {
-                        return None;
-                    }
-                    let raw = i32::from_le_bytes([
-                        self.bytes[o + 1],
-                        self.bytes[o + 2],
-                        self.bytes[o + 3],
-                        self.bytes[o + 4],
-                    ]);
-                    args.push(ObScriptValue::Num(raw as f32));
-                    o += 5;
-                }
-                b'z' => {
-                    // String literal, NUL-terminated. Phase-1 hosts receive
-                    // no string value; text-aware commands decode the raw
-                    // bytes themselves, so the VM just steps over it.
-                    let text_start = o + 1;
-                    let rel = self.bytes[text_start..end].iter().position(|&c| c == 0)?;
-                    o = text_start + rel + 1;
-                }
-                b'Y' | b'Z' => {
-                    // Zero-payload tags ('Y' = the calling reference, 'Z' =
-                    // a null reference in every corpus context).
-                    args.push(ObScriptValue::Ref(0));
-                    o += 1;
-                }
-                b'X' => {
-                    if o + 5 > end {
-                        return None;
-                    }
-                    let cmd = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
-                    let inner_len = byroredux_core::bytes::le_u16_at(self.bytes, o + 3)? as usize;
-                    let inner_start = o + 5;
-                    let inner_end = inner_start.checked_add(inner_len)?;
-                    if inner_end > end {
-                        return None;
-                    }
-                    let inner = self.decode_args_at_depth(inner_start, inner_end, depth + 1)?;
-                    let result = self.host.call(cmd, &inner, None);
-                    args.push(result.unwrap_or(ObScriptValue::Num(0.0)));
-                    o = inner_end;
-                }
-                _ => {
-                    // u16 integer literal.
-                    if o + 2 > end {
-                        return None;
-                    }
-                    let v = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
-                    args.push(ObScriptValue::Num(v as f32));
-                    o += 2;
-                }
-            }
+            let (value, next) = self.decode_arg_item(o, end, depth)?;
+            args.extend(value);
+            o = next;
         }
         Some(args)
+    }
+
+    /// A `Message` / `MessageBox` payload (see [`ObScriptMessage`]).
+    fn decode_message(&mut self, start: usize, end: usize, op: u16) -> Option<ObScriptMessage> {
+        let read_string = |vm: &Self, o: usize| -> Option<(String, usize)> {
+            let len = usize::from(byroredux_core::bytes::le_u16_at(vm.bytes, o)?);
+            let text_end = (o + 2).checked_add(len)?;
+            if text_end > end {
+                return None;
+            }
+            // Windows-1252 text; its ASCII range is all vanilla uses.
+            let text = vm.bytes[o + 2..text_end].iter().map(|&c| c as char).collect();
+            Some((text, text_end))
+        };
+        if byroredux_core::bytes::le_u16_at(self.bytes, start)? != 1 {
+            return None;
+        }
+        let (text, mut o) = read_string(self, start + 2)?;
+        let mut values = Vec::new();
+        if o + 2 <= end {
+            let count = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
+            o += 2;
+            for _ in 0..count {
+                let (value, next) = self.decode_arg_item(o, end, 0)?;
+                values.push(value.map_or(0.0, |v| v.as_num()));
+                o = next;
+            }
+        }
+        let message_box = op == CMD_MESSAGE_BOX;
+        let mut buttons = Vec::new();
+        if message_box && o + 2 <= end {
+            let count = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
+            o += 2;
+            for _ in 0..count {
+                let (button, next) = read_string(self, o + 2)?;
+                buttons.push(button);
+                o = next;
+            }
+        }
+        Some(ObScriptMessage {
+            text,
+            values,
+            buttons,
+            message_box,
+        })
+    }
+
+    /// One typed argument at `o` (bounded by `end`): its value — `None` for
+    /// a string literal, which phase-1 hosts do not receive — and the offset
+    /// just past it.
+    fn decode_arg_item(
+        &mut self,
+        o: usize,
+        end: usize,
+        depth: usize,
+    ) -> Option<(Option<ObScriptValue>, usize)> {
+        let mut o = o;
+        let mut value = None;
+        if o >= end {
+            return None;
+        }
+        let tag = self.bytes[o];
+        match tag {
+            b'r' => {
+                if o + 3 > end {
+                    return None;
+                }
+                let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
+                let form = self.resolve_ref_var(idx).unwrap_or(0);
+                value = Some(ObScriptValue::Ref(form));
+                o += 3;
+            }
+            b's' | b'f' => {
+                if o + 3 > end {
+                    return None;
+                }
+                let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
+                value = Some(ObScriptValue::Num(
+                    self.state.locals.get(&idx).copied().unwrap_or(0.0),
+                ));
+                o += 3;
+            }
+            b'G' => {
+                if o + 3 > end {
+                    return None;
+                }
+                let idx = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
+                let form = self.resolve_ref_var(idx).unwrap_or(0);
+                let global = self
+                    .host
+                    .call(CMD_GET_GLOBAL, &[ObScriptValue::Ref(form)], Some(form))
+                    .map(|v| v.as_num())
+                    .unwrap_or(0.0);
+                value = Some(ObScriptValue::Num(global));
+                o += 3;
+            }
+            b'n' => {
+                if o + 5 > end {
+                    return None;
+                }
+                let raw = i32::from_le_bytes([
+                    self.bytes[o + 1],
+                    self.bytes[o + 2],
+                    self.bytes[o + 3],
+                    self.bytes[o + 4],
+                ]);
+                value = Some(ObScriptValue::Num(raw as f32));
+                o += 5;
+            }
+            b'z' => {
+                // String literal, NUL-terminated. Phase-1 hosts receive
+                // no string value; text-aware commands decode the raw
+                // bytes themselves, so the VM just steps over it.
+                let text_start = o + 1;
+                let rel = self.bytes[text_start..end].iter().position(|&c| c == 0)?;
+                o = text_start + rel + 1;
+            }
+            b'Y' | b'Z' => {
+                // Zero-payload tags ('Y' = the calling reference, 'Z' =
+                // a null reference in every corpus context).
+                value = Some(ObScriptValue::Ref(0));
+                o += 1;
+            }
+            b'X' => {
+                if o + 5 > end {
+                    return None;
+                }
+                let cmd = byroredux_core::bytes::le_u16_at(self.bytes, o + 1)?;
+                let inner_len = byroredux_core::bytes::le_u16_at(self.bytes, o + 3)? as usize;
+                let inner_start = o + 5;
+                let inner_end = inner_start.checked_add(inner_len)?;
+                if inner_end > end {
+                    return None;
+                }
+                let inner = self.decode_args_at_depth(inner_start, inner_end, depth + 1)?;
+                let result = self.host.call(cmd, &inner, None);
+                value = Some(result.unwrap_or(ObScriptValue::Num(0.0)));
+                o = inner_end;
+            }
+            _ => {
+                // u16 integer literal.
+                if o + 2 > end {
+                    return None;
+                }
+                let v = byroredux_core::bytes::le_u16_at(self.bytes, o)?;
+                value = Some(ObScriptValue::Num(v as f32));
+                o += 2;
+            }
+        }
+        Some((value, o))
     }
 
     /// Resolve a 1-based reference index against the script's reference
@@ -796,9 +889,14 @@ mod tests {
     struct Recorder {
         calls: Vec<(u16, Vec<ObScriptValue>, Option<u32>)>,
         globals: std::collections::HashMap<u32, f32>,
+        messages: Vec<ObScriptMessage>,
     }
 
     impl ObScriptHost for Recorder {
+        fn message(&mut self, message: ObScriptMessage) {
+            self.messages.push(message);
+        }
+
         fn call(
             &mut self,
             cmd: u16,
@@ -1373,5 +1471,57 @@ mod tests {
                 leg.name
             );
         }
+    }
+
+    /// M47.3 phase 2 — `Message` / `MessageBox` payloads, byte for byte from
+    /// vanilla `Oblivion.esm` (SEObeliskNewSCRIPT, ARTrapEvilStoneAUTOFire…).
+    #[test]
+    fn message_payloads_decode_text_variables_and_buttons() {
+        let text = b"Do you want to place a Heart of Order into the obelisk?";
+        let mut message_box = vec![0x00, 0x10, 0, 0, 0x01, 0x00];
+        message_box.extend_from_slice(&(text.len() as u16).to_le_bytes());
+        message_box.extend_from_slice(text);
+        message_box.extend_from_slice(&[0x00, 0x00, 0x02, 0x00]);
+        message_box.extend_from_slice(&[0x01, 0x00, 0x03, 0x00]);
+        message_box.extend_from_slice(b"Yes");
+        message_box.extend_from_slice(&[0x01, 0x00, 0x02, 0x00]);
+        message_box.extend_from_slice(b"No");
+        let len = (message_box.len() - 4) as u16;
+        message_box[2..4].copy_from_slice(&len.to_le_bytes());
+
+        let text = b"Rank %.0f Fireball";
+        let mut message = vec![0x59, 0x10, 0, 0, 0x01, 0x00];
+        message.extend_from_slice(&(text.len() as u16).to_le_bytes());
+        message.extend_from_slice(text);
+        // One variable — short local 1 — then the display seconds (10).
+        message.extend_from_slice(&[0x01, 0x00, b's', 0x01, 0x00, 0x0a, 0x00, 0x00, 0x00]);
+        let len = (message.len() - 4) as u16;
+        message[2..4].copy_from_slice(&len.to_le_bytes());
+
+        let mut body = message_box;
+        body.extend(message);
+        let record = script(wrap_body(body), vec![local(1, "SpellRank", 1)], Vec::new());
+        let program = ObScriptProgram::new(&record);
+        let mut state = VmState::default();
+        state.locals.insert(1, 3.0);
+        let mut host = Recorder::default();
+        program.run_block(BLOCK_GAME_MODE, &mut state, &mut host);
+        assert_eq!(
+            host.messages,
+            vec![
+                ObScriptMessage {
+                    text: "Do you want to place a Heart of Order into the obelisk?".into(),
+                    values: Vec::new(),
+                    buttons: vec!["Yes".into(), "No".into()],
+                    message_box: true,
+                },
+                ObScriptMessage {
+                    text: "Rank %.0f Fireball".into(),
+                    values: vec![3.0],
+                    buttons: Vec::new(),
+                    message_box: false,
+                },
+            ]
+        );
     }
 }
