@@ -1211,6 +1211,9 @@ pub enum Effect {
     /// M47.2 — `Game.IncrementStat(asStatName, aiModAmount = 1)` with
     /// literal arguments ([`crate::misc_stats`]).
     IncrementStat { stat: String, amount: i32 },
+    /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
+    /// ([`crate::Achievements`]).
+    AddAchievement { id: i32 },
     /// M47.2 — `Game.GivePlayerCaps(n)` / `RemovePlayerCaps(n)` (FO4): the
     /// script bodies add / remove `n` of `Game.GetCaps()` (form `0xF`) on the
     /// player when `n > 0`. Negative `delta` removes.
@@ -2828,6 +2831,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_change_keyword,
     prim_reward_player_xp,
     prim_increment_stat,
+    prim_add_achievement,
     prim_player_caps,
     prim_set_objective_skipped,
     prim_equip_item,
@@ -3516,6 +3520,17 @@ fn prim_reward_player_xp(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::RewardPlayerXp {
         amount: item_count_arg(args, 0, 0, scope)?,
         direct: bool_arg(args, 1)?.unwrap_or(false),
+    })
+}
+
+/// `Game.AddAchievement(int aiAchievementID)` with a literal ID.
+fn prim_add_achievement(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "AddAchievement")?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::AddAchievement {
+        id: i32::try_from(int_arg(args, 0)?).ok()?,
     })
 }
 

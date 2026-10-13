@@ -120,7 +120,7 @@ pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
-pub use misc_stats::MiscStats;
+pub use misc_stats::{Achievements, MiscStats};
 pub use actor_value_names::{install_actor_value_names, ActorValueNames};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
@@ -253,6 +253,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted IncrementStat misc stats (saved).
     if world.try_resource::<MiscStats>().is_none() {
         world.insert_resource(MiscStats::default());
+    }
+    // M47.2 — scripted AddAchievement awards (saved).
+    if world.try_resource::<Achievements>().is_none() {
+        world.insert_resource(Achievements::default());
     }
     // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
     if world.try_resource::<AliasOverrides>().is_none() {

@@ -1286,3 +1286,29 @@ fn package_fragments_run_on_transitions() {
     crate::package_fragment_system(&world, 0.0);
     assert!(crate::fragment::reference_enabled(&world, ACTOR), "B began: akActor enabled");
 }
+
+/// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
+/// clock) and `Game.AddAchievement` (recorded once).
+#[test]
+fn math_game_time_and_achievements() {
+    let script = parsed_source(
+        "ScriptName QF_VmMath extends Quest\n\
+         Function Fragment_1()\n\
+           If Math.Floor(Math.Min(7.9, 12.0)) == 7 && Math.Ceiling(2.1) == 3 && Math.Pow(2.0, 8.0) == 256.0\n\
+             If Math.Abs(-5.0) == 5.0 && Utility.GetCurrentGameTime() > 1.4\n\
+               Game.AddAchievement(9)\n\
+               Game.AddAchievement(9)\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    // 36 game hours = day 1.5.
+    crate::script_update_system(&world, 0.0, Some(36.0));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(world.resource::<crate::Achievements>().has(9));
+}

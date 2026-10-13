@@ -680,6 +680,13 @@ runtime:
   `Insert`, `Remove`, `RemoveLast` and `Clear`. The check follows declared
   types through elements and members. An array held in a script variable
   doesn't persist yet: it would need a saved array heap with identity.
+- **Math and time.** `Math.Min/Max/Abs/Floor/Ceiling/Sqrt/Pow/Sin` compute in
+  the VM (`Sin` takes degrees, per the CK page). `Utility.GetCurrentGameTime()`
+  is the host's absolute game clock in days, from `ScriptUpdates`, which
+  `script_update_system` refreshes each frame.
+- **Achievements.** `Game.AddAchievement(id)` records the award in the saved
+  `Achievements` set (a second award changes nothing). The platform profile
+  is the host's.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
 - **Linked references.** `GetNthLinkedRef(n)` follows the unkeyworded link n
@@ -720,7 +727,7 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 79.4% of the Skyrim corpus runs (Fallout 4: 72.0%) (lowered + interpreted;
+With the VM, 80.0% of the Skyrim corpus runs (Fallout 4: 72.1%) (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:

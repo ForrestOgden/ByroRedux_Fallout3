@@ -48,6 +48,28 @@ impl MiscStats {
     }
 }
 
+/// The achievements / trophies scripts awarded (`Game.AddAchievement`), by
+/// ID. Saved. The platform profile is the host's; this is the engine's own
+/// record that one was awarded, which a second award leaves unchanged.
+#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct Achievements {
+    awarded: std::collections::BTreeSet<i32>,
+}
+
+impl Resource for Achievements {}
+
+impl Achievements {
+    /// Award `id`; `true` the first time.
+    pub fn award(&mut self, id: i32) -> bool {
+        self.awarded.insert(id)
+    }
+
+    pub fn has(&self, id: i32) -> bool {
+        self.awarded.contains(&id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

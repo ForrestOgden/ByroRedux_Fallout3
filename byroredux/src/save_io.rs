@@ -625,6 +625,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates")
         // M47.2 — Game.IncrementStat misc stats.
         .register_resource::<byroredux_scripting::MiscStats>("MiscStats")
+        // M47.2 — Game.AddAchievement awards.
+        .register_resource::<byroredux_scripting::Achievements>("Achievements")
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.

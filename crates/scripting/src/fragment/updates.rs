@@ -226,6 +226,12 @@ impl ScriptUpdates {
         }
     }
 
+    /// The game clock (hours since the runtime began) the host last
+    /// reported; `None` before the first report.
+    pub fn game_hours(&self) -> Option<f64> {
+        self.game_hours
+    }
+
     pub fn registrations(&self) -> &[UpdateRegistration] {
         &self.registrations
     }

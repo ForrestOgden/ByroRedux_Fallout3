@@ -600,6 +600,38 @@ fn getter_constant(property: &byroredux_papyrus::ast::Property) -> Option<Value>
     }
 }
 
+/// The `Math` natives the VM computes itself.
+const MATH_NATIVES: [&str; 8] = ["min", "max", "abs", "floor", "ceiling", "sqrt", "pow", "sin"];
+
+/// `Math.<name>(values)`, by lowercase name (CK *Math Script* pages; `Min` /
+/// `Max` are Fallout 4's). `None` arity or kind the VM cannot compute.
+fn math_native(name: &str, values: &[Value]) -> Run<Option<Value>> {
+    let mut numbers = Vec::with_capacity(values.len());
+    for value in values {
+        let Some(number) = value.number() else {
+            return stop(format!("Math.{name} on {}", value.text()));
+        };
+        numbers.push(number);
+    }
+    let arity = if matches!(name, "min" | "max" | "pow") { 2 } else { 1 };
+    if numbers.len() != arity {
+        return stop(format!("Math.{name} takes {arity} argument(s)"));
+    }
+    let a = numbers[0];
+    Ok(Some(match name {
+        "min" => Value::Float(a.min(numbers[1])),
+        "max" => Value::Float(a.max(numbers[1])),
+        "abs" => Value::Float(a.abs()),
+        "floor" => Value::Int(a.floor() as i32),
+        "ceiling" => Value::Int(a.ceil() as i32),
+        "sqrt" => Value::Float(a.sqrt()),
+        "pow" => Value::Float(a.powf(numbers[1])),
+        // Papyrus trigonometry takes degrees.
+        "sin" => Value::Float(a.to_radians().sin()),
+        _ => return Ok(None),
+    }))
+}
+
 /// The array methods the VM runs (CK *Arrays (Papyrus)*).
 const ARRAY_METHODS: [&str; 9] = [
     "find",
@@ -1743,6 +1775,19 @@ impl Vm<'_> {
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
+                ("math", function) if MATH_NATIVES.contains(&function) => {
+                    let values = self.eval_args(frame, args)?;
+                    math_native(function, &values)?
+                }
+                // CK *GetCurrentGameTime - Utility*: "game days passed".
+                ("utility", "getcurrentgametime") => {
+                    let hours = self
+                        .world
+                        .try_resource::<super::ScriptUpdates>()
+                        .and_then(|updates| updates.game_hours())
+                        .unwrap_or(0.0);
+                    Some(Value::Float((hours / 24.0) as f32))
+                }
                 ("game", "getformfromfile") => {
                     let values = self.eval_args(frame, args)?;
                     // The id exactly: an f32 (`Value::number`) cannot hold
@@ -2959,6 +3004,17 @@ impl<'l> Checker<'l> {
             }
             if class == "debug" && name.starts_with("trace") {
                 return Some(Kind::None);
+            }
+            if class == "math" && MATH_NATIVES.contains(&name.as_str()) {
+                let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
+                let arity = if matches!(name.as_str(), "min" | "max" | "pow") { 2 } else { 1 };
+                if arg_kinds.len() == arity && arg_kinds.iter().all(numeric) {
+                    return Some(Kind::Num);
+                }
+                return self.fail(|| format!("Math.{name} as written"));
+            }
+            if class == "utility" && name == "getcurrentgametime" && arg_kinds.is_empty() {
+                return Some(Kind::Num);
             }
             if class == "utility" && name == "wait" {
                 if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) {

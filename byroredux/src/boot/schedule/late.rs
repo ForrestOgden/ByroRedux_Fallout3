@@ -682,7 +682,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::ScriptUpdates>()
             // M47.2 — a spoken line's IncrementStat / QueryStat.
             .reads_resource::<byroredux_scripting::MiscStats>()
-            .writes_resource::<byroredux_scripting::MiscStats>(),
+            .writes_resource::<byroredux_scripting::MiscStats>()
+            // M47.2 — a spoken line's AddAchievement.
+            .reads_resource::<byroredux_scripting::Achievements>()
+            .writes_resource::<byroredux_scripting::Achievements>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

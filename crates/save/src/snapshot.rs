@@ -418,7 +418,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v68 -> v69 (M47.2): `PackageFragmentEvent` / `PackageScriptFragment`, the
 /// `PACK` VMAD fragment bindings (serialized types reachable from the save).
-pub const FORMAT_MAJOR: u16 = 69;
+///
+/// v69 -> v70 (M47.2): `Effect::AddAchievement` and the `Achievements`
+/// resource column.
+pub const FORMAT_MAJOR: u16 = 70;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -152,6 +152,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
         Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
         Effect::IncrementStat { .. } => "IncrementStat",
+        Effect::AddAchievement { .. } => "AddAchievement",
         Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::SetLocal { .. } => "SetLocal",
         Effect::SetReferenceVariable { .. } => "SetReferenceVariable",

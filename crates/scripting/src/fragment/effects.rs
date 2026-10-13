@@ -443,6 +443,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::IncrementStat`s, applied to [`crate::MiscStats`]
     /// after the guards drop.
     misc_stats: Vec<(String, i32)>,
+    /// M47.2 — `Effect::AddAchievement` IDs, applied to
+    /// [`crate::Achievements`] after the guards drop.
+    achievements: Vec<i32>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
@@ -550,6 +553,7 @@ impl DeferredFragmentEffects {
             kills: Vec::new(),
             player_xp: Vec::new(),
             misc_stats: Vec::new(),
+            achievements: Vec::new(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
@@ -640,6 +644,16 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.achievements.is_empty() {
+            if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
+                for id in self.achievements.drain(..) {
+                    if awarded.award(id) {
+                        log::info!("achievement {id} awarded");
+                    }
+                }
+            }
+            self.achievements.clear();
         }
         if !self.misc_stats.is_empty() {
             if let Some(mut stats) = world.try_resource_mut::<crate::MiscStats>() {
@@ -1314,6 +1328,10 @@ pub(crate) fn apply_effect(
         Effect::RewardPlayerXp { amount, direct } => {
             let amount = resolve_item_count(amount, context, vmad, world, stages, deferred)?;
             deferred.player_xp.push((amount, *direct));
+            None
+        }
+        Effect::AddAchievement { id } => {
+            deferred.achievements.push(*id);
             None
         }
         Effect::IncrementStat { stat, amount } => {
@@ -2836,6 +2854,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetRelationshipRank { .. }
         | Effect::RewardPlayerXp { .. }
         | Effect::IncrementStat { .. }
+        | Effect::AddAchievement { .. }
         | Effect::PlayerCaps { .. }
         | Effect::SetLocal { .. }
         | Effect::SetReferenceVariable { .. }
