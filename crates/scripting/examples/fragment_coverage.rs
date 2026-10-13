@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashSet};
 use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_papyrus::ast::{Expr, ScriptItem, Stmt};
 use byroredux_pex::{decompile::decompile_script, parse};
-use byroredux_scripting::fragment::quest_property_names;
+use byroredux_scripting::fragment::quest_property_names_with_library;
 use byroredux_papyrus::ast::Param;
 use byroredux_scripting::translate::effects::{
     lower_fragment_with_quest_properties, lower_info_fragment, lower_quest_fragment, Effect,
@@ -406,7 +406,9 @@ fn main() {
             // the production caller (`populate_quest_fragments_from_script`),
             // and fed to `lower_fragment_with_quest_properties` below so
             // this measures the SAME lowering path production runs.
-            let quest_properties = quest_property_names(&script);
+            // M47.2 — production classifies quest-script-typed properties
+            // through the script library on every populate path.
+            let quest_properties = quest_property_names_with_library(&script, Some(&library));
             // Quest-fragment scripts: `QF_…`, `DLC1_QF_…`, FO4's
             // `Fragments:Quests:QF_…` — the ones production populates through
             // the quest path, which inlines calls into the quest's script.

@@ -25,16 +25,11 @@ use super::*;
 /// `receiver_object`/`explicit_quest_receiver` normalize through
 /// `quest_property_key` before consulting this set (#2653, `53f7de9d`).
 ///
-/// A SEPARATE, still-open gap from the same issue: the type test below
-/// is an exact `Type::Object("quest")` match, so a property typed with a
-/// Quest-*derived* script (`mq206script`, `dn019script`, `min03script`,
-/// …) is never collected — real corpus content does this. Closing it
-/// needs a script-class-hierarchy resolver (something that can answer
-/// "does `mq206script` transitively extend `Quest`?"); nothing in this
-/// crate builds one today, and this single-`Script` function has no
-/// access to any other script's `extends` declaration to improvise one.
-/// Not attempted here — flagged as a candidate follow-up issue rather
-/// than guessed at with a naming-convention heuristic.
+/// This single-`Script` form matches only an exact `Type::Object("quest")`.
+/// A property typed with a Quest-*derived* script (`mq206script`,
+/// `tg04pqsscript`, …) needs the other script's `extends` chain:
+/// [`quest_property_names_with_library`] (M47.2) walks it through a
+/// [`ScriptLibrary`](crate::translate::effects::ScriptLibrary).
 ///
 /// `pub` (#2658 / SCR-D5-NEW11-03) — so `examples/fragment_coverage.rs`
 /// and `examples/mq101_conformance.rs` can build the same per-script set
@@ -43,12 +38,47 @@ use super::*;
 /// `lower_fragment_with_quest_properties` (what production actually
 /// runs) instead of context-free `lower_fragment`.
 pub fn quest_property_names(script: &Script) -> std::collections::HashSet<String> {
+    quest_property_names_with_library(script, None)
+}
+
+/// How many `extends` links [`extends_quest`] follows.
+const MAX_EXTENDS_DEPTH: usize = 8;
+
+/// Whether the script type `name` is `Quest` or transitively extends it,
+/// following each script's `extends` through `library`.
+fn extends_quest(name: &str, library: &dyn crate::translate::effects::ScriptLibrary) -> bool {
+    let mut name = name.to_owned();
+    for _ in 0..MAX_EXTENDS_DEPTH {
+        if name.eq_ignore_ascii_case("quest") {
+            return true;
+        }
+        let Some(parent) = library
+            .script(&name)
+            .and_then(|script| script.parent.as_ref().map(|parent| parent.node.0.clone()))
+        else {
+            return false;
+        };
+        name = parent;
+    }
+    false
+}
+
+/// [`quest_property_names`], also collecting properties typed with a script
+/// that extends `Quest` (M47.2: `TG04PQSScript Property pTG04PQS`), resolved
+/// through `library`'s `extends` chains.
+pub fn quest_property_names_with_library(
+    script: &Script,
+    library: Option<&dyn crate::translate::effects::ScriptLibrary>,
+) -> std::collections::HashSet<String> {
     script
         .body
         .iter()
         .filter_map(|item| match &item.node {
             ScriptItem::Property(p) => match &p.ty.node {
-                Type::Object(ty_name) if ty_name.0.eq_ignore_ascii_case("quest") => {
+                Type::Object(ty_name)
+                    if ty_name.0.eq_ignore_ascii_case("quest")
+                        || library.is_some_and(|library| extends_quest(&ty_name.0, library)) =>
+                {
                     Some(p.name.node.0.to_ascii_lowercase())
                 }
                 _ => None,
@@ -323,7 +353,8 @@ fn populate_quest_fragments_from_script_internal(
     // #2538 / SCR-D5-NEW10-01 — computed once per script, not per
     // fragment; every fragment in the same script shares the same
     // property declarations.
-    let quest_properties = quest_property_names(script);
+    let quest_properties =
+        quest_property_names_with_library(script, providers.and_then(|scope| scope.library));
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);
@@ -557,7 +588,8 @@ fn populate_scene_fragments_from_script_internal(
     bindings: &[(SceneFragmentEvent, &str)],
     providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
-    let quest_properties = quest_property_names(script);
+    let quest_properties =
+        quest_property_names_with_library(script, providers.and_then(|scope| scope.library));
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);
@@ -653,7 +685,8 @@ fn populate_info_fragments_from_script_internal(
     bindings: &[(bool, &str)],
     providers: Option<FragmentProviderScope<'_>>,
 ) -> usize {
-    let quest_properties = quest_property_names(script);
+    let quest_properties =
+        quest_property_names_with_library(script, providers.and_then(|scope| scope.library));
     // #5407 — the script's own argless helpers, for the race-spells
     // primitives' script-defined check.
     let argless_functions = argless_function_names(script);

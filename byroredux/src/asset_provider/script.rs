@@ -309,6 +309,12 @@ fn populate_scene_fragments(
     let providers = world
         .resource::<byroredux_scripting::PapyrusProviderRuntime>()
         .servable_catalog();
+    // M47.2 — own the provider for the walk (re-inserted below) so the
+    // script library can classify quest-script-typed properties.
+    let Some(script_provider) = world.remove_resource::<ScriptProvider>() else {
+        return 0;
+    };
+    let library = ProviderScriptLibrary::new(&script_provider);
 
     let mut total = 0;
     for (&scene_form_id, scene) in &index.scenes {
@@ -332,10 +338,7 @@ fn populate_scene_fragments(
                 .push((fragment.event, fragment.fragment_name.as_str()));
         }
         for (script_name, bindings) in by_script {
-            let resolved = {
-                let provider = world.resource::<ScriptProvider>();
-                provider.resolve_pex(script_name)
-            };
+            let resolved = script_provider.resolve_pex(script_name);
             let Some(resolved) = resolved else {
                 log::trace!(
                     "scene-fragment: .pex '{script_name}' not in archive (scene {scene_form_id:08X})"
@@ -354,7 +357,8 @@ fn populate_scene_fragments(
                     byroredux_scripting::OwnedFragmentProviders::new(
                         &providers,
                         &resolved.principal,
-                    ),
+                    )
+                    .with_library(&library),
                 )
             };
             total += translation.inserted;
@@ -365,6 +369,8 @@ fn populate_scene_fragments(
             );
         }
     }
+    drop(library);
+    world.insert_resource(script_provider);
     total
 }
 
@@ -404,6 +410,12 @@ fn populate_info_fragments(
     let providers = world
         .resource::<byroredux_scripting::PapyrusProviderRuntime>()
         .servable_catalog();
+    // M47.2 — own the provider for the walk (re-inserted below) so the
+    // script library can classify quest-script-typed properties.
+    let Some(script_provider) = world.remove_resource::<ScriptProvider>() else {
+        return;
+    };
+    let library = ProviderScriptLibrary::new(&script_provider);
 
     let mut infos_with_bindings = 0usize;
     let mut total = 0usize;
@@ -429,10 +441,7 @@ fn populate_info_fragments(
                     .push((fragment.on_begin, fragment.fragment_name.as_str()));
             }
             for (script_name, bindings) in by_script {
-                let resolved = {
-                    let provider = world.resource::<ScriptProvider>();
-                    provider.resolve_pex(script_name)
-                };
+                let resolved = script_provider.resolve_pex(script_name);
                 let Some(resolved) = resolved else {
                     log::trace!(
                         "info-fragment: .pex '{script_name}' not in archive (info {:#08X})",
@@ -453,13 +462,16 @@ fn populate_info_fragments(
                         byroredux_scripting::OwnedFragmentProviders::new(
                             &providers,
                             &resolved.principal,
-                        ),
+                        )
+                        .with_library(&library),
                     )
                 };
                 total += inserted;
             }
         }
     }
+    drop(library);
+    world.insert_resource(script_provider);
     if total > 0 {
         log::info!(
             "M47.2: populated {total} INFO response fragments from {infos_with_bindings} bound infos"

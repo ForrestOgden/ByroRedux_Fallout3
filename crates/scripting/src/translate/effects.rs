@@ -1367,7 +1367,10 @@ fn inline_quest_script_call(
     }
     let mut callee_scope = Scope {
         library: Some(library),
-        known_quest_properties: crate::fragment::quest_property_names(&script),
+        known_quest_properties: crate::fragment::quest_property_names_with_library(
+            &script,
+            Some(library),
+        ),
         own_argless_functions: crate::fragment::argless_function_names(&script),
         inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
         ..Scope::default()
@@ -4818,6 +4821,43 @@ mod tests {
         fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_papyrus::ast::Script>> {
             self.0.get(&name.to_ascii_lowercase()).cloned()
         }
+    }
+
+    /// M47.2 — a property typed with a script that (transitively) extends
+    /// Quest is a quest property once the library supplies the `extends`
+    /// chain, so a write to its variable lowers.
+    #[test]
+    fn quest_script_typed_properties_resolve_through_the_library() {
+        let library = PscLibrary::new(&[
+            "ScriptName TG04PQSScript extends TG04BaseScript\nInt Property pTG04PostChoice Auto\n",
+            "ScriptName TG04BaseScript extends Quest\n",
+            "ScriptName NotAQuestScript extends ObjectReference\n",
+        ]);
+        const SOURCE: &str = "ScriptName TIF_000D3AB3 extends TopicInfo\n\
+             TG04PQSScript Property pTG04PQS Auto\n\
+             NotAQuestScript Property Other Auto\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             pTG04PQS.pTG04PostChoice = 3\n\
+             EndFunction\n";
+        let (script, errs) = parse_script(SOURCE).expect("parses");
+        assert!(errs.is_empty(), "{errs:?}");
+        let without = crate::fragment::quest_property_names(&script);
+        assert!(without.is_empty());
+        let with = crate::fragment::quest_property_names_with_library(&script, Some(&library));
+        assert_eq!(with, ["ptg04pqs".to_owned()].into_iter().collect());
+        let body = first_fn_body(SOURCE);
+        assert_eq!(
+            lower_fragment_with_script_metadata(&body, &with, &HashSet::new(), None),
+            Some(vec![Effect::SetQuestVariable {
+                quest: QuestRef::Property("pTG04PQS".into()),
+                variable: "pTG04PostChoice".into(),
+                value: 3.0,
+            }])
+        );
+        assert_eq!(
+            lower_fragment_with_script_metadata(&body, &without, &HashSet::new(), None),
+            None
+        );
     }
 
     const MOTHPRIEST_SCRIPT: &str = "ScriptName DLC1VQ03MothpriestFightScript extends Quest\n\
