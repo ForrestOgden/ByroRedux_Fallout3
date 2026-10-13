@@ -896,6 +896,19 @@ fn member_type_in(script: &Script, name: &str, scripts: &HashMap<String, Arc<Scr
     None
 }
 
+/// Whether `receiver` names a property or variable of `script` declared a
+/// `MusicType`: the one receiver `Add()` / `Remove()` is a music-stack call on
+/// (a script's own `Add()` function is a different call).
+fn declares_music_type(script: &Script, receiver: &Expr) -> bool {
+    let Expr::Ident(name) = receiver else {
+        return false;
+    };
+    matches!(
+        script_member_type(script, &name.0),
+        Some(Type::Object(ty)) if ty.0.eq_ignore_ascii_case("musictype")
+    )
+}
+
 /// The script's declared type for `name` (a property or a script variable).
 fn script_member_type(script: &Script, name: &str) -> Option<Type> {
     let bare = vmad_property_name(name);
@@ -2807,16 +2820,18 @@ impl Vm<'_> {
                 };
                 Some(self.linked_ref(*form, keyword).map_or(Value::None, Value::Form))
             }
-            // CK *GetNthLinkedRef*: 0 is the object itself, n follows the
-            // unkeyworded link n times.
+            // CK *GetNthLinkedRef*: 0 is the object itself, n follows the link
+            // under the keyword (default none) n times.
             (Value::Form(form), "getnthlinkedref") => {
-                let hops = match args.first() {
-                    Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
-                    None => 0.0,
+                let values = self.eval_args(frame, args)?;
+                let hops = values.first().and_then(Value::number).unwrap_or(0.0);
+                let keyword = match values.get(1) {
+                    Some(Value::Form(keyword)) => *keyword,
+                    _ => 0,
                 };
                 let mut current = Some(*form);
                 for _ in 0..(hops.max(0.0) as usize).min(64) {
-                    current = current.and_then(|form| self.linked_ref(form, 0));
+                    current = current.and_then(|form| self.linked_ref(form, keyword));
                 }
                 Some(current.map_or(Value::None, Value::Form))
             }
@@ -3021,6 +3036,18 @@ impl Vm<'_> {
         }
         // Help-message housekeeping names the `Message` class or a message: the
         // receiver is never read.
+        // CK *Add - MusicType* / *Remove - MusicType*: "Adds this music type to
+        // the music stack, causing it to start playing if it's the highest
+        // priority item". There is no music player (the music is xWMA, which the
+        // engine cannot decode), so the stack has no observable state and the
+        // call is a no-op. Only a receiver declared a `MusicType` is one (a
+        // script's own `Add()` function is a different call).
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            let name = member.node.0.to_ascii_lowercase();
+            if matches!(name.as_str(), "add" | "remove") && args.is_empty() && declares_music_type(&frame.script, &object.node) {
+                return Ok(Flow::Normal);
+            }
+        }
         if help_message_housekeeping(&callee.node).is_some() {
             self.eval_args(frame, args)?;
             return Ok(Flow::Normal);
@@ -4185,6 +4212,12 @@ impl<'l> Checker<'l> {
                 }
             }
         }
+        // `<MusicType>.Add()` / `.Remove()` as a statement (see the runtime arm).
+        if matches!(name.as_str(), "add" | "remove") && statement && arg_kinds.is_empty() {
+            if receiver.is_some_and(|receiver| declares_music_type(&frame.script, receiver)) {
+                return Some(Kind::None);
+            }
+        }
         // The frame's own script function.
         if receiver.is_none()
             || receiver.is_some_and(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))
@@ -4412,7 +4445,15 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Object);
             }
             (Kind::Object | Kind::Player, "getnthlinkedref")
-                if matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) =>
+                if match arg_kinds.as_slice() {
+                    [hops] | [hops, _] => {
+                        matches!(hops, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num))
+                            && arg_kinds.get(1).is_none_or(|keyword| {
+                                matches!(keyword, Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object))
+                            })
+                    }
+                    _ => false,
+                } =>
             {
                 return Some(Kind::Object);
             }

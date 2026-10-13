@@ -2297,6 +2297,36 @@ fn base_and_percentage_actor_value_reads() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `<MusicType>.Add()` / `.Remove()` are accepted (there is no music player to
+/// drive), and the statements after them run; a receiver that is not declared a
+/// `MusicType` is not one.
+#[test]
+fn music_type_add_and_remove_are_accepted_only_on_a_music_type() {
+    let accepted = parsed_source(
+        "ScriptName QF_VmMusic extends Quest\n\
+         MusicType Property Theme Auto\n\
+         Function Fragment_1()\n\
+           Theme.Add()\n\
+           Theme.Remove()\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&accepted), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(accepted);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+
+    let other = parsed_source(
+        "ScriptName QF_VmMusicNot extends Quest\n\
+         Quest Property Other Auto\n\
+         Function Fragment_1()\n\
+           Other.Add()\n\
+         EndFunction\n",
+    );
+    assert!(check_function_reason(other, "Fragment_1", None).is_err());
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]
@@ -2346,6 +2376,33 @@ fn set_linked_ref_writes_the_saved_link() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
     assert_eq!(crate::linked_ref(&world, MARKER, 0), Some(MARKER));
+}
+
+/// `GetNthLinkedRef(n, keyword)` follows the link under the keyword n times:
+/// 0 is the reference itself, and a chain that ends reads `None`.
+#[test]
+fn get_nth_linked_ref_follows_the_chain_under_a_keyword() {
+    const SECOND: u32 = 0x0002_0001;
+    const THIRD: u32 = 0x0002_0002;
+    let script = parsed_source(
+        "ScriptName QF_VmNth extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetNthLinkedRef(0, None) == Marker && Marker.GetNthLinkedRef(2, None) && !Marker.GetNthLinkedRef(3, None)\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    {
+        let mut links = world.resource_mut::<crate::LinkedRefOverrides>();
+        links.set(MARKER, 0, SECOND);
+        links.set(SECOND, 0, THIRD);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
 /// `PlaceAtMe` creates the references through the saved `CreatedReferences`

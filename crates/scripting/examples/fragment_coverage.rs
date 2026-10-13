@@ -557,7 +557,13 @@ fn main() {
                         };
                         match checked {
                             Ok(_) => interpretable += 1,
-                            Err(reason) => *vm_reasons.entry(reason).or_default() += 1,
+                            Err(reason) => {
+                                // `VM_REASON_SCRIPTS=<text>` names the fragments behind a reason.
+                                if std::env::var("VM_REASON_SCRIPTS").is_ok_and(|text| reason.contains(&text)) {
+                                    println!("  {} :: {} — {reason}", script.name.node.0, func.name.node.0);
+                                }
+                                *vm_reasons.entry(reason).or_default() += 1
+                            }
                         }
                         if call_census {
                             let mut names = std::collections::BTreeSet::new();

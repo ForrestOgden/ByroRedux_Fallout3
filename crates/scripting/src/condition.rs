@@ -2773,7 +2773,7 @@ mod tests {
         assert_eq!(read(&world, CRIT, ActorValueView::Base), 4.0);
         // Authored Luck with a modifier and damage.
         {
-            let mut avs = world.get_mut::<ActorValues>(actor).unwrap();
+            let avs = world.get_mut::<ActorValues>(actor).unwrap();
             avs.mod_permanent(LUCK, 2.0);
             avs.apply_damage(LUCK, 1.0);
         }

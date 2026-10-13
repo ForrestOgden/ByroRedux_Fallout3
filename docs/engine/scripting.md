@@ -729,8 +729,8 @@ runtime:
   is the host's.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
-- **Linked references.** `GetNthLinkedRef(n)` follows the unkeyworded link n
-  times; 0 is the object itself (CK *GetNthLinkedRef*).
+- **Linked references.** `GetNthLinkedRef(n[, keyword])` follows the link under
+  the keyword (default none) n times; 0 is the object itself (CK *GetNthLinkedRef*).
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the
   fragment and in any function it calls as a statement. The suspended state
   is an `Effect::Interpret` carrying a `VmResume`. It holds one `VmFrame` per
@@ -1234,6 +1234,17 @@ resolves the descriptor, takes the next of its files in turn, extracts it from t
 archives and plays it one-shot from the source's `GlobalTransform` through the shared
 `SoundCache`. A looping descriptor is not played (a one-shot cannot loop). Not modelled:
 the instance id, `PlayAndWait`, `SetInstanceVolume`/`StopInstance`.
+
+### MusicType.Add / Remove (M47.2)
+
+CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start
+playing if it's the highest priority item"; *Remove* takes it off. The engine has no
+music player (the music files are xWMA, which it cannot decode), so the stack has no
+state anyone could observe and `<MusicType>.Add()` / `.Remove()` run as no-ops. They exist
+so the rest of the fragment (the `SetStage` beside a music cue, 66 FO4 fragments) runs.
+The receiver must be a property or variable of the running script declared a `MusicType`
+(checker and runtime share `declares_music_type`), so a script's own `Add()` function is
+not swallowed.
 
 ### Script-created references (M47.2)
 
