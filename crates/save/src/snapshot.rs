@@ -412,7 +412,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v66 -> v67 (M47.2): `UpdateRegistration` gained the required `timer`
 /// (Fallout 4 `StartTimer` / `StartTimerGameTime` IDs).
-pub const FORMAT_MAJOR: u16 = 67;
+///
+/// v67 -> v68 (M47.2): `PropertyValue` gained `Struct` (FO4 VMAD struct and
+/// array-of-struct properties), which a saved continuation's VMAD carries.
+pub const FORMAT_MAJOR: u16 = 68;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

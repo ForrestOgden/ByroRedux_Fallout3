@@ -67,12 +67,27 @@ pub enum PropertyValue {
     Float(f32),
     /// Type 5.
     Bool(bool),
-    /// Types 11-15 — homogeneous array of the base type.
+    /// Types 11-15 and 17 — homogeneous array of the base type.
     Array(Vec<PropertyValue>),
-    /// A property type outside the decoded set (e.g. a struct/var on
-    /// FO4, or a malformed type). Carries the raw type tag; the rest of
-    /// this script's properties are abandoned (we can't know the width).
+    /// Type 7 (Fallout 4+) — a struct: its members by name. xEdit
+    /// `wbScriptPropertyStruct`: a u32 count of members, each a u16-length
+    /// name, a type byte, a flags byte and a value of that type (a nested
+    /// struct recursing).
+    Struct(Vec<StructMember>),
+    /// A property type outside the decoded set (FO4's `Var` (6), which xEdit
+    /// itself leaves undecoded, or a malformed type). Carries the raw type
+    /// tag; the rest of this script's properties are abandoned (we can't know
+    /// the width).
     Unknown(u8),
+}
+
+/// One member of a [`PropertyValue::Struct`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StructMember {
+    pub name: String,
+    /// The member's flags byte (`1` = edited).
+    pub flags: u8,
+    pub value: PropertyValue,
 }
 
 /// One authored property: name + value.
@@ -288,6 +303,11 @@ fn remap_property_value(value: &mut PropertyValue, remap: &crate::esm::reader::F
         PropertyValue::Array(values) => {
             for value in values {
                 remap_property_value(value, remap);
+            }
+        }
+        PropertyValue::Struct(members) => {
+            for member in members {
+                remap_property_value(&mut member.value, remap);
             }
         }
         _ => {}
@@ -643,8 +663,9 @@ impl<'a> Cursor<'a> {
             3 => PropertyValue::Int32(self.i32()?),
             4 => PropertyValue::Float(self.f32()?),
             5 => PropertyValue::Bool(self.u8()? != 0),
-            11..=15 => {
-                // Array of the base type (11 → 1, 12 → 2, …).
+            7 => self.struct_value(object_format)?,
+            11..=15 | 17 => {
+                // Array of the base type (11 → 1, 12 → 2, …, 17 → 7).
                 let base = ptype - 10;
                 let count = self.u32()?;
                 let mut items = Vec::with_capacity(count.min(4096) as usize);
@@ -658,6 +679,23 @@ impl<'a> Cursor<'a> {
             }
             other => PropertyValue::Unknown(other),
         })
+    }
+
+    /// A [`PropertyValue::Struct`]: a u32 count of named, typed members.
+    fn struct_value(&mut self, object_format: i16) -> Option<PropertyValue> {
+        let count = self.u32()?;
+        let mut members = Vec::with_capacity(count.min(256) as usize);
+        for _ in 0..count {
+            let name = self.wstring()?;
+            let ty = self.u8()?;
+            let flags = self.u8()?;
+            match self.property_value(ty, object_format)? {
+                // A member of unknowable width ends the whole value.
+                v @ PropertyValue::Unknown(_) => return Some(v),
+                value => members.push(StructMember { name, flags, value }),
+            }
+        }
+        Some(PropertyValue::Struct(members))
     }
 }
 
@@ -1064,6 +1102,84 @@ mod tests {
         let (_, clean_end) = ScriptInstanceData::parse_with_consumed(&with_fragments);
         assert_eq!(clean_end, Some(prefix_len));
         assert!(prefix_len < with_fragments.len());
+    }
+
+    /// FO4 struct (7) and array-of-struct (17) properties decode by xEdit's
+    /// `wbScriptPropertyStruct` layout, and the properties after them still
+    /// decode.
+    #[test]
+    fn struct_properties_decode_and_the_rest_follow() {
+        let mut v = Vec::new();
+        v.extend_from_slice(&6i16.to_le_bytes()); // version
+        v.extend_from_slice(&2i16.to_le_bytes()); // object format
+        v.extend_from_slice(&1u16.to_le_bytes()); // scripts
+        push_wstring(&mut v, "WorkshopScript");
+        v.push(0); // script status
+        v.extend_from_slice(&3u16.to_le_bytes()); // properties
+        let object = |v: &mut Vec<u8>, form: u32| {
+            v.extend_from_slice(&0u16.to_le_bytes());
+            v.extend_from_slice(&(-1i16).to_le_bytes());
+            v.extend_from_slice(&form.to_le_bytes());
+        };
+        // Data: Struct { Ref: Object 0x1234, Count: Int32 5 }
+        push_wstring(&mut v, "Data");
+        v.push(7);
+        v.push(1);
+        v.extend_from_slice(&2u32.to_le_bytes());
+        push_wstring(&mut v, "Ref");
+        v.push(1);
+        v.push(1);
+        object(&mut v, 0x1234);
+        push_wstring(&mut v, "Count");
+        v.push(3);
+        v.push(1);
+        v.extend_from_slice(&5i32.to_le_bytes());
+        // Rows: Array of Struct [ { N: Int32 9 } ]
+        push_wstring(&mut v, "Rows");
+        v.push(17);
+        v.push(1);
+        v.extend_from_slice(&1u32.to_le_bytes());
+        v.extend_from_slice(&1u32.to_le_bytes());
+        push_wstring(&mut v, "N");
+        v.push(3);
+        v.push(1);
+        v.extend_from_slice(&9i32.to_le_bytes());
+        // After: Int32 7
+        push_wstring(&mut v, "After");
+        v.push(3);
+        v.push(1);
+        v.extend_from_slice(&7i32.to_le_bytes());
+
+        let (data, end) = ScriptInstanceData::parse_with_consumed(&v);
+        assert_eq!(end, Some(v.len()), "decoded cleanly to the end");
+        let properties = &data.scripts[0].properties;
+        assert_eq!(
+            properties[0].value,
+            PropertyValue::Struct(vec![
+                StructMember {
+                    name: "Ref".into(),
+                    flags: 1,
+                    value: PropertyValue::Object {
+                        form_id: 0x1234,
+                        alias: -1
+                    },
+                },
+                StructMember {
+                    name: "Count".into(),
+                    flags: 1,
+                    value: PropertyValue::Int32(5),
+                },
+            ])
+        );
+        assert_eq!(
+            properties[1].value,
+            PropertyValue::Array(vec![PropertyValue::Struct(vec![StructMember {
+                name: "N".into(),
+                flags: 1,
+                value: PropertyValue::Int32(9),
+            }])])
+        );
+        assert_eq!(properties[2].value, PropertyValue::Int32(7));
     }
 
     // ---- SCEN fragment section ----------------------------------------

@@ -2632,6 +2632,7 @@ fn is_side_effect_free(e: &Expr) -> bool {
         Expr::Cast { expr, .. } => is_side_effect_free(&expr.node),
         Expr::Is { expr, .. } => is_side_effect_free(&expr.node),
         Expr::New { size, .. } => is_side_effect_free(&size.node),
+        Expr::NewStruct { .. } => true,
         Expr::ArrayLit(items) => items.iter().all(|i| is_side_effect_free(&i.node)),
         Expr::IntLit(_)
         | Expr::FloatLit(_)

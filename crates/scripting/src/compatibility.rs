@@ -587,6 +587,7 @@ fn scan_expr(
         Expr::Cast { expr, .. } => scan_expr(expr, scope, source_text, findings),
         Expr::Is { expr, .. } => scan_expr(expr, scope, source_text, findings),
         Expr::New { size, .. } => scan_expr(size, scope, source_text, findings),
+        Expr::NewStruct { .. } => {}
         Expr::ArrayLit(values) => {
             for value in values {
                 scan_expr(value, scope, source_text, findings);

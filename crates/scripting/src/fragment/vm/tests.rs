@@ -1169,3 +1169,57 @@ fn int_arithmetic_is_exact() {
     let lt = binary(BinaryOp::Lt, &Value::Int(0x4101_0F00), &Value::Int(0x4101_0F01)).unwrap();
     assert!(matches!(lt, Value::Bool(true)));
 }
+
+/// Fallout 4 structs and array methods: `new Struct`, members read and
+/// written, `Add`, `FindStruct`, `Remove`, `Length`, an array-of-struct
+/// property from the VMAD.
+#[test]
+fn structs_and_array_methods_run() {
+    let script = parsed_source(
+        "ScriptName QF_VmStructs extends Quest\n\
+         Struct Entry\n Int Id\n ObjectReference Target\n EndStruct\n\
+         ObjectReference Property Marker Auto\n\
+         Entry[] Property Rows Auto\n\
+         Function Fragment_1()\n\
+           Entry[] entries = new Entry[0]\n\
+           Entry first = new Entry\n\
+           first.Id = 3\n\
+           first.Target = Marker\n\
+           entries.Add(first)\n\
+           Entry second = new Entry\n\
+           second.Id = 7\n\
+           entries.Add(second)\n\
+           Int i = entries.FindStruct(\"Id\", 3)\n\
+           If i == 0 && entries.FindStruct(\"Id\", 9) < 0 && entries.Length == 2\n\
+             entries[i].Target.Enable()\n\
+             entries.Remove(0)\n\
+             If entries.Length == 1 && entries[0].Id == 7 && Rows[0].Id == 11\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "Rows".into(),
+            status: 1,
+            value: PropertyValue::Array(vec![PropertyValue::Struct(vec![
+                byroredux_plugin::esm::records::script_instance::StructMember {
+                    name: "Id".into(),
+                    flags: 1,
+                    value: PropertyValue::Int32(11),
+                },
+            ])]),
+        });
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "entries[0].Target.Enable()");
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let _ = &mut world;
+}

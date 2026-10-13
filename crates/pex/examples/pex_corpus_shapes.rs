@@ -171,6 +171,7 @@ fn norm_expr(e: &Expr, out: &mut String) {
         Expr::Cast { expr, .. } => norm_expr(&expr.node, out),
         Expr::Is { expr, .. } => norm_expr(&expr.node, out),
         Expr::New { .. } => out.push_str("new"),
+        Expr::NewStruct { .. } => out.push_str("new struct"),
         Expr::ArrayLit(_) => out.push_str("[..]"),
     }
 }

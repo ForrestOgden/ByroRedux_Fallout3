@@ -281,6 +281,10 @@ pub enum Expr {
         ty: Spanned<Type>,
         size: Box<Spanned<Expr>>,
     },
+    /// Fallout 4 `new StructName`: a struct instance.
+    NewStruct {
+        ty: Spanned<Type>,
+    },
     ArrayLit(Vec<Spanned<Expr>>),
 
     /// `parent.Func(args)` — explicit parent call

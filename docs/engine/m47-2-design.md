@@ -429,7 +429,7 @@ that does not exist yet:
   - relationships, `Kill`, caps and XP rewards.
 
   The Papyrus VM (`scripting.md` §The Papyrus VM) now runs quest fragments
-  the lowering declines but its check accepts: 66.8% lowered, 79.2% lowered
+  the lowering declines but its check accepts: 66.8% lowered, 79.3% lowered
   or interpreted. It keeps object script variables across fragments
   (`QuestScriptObjects`) and suspends at `Utility.Wait` anywhere in a
   statement call chain (`VmResume` frames, saved with the continuation).

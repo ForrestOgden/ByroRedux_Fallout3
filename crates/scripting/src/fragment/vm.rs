@@ -92,6 +92,9 @@ pub enum Value {
     /// A quest alias.
     Alias { quest: u32, alias: i16 },
     Array(Rc<RefCell<Vec<Value>>>),
+    /// A Fallout 4 struct: its members by name. Structs, like arrays, are
+    /// shared by reference.
+    Struct(Rc<RefCell<Vec<(String, Value)>>>),
 }
 
 impl Value {
@@ -103,7 +106,7 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             Value::Str(s) => !s.is_empty(),
             Value::Form(form) => *form != 0,
-            Value::Alias { .. } | Value::Array(_) => true,
+            Value::Alias { .. } | Value::Array(_) | Value::Struct(_) => true,
         }
     }
 
@@ -140,6 +143,7 @@ impl Value {
             Value::Form(form) => format!("[Form <{form:08X}>]"),
             Value::Alias { quest, alias } => format!("[Alias <{quest:08X}:{alias}>]"),
             Value::Array(_) => "[Array]".into(),
+            Value::Struct(_) => "[Struct]".into(),
         }
     }
 
@@ -151,6 +155,7 @@ impl Value {
             (Value::Form(a), Value::Form(b)) => a == b,
             (Value::Alias { quest: a, alias: x }, Value::Alias { quest: b, alias: y }) => a == b && x == y,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
+            (Value::Struct(a), Value::Struct(b)) => Rc::ptr_eq(a, b),
             (a, b) => match (a.int(), b.int()) {
                 (Some(a), Some(b)) => a == b,
                 _ => match (a.number(), b.number()) {
@@ -159,6 +164,11 @@ impl Value {
                 },
             },
         }
+    }
+
+    /// A struct's member `name`, case-insensitively.
+    fn member(members: &[(String, Value)], name: &str) -> Option<usize> {
+        members.iter().position(|(member, _)| member.eq_ignore_ascii_case(name))
     }
 
     fn default_for(ty: &Type) -> Value {
@@ -185,6 +195,12 @@ impl Value {
             PropertyValue::Bool(b) => Value::Bool(*b),
             PropertyValue::Array(items) => Value::Array(Rc::new(RefCell::new(
                 items.iter().map(Value::from_property).collect(),
+            ))),
+            PropertyValue::Struct(members) => Value::Struct(Rc::new(RefCell::new(
+                members
+                    .iter()
+                    .map(|member| (member.name.clone(), Value::from_property(&member.value)))
+                    .collect(),
             ))),
             PropertyValue::Unknown(_) => Value::None,
         }
@@ -270,7 +286,7 @@ fn store(value: &Value) -> Option<VmStored> {
             quest: *quest,
             alias: *alias,
         },
-        Value::Array(_) => return None,
+        Value::Array(_) | Value::Struct(_) => return None,
     })
 }
 
@@ -584,6 +600,40 @@ fn getter_constant(property: &byroredux_papyrus::ast::Property) -> Option<Value>
     }
 }
 
+/// The array methods the VM runs (CK *Arrays (Papyrus)*).
+const ARRAY_METHODS: [&str; 9] = [
+    "find",
+    "rfind",
+    "findstruct",
+    "rfindstruct",
+    "add",
+    "insert",
+    "remove",
+    "removelast",
+    "clear",
+];
+
+/// The declaration of the struct type `name`: `Script#Struct` names its
+/// script; a bare name is a struct of `script`'s chain.
+fn struct_declaration(
+    script: &Arc<Script>,
+    name: &str,
+    scripts: &HashMap<String, Arc<Script>>,
+) -> Option<byroredux_papyrus::ast::Struct> {
+    let (owners, struct_name) = match name.split_once('#') {
+        Some((owner, struct_name)) => (vec![scripts.get(&owner.to_ascii_lowercase())?.clone()], struct_name),
+        None => (script_chain(script, scripts), name),
+    };
+    owners.iter().find_map(|owner| {
+        owner.body.iter().find_map(|item| match &item.node {
+            ScriptItem::Struct(declaration) if declaration.name.node.0.eq_ignore_ascii_case(struct_name) => {
+                Some(declaration.clone())
+            }
+            _ => None,
+        })
+    })
+}
+
 /// The engine classes whose `AutoReadOnly` constants a script reads on any
 /// reference (`akRef.Motion_Keyframed`).
 const CONSTANT_CLASSES: [&str; 3] = ["objectreference", "actor", "form"];
@@ -712,6 +762,7 @@ impl Synth {
             }
             Value::Alias { .. } => return stop("another quest's alias as a native argument"),
             Value::Array(_) => return stop("an array as a native argument"),
+            Value::Struct(_) => return stop("a struct as a native argument"),
         })
     }
 
@@ -1113,6 +1164,16 @@ impl Vm<'_> {
             }
             Expr::MemberAccess { object, member } => {
                 let owner = self.eval(frame, &object.node)?;
+                if let Value::Struct(members) = &owner {
+                    let mut members = members.borrow_mut();
+                    return match Value::member(&members, &member.node.0) {
+                        Some(index) => {
+                            members[index].1 = value;
+                            Ok(())
+                        }
+                        None => stop(format!("struct member {}", member.node.0)),
+                    };
+                }
                 if member.node.0.eq_ignore_ascii_case("value") && matches!(owner, Value::Form(_)) && !self.is_quest_form(&owner) {
                     let Some(number) = value.number() else {
                         return stop("a non-number GlobalVariable.Value");
@@ -1282,6 +1343,16 @@ impl Vm<'_> {
                     None => return stop("array index out of range"),
                 }
             }
+            Expr::NewStruct { ty } => {
+                let name = match &ty.node {
+                    Type::Object(name) => name.0.clone(),
+                    _ => String::new(),
+                };
+                match self.new_struct(frame, &name) {
+                    Some(value) => value,
+                    None => return stop(format!("no struct {name}")),
+                }
+            }
             Expr::New { ty, size } => {
                 let size = self.eval(frame, &size.node)?.number().unwrap_or(0.0).max(0.0) as usize;
                 Value::Array(Rc::new(RefCell::new(vec![Value::default_for(&ty.node); size])))
@@ -1300,6 +1371,13 @@ impl Vm<'_> {
                     if let Value::Array(array) = &owner {
                         return Ok(Value::Int(array.borrow().len() as i32));
                     }
+                }
+                if let Value::Struct(members) = &owner {
+                    let members = members.borrow();
+                    return match Value::member(&members, name) {
+                        Some(index) => Ok(members[index].1.clone()),
+                        None => stop(format!("struct member {name}")),
+                    };
                 }
                 self.read_member(&owner, name)?
             }
@@ -1443,6 +1521,115 @@ impl Vm<'_> {
             Some(value) => Ok(Value::Float(value)),
             None => stop(format!("member {name} of {form:08X}")),
         }
+    }
+
+    /// A new instance of the struct type `name` (`Script#Struct`, or a
+    /// struct of the running script's chain), its members at their defaults.
+    fn new_struct(&self, frame: &Frame, name: &str) -> Option<Value> {
+        let declaration = struct_declaration(&frame.script, name, &self.deferred.vm_scripts)?;
+        let members = declaration
+            .members
+            .iter()
+            .map(|member| {
+                let value = member
+                    .initial_value
+                    .as_ref()
+                    .and_then(|initial| literal_value(&initial.node))
+                    .unwrap_or_else(|| Value::default_for(&member.ty.node));
+                (member.name.node.0.clone(), value)
+            })
+            .collect();
+        Some(Value::Struct(Rc::new(RefCell::new(members))))
+    }
+
+    /// An array method (CK *Arrays (Papyrus)*), when `callee` calls one on an
+    /// array: `Find` / `RFind`, `FindStruct` / `RFindStruct`, `Add`, `Insert`,
+    /// `Remove`, `RemoveLast`, `Clear`.
+    fn array_call(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
+        let Expr::MemberAccess { object, member } = callee else {
+            return Ok(None);
+        };
+        let name = member.node.0.to_ascii_lowercase();
+        if !ARRAY_METHODS.contains(&name.as_str()) || static_class(&object.node).is_some() {
+            return Ok(None);
+        }
+        let Value::Array(array) = self.eval(frame, &object.node)? else {
+            return Ok(None);
+        };
+        let values = self.eval_args(frame, args)?;
+        let int = |index: usize, default: i32| -> i32 { values.get(index).and_then(Value::int).unwrap_or(default) };
+        let mut items = array.borrow_mut();
+        let len = items.len() as i32;
+        // The member a FindStruct compares.
+        let matches = |item: &Value, member: Option<&str>, wanted: &Value| -> bool {
+            match member {
+                None => item.equals(wanted),
+                Some(member) => match item {
+                    Value::Struct(members) => {
+                        let members = members.borrow();
+                        Value::member(&members, member).is_some_and(|index| members[index].1.equals(wanted))
+                    }
+                    _ => false,
+                },
+            }
+        };
+        let (member, wanted, start_arg) = match name.as_str() {
+            "findstruct" | "rfindstruct" => {
+                let Some(Value::Str(member)) = values.first() else {
+                    return stop(format!("{name} without a member name"));
+                };
+                (Some(member.clone()), values.get(1).cloned().unwrap_or(Value::None), 2)
+            }
+            _ => (None, values.first().cloned().unwrap_or(Value::None), 1),
+        };
+        Ok(Some(match name.as_str() {
+            "find" | "findstruct" => {
+                let start = int(start_arg, 0).max(0);
+                (start..len)
+                    .find(|&i| matches(&items[i as usize], member.as_deref(), &wanted))
+                    .map_or(Value::Int(-1), Value::Int)
+            }
+            "rfind" | "rfindstruct" => {
+                let start = int(start_arg, -1);
+                let start = if start < 0 || start >= len { len - 1 } else { start };
+                (0..=start)
+                    .rev()
+                    .find(|&i| matches(&items[i as usize], member.as_deref(), &wanted))
+                    .map_or(Value::Int(-1), Value::Int)
+            }
+            "add" => {
+                // "in the case of adding structs, they will all point at the
+                // same struct" — the value is shared, not copied.
+                for _ in 0..int(1, 1).max(0) {
+                    items.push(wanted.clone());
+                }
+                Value::None
+            }
+            "insert" => {
+                let index = int(1, 0).clamp(0, len) as usize;
+                items.insert(index, wanted);
+                Value::None
+            }
+            "remove" => {
+                let index = int(0, 0);
+                let count = int(1, 1).max(0);
+                if index < 0 || index >= len {
+                    return stop("array Remove out of range");
+                }
+                let end = (index + count).min(len);
+                items.drain(index as usize..end as usize);
+                Value::None
+            }
+            "removelast" => {
+                items.pop();
+                Value::None
+            }
+            "clear" => {
+                items.clear();
+                Value::None
+            }
+            _ => return Ok(None),
+        }))
     }
 
     /// An engine class's constant `name`, from the installed classes.
@@ -1753,6 +1940,9 @@ impl Vm<'_> {
     }
 
     fn call_value(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Value> {
+        if let Some(value) = self.array_call(frame, callee, args)? {
+            return Ok(value);
+        }
         if let Some(value) = self.object_read(frame, callee, args)? {
             return Ok(value);
         }
@@ -1799,6 +1989,9 @@ impl Vm<'_> {
                 };
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
+        }
+        if self.array_call(frame, &callee.node, args)?.is_some() {
+            return Ok(Flow::Normal);
         }
         if self.object_read(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
@@ -2028,6 +2221,8 @@ enum Kind {
     Player,
     Alias,
     Array,
+    /// A Fallout 4 struct.
+    Struct,
     None,
 }
 
@@ -2203,6 +2398,94 @@ impl<'l> Checker<'l> {
         }
     }
 
+    /// The check's kind of the declared type `ty` in `script`: a struct type
+    /// is a struct, the rest as [`kind_of_type`].
+    fn kind_of_declared(&mut self, script: &Arc<Script>, ty: &Type) -> Kind {
+        if let Type::Object(name) = ty {
+            if self.struct_declaration(script, &name.0).is_some() {
+                return Kind::Struct;
+            }
+        }
+        kind_of_type(ty, self.library)
+    }
+
+    /// The declaration of the struct type `name` from `script`'s chain or,
+    /// for `Script#Struct`, that script — registering it for the run.
+    fn struct_declaration(&mut self, script: &Arc<Script>, name: &str) -> Option<byroredux_papyrus::ast::Struct> {
+        let owners = match name.split_once('#') {
+            Some((owner, _)) => {
+                let owner = self.library?.script(owner)?;
+                self.scripts
+                    .insert(owner.name.node.0.to_ascii_lowercase(), Arc::clone(&owner));
+                vec![owner]
+            }
+            None => self.chain(script),
+        };
+        let mut known: HashMap<String, Arc<Script>> = HashMap::new();
+        for owner in &owners {
+            known.insert(owner.name.node.0.to_ascii_lowercase(), Arc::clone(owner));
+        }
+        struct_declaration(&owners[0], name, &known)
+    }
+
+    /// The declared type of `e`, where the check can know it: a typed local
+    /// or member, an array's element, a struct's member, a cast.
+    fn static_type(&mut self, frame: &CheckFrame, e: &Expr) -> Option<Type> {
+        match e {
+            Expr::Ident(name) => match frame.types.get(&name.0.to_ascii_lowercase()) {
+                Some(ty) => Some(ty.clone()),
+                None => {
+                    let script = Arc::clone(&frame.script);
+                    self.member_type(&script, &name.0)
+                }
+            },
+            Expr::Cast { target_type, .. } => Some(target_type.node.clone()),
+            Expr::Index { object, .. } => match self.static_type(frame, &object.node)? {
+                Type::Array(element) => Some(*element),
+                _ => None,
+            },
+            Expr::MemberAccess { object, member } => {
+                let owner = self.static_type(frame, &object.node)?;
+                let Type::Object(owner) = owner else {
+                    return None;
+                };
+                let script = Arc::clone(&frame.script);
+                if let Some(declaration) = self.struct_declaration(&script, &owner.0) {
+                    return declaration
+                        .members
+                        .iter()
+                        .find(|m| m.name.node.0.eq_ignore_ascii_case(&member.node.0))
+                        .map(|m| m.ty.node.clone());
+                }
+                let declared = self.library?.script(&owner.0)?;
+                self.member_type(&declared, &member.node.0)
+            }
+            _ => None,
+        }
+    }
+
+    /// An array method's result kind (CK *Arrays (Papyrus)*).
+    fn check_array_call(&mut self, name: &str, args: &[Arg], statement: bool) -> Option<Kind> {
+        let num = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num));
+        let ok = match name {
+            "find" | "rfind" => (1..=2).contains(&args.len()) && args.get(1).is_none_or(num),
+            "findstruct" | "rfindstruct" => {
+                (2..=3).contains(&args.len())
+                    && matches!(args[0], Arg::Literal(Expr::StringLit(_)))
+                    && args.get(2).is_none_or(num)
+            }
+            "add" => statement && (1..=2).contains(&args.len()) && args.get(1).is_none_or(num),
+            "insert" => statement && args.len() == 2 && num(&args[1]),
+            "remove" => statement && (1..=2).contains(&args.len()) && args.iter().all(num),
+            "removelast" | "clear" => statement && args.is_empty(),
+            _ => false,
+        };
+        if !ok {
+            return self.fail(|| format!("array {name}/{}", args.len()));
+        }
+        Some(if name.contains("find") { Kind::Num } else { Kind::None })
+    }
+
     /// An engine class's constant `name`'s type, registering the class.
     fn engine_constant_type(&mut self, name: &str) -> Option<Type> {
         CONSTANT_CLASSES.iter().find_map(|class| {
@@ -2308,7 +2591,8 @@ impl<'l> Checker<'l> {
             };
             for param in callable.params {
                 let key = param.name.node.0.to_ascii_lowercase();
-                frame.locals.insert(key.clone(), kind_of_type(&param.ty.node, self.library));
+                let kind = self.kind_of_declared(script, &param.ty.node);
+                frame.locals.insert(key.clone(), kind);
                 frame.types.insert(key, param.ty.node.clone());
             }
             callable
@@ -2368,9 +2652,8 @@ impl<'l> Checker<'l> {
                     self.kind(frame, &init.node)?;
                 }
                 let key = variable.name.node.0.to_ascii_lowercase();
-                frame
-                    .locals
-                    .insert(key.clone(), kind_of_type(&variable.ty.node, self.library));
+                let kind = self.kind_of_declared(&frame.script, &variable.ty.node);
+                frame.locals.insert(key.clone(), kind);
                 frame.types.insert(key, variable.ty.node.clone());
             }
             Stmt::Assign { target, value, .. } => {
@@ -2384,7 +2667,12 @@ impl<'l> Checker<'l> {
                     }
                     Expr::MemberAccess { object, member } => {
                         let owner = self.kind(frame, &object.node)?;
-                        if owner == Kind::Object && member.node.0.eq_ignore_ascii_case("value") && value_kind == Kind::Num {
+                        if owner == Kind::Struct {
+                            if self.static_type(frame, &target.node).is_none() {
+                                let member = member.node.0.clone();
+                                return self.fail(|| format!("assignment to .{member} of an untyped struct"));
+                            }
+                        } else if owner == Kind::Object && member.node.0.eq_ignore_ascii_case("value") && value_kind == Kind::Num {
                             // `Global.Value = n`.
                             let (callee, args) = set_value_call(object, value);
                             self.check_call(frame, &callee.node, &args, true)?;
@@ -2460,7 +2748,7 @@ impl<'l> Checker<'l> {
                         let name = name.0.clone();
                         return self.fail(|| format!("unknown name {name}"));
                     };
-                    kind_of_type(&ty, self.library)
+                    self.kind_of_declared(&script, &ty)
                 }
             }
             Expr::Cast { expr, target_type } => {
@@ -2510,8 +2798,22 @@ impl<'l> Checker<'l> {
                     return None;
                 }
                 self.kind(frame, &index.node)?;
-                // Element kinds are not tracked; reads of them stay values.
-                Kind::Object
+                // The element's declared type when the array's is known;
+                // else an untracked value.
+                match self.static_type(frame, e) {
+                    Some(ty) => {
+                        let script = Arc::clone(&frame.script);
+                        self.kind_of_declared(&script, &ty)
+                    }
+                    None => Kind::Object,
+                }
+            }
+            Expr::NewStruct { ty } => {
+                let script = Arc::clone(&frame.script);
+                match &ty.node {
+                    Type::Object(name) if self.struct_declaration(&script, &name.0).is_some() => Kind::Struct,
+                    _ => return self.fail(|| "new of an unknown struct".into()),
+                }
             }
             Expr::New { size, .. } => {
                 self.kind(frame, &size.node)?;
@@ -2528,6 +2830,14 @@ impl<'l> Checker<'l> {
                 if member.node.0.eq_ignore_ascii_case("length") && owner == Kind::Array {
                     return Some(Kind::Num);
                 }
+                if owner == Kind::Struct {
+                    let Some(ty) = self.static_type(frame, e) else {
+                        let member = member.node.0.clone();
+                        return self.fail(|| format!("member .{member} of an untyped struct"));
+                    };
+                    let script = Arc::clone(&frame.script);
+                    return Some(self.kind_of_declared(&script, &ty));
+                }
                 if owner == Kind::Quest {
                     // Another quest script's member: its declared type when
                     // the quest's script is known (an `ActorValue Property`
@@ -2537,8 +2847,10 @@ impl<'l> Checker<'l> {
                         .declared_script(frame, &object.node)
                         .and_then(|script| self.member_type(&script, &member.node.0));
                     match declared {
-                        Some(Type::Array(_)) => return self.fail(|| "an array member of a quest".into()),
-                        Some(ty) => kind_of_type(&ty, self.library),
+                        Some(ty) => {
+                            let script = Arc::clone(&frame.script);
+                            self.kind_of_declared(&script, &ty)
+                        }
                         None => Kind::Num,
                     }
                 } else if member.node.0.eq_ignore_ascii_case("value") {
@@ -2662,6 +2974,9 @@ impl<'l> Checker<'l> {
             return result;
         }
         let receiver_kind = self.kind(frame, receiver)?;
+        if receiver_kind == Kind::Array {
+            return self.check_array_call(&name, &arg_kinds, statement);
+        }
         match (receiver_kind, name.as_str()) {
             (Kind::Alias, "getref" | "getreference" | "getactorref" | "getactorreference" | "getshipref" | "getshipreference") => {
                 return Some(Kind::Object);
@@ -2787,7 +3102,7 @@ impl<'l> Checker<'l> {
                     ident(&name)
                 }
                 Kind::Object | Kind::Alias => ident(&name),
-                Kind::Array => return None,
+                Kind::Array | Kind::Struct => return None,
             })
         };
         let receiver = match receiver {

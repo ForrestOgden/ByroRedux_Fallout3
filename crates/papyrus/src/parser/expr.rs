@@ -236,7 +236,7 @@ impl Parser {
         }
     }
 
-    /// Parse `new Type[size]`
+    /// Parse `new Type[size]`, or FO4's `new StructName`
     ///
     /// #5331 — `New` is a prefix keyword with a mandatory operand, the
     /// #5021 discipline: the type must share the keyword's line, and so
@@ -247,6 +247,11 @@ impl Parser {
         let (_, start) = self.advance().unwrap(); // consume 'New'
         self.expect_same_line("type after 'New'")?;
         let ty = self.parse_base_type()?;
+        // Fallout 4 `new StructName`: a struct instance, no size.
+        if matches!(ty.node, Type::Object(_)) && !self.check_raw(&Token::LBracket) {
+            let span = start.merge(ty.span);
+            return Ok(Spanned::new(Expr::NewStruct { ty }, span));
+        }
         self.expect_raw(&Token::LBracket, "'[' after new type")?;
         let size = self.parse_expr()?;
         let end = self.expect(&Token::RBracket, "']' in new expression")?;

@@ -670,6 +670,16 @@ runtime:
   asFilename)` resolves a plugin-local id through the load order
   (`LoadOrderIdentity::form_from_file`), ignoring the id's load-order bits
   as the CK page says.
+- **Structs and array methods (Fallout 4).** A struct is a shared value
+  with named members; `new StructName` creates one from its declaration.
+  The decompiler now emits the `.pex` struct tables, and the parser and AST
+  have a distinct `Expr::NewStruct`. VMAD struct (type 7) and
+  array-of-struct (17) properties decode by xEdit's layout. Arrays run the
+  CK's *Arrays (Papyrus)* methods: `Find` / `RFind`, `FindStruct` /
+  `RFindStruct`, `Add` (a struct added several times is the same struct),
+  `Insert`, `Remove`, `RemoveLast` and `Clear`. The check follows declared
+  types through elements and members. An array held in a script variable
+  doesn't persist yet: it would need a saved array heap with identity.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
 - **Linked references.** `GetNthLinkedRef(n)` follows the unkeyworded link n
@@ -698,7 +708,7 @@ walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
 line, as the lowering binds it. Package (`PF_`) fragments are not wired on
 either path yet.
 
-With the VM, 79.2% of the Skyrim corpus runs (Fallout 4: 70.2%) (lowered + interpreted;
+With the VM, 79.3% of the Skyrim corpus runs (Fallout 4: 71.7%) (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:

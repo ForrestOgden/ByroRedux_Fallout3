@@ -198,11 +198,9 @@ fn lower_expr(node: &Node) -> Spanned<Expr> {
             ty: sp(lower_type(element_type)),
             size: Box::new(lower_expr(size)),
         },
-        // Struct creation (`new T`) has no size; the AST's `New` requires
-        // one, so we use 0. Rare (FO4+ structs) and recognizer-irrelevant.
-        NodeKind::StructCreate { struct_type } => Expr::New {
+        // Struct creation, `new T` (FO4+).
+        NodeKind::StructCreate { struct_type } => Expr::NewStruct {
             ty: sp(lower_type(struct_type)),
-            size: Box::new(sp(Expr::IntLit(0))),
         },
         // Statement-shaped nodes shouldn't appear as sub-expressions.
         NodeKind::Assign { .. }
@@ -546,6 +544,26 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
     let object = pex.main_object().ok_or(DecompileError::EmptyPex)?;
     let masks = UserFlagMasks::from_pex(pex);
     let mut body: Vec<Spanned<ScriptItem>> = Vec::new();
+
+    // FO4+ — the object's struct definitions, each member with the default
+    // its table stores.
+    for info in &object.struct_infos {
+        body.push(sp(ScriptItem::Struct(byroredux_papyrus::ast::Struct {
+            name: ident(&info.name),
+            members: info
+                .members
+                .iter()
+                .map(|member| Variable {
+                    ty: sp(lower_type(&member.type_name)),
+                    name: ident(&member.name),
+                    initial_value: default_literal(&member.value),
+                    is_conditional: false,
+                    is_const: member.const_flag != 0,
+                    is_hidden: false,
+                })
+                .collect(),
+        })));
+    }
 
     for v in &object.variables {
         if v.name.starts_with("::") {
