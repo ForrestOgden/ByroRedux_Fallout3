@@ -236,6 +236,16 @@ impl QuestStageState {
             .is_some_and(|data| data.status == QuestStatus::Failed)
     }
 
+    /// Every started quest's lifecycle status — a snapshot a caller can hold
+    /// after dropping its guard (the Story Manager walk evaluates conditions
+    /// that read this resource again).
+    pub fn statuses(&self) -> HashMap<QuestFormId, QuestStatus> {
+        self.quests
+            .iter()
+            .map(|(&quest, data)| (quest, data.status))
+            .collect()
+    }
+
     pub fn is_active(&self, quest: QuestFormId) -> bool {
         self.quests.get(&quest).is_some_and(|data| data.active)
     }

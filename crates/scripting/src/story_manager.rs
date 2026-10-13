@@ -49,7 +49,7 @@ use byroredux_plugin::esm::records::{SmNodeKind, SmNodePolicies, SmQuestLink, Sm
 use std::collections::HashMap;
 
 use crate::condition::{evaluate, ConditionContext, ConditionFunction, EventDataSlots};
-use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState};
+use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState, QuestStatus};
 use crate::scene::SceneActorBindings;
 
 /// One raised story event — the ECS replacement for the engine's story
@@ -723,7 +723,9 @@ pub fn story_manager_dispatch_system(world: &World) {
         };
         let registry = world.try_resource::<QuestDefinitionRegistry>();
         let aliases = world.try_resource::<crate::scene::SceneQuestAliasRegistry>();
-        let stages = world.try_resource::<QuestStageState>();
+        let stages = world
+            .try_resource::<QuestStageState>()
+            .map(|stages| stages.statuses());
         let node_state = world.try_resource::<StoryManagerNodeState>();
         let mut candidates = Vec::new();
         let mut wraps = Vec::new();
@@ -733,7 +735,7 @@ pub fn story_manager_dispatch_system(world: &World) {
                 slots: event.slots(),
                 registry: registry.as_deref(),
                 aliases: aliases.as_deref(),
-                stages: stages.as_deref(),
+                stages: stages.as_ref(),
                 candidates: &mut candidates,
                 node_state: node_state.as_deref(),
                 hours,
@@ -895,7 +897,10 @@ struct WalkState<'a> {
     registry: Option<&'a QuestDefinitionRegistry>,
     /// M47.2 — the quests' aliases, for the required-`FromEvent`-fill gate.
     aliases: Option<&'a crate::scene::SceneQuestAliasRegistry>,
-    stages: Option<&'a QuestStageState>,
+    /// The started quests' statuses, snapshotted before the walk: its
+    /// condition evaluation reads `QuestStageState` itself, and a second
+    /// read guard on one thread can deadlock behind a queued writer (#2386).
+    stages: Option<&'a HashMap<QuestFormId, QuestStatus>>,
     candidates: &'a mut Vec<QuestStartCandidate>,
     /// Phase 3 — node-policy state (do-all marks, reset timestamps),
     /// read during the walk; writes go through `pending_marks` and are
@@ -1154,7 +1159,8 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
             // Running quests are ineligible; stopped ones may re-fire
             // (the radiant rerun path — `is_started` would block a
             // stopped quest's restart forever).
-            if state.stages.is_some_and(|stages| stages.is_running(quest)) {
+            let status = state.stages.and_then(|stages| stages.get(&quest)).copied();
+            if status == Some(QuestStatus::Running) {
                 return false;
             }
             // #5406 — a terminal quest is only eligible for the rerun
@@ -1163,9 +1169,7 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
             // done forever and must stop jamming stacked pools and
             // winning random picks. Without definitions the quest is
             // treated as repeatable and phase B decides.
-            if state.stages.is_some_and(|stages| {
-                stages.is_completed(quest) || stages.is_failed(quest)
-            }) && state
+            if matches!(status, Some(QuestStatus::Completed | QuestStatus::Failed)) && state
                 .registry
                 .is_some_and(|registry| registry.is_run_once(quest))
             {
