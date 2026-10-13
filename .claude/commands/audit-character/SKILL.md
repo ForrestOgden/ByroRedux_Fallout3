@@ -181,8 +181,8 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   hide the gap (#4458: fixed by `attach_to_player`; recurred as #5413 `212a71dba` — the player body path skips
   `stamp_spell_list`, so `RaceSpells` was absent and the scripted `AddRaceSpells`/`RemoveRaceSpells` pair no-oped
   until `attach_to_player` stamped it from `resolve_racial_spells`). The player now carries `CharacterLevel`/`Background`
-  from the resolved Player record (#4678); `CharacterLevel` is still unsaved, so the first XP writer trips
-  `validate_progression_state` (`/audit-save`). The player's `FactionRanks` is re-derived from the record
+  from the resolved Player record (#4678); `CharacterLevel` is saved since M47.2's kill experience (v46),
+  which retired #2947's `validate_progression_state` guard. The player's `FactionRanks` is re-derived from the record
   (Use-Factions terminal) on load, not saved (#5058 `be3cd9468`) — a scripted rank edit is lost on load by
   design, exactly as for a respawned NPC.
 - **Magic modifiers (#4415, closed)**: `byroredux_scripting::magic::apply_constant_modifiers` adds constant-spell

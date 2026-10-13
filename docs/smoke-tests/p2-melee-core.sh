@@ -273,15 +273,22 @@ grep -Fq 'controls.bind.attack=key_r restart_required=false' "$settings_status_l
     || fail "settings.status did not expose the live Attack binding"
 echo "smoke[p2-melee-core]: PASS -- persistent settings registry is observable"
 
-expected_hits="$(awk -v health="$P2_TARGET_HEALTH" -v damage="$loadout_damage" \
-    'BEGIN { print int((health + damage - 0.0001) / damage) }')"
 previous_health="$P2_TARGET_HEALTH"
 # The #2976 blocked swing above already landed one hit (zero damage) before
 # this loop starts, so CombatState's cumulative attacks/hits counters are
 # offset by one from here on. Health is unaffected, so previous_health still
 # correctly starts clean at P2_TARGET_HEALTH.
 blocked_swing_count=1
-for hit in $(seq 1 "$expected_hits"); do
+# M47.2 — the target's Damage Threshold (New Vegas) resolves where the hit
+# lands: every swing must *arrive* with the inventory.status damage
+# (`incoming=`) and apply one consistent amount (`damage=`) that Health then
+# loses. The swing count follows from the applied damage, so it is counted
+# to the kill (bounded by the undefended count) rather than precomputed.
+max_hits="$(awk -v health="$P2_TARGET_HEALTH" -v damage="$loadout_damage" \
+    'BEGIN { print int((health + damage - 0.0001) / (damage * 0.2)) }')"
+applied_damage=""
+expected_hits=0
+for hit in $(seq 1 "$max_hits"); do
     debug_commands "combat.approach $target
 input.press attack" "$command_log" || fail "could not queue swing $hit"
     grep -Fq "physics_synced=true" "$command_log" \
@@ -298,17 +305,34 @@ input.press attack" "$command_log" || fail "could not queue swing $hit"
         "hits=$((hit + blocked_swing_count))" \
         "$status_log" \
         "swing $hit emitted one HitEvent and applied damage"
-    grep -Fq "damage=$loadout_damage" "$status_log" \
-        || fail "swing $hit did not use inventory.status damage $loadout_damage"
-    expected_after="$(awk -v before="$previous_health" -v damage="$loadout_damage" \
+    grep -Fq "incoming=$loadout_damage" "$status_log" \
+        || fail "swing $hit did not arrive with inventory.status damage $loadout_damage"
+    swing_damage="$(sed -nE 's/.* damage=([0-9]+([.][0-9]+)?) health_before=.*/\1/p' \
+        "$status_log" | tail -1)"
+    [[ "$swing_damage" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        || fail "swing $hit did not report its applied damage"
+    awk -v applied="$swing_damage" -v incoming="$loadout_damage" \
+        'BEGIN { exit !(applied > 0.0 && applied <= incoming) }' \
+        || fail "swing $hit applied $swing_damage of $loadout_damage incoming"
+    if [[ -z "$applied_damage" ]]; then
+        applied_damage="$swing_damage"
+    elif [[ "$swing_damage" != "$applied_damage" ]]; then
+        fail "swing $hit applied $swing_damage, not the $applied_damage of the swings before"
+    fi
+    expected_after="$(awk -v before="$previous_health" -v damage="$swing_damage" \
         'BEGIN { printf "%.1f", before - damage }')"
     grep -Fq "health_before=$previous_health" "$status_log" \
         || fail "swing $hit began from the wrong Health value"
     grep -Fq "health_after=$expected_after" "$status_log" \
         || fail "swing $hit produced the wrong Health result"
     previous_health="$expected_after"
+    expected_hits="$hit"
+    if grep -Fq "killed=true" "$status_log"; then
+        break
+    fi
     wait_for_pattern "combat.status" "cooldown_ready=true" "$status_log" "swing $hit cooldown elapsed"
 done
+echo "smoke[p2-melee-core]: PASS -- $expected_hits swings of $applied_damage applied ($loadout_damage incoming)"
 
 total_hits=$((expected_hits + blocked_swing_count))
 grep -Fq "attacks=$total_hits hits=$total_hits kills=1" "$status_log" \

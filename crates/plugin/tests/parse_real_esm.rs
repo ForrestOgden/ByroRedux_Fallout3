@@ -5961,3 +5961,4 @@ fn fallout_armor_damage_threshold_and_resistance_decode() {
     }
 }
 
+

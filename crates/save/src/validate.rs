@@ -13,7 +13,6 @@
 //! then layer game-specific checks on top.
 
 use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer, AnimationStack};
-use byroredux_core::character::CharacterLevel;
 use byroredux_core::ecs::components::{
     Children, EquipmentSlots, EquippedWeapon, EscortState, FollowState, Inventory, Material,
     Parent, Seated,
@@ -54,10 +53,6 @@ pub enum ValidationKind {
     FormId,
     /// An entity reference points past `next_entity` (never spawned).
     DanglingEntity,
-    /// A component the save registry deliberately excludes as
-    /// "re-derived from static ESM data, write-once" now holds state that
-    /// isn't actually re-derivable — see [`validate_progression_state`].
-    UnsavedProgression,
     /// A `Material` carries a non-finite (NaN/Inf) scalar — see
     /// [`validate_material_finiteness`] and [`Material::sanitize_finite`].
     NonFiniteMaterial,
@@ -77,7 +72,6 @@ pub fn validate_world(world: &World) -> Vec<ValidationError> {
     validate_saved_entity_references(world, next_entity, &mut errors);
     validate_animation(world, next_entity, &mut errors);
     validate_inventory_instances(world, &mut errors);
-    validate_progression_state(world, &mut errors);
     validate_material_finiteness(world, &mut errors);
 
     errors
@@ -531,39 +525,6 @@ fn validate_inventory_instances(world: &World, errors: &mut Vec<ValidationError>
     }
 }
 
-/// `CharacterLevel` is deliberately excluded from the save registry — see
-/// `REDERIVED_NOT_SAVED`, `byroredux/src/save_io/round_trip_tests.rs` —
-/// classified as "re-derived from static ESM `NPC_` data, write-once". That
-/// premise holds only because no leveling runtime exists yet: NPC spawn
-/// always stamps `xp: 0` (`byroredux/src/npc_spawn.rs`), and `CharacterLevel`
-/// itself defines `xp` as runtime progress toward the next level — state a
-/// static ESM record cannot supply by construction. The day XP starts
-/// accumulating, the exemption is false and every save would silently
-/// discard it (#2947). Abort loudly instead of letting that happen quietly:
-/// a non-zero `xp` at snapshot time means either a leveling runtime landed
-/// without registering `CharacterLevel` in `build_save_registry` (do that,
-/// dropping it from `REDERIVED_NOT_SAVED` in the same commit, per #1835's
-/// established pattern), or this check needs to move with it.
-fn validate_progression_state(world: &World, errors: &mut Vec<ValidationError>) {
-    let Some(q_level) = world.query::<CharacterLevel>() else {
-        return;
-    };
-    for (entity, level) in q_level.iter() {
-        if level.xp != 0 {
-            errors.push(ValidationError {
-                entity,
-                kind: ValidationKind::UnsavedProgression,
-                detail: format!(
-                    "CharacterLevel.xp = {} is unsaved runtime progress, but CharacterLevel \
-                     is excluded from the save registry as write-once/re-derivable-from-ESM \
-                     (#2947) — register it in build_save_registry before this can be true",
-                    level.xp
-                ),
-            });
-        }
-    }
-}
-
 /// Every `Material` must carry only finite (non-NaN, non-±inf) scalars —
 /// see [`Material::sanitize_finite`] for why. Probes a clone rather than
 /// mutating the live world: `validate_world` takes `&World` and is meant
@@ -853,17 +814,6 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
 
-    /// #2947 — the exemption `REDERIVED_NOT_SAVED` documents
-    /// (`byroredux/src/save_io/round_trip_tests.rs`) holds only because NPC
-    /// spawn always stamps `xp: 0`; a freshly spawned actor must pass clean.
-    #[test]
-    fn character_level_with_no_progress_is_clean() {
-        let mut world = World::new();
-        let e = world.spawn();
-        world.insert(e, CharacterLevel { level: 5, xp: 0 });
-        assert!(validate_world(&world).is_empty());
-    }
-
     /// #2687 (SAFE-D9-01) — a `Material` with a non-finite scalar (the
     /// shape a hand-edited/corrupted save would carry) trips the gate
     /// rather than being written silently. A clean `Material` passes.
@@ -890,53 +840,6 @@ mod tests {
         let mut world = World::new();
         let e = world.spawn();
         world.insert(e, Material::default());
-        assert!(validate_world(&world).is_empty());
-    }
-
-    /// #2947 — the moment `xp` accumulates, `CharacterLevel` is no longer
-    /// re-derivable from static ESM data (it's runtime progress, by
-    /// CHARAL's own definition), so the save-exemption premise is false.
-    /// This must abort the save loudly rather than silently discard the
-    /// progress, exactly like every other referential-integrity gate here.
-    #[test]
-    fn character_level_with_progress_trips_the_unsaved_progression_gate() {
-        let mut world = World::new();
-        let e = world.spawn();
-        world.insert(e, CharacterLevel { level: 5, xp: 42 });
-
-        let errors = validate_world(&world);
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].entity, e);
-        assert_eq!(errors[0].kind, ValidationKind::UnsavedProgression);
-        assert!(errors[0].detail.contains("42"));
-    }
-
-    /// #3491 — `validate_progression_state` must NOT flag a populated
-    /// `Perks` component. Unlike `CharacterLevel.xp`, an ESM-authored NPC's
-    /// `Perks` is routinely non-empty (`npc_spawn.rs` stamps it verbatim
-    /// from `PRKR`), so there is no "non-empty = runtime mutation happened"
-    /// signal the way `xp != 0` is for `CharacterLevel`. Perks is now saved
-    /// by the binary registry; populated ranks are valid save state. This pins that
-    /// distinction: a future "for symmetry, also flag non-empty Perks"
-    /// change (the literal reading of one of #3491's two suggested fixes,
-    /// rejected for this reason) would break this test immediately instead
-    /// of shipping as a save-breaking false positive on any perked actor.
-    #[test]
-    fn populated_perks_does_not_trip_the_unsaved_progression_gate() {
-        use byroredux_core::character::{PerkRank, Perks};
-
-        let mut world = World::new();
-        let e = world.spawn();
-        world.insert(
-            e,
-            Perks {
-                entries: vec![PerkRank {
-                    perk_form_id: 0x0005_8F80,
-                    rank: 2,
-                }],
-            },
-        );
-
         assert!(validate_world(&world).is_empty());
     }
 }

@@ -48,6 +48,10 @@ pub(crate) const UNARMED_DAMAGE: f32 = 8.0;
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CombatTraceEntry {
     pub(crate) target: Option<EntityId>,
+    /// The hit's damage before the target's defenses (Block, Damage
+    /// Threshold) — what the aggressor's weapon and perks produced.
+    pub(crate) incoming: f32,
+    /// The damage applied.
     pub(crate) damage: f32,
     pub(crate) health_before: Option<f32>,
     pub(crate) health_after: Option<f32>,
@@ -317,6 +321,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     if let Some(mut state) = world.try_resource_mut::<CombatState>() {
         state.last = Some(CombatTraceEntry {
             target: Some(target),
+            incoming: damage,
             damage,
             health_before: None,
             health_after: None,
@@ -346,11 +351,12 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             continue;
         };
         // `blocked` is the target's defense, so it is resolved here rather
-        // than folded into the producer's `damage` (#2980).
+        // than folded into the producer's `damage` (#2980); so is its
+        // Damage Threshold (M47.2).
         let damage = if event.blocked {
             0.0
         } else {
-            event.damage.max(0.0)
+            apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0))
         };
         let Some((before, after)) = apply_health_damage(world, target, vitals.health, damage)
         else {
@@ -358,6 +364,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         };
         let killed = after <= 0.0;
         let mut outcome = format!("health {:.1} -> {:.1}", before, after);
+        note_player_damage(world, event.aggressor, target, before - after.max(0.0));
 
         if killed {
             if let Some(mut dead) = world.query_mut::<Dead>() {
@@ -375,6 +382,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                 Some(event.aggressor),
             );
             outcome.push_str(&reconcile_dead_actor(world, target));
+            award_kill_experience(world, target, vitals.health);
         }
 
         if let Some(mut state) = world.try_resource_mut::<CombatState>() {
@@ -384,6 +392,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             }
             state.last = Some(CombatTraceEntry {
                 target: Some(target),
+                incoming: event.damage,
                 damage,
                 health_before: Some(before),
                 health_after: Some(after),
@@ -408,16 +417,212 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
 
 /// [`attack_damage`] composed with the aggressor's perk entry points
 /// (`Calculate Weapon Damage` / `Mod Attack Damage`, M47.2) for a strike on
-/// `target`, then reduced by the target's Damage Threshold where the load
-/// order has one ([`DamageThresholdRules`]). Callers must hold no storage
-/// guard: the composition evaluates perk conditions, which lock arbitrary
-/// components.
+/// `target`. The target's defenses (Block, Damage Threshold) are resolved
+/// where the hit lands, in [`combat_damage_system`] (#2980). Callers must
+/// hold no storage guard: the composition evaluates perk conditions, which
+/// lock arbitrary components.
 pub(crate) fn attack_damage_against(world: &World, aggressor: EntityId, target: EntityId) -> f32 {
     let base = attack_damage(world, aggressor);
-    let damage =
-        byroredux_scripting::perk_entry_points::compose_outgoing_damage(world, aggressor, target, base)
-            .max(0.0);
-    apply_damage_threshold(world, aggressor, target, damage)
+    byroredux_scripting::perk_entry_points::compose_outgoing_damage(world, aggressor, target, base)
+        .max(0.0)
+}
+
+/// Fallout 3 / New Vegas kill experience (M47.2), from the GECK *Experience
+/// Settings* page: a kill of an NPC or a creature rewards the player with the
+/// `iXPRewardKillNPC*` / `iXPRewardKillOpponent*` of the difficulty band the
+/// victim's level falls in (each band's upper level is `iXPLevelKillNPC*` /
+/// `iXPLevelKillCreature*`; above the last, "very hard"), but only when the
+/// player dealt at least `iXPDeathRewardHealthThreshold` percent of the
+/// victim's health. Installed when the load order authors those settings.
+///
+/// Neither master authors the five `iXPRewardKillNPC*` rewards, so they take
+/// the engine defaults [`NPC_KILL_REWARD_DEFAULTS`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExperienceRules {
+    /// `(highest level, reward)` per band, easiest first.
+    npc_bands: Vec<(f32, f32)>,
+    creature_bands: Vec<(f32, f32)>,
+    /// The share of a victim's health the player must have dealt.
+    health_share: f32,
+    /// Creature base records (`CREA`) — the other bases are NPCs.
+    creature_bases: std::collections::HashSet<u32>,
+}
+
+impl Resource for ExperienceRules {}
+
+impl ExperienceRules {
+    fn reward(&self, level: f32, creature: bool) -> f32 {
+        let bands = if creature {
+            &self.creature_bands
+        } else {
+            &self.npc_bands
+        };
+        bands
+            .iter()
+            .find(|(highest, _)| level <= *highest)
+            .or(bands.last())
+            .map_or(0.0, |(_, reward)| *reward)
+    }
+}
+
+/// The player's damage dealt to each actor still standing, for the kill
+/// experience share. Session state, `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub(crate) struct PlayerDamageDealt(pub HashMap<EntityId, f32>);
+
+impl Resource for PlayerDamageDealt {}
+
+/// The engine defaults of `iXPRewardKillNPC{VeryEasy,Easy,Average,Hard,VeryHard}`
+/// — 0 / 10 / 20 / 30 / 50 on the GECK *Experience Settings* page and in
+/// `Fallout3.exe`'s static setting table (each value precedes a pointer to its
+/// name). Read when a load order does not author the setting; FalloutNV.esm
+/// and Fallout3.esm author none of the five.
+const NPC_KILL_REWARD_DEFAULTS: [(&str, f32); 5] = [
+    ("iXPRewardKillNPCVeryEasy", 0.0),
+    ("iXPRewardKillNPCEasy", 10.0),
+    ("iXPRewardKillNPCAverage", 20.0),
+    ("iXPRewardKillNPCHard", 30.0),
+    ("iXPRewardKillNPCVeryHard", 50.0),
+];
+
+/// Install (or remove) [`ExperienceRules`] for a load order.
+pub(crate) fn install_experience_rules(
+    world: &mut World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> bool {
+    const DIFFICULTIES: [&str; 5] = ["VeryEasy", "Easy", "Average", "Hard", "VeryHard"];
+    // The GECK page documents Fallout 3 / New Vegas. Skyrim.esm authors the
+    // same `iXPLevelKill*` / `iXPRewardKillOpponent*` names but levels by
+    // skill use and awards no kill experience.
+    if index.game != byroredux_plugin::esm::reader::GameKind::Fallout3NV {
+        world.remove_resource::<ExperienceRules>();
+        return false;
+    }
+    let setting = |name: String| {
+        index.game_setting_float(&name).or_else(|| {
+            NPC_KILL_REWARD_DEFAULTS
+                .iter()
+                .find(|(default, _)| *default == name)
+                .map(|(_, value)| *value)
+        })
+    };
+    let bands = |reward: &str, level: &str| -> Option<Vec<(f32, f32)>> {
+        DIFFICULTIES
+            .iter()
+            .map(|band| {
+                Some((
+                    setting(format!("iXPLevelKill{level}{band}"))?,
+                    setting(format!("iXPRewardKill{reward}{band}"))?,
+                ))
+            })
+            .collect()
+    };
+    let rules = (|| {
+        Some(ExperienceRules {
+            npc_bands: bands("NPC", "NPC")?,
+            creature_bands: bands("Opponent", "Creature")?,
+            health_share: setting("iXPDeathRewardHealthThreshold".into())? / 100.0,
+            creature_bases: index.creatures.keys().copied().collect(),
+        })
+    })();
+    match rules {
+        Some(rules) => {
+            world.insert_resource(rules);
+            if world.try_resource::<PlayerDamageDealt>().is_none() {
+                world.insert_resource(PlayerDamageDealt::default());
+            }
+            true
+        }
+        None => {
+            world.remove_resource::<ExperienceRules>();
+            false
+        }
+    }
+}
+
+/// Add the player's `dealt` damage on `target` to its kill-experience share.
+fn note_player_damage(world: &World, aggressor: EntityId, target: EntityId, dealt: f32) {
+    let is_player = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .is_some_and(|player| player.0 == Some(aggressor));
+    if !is_player || dealt <= 0.0 || world.try_resource::<ExperienceRules>().is_none() {
+        return;
+    }
+    if let Some(mut dealt_by_player) = world.try_resource_mut::<PlayerDamageDealt>() {
+        *dealt_by_player.0.entry(target).or_default() += dealt;
+    }
+}
+
+/// Award the player the kill experience for `victim` (see
+/// [`ExperienceRules`]), composed by the player's `Adjust Experience Points`
+/// perks (hook 9 — Swift Learner), and roll over any level it completes.
+fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
+    use byroredux_core::character::CharacterLevel;
+    let Some(rules) = world
+        .try_resource::<ExperienceRules>()
+        .map(|rules| (*rules).clone())
+    else {
+        return;
+    };
+    let dealt = world
+        .try_resource_mut::<PlayerDamageDealt>()
+        .and_then(|mut dealt| dealt.0.remove(&victim))
+        .unwrap_or(0.0);
+    let health = world
+        .get::<ActorValues>(victim)
+        .and_then(|values| values.get(health_avif).map(|value| value.undamaged()))
+        .unwrap_or(0.0);
+    if health <= 0.0 || dealt < rules.health_share * health {
+        return;
+    }
+    let Some(player) = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return;
+    };
+    let level = world
+        .get::<CharacterLevel>(victim)
+        .map_or(1.0, |level| f32::from(level.level));
+    let creature = world
+        .get::<byroredux_scripting::SceneAliasCandidate>(victim)
+        .is_some_and(|candidate| rules.creature_bases.contains(&candidate.base_form_id));
+    let reward = rules.reward(level, creature);
+    if reward <= 0.0 {
+        return;
+    }
+    let xp = byroredux_scripting::perk_entry_points::compose_entry_point(
+        world,
+        player,
+        byroredux_scripting::perk_entry_points::fnv::ADJUST_EXPERIENCE_POINTS,
+        reward,
+        &[],
+    )
+    .max(0.0)
+    .round() as u32;
+    let leveling = world
+        .try_resource::<CharacterRuleset>()
+        .map(|ruleset| ruleset.leveling);
+    let Some(mut levels) = world.query_mut::<CharacterLevel>() else {
+        return;
+    };
+    let Some(progress) = levels.get_mut(player) else {
+        return;
+    };
+    progress.xp = progress.xp.saturating_add(xp);
+    if let Some(leveling) = leveling {
+        loop {
+            let to_next = leveling.xp_to_next(progress.level);
+            let capped = leveling.level_cap() > 0 && progress.level >= leveling.level_cap();
+            if capped || to_next <= 0.0 || (progress.xp as f32) < to_next {
+                break;
+            }
+            progress.xp -= to_next as u32;
+            progress.level = progress.level.saturating_add(1);
+            log::info!("Player reached level {}", progress.level);
+        }
+    }
+    log::info!("Kill experience: +{xp} XP");
 }
 
 /// New Vegas Damage Threshold (M47.2): the flat damage an actor's DT absorbs
@@ -808,6 +1013,7 @@ fn record_miss(world: &World, outcome: &str) {
     if let Some(mut state) = world.try_resource_mut::<CombatState>() {
         state.last = Some(CombatTraceEntry {
             target: None,
+            incoming: 0.0,
             damage: 0.0,
             health_before: None,
             health_after: None,
@@ -1021,7 +1227,7 @@ mod tests {
             min_damage_mult: 0.2,
             armor_dt: HashMap::from([(LEGATE_ARMOR, 15.0)]),
         });
-        assert_eq!(attack_damage_against(&world, aggressor, target), 20.0, "no armor");
+        assert_eq!(apply_damage_threshold(&world, aggressor, target, 20.0), 20.0, "no armor");
 
         let mut inventory = Inventory::new();
         inventory.push(ItemStack::new(LEGATE_ARMOR, 1));
@@ -1029,7 +1235,7 @@ mod tests {
         let mut slots = EquipmentSlots::new();
         slots.equip(0x4, InventoryIndex(0));
         world.insert(target, slots);
-        assert_eq!(attack_damage_against(&world, aggressor, target), 5.0, "20 − DT 15");
+        assert_eq!(apply_damage_threshold(&world, aggressor, target, 20.0), 5.0, "20 − DT 15");
 
         let mut index = EsmIndex {
             game: GameKind::Fallout3NV,
@@ -1061,7 +1267,42 @@ mod tests {
         perks.set_rank(TOUGHNESS, 1);
         world.insert(target, perks);
         // DT 18 would leave 2; the floor keeps 20 × 0.2 = 4.
-        assert_eq!(attack_damage_against(&world, aggressor, target), 4.0);
+        assert_eq!(apply_damage_threshold(&world, aggressor, target, 20.0), 4.0);
+        // Where the hit lands: the trace keeps the incoming 20 and applies 4.
+        combat_damage_system(&world, 0.0);
+        let last = world.resource::<CombatState>().last.clone().unwrap();
+        assert_eq!((last.incoming, last.damage), (20.0, 4.0));
+    }
+
+    /// M47.2 — Fallout kill experience: a kill the player made (≥ the health
+    /// share) pays the victim's difficulty band, and a level's worth rolls over.
+    #[test]
+    fn a_player_kill_pays_its_band_and_rolls_levels() {
+        use byroredux_core::character::{CharacterLevel, LevelingModel};
+        let rules = ExperienceRules {
+            npc_bands: vec![(0.0, 0.0), (1.0, 10.0), (7.0, 20.0), (10.0, 30.0), (13.0, 50.0)],
+            creature_bands: vec![(1.0, 1.0), (3.0, 5.0), (6.0, 10.0), (9.0, 25.0), (12.0, 50.0)],
+            health_share: 0.4,
+            creature_bases: std::collections::HashSet::from([0xC0]),
+        };
+        let kill = |victim_level: u16, damage: f32, player_xp: u32| {
+            let (mut world, aggressor, target) = damage_fixture(50.0, Some(damage), false);
+            world.register::<CharacterLevel>();
+            world.insert_resource(crate::systems::PlayerEntity(Some(aggressor)));
+            world.insert_resource(rules.clone());
+            world.insert_resource(PlayerDamageDealt::default());
+            world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
+            world.insert(aggressor, CharacterLevel { level: 1, xp: player_xp });
+            world.insert(target, CharacterLevel { level: victim_level, xp: 0 });
+            combat_damage_system(&world, 0.0);
+            let level = *world.get::<CharacterLevel>(aggressor).unwrap();
+            (level.level, level.xp)
+        };
+        assert_eq!(kill(8, 60.0, 0), (1, 30), "level 8 is the Hard band");
+        assert_eq!(kill(20, 60.0, 0), (1, 50), "above the last band pays Very Hard");
+        assert_eq!(kill(8, 10.0, 0), (1, 0), "no kill, no experience");
+        let to_next = LevelingModel::FNV.xp_to_next(1) as u32;
+        assert_eq!(kill(8, 60.0, to_next - 10), (2, 20), "rolls over into level 2");
     }
 
     /// The rules install only where the load order authors both the

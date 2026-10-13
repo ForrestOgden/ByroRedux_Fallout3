@@ -668,6 +668,10 @@ pub(crate) fn populate_scene_runtime(
     if crate::combat::install_damage_threshold_rules(world, index) {
         log::info!("Installed Damage Threshold rules");
     }
+    // M47.2 — Fallout 3 / New Vegas kill experience (GMST level bands).
+    if crate::combat::install_experience_rules(world, index) {
+        log::info!("Installed kill experience rules");
+    }
     let perk_entry_perks =
         byroredux_scripting::perk_entry_points::install_perk_entry_points(world, index);
     if perk_entry_perks > 0 {

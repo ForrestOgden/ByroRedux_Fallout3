@@ -47,6 +47,7 @@ fn delta_columns_carry_only_session_stable_fields() {
         "ActorValues",
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
+        "CharacterLevel",
         // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
         "TimedRestorations",
         // #4415 — SpellList: Vec<u32> spell FormIDs, global-space.
@@ -1574,16 +1575,10 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // the saved procedure state is overlaid (#4815), so persisting its
     // cached winner is unnecessary.
     //
-    // #2947 — CharacterLevel holds only *while no leveling runtime exists*:
-    // `npc_spawn.rs` always stamps `CharacterLevel { xp: 0, .. }`, so there
-    // is nothing accumulated to lose today. `xp` is CHARAL-defined runtime
-    // progress toward the next level — not re-derivable from a static ESM
-    // record by construction — so the exempt premise breaks the moment XP
-    // starts accumulating. That is not left to this allow-list to notice on
-    // its own: `crates/save/src/validate.rs::validate_progression_state`
-    // aborts any save where a `CharacterLevel.xp != 0` slips through with it
-    // still unregistered, so the exemption fails loudly rather than
-    // silently discarding progress.
+    // #2947 — CharacterLevel was exempt here only while no leveling runtime
+    // existed. M47.2's Fallout kill experience accumulates `xp` and rolls
+    // levels, so it is registered now (a replacing column beside Perks), and
+    // the `validate_progression_state` guard for the unregistered case retired.
     //
     // Perks is now persisted, including authoritative absence on live reload.
     // Its ranks select conditional consumable effects and must not come from
@@ -1591,7 +1586,6 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     const REDERIVED_NOT_SAVED: &[&str] = &[
         "CreatureAttack",
         "FactionRanks",
-        "CharacterLevel",
         "Background",
         // M42.9 — rebuilt from NPC_.PKID plus the restored clock/CTDA
         // state: on a save load by `reseat_ambient_packages_after_restore`

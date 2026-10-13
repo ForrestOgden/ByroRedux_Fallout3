@@ -12,6 +12,7 @@ use crate::ecs::storage::Component;
 /// An actor's level and progress toward the next. Universal: Fallout drives
 /// it with XP, TES with skill use — both still have a level + an accumulator.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct CharacterLevel {
     /// Current level.
     pub level: u16,

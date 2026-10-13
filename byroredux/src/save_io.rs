@@ -100,6 +100,9 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // Ranked perk FormIDs (u32) and ranks (u8) are session-stable. Its
     // replacing registration also clears a saved absence on the live player.
     "Perks",
+    // M47.2 — level and XP toward the next (u16 / u32); kill experience
+    // accumulates it, so it is progression, not a re-derived spawn stamp.
+    "CharacterLevel",
     // Stable source/AV FormIDs and scalar rate/remaining simulation seconds.
     "TimedRestorations",
     // #4415 — spell FormIDs (u32) only.
@@ -423,6 +426,12 @@ pub fn build_save_registry() -> SaveRegistry {
         // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
         .register_component::<ActorValues>("ActorValues")
         .register_replacing_component::<byroredux_core::character::Perks>("Perks")
+        // M47.2 — kill experience accumulates `xp` and rolls levels, so
+        // #2947's re-derived exemption (and its `validate_progression_state`
+        // guard) ended.
+        .register_replacing_component::<byroredux_core::character::CharacterLevel>(
+            "CharacterLevel",
+        )
         .register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations")
         // #4415 — the actor's spells. Stamped at spawn from SPLO and mutated
         // by AddSpell / RemoveSpell; the ActorValues column above already

@@ -148,7 +148,7 @@ fn register_faction_reputation(registry: &mut ComponentRegistry) {
 /// Register all inspectable components with the registry.
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
-    use byroredux_core::character::Perks;
+    use byroredux_core::character::{CharacterLevel, Perks};
     use byroredux_core::ecs::components::*;
     use byroredux_core::ecs::components::water::WaterCurrentVolume;
 
@@ -357,6 +357,7 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<Dead>(registry, "Dead", vec![]);
     register_component::<CreatureAttack>(registry, "CreatureAttack", vec!["damage"]);
     register_component::<Perks>(registry, "Perks", vec!["entries"]);
+    register_component::<CharacterLevel>(registry, "CharacterLevel", vec!["level", "xp"]);
     register_faction_reputation(registry);
 
     // #4755 — the remainder of the inspect-carrying roster. Every core

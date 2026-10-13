@@ -80,10 +80,7 @@ resolve into `Inventory`), DanglingEntity (saved `FollowState`/
 `EscortState`/`Seated` entity references point at a spawned id —
 `validate_saved_entity_references`), AnimationClip
 (`AnimationPlayer.clip_handle` resolves in the registry), ItemInstance
-(`ItemStack.instance` resolves in `ItemInstancePool`), UnsavedProgression
-(`CharacterLevel.xp != 0` while that type is still save-exempt as
-re-derivable — #2947, aborts loudly rather than silently discarding
-progress), and NonFiniteMaterial (a `Material` scalar is NaN/Inf — #2687,
+(`ItemStack.instance` resolves in `ItemInstancePool`), and NonFiniteMaterial (a `Material` scalar is NaN/Inf — #2687,
 probes a clone via `Material::sanitize_finite` rather than a second field
 list) — plus a binary-side `validate_form_ids` (`byroredux/src/save_io.rs`,
 needs `FormIdPool`, which the save crate doesn't own) and

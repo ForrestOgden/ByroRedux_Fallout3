@@ -258,6 +258,20 @@ FO3/FNV ARMO `DNAM` decode was corrected to xEdit's layout on the way. It had
 read the DR field as DT and the DT float as DR (FNV: `AR ×100, 2 unused, DT,
 flags`; FO3: `AR, flags`).
 
+The third is Fallout 3 / New Vegas **kill experience** (`ExperienceRules`,
+from the GECK *Experience Settings* page). A kill pays the player the
+`iXPRewardKillNPC*` / `iXPRewardKillOpponent*` of the difficulty band the
+victim's level falls in (band tops `iXPLevelKill*`; above the last band,
+"very hard"). It pays only if the player dealt at least
+`iXPDeathRewardHealthThreshold` percent of the victim's health. The award is
+composed by hook 9 (`Adjust Experience Points` — Swift Learner) and rolls
+levels by the ruleset's `LevelingModel`, up to its cap. The masters author no
+`iXPRewardKillNPC*`, so those take the engine defaults 0 / 10 / 20 / 30 / 50
+(the GECK page, confirmed in `Fallout3.exe`'s static setting table).
+`CharacterLevel` is saved since (v46), which retired #2947's
+`validate_progression_state` guard. Skill points (hook 10) and the level-up
+menu remain.
+
 The record layout and the composition rules are pinned to xEdit's
 `wbDefinitionsFNV` / `wbDefinitionsTES5` and checked against the vanilla masters
 (`cargo run --release -p byroredux-plugin --example perk_entry_census -- <ESM>`,

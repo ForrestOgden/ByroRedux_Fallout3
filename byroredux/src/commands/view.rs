@@ -215,10 +215,11 @@ impl ConsoleCommand for CombatStatusCommand {
         ));
         if let Some(last) = state.last {
             lines.push(format!(
-                "  last_target={} damage={:.1} health_before={} health_after={} killed={}",
+                "  last_target={} incoming={:.1} damage={:.1} health_before={} health_after={} killed={}",
                 last.target
                     .map(|entity| entity.to_string())
                     .unwrap_or_else(|| "none".to_owned()),
+                last.incoming,
                 last.damage,
                 last.health_before
                     .map(|health| format!("{health:.1}"))
