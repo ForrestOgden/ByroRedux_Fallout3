@@ -351,6 +351,15 @@ pub enum Effect {
         count: u32,
         destination: Option<ActorRef>,
     },
+    /// M47.2 — `<quest>.<Property> = <literal>`: a write to a quest script's
+    /// auto property, recorded in [`crate::QuestScriptVariables`] under the
+    /// backing `::Property_var` name `GetVMQuestVariable` conditions read.
+    /// The value is a numeric / Bool literal (Bool as 0 / 1).
+    SetQuestVariable {
+        quest: QuestRef,
+        variable: String,
+        value: f32,
+    },
     /// A manifest or engine-owned static provider call used as a sequencing
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
     /// released, then resumes the remaining top-level effects in order.
@@ -365,6 +374,11 @@ pub enum Effect {
 pub enum ActorRef {
     Player,
     Object(ObjectRef),
+    /// M47.2 — the speaker of the dialogue line whose `TIF` fragment this is
+    /// (`akSpeakerRef`, and the `akSpeaker = akSpeakerRef as Actor` local
+    /// Champollion emits). Only INFO fragments lower it, and never alongside
+    /// a latent tail, so it is always resolved from the live dialogue call.
+    Speaker,
 }
 
 impl Effect {
@@ -404,6 +418,15 @@ struct Scope {
     object_locals: HashMap<String, ObjectRef>,
     player_locals: HashSet<String>,
     decl_locals: HashSet<String>,
+    /// M47.2 — names (lowercased) that denote the dialogue line's speaker:
+    /// an INFO fragment's `akSpeakerRef` parameter and every local bound
+    /// from it (`akSpeaker = akSpeakerRef as Actor`). Empty outside INFO
+    /// fragments.
+    speaker_locals: HashSet<String>,
+    /// Set when a receiver lowered to [`ActorRef::Speaker`], so the INFO
+    /// entry point can refuse a speaker fragment with a latent tail. Shared
+    /// (not copied) by the clones an `If` branch lowers against.
+    uses_speaker: std::rc::Rc<std::cell::Cell<bool>>,
     /// #2538 / SCR-D5-NEW10-01 — lowercased names of the containing
     /// script's `Quest Property` declarations (from VMAD-equivalent
     /// property-type metadata, threaded in from `&Script` at
@@ -438,6 +461,7 @@ enum LocalBinding {
     Quest(QuestRef),
     Object(ObjectRef),
     Player,
+    Speaker,
     Plain,
 }
 
@@ -451,6 +475,8 @@ impl Scope {
             Some(LocalBinding::Object(via.clone()))
         } else if self.player_locals.contains(name) {
             Some(LocalBinding::Player)
+        } else if self.speaker_locals.contains(name) {
+            Some(LocalBinding::Speaker)
         } else if self.decl_locals.contains(name) {
             Some(LocalBinding::Plain)
         } else {
@@ -472,6 +498,7 @@ impl Scope {
             .keys()
             .chain(self.object_locals.keys())
             .chain(self.player_locals.iter())
+            .chain(self.speaker_locals.iter())
             .chain(self.decl_locals.iter());
         names.into_iter().any(|name| self.binding_of(name) != branch.binding_of(name))
     }
@@ -547,6 +574,59 @@ pub fn lower_fragment_with_script_metadata(
     lower_statements(body, &mut scope, providers, 0)
 }
 
+/// The parameter through which an INFO (`TIF_…`) fragment receives the
+/// speaking actor — `Function Fragment_N(ObjectReference akSpeakerRef)` in
+/// every Skyrim / Fallout 4 / Starfield topic-info fragment script.
+pub const INFO_SPEAKER_PARAMETER: &str = "akSpeakerRef";
+
+/// Lower one INFO (`TIF_…`) fragment function (M47.2): like
+/// [`lower_fragment_with_script_metadata`], with the function's
+/// [`INFO_SPEAKER_PARAMETER`] (and every local bound from it) lowering to
+/// [`ActorRef::Speaker`].
+///
+/// The speaker is a live entity of the dialogue call, not something a saved
+/// continuation can name, so a fragment that uses it and also carries a
+/// latent tail (a `Utility.Wait`, a 3D-loaded poll, a provider barrier) —
+/// whose remainder would be queued and resumed later — declines.
+pub fn lower_info_fragment(
+    params: &[byroredux_papyrus::ast::Param],
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+    own_argless_function_names: &HashSet<String>,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
+    let mut scope = Scope {
+        known_quest_properties: quest_property_names.clone(),
+        own_argless_functions: own_argless_function_names.clone(),
+        ..Scope::default()
+    };
+    for param in params {
+        if param.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER) {
+            scope.speaker_locals.insert(param.name.node.0.to_ascii_lowercase());
+        }
+    }
+    let effects = lower_statements(body, &mut scope, providers, 0)?;
+    if scope.uses_speaker.get() && effects.iter().any(has_latent_tail) {
+        return None;
+    }
+    Some(effects)
+}
+
+/// Whether running `effect` can suspend the fragment and queue the rest.
+fn has_latent_tail(effect: &Effect) -> bool {
+    match effect {
+        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::ProviderCall(_) => {
+            true
+        }
+        Effect::Conditional {
+            then_effects,
+            else_effects,
+            ..
+        } => then_effects.iter().chain(else_effects).any(has_latent_tail),
+        _ => false,
+    }
+}
+
 /// Maximum `Stmt::If` nesting depth [`lower_statements`] recurses through
 /// before declining rather than recursing further.
 ///
@@ -593,10 +673,14 @@ fn lower_statements(
                     }
                 }
             }
+            // M47.2 — `quest.Property = literal`, a quest-script variable.
+            Stmt::Assign { target, op, value } if matches!(target.node, Expr::MemberAccess { .. }) => {
+                effects.push(lower_quest_variable_write(&target.node, *op, &value.node, scope)?);
+            }
             // Re-assignment to an existing local: same binding rule.
             Stmt::Assign { target, value, .. } => {
                 let Expr::Ident(name) = &target.node else {
-                    return None; // assignment to a field/index — unmodeled
+                    return None; // assignment to an index — unmodeled
                 };
                 let name = name.0.to_ascii_lowercase();
                 // Only a local this function declared can be re-bound. A bare
@@ -688,6 +772,43 @@ fn lower_statements(
     Some(effects)
 }
 
+/// `<quest>.<Property> = <literal>` (M47.2). The receiver must be a quest the
+/// lowerer can name — a quest local (`kmyQuest`, bound from `Self as Quest`
+/// or `GetOwningQuest()`), `GetOwningQuest()` itself through its cast, or a
+/// known `Quest` property — never a bare `Self`, which in a topic-info or
+/// scene fragment is that fragment's own script, not the quest. Only a plain
+/// `=` of a numeric / Bool literal lowers: a computed value (`x.value + 1`)
+/// needs the read the lowerer does not model.
+fn lower_quest_variable_write(
+    target: &Expr,
+    op: byroredux_papyrus::ast::AssignOp,
+    value: &Expr,
+    scope: &Scope,
+) -> Option<Effect> {
+    if op != byroredux_papyrus::ast::AssignOp::Eq {
+        return None;
+    }
+    let Expr::MemberAccess { object, member } = target else {
+        return None;
+    };
+    if matches!(&object.node, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
+        return None;
+    }
+    let quest = match &object.node {
+        Expr::Ident(_) => explicit_quest_receiver(&object.node, scope)?,
+        Expr::Cast { .. } => match quest_expr_ref(&object.node, scope)? {
+            quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => quest,
+            QuestRef::Property(_) => return None,
+        },
+        _ => return None,
+    };
+    Some(Effect::SetQuestVariable {
+        quest,
+        variable: member.node.0.clone(),
+        value: as_num(value)?,
+    })
+}
+
 /// Record a local's binding, or decline the whole fragment.
 ///
 /// - A quest expression → `quest_locals`.
@@ -702,6 +823,7 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
     enum Binding {
         Quest(QuestRef),
         Player,
+        Speaker,
         Object(ObjectRef),
         Plain,
     }
@@ -709,6 +831,8 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
         Binding::Quest(via)
     } else if player_expr_ref(init, scope) {
         Binding::Player
+    } else if speaker_expr_ref(init, scope) {
+        Binding::Speaker
     } else if let Some(via) = object_expr_ref(init, scope) {
         Binding::Object(via)
     } else if is_side_effect_free(init) {
@@ -720,6 +844,7 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
     scope.quest_locals.remove(&name);
     scope.object_locals.remove(&name);
     scope.player_locals.remove(&name);
+    scope.speaker_locals.remove(&name);
     scope.decl_locals.remove(&name);
     match binding {
         Binding::Quest(via) => {
@@ -727,6 +852,9 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
         }
         Binding::Player => {
             scope.player_locals.insert(name);
+        }
+        Binding::Speaker => {
+            scope.speaker_locals.insert(name);
         }
         Binding::Object(via) => {
             scope.object_locals.insert(name, via);
@@ -1877,7 +2005,8 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
         if let Some(via) = scope.quest_locals.get(&key) {
             return Some(via.clone());
         }
-        if scope.decl_locals.contains(&key) {
+        // A plain local, or the dialogue speaker (M47.2), is no quest.
+        if scope.decl_locals.contains(&key) || scope.speaker_locals.contains(&key) {
             return None;
         }
     }
@@ -1914,6 +2043,15 @@ fn object_expr_ref(value: &Expr, scope: &Scope) -> Option<ObjectRef> {
         return None;
     }
     receiver_object(alias, scope)
+}
+
+/// Whether `value` is the dialogue speaker: a speaker name, through casts.
+fn speaker_expr_ref(value: &Expr, scope: &Scope) -> bool {
+    match value {
+        Expr::Cast { expr, .. } => speaker_expr_ref(&expr.node, scope),
+        Expr::Ident(name) => scope.speaker_locals.contains(&name.0.to_ascii_lowercase()),
+        _ => false,
+    }
 }
 
 fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
@@ -1963,6 +2101,7 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if key == "self"
         || scope.quest_locals.contains_key(&key)
         || scope.player_locals.contains(&key)
+        || scope.speaker_locals.contains(&key)
         || scope.decl_locals.contains(&key)
         || scope
             .known_quest_properties
@@ -1976,6 +2115,9 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
 fn receiver_actor(object: &Expr, scope: &Scope) -> Option<ActorRef> {
     if player_expr_ref(object, scope) {
         Some(ActorRef::Player)
+    } else if speaker_expr_ref(object, scope) {
+        scope.uses_speaker.set(true);
+        Some(ActorRef::Speaker)
     } else {
         receiver_object(object, scope).map(ActorRef::Object)
     }
@@ -2599,6 +2741,145 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{call}");
         }
+    }
+
+    /// M47.2 — quest-script property writes: through a quest local bound
+    /// from `Self as Quest` (QF fragments), through `GetOwningQuest()`'s
+    /// cast (topic-info fragments), and a Bool literal as 0 / 1.
+    #[test]
+    fn lowers_quest_variable_writes() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Quest __temp = Self as Quest\n\
+             MS11QuestScript kmyQuest = __temp as MS11QuestScript\n\
+             kmyQuest.FriendsKilled = 3\n\
+             (Self.GetOwningQuest() as MS11QuestScript).GetInHjerimTovaPointer = true\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "FriendsKilled".into(),
+                    value: 3.0,
+                },
+                Effect::SetQuestVariable {
+                    quest: QuestRef::OwningQuest,
+                    variable: "GetInHjerimTovaPointer".into(),
+                    value: 1.0,
+                },
+            ])
+        );
+    }
+
+    /// A computed value, a compound operator, a bare `Self` receiver (a
+    /// topic-info fragment's own script, not the quest), an unknown property
+    /// receiver and an index target all decline.
+    #[test]
+    fn quest_variable_writes_decline_what_they_cannot_name() {
+        for statement in [
+            "kmyQuest.Count = kmyQuest.Count + 1",
+            "kmyQuest.Count += 1",
+            "Self.Count = 1",
+            "SomeObjectProperty.Count = 1",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_8()\n\
+                 Quest __temp = Self as Quest\n\
+                 MyQuestScript kmyQuest = __temp as MyQuestScript\n\
+                 {statement}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{statement}");
+        }
+    }
+
+    /// The first function of `src`, params and body, lowered as an INFO
+    /// fragment.
+    fn lower_first_info_fragment(src: &str) -> Option<Vec<Effect>> {
+        let (script, errs) = parse_script(src).expect("parses");
+        assert!(errs.is_empty(), "{errs:?}");
+        let function = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Function(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a function");
+        lower_info_fragment(
+            &function.params,
+            &function.body,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+        )
+    }
+
+    /// M47.2 — an INFO fragment's `akSpeakerRef`, and the Champollion
+    /// `akSpeaker = akSpeakerRef as Actor` local, are the line's speaker.
+    #[test]
+    fn info_fragments_lower_the_speaker() {
+        let effects = lower_first_info_fragment(
+            "ScriptName TIF__0005520F extends TopicInfo\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             Actor akSpeaker = akSpeakerRef as Actor\n\
+             akSpeaker.AddItem(Gold001, 10)\n\
+             akSpeakerRef.RemoveItem(Ale)\n EndFunction\n",
+        );
+        assert_eq!(
+            effects,
+            Some(vec![
+                Effect::AddItem {
+                    container: ActorRef::Speaker,
+                    item: ObjectRef::Property("Gold001".into()),
+                    count: 10,
+                },
+                Effect::RemoveItem {
+                    container: ActorRef::Speaker,
+                    item: ObjectRef::Property("Ale".into()),
+                    count: 1,
+                    destination: None,
+                },
+            ])
+        );
+        // The quest/scene path has no speaker: the same body declines there
+        // rather than treating `akSpeaker` as a VMAD property.
+        let body = first_fn_body(
+            "ScriptName TIF__0005520F extends TopicInfo\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             Actor akSpeaker = akSpeakerRef as Actor\n\
+             akSpeaker.AddItem(Gold001, 10)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    /// A speaker fragment with a latent tail declines (the speaker is a live
+    /// entity a saved continuation cannot name) — also when the speaker is
+    /// only used inside an `If` branch, which lowers against a scope clone.
+    #[test]
+    fn a_speaker_fragment_with_a_latent_tail_declines() {
+        for body in [
+            "akSpeaker.AddItem(Gold001, 10)\nUtility.Wait(1.0)",
+            "If Self.GetOwningQuest().GetStageDone(10)\nakSpeaker.AddItem(Gold001, 10)\nEndIf\nUtility.Wait(1.0)",
+        ] {
+            let effects = lower_first_info_fragment(&format!(
+                "ScriptName TIF__1 extends TopicInfo\n\
+                 Function Fragment_0(ObjectReference akSpeakerRef)\n\
+                 Actor akSpeaker = akSpeakerRef as Actor\n\
+                 {body}\n EndFunction\n"
+            ));
+            assert_eq!(effects, None, "{body}");
+        }
+        // Without the speaker the same wait lowers.
+        assert!(lower_first_info_fragment(
+            "ScriptName TIF__1 extends TopicInfo\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             Game.GetPlayer().AddItem(Gold001, 10)\n\
+             Utility.Wait(1.0)\n EndFunction\n"
+        )
+        .is_some());
     }
 
     #[test]

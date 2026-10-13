@@ -145,12 +145,22 @@ fn resolve_actor(
     context: QuestFormId,
     via: &ActorRef,
     bindings: &crate::scene::SceneActorBindings,
+    speaker: Option<EntityId>,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
     match via {
         ActorRef::Player => world
             .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
             .map(|player| player.0),
         ActorRef::Object(via) => resolve_object(vmad, world, context, via, bindings),
+        // M47.2 — the line's speaker, supplied by the dialogue caller. A
+        // fragment run without one (a quest or scene fragment never lowers
+        // this; a speaker-less test call) skips the effect.
+        ActorRef::Speaker => {
+            if speaker.is_none() {
+                log::debug!("fragment effect skipped: no dialogue speaker in this run");
+            }
+            speaker
+        }
     }
 }
 
@@ -172,8 +182,9 @@ fn resolve_npc_actor(
     context: QuestFormId,
     via: &ActorRef,
     bindings: &crate::scene::SceneActorBindings,
+    speaker: Option<EntityId>,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
-    let entity = resolve_actor(vmad, world, context, via, bindings)?;
+    let entity = resolve_actor(vmad, world, context, via, bindings, speaker)?;
     let player = world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0);
@@ -195,7 +206,9 @@ pub(crate) fn actors_3d_loaded(
     bindings: &crate::scene::SceneActorBindings,
 ) -> bool {
     actors.iter().all(|actor| {
-        resolve_actor(vmad, world, context, actor, bindings)
+        // Latent waits never carry the speaker (the lowerer declines a
+        // speaker fragment with a latent tail), so none is needed here.
+        resolve_actor(vmad, world, context, actor, bindings, None)
             .is_some_and(|entity| world.has::<Transform>(entity))
     })
 }
@@ -293,6 +306,9 @@ pub struct DeferredFragmentEffects {
     /// taken once at the top of the exclusive system is behaviorally
     /// identical to a live read throughout.
     pub(crate) scene_actor_bindings: crate::scene::SceneActorBindings,
+    /// M47.2 — the speaker of the dialogue line whose fragment is running
+    /// (`ActorRef::Speaker`). `None` for every quest / scene fragment.
+    pub(crate) speaker: Option<EntityId>,
     cinematic_presentation: Vec<DeferredCinematicPresentationEffect>,
     scene_actor_bindings_dirty: bool,
     /// `(target, activator)` pairs from `Effect::Activate`, handed to
@@ -311,6 +327,9 @@ pub struct DeferredFragmentEffects {
     /// nested-acquisition caution as `CinematicPresentationState` above
     /// (#2269), not the "direct component storage, stays nested" exception.
     faction_relations: Vec<(u32, u32, bool, bool)>,
+    /// M47.2 — `Effect::SetQuestVariable` writes, applied to
+    /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
+    quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -342,12 +361,14 @@ impl DeferredFragmentEffects {
                 .try_resource::<crate::scene::SceneActorBindings>()
                 .map(|bindings| bindings.clone())
                 .unwrap_or_default(),
+            speaker: None,
             cinematic_presentation: Vec::new(),
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
             reference_enable_changes: Vec::new(),
             reference_lock_changes: Vec::new(),
             faction_relations: Vec::new(),
+            quest_variables: Vec::new(),
             provider_steps: Vec::new(),
         }
     }
@@ -448,6 +469,22 @@ impl DeferredFragmentEffects {
                             state.request_save(auto);
                         }
                     }
+                }
+            }
+        }
+        if !self.quest_variables.is_empty() {
+            match world.try_resource_mut::<crate::QuestScriptVariables>() {
+                Some(mut variables) => {
+                    for (quest, variable, value) in self.quest_variables.drain(..) {
+                        variables.set(quest, variable, value);
+                    }
+                }
+                None => {
+                    log::debug!(
+                        "{} quest-variable write(s) dropped: QuestScriptVariables not installed",
+                        self.quest_variables.len()
+                    );
+                    self.quest_variables.clear();
                 }
             }
         }
@@ -557,7 +594,20 @@ pub(crate) fn apply_fragment_guard_free(
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
 ) -> Vec<QuestStageAdvanced> {
+    apply_fragment_guard_free_as(world, effects, context, vmad, None)
+}
+
+/// [`apply_fragment_guard_free`] for a dialogue line's fragment, with the
+/// line's `speaker` bound for `ActorRef::Speaker` (M47.2).
+pub(crate) fn apply_fragment_guard_free_as(
+    world: &World,
+    effects: &[Effect],
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    speaker: Option<EntityId>,
+) -> Vec<QuestStageAdvanced> {
     let mut deferred = DeferredFragmentEffects::new(world);
+    deferred.speaker = speaker;
     let mut advances = {
         let (mut stages, mut objectives) =
             world.resource_2_mut::<QuestStageState, QuestObjectiveState>();
@@ -754,6 +804,19 @@ pub(crate) fn apply_effect(
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
         }
+        Effect::SetQuestVariable {
+            quest,
+            variable,
+            value,
+        } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            deferred.quest_variables.push((
+                quest,
+                crate::QuestScriptVariables::property_key(variable),
+                *value,
+            ));
+            None
+        }
         Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
@@ -762,7 +825,7 @@ pub(crate) fn apply_effect(
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
         Effect::AddSpell { actor, spell } | Effect::RemoveSpell { actor, spell } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let spell = resolve_property_form_id(vmad, spell.property_name())?;
             let adding = matches!(effect, Effect::AddSpell { .. });
             let changed = if adding {
@@ -786,7 +849,7 @@ pub(crate) fn apply_effect(
         // needs no index; each member goes through the same add/remove the
         // scripted `AddSpell` uses (constant modifiers included).
         Effect::AddRaceSpells { actor } | Effect::RemoveRaceSpells { actor } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let adding = matches!(effect, Effect::AddRaceSpells { .. });
             let changed = if adding {
                 crate::magic::add_race_spells(world, actor)
@@ -974,6 +1037,7 @@ fn apply_inventory_effect(
                 context,
                 container,
                 &deferred.scene_actor_bindings,
+                deferred.speaker,
             )?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
@@ -1013,10 +1077,10 @@ fn apply_inventory_effect(
             destination,
         } => {
             let bindings = &deferred.scene_actor_bindings;
-            let source = resolve_actor(vmad, world, context, container, bindings)?;
+            let source = resolve_actor(vmad, world, context, container, bindings, deferred.speaker)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let destination = match destination {
-                Some(via) => Some(resolve_actor(vmad, world, context, via, bindings)?),
+                Some(via) => Some(resolve_actor(vmad, world, context, via, bindings, deferred.speaker)?),
                 None => None,
             };
             remove_items(world, source, item_form_id, *count, destination);
@@ -1027,7 +1091,7 @@ fn apply_inventory_effect(
             item,
             silent: _,
         } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let Some(slot_mask) = world
                 .try_resource::<crate::EquipItemCatalog>()
@@ -1559,7 +1623,7 @@ fn apply_vehicle_cinematic_effect(
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::PlayIdle { actor, idle } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let idle_form_id = resolve_property_form_id(vmad, idle.property_name())?;
             if !update_actor_cinematic_state(world, actor, |state| {
                 state.request_idle(idle_form_id);
@@ -1569,7 +1633,7 @@ fn apply_vehicle_cinematic_effect(
             None
         }
         Effect::SetVehicle { actor, vehicle } => {
-            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let vehicle = match vehicle {
                 Some(vehicle) => Some(resolve_object(
                     vmad,
@@ -1740,9 +1804,9 @@ fn apply_ai_combat_effect(
             // #5298 — the combatant must be an NPC; the target may be the
             // player (`Attacker.StartCombat(PlayerRef)` is the common shape).
             let actor =
-                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let target =
-                resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings)?;
+                resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings, deferred.speaker)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                 states.insert(
                     actor,
@@ -1764,7 +1828,7 @@ fn apply_ai_combat_effect(
         }
         Effect::StopCombat { actor } => {
             let actor =
-                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                 states.remove(actor);
             }
@@ -1772,7 +1836,7 @@ fn apply_ai_combat_effect(
         }
         Effect::SetUnconscious { actor, unconscious } => {
             let actor =
-                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             if !crate::update_actor_control(world, actor, |state| {
                 state.set_unconscious(*unconscious)
             }) {
@@ -1966,6 +2030,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetInChargen { .. }
         | Effect::ShowRaceMenu
         | Effect::RequestSave { .. }
+        | Effect::SetQuestVariable { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }

@@ -4378,3 +4378,67 @@ fn dispatch_remove_item_drains_releases_and_moves() {
         .collect();
     assert_eq!(added, vec![(GOLD, 10, true)]);
 }
+
+/// M47.2 — a fragment's `kmyQuest.Property = literal` lands in
+/// `QuestScriptVariables` under the backing name a `GetVMQuestVariable`
+/// condition reads, once the quest guards have dropped.
+#[test]
+fn dispatch_set_quest_variable_is_read_by_get_vm_quest_variable() {
+    use crate::quest_variables::QuestScriptVariables;
+    use crate::translate::compose::QuestRef;
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionStringId, ConditionValue,
+    };
+
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![Effect::SetQuestVariable {
+            quest: QuestRef::SelfRef,
+            variable: "GetInHjerimTovaPointer".into(),
+            value: 1.0,
+        }],
+    );
+    let condition = Condition {
+        function_index: 629,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: Q.0,
+        param_2_text: Some(ConditionStringId::from_text("::GetInHjerimTovaPointer_var")),
+        ..Default::default()
+    };
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    assert!(crate::condition::evaluate(
+        &vec![condition],
+        &world,
+        &crate::condition::ConditionContext::for_subject(player),
+    ));
+}
+
+/// M47.2 — a spoken line's fragment resolves `ActorRef::Speaker` to the NPC
+/// the dialogue caller names; without one the effect is skipped.
+#[test]
+fn spoken_fragment_resolves_the_speaker() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::Inventory;
+
+    const GOLD: u32 = 0x0000_000F;
+    let mut world = fixture();
+    world.register::<Inventory>();
+    let npc = world.spawn();
+    let vmad = object_property_vmad(&[("Gold001", GOLD)]);
+    let effects = vec![Effect::AddItem {
+        container: ActorRef::Speaker,
+        item: ObjectRef::Property("Gold001".into()),
+        count: 10,
+    }];
+    crate::apply_spoken_info_fragment(&world, &effects, Q, Some(&vmad), None);
+    assert!(world.get::<Inventory>(npc).is_none(), "no speaker, no effect");
+    crate::apply_spoken_info_fragment(&world, &effects, Q, Some(&vmad), Some(npc));
+    let inventory = world.get::<Inventory>(npc).expect("the speaker received the gold");
+    assert_eq!(inventory.items[0].base_form_id, GOLD);
+    assert_eq!(inventory.items[0].count, 10);
+}

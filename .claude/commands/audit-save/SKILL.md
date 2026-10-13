@@ -174,7 +174,8 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   saved resource `StoryEventAliasFill`, v36 Wave 4 `RigidBodyData.surface_material` required byte, v37 #5542
   `surface_material` widened `u8`→`u32` (Skyrim CRC32 materials), v38 #5300 `DialogueSpokenInfoForms` element
   `u32`→`(speaker ref FormID, INFO FormID)` pair — Say Once is per actor, v39 M47.2 fragment `Effect::AddItem`
-  container `ObjectRef`→`ActorRef` + new `Effect::RemoveItem` (queued fragment tails are saved); do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
+  container `ObjectRef`→`ActorRef` + new `Effect::RemoveItem` (queued fragment tails are saved), v40 M47.2 new saved resource
+  `QuestScriptVariables` (+ `ActorRef::Speaker`, `Effect::SetQuestVariable`); do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default
   would be correct for every old save. Read-compatible changes move the shape baseline **without** a bump:

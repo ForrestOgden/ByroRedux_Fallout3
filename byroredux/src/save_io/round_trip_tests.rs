@@ -2012,6 +2012,68 @@ fn story_event_alias_fill_survives_save_load_as_reference_forms() {
     );
 }
 
+/// M47.2 — quest-script property writes survive a save/load; the authored
+/// VMAD defaults do not travel in the save (they are re-derived from the
+/// load order), so a restored world that re-installs them reads both.
+#[test]
+fn quest_script_variable_writes_survive_save_load() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use byroredux_scripting::{QuestFormId, QuestScriptVariables};
+
+    let quest = QuestFormId(0x0004_4B4B);
+    let authored = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "MS11QuestScript".into(),
+            status: 0,
+            properties: vec![ScriptProperty {
+                name: "FriendsKilled".into(),
+                status: 1,
+                value: PropertyValue::Int32(2),
+            }],
+        }],
+    };
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut src);
+    byroredux_scripting::install_quest_script_variables(&mut src, [(quest.0, &authored)]);
+    src.resource_mut::<QuestScriptVariables>().set(
+        quest,
+        QuestScriptVariables::property_key("GetInHjerimTovaPointer"),
+        1.0,
+    );
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    byroredux_scripting::register(&mut dst);
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    {
+        let restored = dst.resource::<QuestScriptVariables>();
+        assert_eq!(
+            restored.get(quest, QuestScriptVariables::property_key("GetInHjerimTovaPointer")),
+            Some(1.0)
+        );
+        assert_eq!(
+            restored.get(quest, QuestScriptVariables::property_key("FriendsKilled")),
+            None,
+            "authored defaults are not serialized"
+        );
+    }
+    byroredux_scripting::install_quest_script_variables(&mut dst, [(quest.0, &authored)]);
+    let read = |name| {
+        byroredux_scripting::quest_variable(&dst, quest, QuestScriptVariables::property_key(name))
+    };
+    assert_eq!(read("FriendsKilled"), Some(2.0), "the reinstalled authored default");
+    assert_eq!(read("GetInHjerimTovaPointer"), Some(1.0), "a reinstall keeps the restored writes");
+}
+
 /// #5366 Phase 3 — Story Manager node-policy state survives save/load,
 /// and the restored state still gates: a pool entry inside its RNAM
 /// window at save time stays blocked after the load (the quickload

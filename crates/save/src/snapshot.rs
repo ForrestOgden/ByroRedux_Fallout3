@@ -298,7 +298,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// and `Effect::RemoveItem` joined the enum. Pending fragment tails
 /// (`FragmentExecutionQueue`) serialize `Effect`s, so a v38 save carrying a
 /// queued `AddItem` cannot be re-read as v39 and is rejected.
-pub const FORMAT_MAJOR: u16 = 39;
+///
+/// v39 -> v40 (M47.2): a new resource column, `QuestScriptVariables` — the
+/// quest-script property writes `GetVMQuestVariable` conditions read. A
+/// pre-v40 save carries none of them, so a restored quest would re-gate its
+/// dialogue on authored defaults; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 40;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

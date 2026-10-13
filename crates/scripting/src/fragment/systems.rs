@@ -225,13 +225,17 @@ pub fn scene_fragment_dispatch_system(world: &World, _dt: f32) {
 /// player sink exactly like [`fragment_continuation_system`]'s (whose batch
 /// mirror the dispatcher deduplicates against the journal when both
 /// survive, i.e. on the UI selection paths that run outside the scheduler).
+///
+/// `speaker` is the actor saying the line: what the fragment's `akSpeaker` /
+/// `akSpeakerRef` resolves to (`ActorRef::Speaker`, M47.2).
 pub fn apply_spoken_info_fragment(
     world: &World,
     effects: &[Effect],
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
+    speaker: Option<EntityId>,
 ) -> Vec<QuestStageAdvanced> {
-    apply_fragment_guard_free(world, effects, context, vmad)
+    apply_fragment_guard_free_as(world, effects, context, vmad, speaker)
 }
 
 /// Consume [`QuestStageAdvanced`] markers and run the matching

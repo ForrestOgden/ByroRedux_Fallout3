@@ -569,7 +569,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::scene::SceneRegistry>()
             .reads_resource::<byroredux_core::ecs::resources::HardcoreMode>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
-            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>(),
+            .writes_resource::<byroredux_scripting::story_manager::StoryManagerRng>()
+            // M47.2 — `GetVMQuestVariable` reads quest-script variables; a
+            // spoken line's fragment writes them (`SetQuestVariable`).
+            .reads_resource::<byroredux_scripting::QuestScriptVariables>()
+            .writes_resource::<byroredux_scripting::QuestScriptVariables>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

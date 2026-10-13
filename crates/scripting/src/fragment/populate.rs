@@ -89,16 +89,24 @@ pub fn argless_function_names(script: &Script) -> std::collections::HashSet<Stri
 }
 
 fn function_body<'a>(script: &'a Script, name: &str) -> Option<&'a [Spanned<Stmt>]> {
+    function_item(script, name).map(|f| f.body.as_slice())
+}
+
+/// The function named `name` (case-insensitive), top-level or in a state.
+fn function_item<'a>(
+    script: &'a Script,
+    name: &str,
+) -> Option<&'a byroredux_papyrus::ast::Function> {
     for item in &script.body {
         match &item.node {
             ScriptItem::Function(f) if f.name.node.0.eq_ignore_ascii_case(name) => {
-                return Some(&f.body);
+                return Some(f);
             }
             ScriptItem::State(st) => {
                 for si in &st.body {
                     if let StateItem::Function(f) = &si.node {
                         if f.name.node.0.eq_ignore_ascii_case(name) {
-                            return Some(&f.body);
+                            return Some(f);
                         }
                     }
                 }
@@ -632,20 +640,20 @@ fn populate_info_fragments_from_script_internal(
     let mut begin: Option<Vec<Effect>> = None;
     let mut end: Option<Vec<Effect>> = None;
     for (on_begin, fragment_name) in bindings {
-        let Some(body) = function_body(script, fragment_name) else {
+        let Some(function) = function_item(script, fragment_name) else {
             log::debug!(
                 "populate_info_fragments: fn '{fragment_name}' absent in info {info_form_id:08X} .pex"
             );
             continue;
         };
-        let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_script_metadata(
-                body,
-                &quest_properties,
-                &argless_functions,
-                providers.map(|scope| scope.catalog),
-            )
-        else {
+        // M47.2 — INFO fragments lower with the line's speaker bound.
+        let Some(mut effects) = crate::translate::effects::lower_info_fragment(
+            &function.params,
+            &function.body,
+            &quest_properties,
+            &argless_functions,
+            providers.map(|scope| scope.catalog),
+        ) else {
             continue;
         };
         if let Some(principal) = providers.and_then(|scope| scope.principal) {

@@ -566,6 +566,12 @@ pub fn build_save_registry() -> SaveRegistry {
             "StoryEventAliasFill",
         )
         .register_resource::<QuestObjectiveState>("QuestObjectiveState")
+        // M47.2 — quest-script property writes (`kmyQuest.Flag = 1`) that
+        // `GetVMQuestVariable` dialogue / package / scene conditions read;
+        // only the writes serialize (the VMAD defaults are re-derived).
+        .register_resource::<byroredux_scripting::QuestScriptVariables>(
+            "QuestScriptVariables",
+        )
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

@@ -546,6 +546,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 550 // IsSceneActionComplete — SCEN FormID (param_2 = action index)
         | 573 // GetReputation — REPU FormID (param_2 = axis, a literal)
         | 575 // GetReputationThreshold — REPU FormID (param_2 = axis)
+        | 629 // GetVMQuestVariable — quest FormID (CIS2 = variable), Skyrim/FO4
         | 630 // GetVMScriptVariable — object-reference FormID (CIS2 = variable)
     )
 }

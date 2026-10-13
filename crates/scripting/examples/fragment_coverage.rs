@@ -27,7 +27,28 @@ use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_papyrus::ast::{Expr, ScriptItem, Stmt};
 use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_scripting::fragment::quest_property_names;
-use byroredux_scripting::translate::effects::{lower_fragment_with_quest_properties, Effect};
+use byroredux_papyrus::ast::Param;
+use byroredux_scripting::translate::effects::{
+    lower_fragment_with_quest_properties, lower_info_fragment, Effect, INFO_SPEAKER_PARAMETER,
+};
+
+/// Lower a fragment the way production does: a topic-info (`TIF_…`) fragment
+/// — the one carrying the speaker parameter — through the INFO entry point
+/// with its speaker bound, every other one through the quest/scene path.
+fn lower_as_production(
+    params: &[Param],
+    body: &[byroredux_papyrus::span::Spanned<Stmt>],
+    quest_properties: &HashSet<String>,
+) -> Option<Vec<Effect>> {
+    if params
+        .iter()
+        .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER))
+    {
+        lower_info_fragment(params, body, quest_properties, &HashSet::new(), None)
+    } else {
+        lower_fragment_with_quest_properties(body, quest_properties)
+    }
+}
 
 enum Archive {
     Bsa(BsaArchive),
@@ -109,9 +130,13 @@ fn expr_call_shape(expr: &Expr) -> Option<String> {
 /// Zero production-code changes — this probes the existing decision
 /// boundary from the outside rather than threading a new "why" return
 /// value through the translator.
-fn decline_shape(body: &[byroredux_papyrus::span::Spanned<Stmt>], quest_properties: &HashSet<String>) -> String {
+fn decline_shape(
+    params: &[Param],
+    body: &[byroredux_papyrus::span::Spanned<Stmt>],
+    quest_properties: &HashSet<String>,
+) -> String {
     for i in 0..body.len() {
-        if lower_fragment_with_quest_properties(&body[..=i], quest_properties).is_none() {
+        if lower_as_production(params, &body[..=i], quest_properties).is_none() {
             return stmt_shape(&body[i].node);
         }
     }
@@ -141,6 +166,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::RemoveItem { .. } => "RemoveItem",
+        Effect::SetQuestVariable { .. } => "SetQuestVariable",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::StartScene { .. } => "StartScene",
@@ -183,6 +209,7 @@ fn effect_kind(e: &Effect) -> &'static str {
 /// the receiver/argument forms behind a decline count can be read directly.
 fn sample_decline(
     file: &str,
+    params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
     shape: &str,
@@ -201,7 +228,7 @@ fn sample_decline(
         return;
     }
     let Some(stmt) = (0..body.len())
-        .find(|&i| lower_fragment_with_quest_properties(&body[..=i], quest_properties).is_none())
+        .find(|&i| lower_as_production(params, &body[..=i], quest_properties).is_none())
         .map(|i| &body[i].node)
     else {
         return;
@@ -276,7 +303,7 @@ fn main() {
                     continue;
                 }
                 behavioral += 1;
-                match lower_fragment_with_quest_properties(&func.body, &quest_properties) {
+                match lower_as_production(&func.params, &func.body, &quest_properties) {
                     Some(effects) => {
                         claimed += 1;
                         claimed_effects += effects.len();
@@ -288,8 +315,8 @@ fn main() {
                         }
                     }
                     None => {
-                        let shape = decline_shape(&func.body, &quest_properties);
-                        sample_decline(&f, &func.body, &quest_properties, &shape);
+                        let shape = decline_shape(&func.params, &func.body, &quest_properties);
+                        sample_decline(&f, &func.params, &func.body, &quest_properties, &shape);
                         *decline_hist.entry(shape).or_default() += 1;
                     }
                 }
@@ -465,7 +492,7 @@ mod tests {
             "sanity: the full body must actually decline"
         );
         assert_eq!(
-            decline_shape(&body, &HashSet::new()),
+            decline_shape(&[], &body, &HashSet::new()),
             "Assign(field/index)"
         );
     }

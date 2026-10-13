@@ -31,6 +31,7 @@ pub mod papyrus_demo;
 pub mod papyrus_provider;
 pub mod player_control;
 pub mod quest_stages;
+pub mod quest_variables;
 pub mod recurring_update;
 pub mod registry;
 pub mod scene;
@@ -142,6 +143,9 @@ pub use quest_stages::{
     resolve_quest_objective_targets, resolve_quest_targets, QuestAliasReadinessGate,
     QuestDefinitionRegistry, QuestEventRead, QuestEventSubscriberId, QuestFormId, QuestStatus,
     SequencedQuestStageAdvanced, StartGameQuestRegistry, QUEST_EVENT_RETENTION,
+};
+pub use quest_variables::{
+    install_quest_script_variables, quest_variable, QuestScriptVariableDefaults, QuestScriptVariables,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};

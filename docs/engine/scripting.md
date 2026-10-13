@@ -274,6 +274,28 @@ zero decode mismatches on FalloutNV / Fallout3 / Skyrim):
   the only visible case is a `Set Value` at a high number (`EagleEye30`), which
   only makes sense applied last.
 
+### Quest script variables and the dialogue speaker (M47.2)
+
+Fragments write quest-script *auto properties* (`kmyQuest.Flag = 1`,
+`(Self.GetOwningQuest() as MS11QuestScript).GetInHjerimTovaPointer = true`),
+and dialogue, package and scene conditions read them back through
+`GetVMQuestVariable` (CTDA 629, Skyrim / FO4 — 3,319 conditions in Skyrim.esm,
+774 in Fallout4.esm). `Effect::SetQuestVariable` records a literal write in
+the saved `QuestScriptVariables` resource under the backing `::Name_var`
+spelling the conditions use (`ctda_variable_census` example); the quest
+`VMAD`'s authored Int / Float / Bool values live in the unsaved
+`QuestScriptVariableDefaults` (re-derived every boot, so a save load cannot
+wipe them). A computed value, a compound operator or a bare `Self` receiver
+(a topic-info fragment's own script) declines.
+
+Topic-info (`TIF_…`) fragments receive their speaker through the
+`akSpeakerRef` parameter. `lower_info_fragment` binds it (and the
+`akSpeaker = akSpeakerRef as Actor` local) to `ActorRef::Speaker`, which the
+dialogue caller resolves to the NPC saying the line
+(`apply_spoken_info_fragment(.., Some(npc))`). A speaker fragment with a
+latent tail (a wait, a 3D-loaded poll, a provider barrier) declines: the
+speaker is a live entity a saved continuation could not name.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

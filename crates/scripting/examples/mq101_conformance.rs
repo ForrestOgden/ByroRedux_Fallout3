@@ -131,6 +131,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
         Effect::RemoveItem { .. } => "RemoveItem",
+        Effect::SetQuestVariable { .. } => "SetQuestVariable",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::Disable { .. } => "Disable",

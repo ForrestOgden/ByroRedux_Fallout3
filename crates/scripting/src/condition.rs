@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **24 functions** at their canonical CTDA
+//! lineage. This catalog ships **25 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -52,6 +52,7 @@
 //! | 573   | GetReputation          | `FactionReputation` (FNV)   |
 //! | 575   | GetReputationThreshold | `FactionReputation` + bands |
 //! | 586   | IsHardcore             | `HardcoreMode` (FNV)        |
+//! | 629   | GetVMQuestVariable     | `QuestScriptVariables`      |
 //! | 630   | GetVMScriptVariable    | `ScriptVariables`           |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
@@ -190,6 +191,13 @@ pub enum ConditionFunction {
     /// `CIS2`-named variable from its canonical [`crate::ScriptVariables`]
     /// component. Skyrim function index **630**.
     GetVMScriptVariable,
+    /// `GetVMQuestVariable(quest_form_id, variable_name) → f32` (M47.2). The
+    /// quest's numeric script variable named by `CIS2` (the backing
+    /// `::Name_var` spelling) from [`crate::QuestScriptVariables`]: the
+    /// scripted write, else the quest `VMAD`'s authored value, else 0.0.
+    /// Skyrim / FO4 function index **629** (xEdit; no FO3/FNV function uses
+    /// it).
+    GetVMQuestVariable,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -240,6 +248,7 @@ impl ConditionFunction {
             573 => Self::GetReputation,
             575 => Self::GetReputationThreshold,
             586 => Self::IsHardcore,
+            629 => Self::GetVMQuestVariable,
             630 => Self::GetVMScriptVariable,
             other => Self::Unknown(other),
         }
@@ -247,7 +256,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 24] = [
+    pub const CATALOG: [ConditionFunction; 25] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -269,6 +278,7 @@ impl ConditionFunction {
         Self::GetReputation,
         Self::GetReputationThreshold,
         Self::GetVMScriptVariable,
+        Self::GetVMQuestVariable,
         Self::GetQuestRunning,
         Self::GetGlobalValue,
         Self::GetRandomPercent,
@@ -300,6 +310,7 @@ impl ConditionFunction {
             | Self::IsSceneActionComplete
             | Self::GetReputation
             | Self::GetReputationThreshold
+            | Self::GetVMQuestVariable
             | Self::GetVMScriptVariable => true,
             Self::GetRandomPercent
             | Self::GetDead
@@ -338,6 +349,7 @@ impl ConditionFunction {
             Self::GetReputation => "GetReputation",
             Self::GetReputationThreshold => "GetReputationThreshold",
             Self::GetVMScriptVariable => "GetVMScriptVariable",
+            Self::GetVMQuestVariable => "GetVMQuestVariable",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -385,6 +397,7 @@ impl ConditionFunction {
             | Self::GetStageDone
             | Self::IsSceneActionComplete
             | Self::IsHardcore
+            | Self::GetVMQuestVariable
             | Self::GetVMScriptVariable
             | Self::Unknown(_) => false,
         }
@@ -426,6 +439,7 @@ impl ConditionFunction {
             | Self::GetStageDone
             | Self::IsSceneActionComplete
             | Self::IsHardcore
+            | Self::GetVMQuestVariable
             | Self::GetVMScriptVariable
             | Self::Unknown(_) => true,
         }
@@ -1124,6 +1138,15 @@ pub fn evaluate_function(
                 .and_then(|variables| variables.get(variable))
                 .unwrap_or(0.0)
         }
+        ConditionFunction::GetVMQuestVariable => {
+            // The quest is an explicit parameter (remapped to global space at
+            // parse, #1666); CIS2 names the variable.
+            let Some(variable) = condition.param_2_text else {
+                return 0.0;
+            };
+            crate::quest_variables::quest_variable(world, QuestFormId(condition.param_1), variable)
+                .unwrap_or(0.0)
+        }
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \
@@ -1556,6 +1579,59 @@ mod tests {
         condition.param_2_text = Some(ConditionStringId::from_text("::isOpen_var"));
 
         assert!(evaluate(&vec![condition], &world, &ctx(subject)));
+    }
+
+    /// M47.2 — `GetVMQuestVariable` (629) reads the named quest variable:
+    /// the scripted write, else the VMAD-authored value, else 0. A condition
+    /// without its CIS2 name reads 0.
+    #[test]
+    fn get_vm_quest_variable_reads_writes_then_authored_values() {
+        use crate::quest_variables::{install_quest_script_variables, QuestScriptVariables};
+        use crate::QuestFormId;
+        use byroredux_plugin::esm::records::condition::ConditionStringId;
+        use byroredux_plugin::esm::records::script_instance::{
+            PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+        };
+
+        const MS11: u32 = 0x0004_4B4B;
+        let mut world = World::new();
+        let subject = world.spawn();
+        install_quest_script_variables(
+            &mut world,
+            [(
+                MS11,
+                &ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "MS11QuestScript".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "FriendsKilled".into(),
+                        status: 1,
+                        value: PropertyValue::Int32(2),
+                    }],
+                }],
+                },
+            )],
+        );
+        let gate = |variable: &str, comparand: f32| {
+            let mut condition = cond(629, ComparisonOp::Eq, comparand, false).with_param_1(MS11);
+            condition.param_2_text = Some(ConditionStringId::from_text(variable));
+            vec![condition]
+        };
+
+        assert!(evaluate(&gate("::FriendsKilled_var", 2.0), &world, &ctx(subject)));
+        assert!(evaluate(&gate("::Unwritten_var", 0.0), &world, &ctx(subject)));
+        world
+            .resource_mut::<QuestScriptVariables>()
+            .set(QuestFormId(MS11), QuestScriptVariables::property_key("FriendsKilled"), 5.0);
+        assert!(evaluate(&gate("::FriendsKilled_var", 5.0), &world, &ctx(subject)));
+        assert!(!evaluate(&gate("::FriendsKilled_var", 2.0), &world, &ctx(subject)));
+
+        let mut nameless = cond(629, ComparisonOp::Eq, 0.0, false).with_param_1(MS11);
+        nameless.param_2_text = None;
+        assert!(evaluate(&vec![nameless], &world, &ctx(subject)));
     }
 
     // ── GetDead / GetInCell (MQ101 scene gates) ─────────────────────────

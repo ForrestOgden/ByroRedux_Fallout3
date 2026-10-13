@@ -586,6 +586,17 @@ pub(crate) fn populate_scene_runtime(
     if sm_nodes > 0 {
         log::info!("Installed Story Manager tree: {sm_nodes} nodes");
     }
+    // M47.2 — quest script variables: the authored numeric property values
+    // of every quest VMAD, the fallback `GetVMQuestVariable` reads until a
+    // fragment writes the variable (writes survive a reinstall).
+    let quest_variable_quests = byroredux_scripting::install_quest_script_variables(
+        world,
+        index
+            .quests
+            .values()
+            .filter_map(|quest| Some((quest.form_id, quest.script_instance.as_ref()?))),
+    );
+    log::info!("Installed quest script variable defaults for {quest_variable_quests} quests");
     // M47.2 — perk entry-point composition table (FO3/FNV, Skyrim): the
     // value-math entries of every PERK, composed against an actor's ranked
     // perks whenever a calculation consults a hook.

@@ -357,8 +357,8 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
             (outgoing, speakers)
         })
         .unwrap_or_default();
-    for existing in &outgoing {
-        speak_info_end_fragment(world, existing);
+    for (existing, speaker) in outgoing.iter().zip(&speakers) {
+        speak_info_end_fragment(world, existing, *speaker);
     }
     // #5432 — the outgoing line stops being spoken: cut every stamped
     // speaker's still-playing/queued segments (a stale partner's, and
@@ -428,7 +428,7 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
         topic.info_form_id,
         topic.owning_quest,
     );
-    speak_info_begin_fragment(world, &topic);
+    speak_info_begin_fragment(world, &topic, npc);
 }
 
 /// #5152 — run the selected INFO's OnBegin fragment (the TIF_ topic-info
@@ -450,23 +450,23 @@ fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record
 /// pre-Papyrus game) or the line has no OnBegin binding — most INFO
 /// dialogue is inert flavor, and 3 773 of vanilla's 5 257 bound INFOs are
 /// OnEnd-only.
-fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic) {
+fn speak_info_begin_fragment(world: &World, topic: &NpcDialogueTopic, speaker: EntityId) {
     let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, true)
     else {
         return;
     };
-    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref());
+    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref(), speaker);
 }
 
 /// The outgoing line's OnEnd fragment — "the line is done". Fires when
 /// another selection replaces it ([`apply_selection`]) and when the
 /// conversation surface closes ([`end_open_conversation`]).
-fn speak_info_end_fragment(world: &World, topic: &NpcDialogueTopic) {
+fn speak_info_end_fragment(world: &World, topic: &NpcDialogueTopic, speaker: EntityId) {
     let Some((effects, context, vmad)) = spoken_fragment_effects(world, topic.info_form_id, false)
     else {
         return;
     };
-    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref());
+    dispatch_spoken_fragment(world, &effects, context, vmad.as_ref(), speaker);
 }
 
 /// One resource read for the fragment binding + context + property table.
@@ -482,13 +482,21 @@ fn spoken_fragment_effects(
         .spoken_effects(info_form_id, begin)
 }
 
+/// `speaker` is the NPC saying the line — the fragment's `akSpeaker` (M47.2).
 fn dispatch_spoken_fragment(
     world: &World,
     effects: &[Effect],
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
+    speaker: EntityId,
 ) {
-    let advances = byroredux_scripting::apply_spoken_info_fragment(world, effects, context, vmad);
+    let advances = byroredux_scripting::apply_spoken_info_fragment(
+        world,
+        effects,
+        context,
+        vmad,
+        Some(speaker),
+    );
     if advances.is_empty() {
         return;
     }
@@ -567,7 +575,7 @@ pub(crate) fn end_open_conversation(world: &World) {
         None => return,
     };
     if let Some(outgoing) = world.get::<NpcDialogueTopic>(npc).map(|topic| topic.clone()) {
-        speak_info_end_fragment(world, &outgoing);
+        speak_info_end_fragment(world, &outgoing, npc);
     }
     // #5432 — closing the conversation cuts the line it was speaking.
     crate::systems::dialogue_voice::stop_line_voice(world, npc);
