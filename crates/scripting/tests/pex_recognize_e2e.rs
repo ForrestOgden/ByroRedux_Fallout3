@@ -139,3 +139,40 @@ fn an_unrecognized_pex_is_a_silent_miss() {
          and is now silently attaching components to unrelated scripts (#2432)"
     );
 }
+
+/// M47.2 Phase 2 checklist — the compiled vanilla `defaultRumbleOnActivate`
+/// decompiles and is recognized like its `.psc`, honoring a VMAD override.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn default_rumble_pex_is_recognized() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    let Some(bytes) = extract_pex("defaultRumbleOnActivate") else {
+        eprintln!("SKIP: defaultRumbleOnActivate.pex not found (no game data?)");
+        return;
+    };
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "defaultRumbleOnActivate".into(),
+            status: 1,
+            properties: vec![ScriptProperty {
+                name: "cameraIntensity".into(),
+                status: 1,
+                value: PropertyValue::Float(0.6),
+            }],
+        }],
+        ..Default::default()
+    };
+    let recognized = translate_pex(&bytes, GameKind::Skyrim, Some(&vmad), None)
+        .expect("the compiled rumble script is recognized");
+    assert!(recognized.archetype.starts_with("rumble_on_activate@"), "{}", recognized.archetype);
+    let mut world = byroredux_core::ecs::world::World::new();
+    byroredux_scripting::register(&mut world);
+    let entity = world.spawn();
+    (recognized.spawn)(&mut world, entity);
+    let rumble = world
+        .get::<byroredux_scripting::papyrus_demo::RumbleOnActivate>(entity)
+        .expect("component lands");
+    assert_eq!(rumble.camera_intensity, 0.6);
+}

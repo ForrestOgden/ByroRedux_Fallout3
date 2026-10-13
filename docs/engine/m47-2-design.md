@@ -351,8 +351,8 @@ recognizer family. `SCDA` disassembly deferred (filed).
 - [x] `RecognizeCtx.owning_quest` resolves for alias-attached scripts
 - [x] hardcoded `papyrus_demo::register_spawners` retired from the attach path (#2191)
 - [x] emitted components + `QuestStageState` registered with the M45 `SaveRegistry` (`save_io.rs`)
-- [ ] synthetic E2E: `.psc` ACTI w/ VMAD → component lands → event → side-effect marker on player
-- [ ] script state survives a `save`→`load` round-trip
+- [x] synthetic E2E: `.psc` ACTI w/ VMAD → component lands → event → side-effect marker on player (`psc_activator_with_vmad_recognizes_activates_and_marks_the_player`; it found the rumble recognizer ignoring VMAD overrides, fixed)
+- [x] script state survives a `save`→`load` round-trip (`save_io/round_trip_tests.rs`: `TwoStateActivator`, `RumbleOnActivate`, `ScriptVariables`, `QuestStageState`, `QuestScriptVariables`)
 
 **Phase 1**
 - [x] `.pex` container + tables decode to a partial `Script` (`crates/pex`)
@@ -362,7 +362,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 **Phase 2**
 - [x] Papyrus-Assembly opcodes decode; jump graph lifts to If/ElseIf/While (26,640 / 26,641 corpus scripts)
 - [x] fidelity gate: recognizer output identical for `.psc` vs decompiled `.pex` (#1740)
-- [ ] `quest_stage_gate` + `rumble` fire on decompiled vanilla content
+- [x] `quest_stage_gate` + `rumble` fire on decompiled vanilla content (`pex_recognize_e2e`: DA10, `defaultRumbleOnActivate`)
 
 **Phase 3**
 - [ ] top-N script families by corpus frequency have generic recognizers
@@ -371,7 +371,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
-- [ ] `sys.accesses` reports 0 unknown / 0 conflicts after additions
+- [x] `sys.accesses` reports 0 unknown / 0 conflicts after additions (`scheduler_access_tests.rs` pins both)
 
 **Phase 5**
 - [ ] Obscript `SCTX` parses to an Obscript AST — superseded: M47.3 executes the `SCDA` bytecode directly

@@ -495,3 +495,60 @@ fn trigger_and_equipment_event_storages_are_registered() {
     }
     assert!(world.has::<crate::EquipmentEventBatch>(npc));
 }
+
+/// M47.2 Phase 0 checklist — the synthetic end-to-end: the shipped
+/// `defaultRumbleOnActivate.psc` source, attached through a VMAD whose
+/// authored property overrides the script default, is recognized into its
+/// canonical component; an activation by the player runs the translated
+/// `OnActivate` and leaves the side-effect marker (`Game.ShakeCamera`) on
+/// the player.
+#[test]
+fn psc_activator_with_vmad_recognizes_activates_and_marks_the_player() {
+    use crate::translate::ScriptSource;
+    use byroredux_plugin::esm::reader::GameKind;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+
+    let source = include_str!("../../../../docs/r5/source/defaultRumbleOnActivate.psc");
+    let (script, errors) = byroredux_papyrus::parse_script(source).expect("the R5 source parses");
+    assert!(errors.is_empty(), "{errors:?}");
+    let vmad = ScriptInstanceData {
+        scripts: vec![ScriptInstance {
+            name: "defaultRumbleOnActivate".into(),
+            status: 1,
+            properties: vec![ScriptProperty {
+                name: "cameraIntensity".into(),
+                status: 1,
+                value: PropertyValue::Float(0.75),
+            }],
+        }],
+        ..Default::default()
+    };
+    let recognized = crate::translate_script(
+        &ScriptSource::PapyrusSource(&script),
+        GameKind::Skyrim,
+        Some(&vmad),
+        None,
+    )
+    .expect("defaultRumbleOnActivate is recognized");
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let activator = world.spawn();
+    (recognized.spawn)(&mut world, activator);
+    assert!(world.get::<RumbleOnActivate>(activator).is_some(), "component lands");
+
+    world
+        .query_mut::<crate::ActivateEvent>()
+        .unwrap()
+        .insert(activator, crate::ActivateEvent { activator: player });
+    rumble_on_activate_system(&world);
+
+    let shake = world
+        .get::<CameraShakeCommand>(player)
+        .expect("the activation leaves the camera-shake marker on the player");
+    assert_eq!(shake.intensity, 0.75, "the VMAD override, not the script default");
+}
