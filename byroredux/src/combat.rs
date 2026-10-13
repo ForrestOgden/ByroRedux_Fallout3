@@ -1125,6 +1125,39 @@ pub(crate) fn scripted_experience_system(world: &World, _dt: f32) {
     }
 }
 
+/// M47.2 — script `Game.AdvanceSkill` calls (`PendingSkillAdvances`): the
+/// usage XP banks against the player's skill, and each skill rank it reaches
+/// feeds character XP (`LevelingModel::xp_from_skill_rank`) through the shared
+/// level roll. Skyrim's skill-XP model only: another ruleset's player has no
+/// skill-use leveling, so the call changes nothing there.
+pub(crate) fn scripted_skill_system(world: &World, _dt: f32) {
+    let advances = world
+        .try_resource_mut::<byroredux_scripting::PendingSkillAdvances>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    if advances.is_empty() {
+        return;
+    }
+    let Some(player) = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return;
+    };
+    let leveling = world
+        .try_resource::<CharacterRuleset>()
+        .map(|ruleset| ruleset.leveling);
+    for (skill, magnitude) in advances {
+        let reached = byroredux_scripting::advance_skill(world, player, &skill, magnitude);
+        for level in reached {
+            log::info!("Script skill advance: {skill} reached {level}");
+            if let Some(xp) = leveling.and_then(|leveling| leveling.xp_from_skill_rank(level)) {
+                grant_experience(world, player, xp.round().max(0.0) as u32);
+            }
+        }
+    }
+}
+
 /// M47.2 — script `Kill` requests (`PendingScriptKills`), through the same
 /// death path as a lethal hit: an essential victim goes into bleedout
 /// instead (the CK *Kill* console page: "Essential actors will be made

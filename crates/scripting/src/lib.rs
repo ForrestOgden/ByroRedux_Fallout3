@@ -31,6 +31,7 @@ pub mod menus;
 pub mod alias_collections;
 pub mod followers;
 pub mod messages;
+pub mod skills;
 pub mod misc_stats;
 pub mod location;
 pub mod magic;
@@ -124,6 +125,7 @@ pub use faction_changes::{
 };
 pub use globals::Globals;
 pub use alias_collections::{AliasCollections, CollectionAliasKinds};
+pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
 pub use actor_value_names::{install_actor_value_names, ActorValueNames};
@@ -258,6 +260,14 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted IncrementStat misc stats (saved).
     if world.try_resource::<MiscStats>().is_none() {
         world.insert_resource(MiscStats::default());
+    }
+    // M47.2 — Game.AdvanceSkill: banked usage XP (saved) and the advances
+    // scripts queued (transient).
+    if world.try_resource::<SkillProgress>().is_none() {
+        world.insert_resource(SkillProgress::default());
+    }
+    if world.try_resource::<PendingSkillAdvances>().is_none() {
+        world.insert_resource(PendingSkillAdvances::default());
     }
     // M47.2 — script-filled reference-collection alias members (saved).
     if world.try_resource::<AliasCollections>().is_none() {

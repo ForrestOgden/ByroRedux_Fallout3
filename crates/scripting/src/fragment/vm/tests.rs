@@ -2365,3 +2365,20 @@ fn custom_and_remote_events_reach_registered_scripts() {
     crate::fragment::fragment_continuation_system(&world, 0.0);
     assert_eq!(pings(&world), Some(111.0));
 }
+
+/// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
+#[test]
+fn advance_skill_queues_the_usage_xp() {
+    let script = parsed_source(
+        "ScriptName QF_VmSkill extends Quest\n\
+         Function Fragment_1()\n Game.AdvanceSkill(\"Lockpicking\", 50.0)\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world.resource::<crate::PendingSkillAdvances>().0,
+        [("Lockpicking".to_owned(), 50.0)]
+    );
+}

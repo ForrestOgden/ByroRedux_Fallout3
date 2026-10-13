@@ -235,6 +235,22 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::character::LevelUpPoints>()
             .reads::<byroredux_core::ecs::components::ActorValues>(),
     );
+    // M47.2 — script Game.AdvanceSkill: skill usage XP, skill level-ups, and the
+    // character XP a rank-up feeds through the same level roll.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::combat::scripted_skill_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::PendingSkillAdvances>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads_resource::<byroredux_scripting::SkillScaling>()
+            .writes_resource::<byroredux_scripting::SkillProgress>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes::<byroredux_core::character::CharacterLevel>()
+            .writes::<byroredux_core::character::LevelUpPoints>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
+    );
     // M47.2 — script Kill requests, ahead of the shared death reconciler.
     scheduler.add_exclusive_with_access(
         Stage::Late,
@@ -697,7 +713,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::AliasCollections>()
             // M47.2 — a spoken line's custom / remote event registrations.
             .reads_resource::<byroredux_scripting::EventRegistrations>()
-            .writes_resource::<byroredux_scripting::EventRegistrations>(),
+            .writes_resource::<byroredux_scripting::EventRegistrations>()
+            // M47.2 — a spoken line's AdvanceSkill.
+            .writes_resource::<byroredux_scripting::PendingSkillAdvances>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

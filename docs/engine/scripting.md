@@ -760,7 +760,7 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.2% of the Skyrim corpus runs (Fallout 4: 76.6%, Starfield
+With the VM, 81.3% of the Skyrim corpus runs (Fallout 4: 76.6%, Starfield
 71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
@@ -774,8 +774,7 @@ archive carries almost no quest fragments (54 behavioral — the quest logic
 is server-side), so its fragment number is not meaningful.
 
 Not modelled yet:
-- `AdvanceSkill`, which needs per-skill usage progression in CHARAL, and
-  other actor natives;
+- other actor natives;
 - alias update registrations;
 - package End fragments (procedure completion).
 
@@ -1007,6 +1006,23 @@ registration the frame's interpreter allowance cannot start stays registered.
 The saved `EventRegistrations` holds them. A quest that stops drops its
 registrations (checked each frame by `reference_script_event_system`), as the
 CK says quests and aliases do.
+
+### Skill advances (M47.2)
+
+`Game.AdvanceSkill(asSkillName, afMagnitude)` (Skyrim) banks usage XP against
+the player's skill, from the skill AVIF's `AVSK` tuple and UESP *Skyrim:
+Leveling*:
+- the XP is `magnitude × Skill Use Mult + Skill Use Offset`;
+- raising a skill from level L costs `Skill Improve Mult × L^1.95 + Skill
+  Improve Offset`, up to the cap of 100;
+- the banked XP is the saved `SkillProgress`, and a level reached rewrites the
+  skill's base value;
+- each rank reached feeds character XP (`LevelingModel::xp_from_skill_rank`)
+  through the shared level roll, in `scripted_skill_system`.
+
+The CK says the amount is "automatically modified by any active effects such as
+a Guardian Stone"; those modifiers are not modelled. `IncrementSkill` is not
+lowered yet.
 
 ### Explicit-start pin (M47.2)
 

@@ -43,6 +43,7 @@ pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     let names = ActorValueNames::from_index(index);
     let count = names.0.len();
     world.insert_resource(names);
+    world.insert_resource(crate::skills::SkillScaling::from_index(index));
     count
 }
 

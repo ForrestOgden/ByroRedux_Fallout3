@@ -442,7 +442,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v76 -> v77 (M47.2): the `EventRegistrations` resource column (Papyrus
 /// custom / remote events) and `VmStored::Array` (an event's `Var[]`).
-pub const FORMAT_MAJOR: u16 = 77;
+///
+/// v77 -> v78 (M47.2): `Effect::AdvanceSkill` and the `SkillProgress`
+/// resource column (banked skill usage XP).
+pub const FORMAT_MAJOR: u16 = 78;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

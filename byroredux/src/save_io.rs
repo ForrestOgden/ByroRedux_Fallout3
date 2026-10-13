@@ -635,6 +635,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::AliasCollections>("AliasCollections")
         // M47.2 — Papyrus custom / remote event registrations.
         .register_resource::<byroredux_scripting::EventRegistrations>("EventRegistrations")
+        // M47.2 — Game.AdvanceSkill's banked usage XP per skill.
+        .register_resource::<byroredux_scripting::SkillProgress>("SkillProgress")
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.

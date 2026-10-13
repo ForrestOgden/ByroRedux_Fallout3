@@ -446,6 +446,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AddAchievement` IDs, applied to
     /// [`crate::Achievements`] after the guards drop.
     achievements: Vec<i32>,
+    /// M47.2 — `Effect::AdvanceSkill`s, queued on
+    /// [`crate::PendingSkillAdvances`] after the guards drop.
+    skill_advances: Vec<(String, f32)>,
     /// M47.2 — follower-flag writes: (actor FormID, teammate (with can-do-
     /// favor) or doing-favor), applied to [`crate::FollowerState`] after the
     /// guards drop.
@@ -570,6 +573,7 @@ impl DeferredFragmentEffects {
             player_xp: Vec::new(),
             misc_stats: Vec::new(),
             achievements: Vec::new(),
+            skill_advances: Vec::new(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             alias_collections: Vec::new(),
@@ -705,6 +709,12 @@ impl DeferredFragmentEffects {
                 }
             }
             self.follower_changes.clear();
+        }
+        if !self.skill_advances.is_empty() {
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSkillAdvances>() {
+                pending.0.append(&mut self.skill_advances);
+            }
+            self.skill_advances.clear();
         }
         if !self.achievements.is_empty() {
             if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
@@ -1418,6 +1428,10 @@ pub(crate) fn apply_effect(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let form = crate::condition::entity_global_form_id(world, actor)?;
             deferred.follower_changes.push((form, FollowerChange::DoingFavor(*doing)));
+            None
+        }
+        Effect::AdvanceSkill { skill, magnitude } => {
+            deferred.skill_advances.push((skill.clone(), *magnitude));
             None
         }
         Effect::AddAchievement { id } => {
@@ -2947,6 +2961,7 @@ fn apply_quest_scoped_effect(
         | Effect::RewardPlayerXp { .. }
         | Effect::IncrementStat { .. }
         | Effect::AddAchievement { .. }
+        | Effect::AdvanceSkill { .. }
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }

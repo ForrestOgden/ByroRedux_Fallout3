@@ -1255,6 +1255,9 @@ pub enum Effect {
     /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
     /// ([`crate::Achievements`]).
     AddAchievement { id: i32 },
+    /// M47.2 — `Game.AdvanceSkill(asSkillName, afMagnitude)` with literal
+    /// arguments ([`crate::skills`]).
+    AdvanceSkill { skill: String, magnitude: f32 },
     /// M47.2 — `<actor>.SetPlayerTeammate([abTeammate], [abCanDoFavor])`
     /// ([`crate::FollowerState`]).
     SetPlayerTeammate {
@@ -2889,6 +2892,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_reward_player_xp,
     prim_increment_stat,
     prim_add_achievement,
+    prim_advance_skill,
     prim_set_player_teammate,
     prim_set_doing_favor,
     prim_player_caps,
@@ -3608,6 +3612,22 @@ fn prim_set_doing_favor(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::SetDoingFavor {
         actor: receiver_actor(object, scope)?,
         doing: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
+/// `Game.AdvanceSkill(string asSkillName, float afMagnitude)` with literal
+/// arguments.
+fn prim_advance_skill(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "AdvanceSkill")?;
+    if args.len() != 2 {
+        return None;
+    }
+    let Expr::StringLit(skill) = &args[0].value.node else {
+        return None;
+    };
+    Some(Effect::AdvanceSkill {
+        skill: skill.clone(),
+        magnitude: as_num(&args[1].value.node)?,
     })
 }
 
