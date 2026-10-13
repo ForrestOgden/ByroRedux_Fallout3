@@ -10,7 +10,9 @@
 //! another is a preemption — this engine re-selects packages by their
 //! conditions and schedules and does not model a procedure completing — so
 //! it runs the old package's Change fragment and the new one's Begin. End
-//! fragments are installed but not run until procedure completion lands.
+//! runs when a procedure completes on its own ([`report_package_end`]); the
+//! only completing procedure modelled is Travel's arrival — Sandbox, Wander
+//! and the rest never finish here, so their End fragments never run.
 //!
 //! Fragments install only when the VM's check passes (the lowering's INFO
 //! speaker binding does not cover `akActor`); the fragment runs with the
@@ -114,6 +116,27 @@ pub struct PendingPackageTransitions(pub Vec<PackageTransition>);
 
 impl Resource for PendingPackageTransitions {}
 
+/// An actor finished running `package` (a procedure completed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageEnd {
+    pub actor: EntityId,
+    pub package: u32,
+}
+
+/// The package completions the host reported this frame.
+#[derive(Debug, Default)]
+pub struct PendingPackageEnds(pub Vec<PackageEnd>);
+
+impl Resource for PendingPackageEnds {}
+
+/// Report that `actor` finished running `package`: the procedure completed
+/// on its own (a Travel arrival), as opposed to being preempted.
+pub fn report_package_end(world: &World, actor: EntityId, package: u32) {
+    if let Some(mut pending) = world.try_resource_mut::<PendingPackageEnds>() {
+        pending.0.push(PackageEnd { actor, package });
+    }
+}
+
 /// Report that `actor`'s package changed from `from` to `to`.
 pub fn report_package_transition(world: &World, actor: EntityId, from: Option<u32>, to: Option<u32>) {
     if from == to {
@@ -128,52 +151,69 @@ pub fn report_package_transition(world: &World, actor: EntityId, from: Option<u3
 pub fn package_fragment_system(world: &World, _dt: f32) {
     let transitions = match world.try_resource_mut::<PendingPackageTransitions>() {
         Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
-        _ => return,
+        _ => Vec::new(),
     };
+    let ends = match world.try_resource_mut::<PendingPackageEnds>() {
+        Some(mut pending) if !pending.0.is_empty() => std::mem::take(&mut pending.0),
+        _ => Vec::new(),
+    };
+    if transitions.is_empty() && ends.is_empty() {
+        return;
+    }
     let fragments = world.resource::<PackageFragments>().clone();
-    log::debug!("{} package transition(s), {} package(s) with fragments", transitions.len(), fragments.len());
+    log::debug!(
+        "{} package transition(s), {} completion(s), {} package(s) with fragments",
+        transitions.len(),
+        ends.len(),
+        fragments.len()
+    );
     if fragments.is_empty() {
         return;
     }
     let player = world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0);
-    let mut advances = Vec::new();
+    // (actor, package, event) in report order: completions first (they
+    // happened during the frame the transitions were decided after).
+    let mut runs: Vec<(EntityId, u32, PackageFragmentEvent)> = Vec::new();
+    for end in ends {
+        runs.push((end.actor, end.package, PackageFragmentEvent::End));
+    }
     for transition in transitions {
-        let actor = if Some(transition.actor) == player {
+        if let Some(from) = transition.from {
+            runs.push((transition.actor, from, PackageFragmentEvent::Change));
+        }
+        if let Some(to) = transition.to {
+            runs.push((transition.actor, to, PackageFragmentEvent::Begin));
+        }
+    }
+    let mut advances = Vec::new();
+    for (entity, package, event) in runs {
+        let actor = if Some(entity) == player {
             Some(0x14)
         } else {
-            crate::condition::entity_global_form_id(world, transition.actor)
+            crate::condition::entity_global_form_id(world, entity)
         };
         let Some(actor) = actor else {
             continue;
         };
-        let runs = [
-            (transition.from, PackageFragmentEvent::Change),
-            (transition.to, PackageFragmentEvent::Begin),
-        ];
-        for (package, event) in runs {
-            let Some(package) = package else {
-                continue;
+        let Some(set) = fragments.get(package) else {
+            continue;
+        };
+        for (_, script, function) in set.fragments.iter().filter(|(on, _, _)| *on == event) {
+            log::debug!("package {package:08X} {event:?} on {actor:08X}: {script}.{function}");
+            let effect = Effect::Interpret {
+                script: script.clone(),
+                function: function.clone(),
+                args: vec![VmStored::Form(actor)],
+                resume: None,
             };
-            let Some(set) = fragments.get(package) else {
-                continue;
-            };
-            for (_, script, function) in set.fragments.iter().filter(|(on, _, _)| *on == event) {
-                log::debug!("package {package:08X} {event:?} on {actor:08X}: {script}.{function}");
-                let effect = Effect::Interpret {
-                    script: script.clone(),
-                    function: function.clone(),
-                    args: vec![VmStored::Form(actor)],
-                    resume: None,
-                };
-                advances.extend(apply_fragment_guard_free(
-                    world,
-                    std::slice::from_ref(&effect),
-                    QuestFormId(package),
-                    set.vmad.as_ref(),
-                ));
-            }
+            advances.extend(apply_fragment_guard_free(
+                world,
+                std::slice::from_ref(&effect),
+                QuestFormId(package),
+                set.vmad.as_ref(),
+            ));
         }
     }
     let Some(player) = player else {

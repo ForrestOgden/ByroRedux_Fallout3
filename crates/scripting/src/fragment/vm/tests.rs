@@ -2183,7 +2183,7 @@ fn structs_and_array_methods_run() {
 
 /// A package's Begin / Change fragments run with `akActor` bound to the
 /// actor; a switch of package runs the old one's Change and the new one's
-/// Begin.
+/// Begin; a completed procedure runs the package's End fragment.
 #[test]
 fn package_fragments_run_on_transitions() {
     use byroredux_plugin::esm::records::script_instance::PackageFragmentEvent;
@@ -2193,7 +2193,8 @@ fn package_fragments_run_on_transitions() {
     let a = parsed_source(
         "ScriptName PF_A extends Package\n\
          Function Fragment_0(Actor akActor)\n akActor.Disable()\n EndFunction\n\
-         Function Fragment_1(Actor akActor)\n Self.SetStage(30)\n EndFunction\n",
+         Function Fragment_1(Actor akActor)\n Self.SetStage(30)\n EndFunction\n\
+         Function Fragment_2(Actor akActor)\n akActor.Disable()\n EndFunction\n",
     );
     let b = parsed_source(
         "ScriptName PF_B extends Package\n\
@@ -2220,7 +2221,11 @@ fn package_fragments_run_on_transitions() {
         (
             PACK_A,
             a,
-            vec![(PackageFragmentEvent::Begin, "Fragment_0"), (PackageFragmentEvent::Change, "Fragment_1")],
+            vec![
+                (PackageFragmentEvent::Begin, "Fragment_0"),
+                (PackageFragmentEvent::Change, "Fragment_1"),
+                (PackageFragmentEvent::End, "Fragment_2"),
+            ],
         ),
         (PACK_B, b, vec![(PackageFragmentEvent::Begin, "Fragment_0")]),
     ] {
@@ -2242,6 +2247,14 @@ fn package_fragments_run_on_transitions() {
     crate::report_package_transition(&world, actor, Some(PACK_A), Some(PACK_B));
     crate::package_fragment_system(&world, 0.0);
     assert!(crate::fragment::reference_enabled(&world, ACTOR), "B began: akActor enabled");
+    // B has no End binding: its completion runs nothing.
+    crate::report_package_end(&world, actor, PACK_B);
+    crate::package_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, ACTOR), "B has no End fragment");
+    // A completion of A runs its End fragment.
+    crate::report_package_end(&world, actor, PACK_A);
+    crate::package_fragment_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, ACTOR), "A ended: akActor disabled");
 }
 
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game

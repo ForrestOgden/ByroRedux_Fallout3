@@ -757,9 +757,13 @@ spawn-time winner, a re-selection and a combat / unconscious suspension. The
 old package's Change fragment then runs, followed by the new one's Begin. The
 CK's *OnEnd* / *OnChange - Package* pages define End as a normal end and
 Change as ended or preempted. This engine re-selects by conditions and
-schedules and doesn't model a procedure completing, so every switch is a
-preemption: End fragments are installed but don't run until procedure
-completion lands.
+schedules, so every switch is a preemption (Change + Begin). The one
+procedure that completes on its own is Travel: when `travel_system` marks the
+actor `Traveled` it reports `report_package_end(actor, package)` for the
+actor's active package (once; the actor keeps the package until re-selection),
+and `package_fragment_system` runs that package's End fragment. Sandbox,
+Wander and the other procedures never finish here, so their End fragments
+don't run.
 
 With the VM, 81.3% of the Skyrim corpus runs (Fallout 4: 76.9%, Starfield
 73.8%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
@@ -777,7 +781,7 @@ is server-side), so its fragment number is not meaningful.
 Not modelled yet:
 - other actor natives;
 - alias update registrations;
-- package End fragments (procedure completion).
+- package End fragments for procedures other than Travel.
 
 Per-game decline heads behind the remaining fragment gap
 (`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table):

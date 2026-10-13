@@ -130,8 +130,8 @@ pub use fragment::{
     raise_unload_events, ActorWatch, PendingUnloadDeliveries,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
-    package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
-    PackageFragments, PackageTransition, PendingPackageTransitions,
+    package_fragment_system, populate_package_fragments, report_package_end, report_package_transition, PackageEnd, PackageFragmentSet,
+    PackageFragments, PackageTransition, PendingPackageEnds, PendingPackageTransitions,
 };
 pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,

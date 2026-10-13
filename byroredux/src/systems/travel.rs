@@ -368,6 +368,16 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             }
         }
     }
+    // M47.2 — arriving is the Travel procedure completing: the package's End
+    // fragment runs (the one completion this engine models).
+    for d in scratch.decisions.iter().filter(|d| d.state.is_none()) {
+        let package = world
+            .get::<crate::components::AmbientPackageRuntime>(d.entity)
+            .and_then(|runtime| runtime.active_package_form_id);
+        if let Some(package) = package {
+            byroredux_scripting::report_package_end(world, d.entity, package);
+        }
+    }
 }
 
 /// Travel system factory — returns a closure with a persistent
@@ -489,6 +499,53 @@ mod tests {
             Vec3::new(300.0, 10.0, 400.0),
             "destination must be the resolved target's live position, not a hash-picked fallback"
         );
+    }
+
+    /// M47.2 — arriving reports the active package's completion (once), so
+    /// its End fragment can run; an actor with no active package reports
+    /// nothing.
+    #[test]
+    fn travel_arrival_reports_the_package_end() {
+        use crate::components::AmbientPackageRuntime;
+        use byroredux_scripting::PendingPackageEnds;
+        const PACK: u32 = 0x0001_0F30;
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<AmbientPackageRuntime>();
+        world.insert_resource(PendingPackageEnds::default());
+
+        let spot = Vec3::new(50.0, 0.0, 50.0);
+        let mut spawn = |package: Option<u32>| {
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(spot));
+            world.insert(
+                actor,
+                TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 },
+            );
+            world.insert(actor, TravelState { destination: spot });
+            world.insert(
+                actor,
+                AmbientPackageRuntime {
+                    package_candidates: Vec::new(),
+                    active_package_form_id: package,
+                    actor_form_id: 0x0005_0005,
+                    last_evaluated_game_minute: None,
+                },
+            );
+            actor
+        };
+        let with_package = spawn(Some(PACK));
+        let _without = spawn(None);
+
+        travel_system(&world, 0.5);
+        travel_system(&world, 0.5);
+
+        let ends = world.resource::<PendingPackageEnds>();
+        assert_eq!(ends.0.len(), 1, "one completion, reported on the arrival tick only");
+        assert_eq!((ends.0[0].actor, ends.0[0].package), (with_package, PACK));
     }
 
     #[test]
