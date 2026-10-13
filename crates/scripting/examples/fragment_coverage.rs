@@ -277,6 +277,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetActorValueNamed { .. } => "SetActorValueNamed",
         Effect::BlockActivation { .. } => "BlockActivation",
         Effect::SendStoryEvent { .. } => "SendStoryEvent",
+        Effect::AddToMap { .. } => "AddToMap",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

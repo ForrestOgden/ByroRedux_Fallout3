@@ -5960,3 +5960,27 @@ fn fallout_armor_damage_threshold_and_resistance_decode() {
         assert_eq!(armor(&index, "MS10LindensOutcastPowerArmor"), (0.0, 40));
     }
 }
+
+/// M47.2 — REFR map markers (`XMRK` + `FNAM` flags) on Skyrim.esm: 397
+/// markers, most hidden until discovered; 20 start visible, 11 of them
+/// fast-travel targets. They live in the worldspace persistent cells.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_map_markers_decode() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim map markers] skipping: game data unavailable");
+        return;
+    };
+    let index = parse_esm(&std::fs::read(data.join("Skyrim.esm")).unwrap()).unwrap();
+    let markers: Vec<u8> = index
+        .cells
+        .cells
+        .values()
+        .chain(index.cells.exterior_cells.values().flat_map(|grid| grid.values()))
+        .chain(index.cells.worldspace_persistent_cells.values())
+        .flat_map(|cell| cell.references.iter().filter_map(|placed| placed.map_marker))
+        .collect();
+    assert_eq!(markers.len(), 397);
+    assert_eq!(markers.iter().filter(|flags| *flags & 0x01 != 0).count(), 20);
+    assert_eq!(markers.iter().filter(|flags| *flags & 0x02 != 0).count(), 11);
+}

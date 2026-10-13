@@ -602,6 +602,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::ReferenceActivationBlocks>(
             "ReferenceActivationBlocks",
         )
+        // M47.2 — script AddToMap (discovered / fast-travel markers).
+        .register_resource::<byroredux_scripting::MapMarkers>("MapMarkers")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

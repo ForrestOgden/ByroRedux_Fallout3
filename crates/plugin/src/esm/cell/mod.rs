@@ -674,6 +674,11 @@ pub struct PlacedRef {
     /// open, because the entry→ragdoll-body mapping and the rotation
     /// convention are not sourced (see [`RagdollPoseBone`]).
     pub ragdoll_pose: Vec<RagdollPoseBone>,
+    /// M47.2 — a map marker's `FNAM` flags (`0x01` Visible, `0x02` Can
+    /// Travel To, `0x04` "Show All" Hidden — xEdit's REFR *Map Marker*
+    /// block, `XMRK` then `FNAM`); `None` when the reference is no map
+    /// marker.
+    pub map_marker: Option<u8>,
 }
 
 impl PlacedRef {
@@ -711,6 +716,7 @@ impl PlacedRef {
             starts_dead: false,
             starts_unconscious: false,
             ragdoll_pose: Vec::new(),
+            map_marker: None,
         }
     }
 }

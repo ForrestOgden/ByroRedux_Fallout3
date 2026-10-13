@@ -24,6 +24,7 @@ pub mod faction_changes;
 pub mod fragment;
 pub mod globals;
 pub mod load_order;
+pub mod map_markers;
 pub mod location;
 pub mod magic;
 pub mod obscript;
@@ -112,6 +113,10 @@ pub use created_references::{
     CreatedCell, CreatedPlacement, CreatedReference, CreatedReferences, CREATED_FORM_ID_BASE,
 };
 pub use load_order::LoadOrderIdentity;
+pub use map_markers::{
+    install_map_markers, map_marker_fast_travel, map_marker_visible, AuthoredMapMarkers,
+    MapMarkers,
+};
 pub use location::{
     current_location, editor_location, install_location_table, LocationAliasBindings,
     LocationTable, PlayerLocation,
@@ -206,6 +211,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — scripted AddToMap (saved).
+    if world.try_resource::<MapMarkers>().is_none() {
+        world.insert_resource(MapMarkers::default());
     }
     // M47.2 — scripted ForceRefTo / Clear alias overrides (saved).
     if world.try_resource::<AliasOverrides>().is_none() {

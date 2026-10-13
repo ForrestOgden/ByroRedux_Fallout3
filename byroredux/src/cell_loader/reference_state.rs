@@ -857,6 +857,7 @@ mod script_kill_tests {
             starts_dead: false,
             starts_unconscious: false,
             ragdoll_pose: Vec::new(),
+            map_marker: None,
         }
     }
 

@@ -4827,6 +4827,46 @@ fn send_story_event_raises_a_script_event() {
     assert_eq!(slots.reference_1, None, "no akRef1");
 }
 
+/// M47.2 — `AddToMap` records the marker once the guards drop, and a guard
+/// later in the same fragment already sees it.
+#[test]
+fn add_to_map_records_the_marker() {
+    use crate::QuestScriptVariables;
+    const MARKER: u32 = 0x0000_6900;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("LairMarker", MARKER)]),
+        vec![
+            Effect::AddToMap {
+                marker: ObjectRef::Property("LairMarker".into()),
+                fast_travel: true,
+            },
+            Effect::Conditional {
+                guards: vec![FragmentGuard::MapMarkerFastTravel {
+                    marker: ObjectRef::Property("LairMarker".into()),
+                    expected: true,
+                }],
+                then_effects: vec![Effect::SetQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "Seen".into(),
+                    value: 1.0,
+                }],
+                else_effects: vec![],
+            },
+        ],
+    );
+    assert!(crate::map_marker_visible(&world, MARKER));
+    assert!(crate::map_marker_fast_travel(&world, MARKER));
+    assert_eq!(
+        world
+            .resource::<QuestScriptVariables>()
+            .get(Q, QuestScriptVariables::property_key("Seen")),
+        Some(1.0)
+    );
+}
+
 /// M47.2 — `BlockActivation` records the reference in the activation-block
 /// ledger once the quest-state guards drop, and an unblock clears it.
 #[test]

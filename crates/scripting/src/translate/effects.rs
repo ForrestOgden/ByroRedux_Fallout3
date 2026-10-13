@@ -178,6 +178,10 @@ pub enum FragmentGuard {
     QuestCompleted { quest: QuestRef, completed: bool },
     /// `<scene>.IsPlaying()` is `playing`.
     ScenePlaying { scene: ObjectRef, playing: bool },
+    /// `<marker>.IsMapMarkerVisible()` is `expected`.
+    MapMarkerVisible { marker: ObjectRef, expected: bool },
+    /// `<marker>.CanFastTravelToMarker()` is `expected`.
+    MapMarkerFastTravel { marker: ObjectRef, expected: bool },
     /// `<actor>.GetCurrentLocation().HasKeyword(keyword)` is `expected` — the
     /// actor's current location itself (the M47.2 location runtime).
     LocationKeyword {
@@ -202,6 +206,8 @@ enum GuardReading {
     QuestCompleted(QuestRef),
     ScenePlaying(ObjectRef),
     LocationKeyword(ActorRef, ObjectRef),
+    MapMarkerVisible(ObjectRef),
+    MapMarkerFastTravel(ObjectRef),
 }
 
 /// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
@@ -363,6 +369,18 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| quest(object).map(GuardReading::QuestCompleted))
             .flatten();
     }
+    if let Some((object, args)) = method_call(e, "IsMapMarkerVisible") {
+        return args
+            .is_empty()
+            .then(|| receiver_object(object, scope).map(GuardReading::MapMarkerVisible))
+            .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "CanFastTravelToMarker") {
+        return args
+            .is_empty()
+            .then(|| receiver_object(object, scope).map(GuardReading::MapMarkerFastTravel))
+            .flatten();
+    }
     if let Some((object, args)) = method_call(e, "IsPlaying") {
         return args
             .is_empty()
@@ -472,6 +490,14 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::ScenePlaying(scene) => FragmentGuard::ScenePlaying {
             scene,
             playing: bool_expectation(comparison, value)?,
+        },
+        GuardReading::MapMarkerVisible(marker) => FragmentGuard::MapMarkerVisible {
+            marker,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::MapMarkerFastTravel(marker) => FragmentGuard::MapMarkerFastTravel {
+            marker,
+            expected: bool_expectation(comparison, value)?,
         },
         GuardReading::LocationKeyword(actor, keyword) => FragmentGuard::LocationKeyword {
             actor,
@@ -820,6 +846,8 @@ pub enum Effect {
         actor_value: ObjectRef,
         value: f32,
     },
+    /// M47.2 — `<marker>.AddToMap([abFastTravel = false])`.
+    AddToMap { marker: ObjectRef, fast_travel: bool },
     /// M47.2 — `<keyword>.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1,
     /// aiValue2)`: raises a script (`SCPT`) Story Manager event carrying the
     /// keyword, the location, the two references and the two integers.
@@ -1641,6 +1669,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_force_alias,
     prim_block_activation,
     prim_send_story_event,
+    prim_add_to_map,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2162,6 +2191,18 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
 /// value setter (`GlobalVariable.SetValue` takes one argument and is
 /// [`prim_set_global_value`]'s). The value must be a numeric literal.
+/// `ObjectReference.AddToMap(bool abFastTravel = False)`.
+fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "AddToMap")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::AddToMap {
+        marker: receiver_object(object, scope)?,
+        fast_travel: bool_arg(args, 0)?.unwrap_or(false),
+    })
+}
+
 /// `Keyword.SendStoryEvent(Location akLoc = None, ObjectReference akRef1 =
 /// None, ObjectReference akRef2 = None, int aiValue1 = 0, int aiValue2 = 0)`
 /// — every parameter materialized by the compiler. A `None` literal leaves a
@@ -3748,6 +3789,38 @@ mod tests {
                 "{call}"
             );
         }
+    }
+
+    /// M47.2 — `AddToMap` and the marker guards.
+    #[test]
+    fn map_markers_lower() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             If !LairMarker.IsMapMarkerVisible()\n LairMarker.AddToMap(false)\n EndIf\n\
+             CityMarker.AddToMap(true)\n EndFunction\n",
+        );
+        let lair = || ObjectRef::Property("LairMarker".into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Conditional {
+                    guards: vec![FragmentGuard::MapMarkerVisible {
+                        marker: lair(),
+                        expected: false
+                    }],
+                    then_effects: vec![Effect::AddToMap {
+                        marker: lair(),
+                        fast_travel: false
+                    }],
+                    else_effects: vec![],
+                },
+                Effect::AddToMap {
+                    marker: ObjectRef::Property("CityMarker".into()),
+                    fast_travel: true
+                },
+            ])
+        );
     }
 
     /// M47.2 — `SendStoryEvent` with nothing, and with a location, the

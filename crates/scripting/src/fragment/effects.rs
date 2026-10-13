@@ -347,6 +347,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SendStoryEvent` events, queued for the Story Manager
     /// after the guards drop.
     story_events: Vec<crate::story_manager::StoryEvent>,
+    /// M47.2 — `Effect::AddToMap` additions, recorded in
+    /// [`crate::MapMarkers`] after the guards drop.
+    map_markers: Vec<(u32, bool)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
@@ -399,6 +402,7 @@ impl DeferredFragmentEffects {
             faction_changes: Vec::new(),
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
+            map_markers: Vec::new(),
             story_events: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
@@ -441,6 +445,13 @@ impl DeferredFragmentEffects {
                 world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
             {
                 pending.0.append(&mut self.story_events);
+            }
+        }
+        if !self.map_markers.is_empty() {
+            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+                for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
+                    markers.add(marker, fast_travel);
+                }
             }
         }
         if !self.activation_blocks.is_empty() {
@@ -952,6 +963,14 @@ pub(crate) fn apply_effect(
                     }),
                 },
             );
+            None
+        }
+        Effect::AddToMap { marker, fast_travel } => {
+            let Some(reference) = object_form_id(vmad, world, context, marker, deferred) else {
+                log::debug!("fragment AddToMap skipped: the marker does not resolve");
+                return None;
+            };
+            deferred.map_markers.push((reference, *fast_travel));
             None
         }
         Effect::BlockActivation { object, blocked } => {
@@ -2358,6 +2377,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }
         | Effect::BlockActivation { .. }
+        | Effect::AddToMap { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2511,6 +2531,19 @@ fn evaluate_guard(
                 .try_resource::<crate::location::LocationTable>()
                 .is_some_and(|table| table.has_keyword(location, keyword));
             has == *expected
+        }
+        FragmentGuard::MapMarkerVisible { marker, expected } => {
+            let marker = object_form_id(vmad, world, context, marker, deferred)?;
+            let pending = deferred.map_markers.iter().any(|(added, _)| *added == marker);
+            (pending || crate::map_marker_visible(world, marker)) == *expected
+        }
+        FragmentGuard::MapMarkerFastTravel { marker, expected } => {
+            let marker = object_form_id(vmad, world, context, marker, deferred)?;
+            let pending = deferred
+                .map_markers
+                .iter()
+                .any(|(added, travel)| *added == marker && *travel);
+            (pending || crate::map_marker_fast_travel(world, marker)) == *expected
         }
         FragmentGuard::Any(alternatives) => {
             // Every guard is evaluated (no short-circuit), so an unresolvable
