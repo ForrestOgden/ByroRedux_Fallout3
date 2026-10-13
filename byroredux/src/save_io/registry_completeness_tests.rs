@@ -505,6 +505,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── Story Manager (#5366) ───────────────────────────────────
         ("StoryEvent", "one-frame Pattern-B marker drained by story_manager_dispatch_system at its head; carries session-local EntityIds only (#2672)"),
         ("InventoryItemForms", "the load order's inventory item base FormIDs (ALCH/AMMO/ARMO/BOOK/INGR/KEYM/MISC/NOTE/SLGM/WEAP); rebuilt from record_types at load-order install every boot. The created-object grants it gates are saved through QuestAliasInjectionState's inventory_grants ledger"),
+        ("LocationTable", "the load order's LCTN hierarchy, keywords and cell / editor-location maps; rebuilt by install_location_table every boot"),
+        ("PlayerLocation", "the location of the cell the player occupies; republished from the loaded cell every frame by story_change_location_system"),
         ("QuestScriptVariableDefaults", "the numeric property values each quest VMAD authors; rebuilt from the load order by install_quest_script_variables every boot. The saved half is QuestScriptVariables (the scripted writes), kept separate so a save load cannot wipe these"),
         ("PerkEntryTable", "immutable fold of every PERK's value-math entry-point entries; rebuilt from the load order by install_perk_entry_points every boot, same posture as SmTree (the saved half is the actor's ranked Perks component)"),
         ("SmTree", "immutable fold of the parsed SMBN/SMEN/SMQN node map; rebuilt from the load order by install_story_manager every boot, same posture as NavmeshTile"),

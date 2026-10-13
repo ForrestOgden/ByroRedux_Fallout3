@@ -313,7 +313,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// scripted faction-membership ledger), and `Effect::ChangeFaction`. A pre-v42
 /// save has no ledger, so scripted memberships would silently revert;
 /// rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 42;
+///
+/// v42 -> v43 (M47.2): a new resource column, `LocationAliasBindings` (the
+/// locations quest location aliases hold). A pre-v43 save has none, so a
+/// restored quest's randomly picked locations would re-roll; rejected like
+/// the other column additions.
+pub const FORMAT_MAJOR: u16 = 43;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

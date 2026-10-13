@@ -1935,7 +1935,10 @@ fn categories_table_row_count_pinned() {
     // Bumped 103 → 104 in #5364 (weather_settings — Starfield WTHS, the
     //   reflection-blob weather; a wipe would pass the parse-rate floor
     //   silently and every WSLT row would dangle).
-    assert_eq!(EsmIndex::categories().len(), 104);
+    // Bumped 104 → 105 in M47.2 (locations — Skyrim+ LCTN, the hierarchy and
+    //   keywords GetInCurrentLoc / LocationHasKeyword and the location
+    //   aliases read).
+    assert_eq!(EsmIndex::categories().len(), 105);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

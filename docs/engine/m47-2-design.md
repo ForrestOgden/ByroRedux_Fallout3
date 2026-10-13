@@ -401,7 +401,10 @@ that does not exist yet:
   equipped weapons as entities.
 - **Created Object "At"** (1,389 Skyrim + FO4 aliases, mostly NPC spawns):
   needs runtime reference creation with a saved identity.
-- **LCTN aliases and location run-on conditions:** need a location runtime.
+- **LCTN aliases and location run-on conditions:** shipped 2026-10-12 — see
+  [scripting.md §Locations](scripting.md#locations-and-location-aliases-m472).
+  Still open: script-raised story events (`SCPT`, 223 Skyrim location aliases
+  fill from one) and cleared-location state.
 
 Always confirm milestone state against [ROADMAP.md](../../ROADMAP.md).
 

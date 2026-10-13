@@ -4,6 +4,7 @@
 //! Split out of `fragment.rs` (#3854).
 
 use super::*;
+use crate::condition::entity_global_form_id;
 use crate::translate::effects::FragmentGuard;
 
 /// Resolve an effect's [`QuestRef`] to a concrete quest FormID.
@@ -55,26 +56,6 @@ pub(crate) fn resolve_property_form_id(
     name: &str,
 ) -> Option<u32> {
     vmad?.scripts.iter().find_map(|s| s.object_form_id(name))
-}
-
-/// The global form ID of a live entity — the inverse of
-/// [`crate::condition::resolve_entity_by_global_form_id`], and keyed the same
-/// way (`FormIdPool::resolve(..).local.0`) so the two agree.
-///
-/// #3278 — needed by [`Effect::Disable`], whose sink
-/// ([`ReferenceEnableState`]) is deliberately FormID-keyed rather than
-/// entity-keyed so a disable survives its reference's cell being unloaded.
-/// Alias-bound receivers resolve to an *entity*, so they have to come back
-/// to a form ID to be recorded.
-fn entity_global_form_id(
-    world: &World,
-    entity: byroredux_core::ecs::storage::EntityId,
-) -> Option<u32> {
-    use byroredux_core::ecs::components::FormIdComponent;
-    use byroredux_core::form_id::FormIdPool;
-    let component = world.get::<FormIdComponent>(entity)?;
-    let pool = world.try_resource::<FormIdPool>()?;
-    pool.resolve(component.0).map(|pair| pair.local.0)
 }
 
 /// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
@@ -751,7 +732,7 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     ownership of an ambient fight — #5046; taken after the
 ///     `AiCombatState` guard drops)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
-///   - **via [`entity_global_form_id`]** — `FormIdPool` (read)
+///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
 ///   - **via `crate::magic::{add_spell, remove_spell}`** (the
 ///     `AddSpell`/`RemoveSpell` arms, applied inline rather than deferred —
@@ -769,7 +750,7 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 /// of arms into an `apply_<family>_effect` helper below (globals,
 /// inventory, placement, scene, lock ledger, player control, vehicle
 /// cinematics, AI/combat), plus the pre-existing [`resolve_actor`],
-/// [`entity_global_form_id`], [`update_actor_cinematic_state`] and
+/// [`crate::condition::entity_global_form_id`], [`update_actor_cinematic_state`] and
 /// [`apply_quest_scoped_effect`]. Nothing about the nesting changed — the
 /// helpers run inside the same two guards, this list still inventories
 /// every lock any of them takes, and the #3949 scan below reads their

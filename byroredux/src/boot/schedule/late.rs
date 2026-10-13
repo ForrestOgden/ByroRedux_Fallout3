@@ -577,7 +577,13 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's AddToFaction / RemoveFromFaction edits
             // the speaker's membership and its saved ledger.
             .writes::<byroredux_core::ecs::components::FactionRanks>()
-            .writes_resource::<byroredux_scripting::ScriptedFactionChanges>(),
+            .writes_resource::<byroredux_scripting::ScriptedFactionChanges>()
+            // M47.2 — location conditions (`GetInCurrentLoc`,
+            // `GetIsEditorLocAlias`, …) read the LCTN table, the quest
+            // location aliases and the player's published location.
+            .reads_resource::<byroredux_scripting::LocationTable>()
+            .reads_resource::<byroredux_scripting::LocationAliasBindings>()
+            .reads_resource::<byroredux_scripting::PlayerLocation>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

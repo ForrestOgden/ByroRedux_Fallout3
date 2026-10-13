@@ -38,12 +38,19 @@ use crate::quest_stages::{QuestFormId, QuestRevision, QuestStageState};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestAliasResolutionState {
     Bound(EntityId),
+    /// A location alias holding an `LCTN` (M47.2).
+    BoundLocation(u32),
     QuestNotRunning,
-    LocationRuntimeUnavailable,
+    /// A location alias no fill mechanism could assign: the source alias or
+    /// event carries no location, or no location matches its conditions.
+    LocationUnfilled,
     ReferenceCollectionRuntimeUnavailable,
     CreatedObjectRuntimeUnavailable,
     StoryManagerEventUnavailable,
-    ExternalSourceUnbound { quest: QuestFormId, alias_id: i32 },
+    ExternalSourceUnbound {
+        quest: QuestFormId,
+        alias_id: i32,
+    },
     DependencyAliasUnbound(i32),
     ForceIntoSourcesUnbound(Vec<i32>),
     NoEligibleLoadedCandidate,
@@ -196,6 +203,7 @@ pub fn quest_alias_diagnostics(
         .try_resource::<QuestStageState>()
         .is_none_or(|stages| stages.is_running(quest));
     let bindings = world.try_resource::<SceneActorBindings>();
+    let location_bindings = world.try_resource::<crate::location::LocationAliasBindings>();
 
     let mut force_sources: HashMap<i32, Vec<i32>> = HashMap::new();
     for alias in &aliases {
@@ -215,16 +223,21 @@ pub fn quest_alias_diagnostics(
                 let bound = bindings
                     .as_ref()
                     .and_then(|bindings| bindings.resolve(quest, alias.alias_id));
+                let bound_location = location_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.resolve(quest, alias.alias_id));
                 let state = if !running {
                     QuestAliasResolutionState::QuestNotRunning
                 } else if let Some(entity) = bound {
                     QuestAliasResolutionState::Bound(entity)
+                } else if let Some(location) = bound_location.filter(|_| alias.is_location) {
+                    QuestAliasResolutionState::BoundLocation(location)
                 } else if alias.is_collection {
                     QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable
                 } else if alias.is_location
                     || matches!(alias.fill_type, Some(AliasFillType::ForcedLocation(_)))
                 {
-                    QuestAliasResolutionState::LocationRuntimeUnavailable
+                    QuestAliasResolutionState::LocationUnfilled
                 } else if matches!(alias.fill_type, Some(AliasFillType::CreatedObject { .. })) {
                     QuestAliasResolutionState::CreatedObjectRuntimeUnavailable
                 } else if matches!(alias.fill_type, Some(AliasFillType::FromEvent { .. })) {
@@ -805,13 +818,48 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
         .map(|player| player.0);
     let mut external_aliases = Vec::new();
     let mut reserved = HashSet::new();
+    // M47.2 — location aliases hold from quest start until the quest stops:
+    // the running quests' committed bindings carry over and only unbound
+    // aliases fill. `None` without a location runtime (no `LCTN` table).
+    let mut locations: Option<HashMap<(QuestFormId, i32), u32>> = world
+        .try_resource::<crate::location::LocationAliasBindings>()
+        .map(|bindings| {
+            let running: HashSet<QuestFormId> = quests.iter().map(|(quest, _)| *quest).collect();
+            bindings
+                .iter()
+                .filter(|((quest, _), _)| running.contains(quest))
+                .collect()
+        });
+    // The location aliases flagged "Reserves Location".
+    let location_reservers: HashSet<(QuestFormId, i32)> = quests
+        .iter()
+        .flat_map(|(quest, aliases)| {
+            aliases
+                .iter()
+                .filter(|alias| alias.is_location && alias.flags.has(ALIAS_FLAG_RESERVES))
+                .map(move |alias| (*quest, alias.alias_id))
+        })
+        .collect();
 
     for (quest, aliases) in &quests {
         let mut used = HashSet::new();
-        for alias in aliases
-            .iter()
-            .filter(|alias| !alias.is_location && !alias.is_collection)
-        {
+        for alias in aliases.iter().filter(|alias| !alias.is_collection) {
+            // M47.2 — location aliases fill in list order with the reference
+            // aliases, so either kind can depend on one above it.
+            if alias.is_location {
+                if let Some(locations) = locations.as_mut() {
+                    fill_location_alias(
+                        world,
+                        *quest,
+                        alias,
+                        &resolved,
+                        locations,
+                        &location_reservers,
+                        &story_fills,
+                    );
+                }
+                continue;
+            }
             if let Some(AliasFillType::ExternalAlias {
                 quest: source_quest,
                 alias_id: source_alias,
@@ -1053,6 +1101,12 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
 
     apply_alias_injections(world, &quests, &resolved, &candidates);
 
+    if let Some(locations) = locations {
+        world
+            .resource_mut::<crate::location::LocationAliasBindings>()
+            .replace(locations);
+    }
+
     let count = resolved
         .keys()
         .filter(|(quest, _)| registered_quests.contains(quest))
@@ -1064,6 +1118,116 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
     // key unconditionally (a spurious bump costs one memo rebuild).
     bindings.revision.bump();
     count
+}
+
+/// Fill one location alias (`ALLS`) of `quest` into `locations` unless it
+/// already holds a location. The CK *Quest Alias Tab*'s four fills:
+///
+/// - **Specific Location** (`ALFL`) — that location.
+/// - **Reference Alias Location** (`ALFA` + optional `KNAM`) — the bound
+///   reference alias's current location, or its nearest parent carrying the
+///   keyword.
+/// - **External Alias Location** (`ALEQ` + `ALEA`) — the other quest's
+///   location alias; unbound while that one is.
+/// - **Find Matching Location** — with "From Event" (`ALFE` + `ALFD`) the
+///   event's location slot, if it passes the alias conditions; otherwise a
+///   random location among those passing them. Conditions run on the
+///   candidate location ([`ConditionContext::with_location_subject`]).
+///
+/// The two picking fills skip a location already in another alias of this
+/// quest (unless "Allow Reuse in Quest") or in a "Reserves Location" alias of
+/// another quest (unless "Allow Reserved"). The runtime keeps no cleared
+/// state, so every location counts as uncleared and "Allow Cleared" changes
+/// nothing.
+fn fill_location_alias(
+    world: &World,
+    quest: QuestFormId,
+    alias: &QuestAlias,
+    resolved: &HashMap<(QuestFormId, i32), EntityId>,
+    locations: &mut HashMap<(QuestFormId, i32), u32>,
+    reservers: &HashSet<(QuestFormId, i32)>,
+    story_fills: &HashMap<QuestFormId, crate::story_manager::StoryEventFill>,
+) {
+    use crate::location::{current_location, LocationTable};
+    use byroredux_plugin::esm::records::condition::EventDataSlot;
+    let key = (quest, alias.alias_id);
+    if locations.contains_key(&key) {
+        return;
+    }
+    let allow_reuse = alias.flags.has(ALIAS_FLAG_ALLOW_REUSE);
+    let allow_reserved = alias.flags.has(ALIAS_FLAG_ALLOW_RESERVED);
+    let taken: HashSet<u32> = locations
+        .iter()
+        .filter(|(&(owner, alias_id), _)| {
+            if owner == quest {
+                !allow_reuse
+            } else {
+                !allow_reserved && reservers.contains(&(owner, alias_id))
+            }
+        })
+        .map(|(_, &location)| location)
+        .collect();
+    let passes = |location: u32, locations: &HashMap<(QuestFormId, i32), u32>| {
+        !taken.contains(&location)
+            && evaluate(
+                &alias.match_conditions,
+                world,
+                &ConditionContext::for_subject(EntityId::MAX)
+                    .with_quest(quest)
+                    .with_pending_alias_bindings(resolved)
+                    .with_pending_location_bindings(locations)
+                    .with_location_subject(location),
+            )
+    };
+    let location = match &alias.fill_type {
+        Some(AliasFillType::ForcedLocation(location)) => Some(*location),
+        Some(AliasFillType::ExternalAlias {
+            quest: source,
+            alias_id,
+        }) => locations.get(&(QuestFormId(*source), *alias_id)).copied(),
+        Some(AliasFillType::LocationAliasReference {
+            alias_id, keyword, ..
+        }) => resolved
+            .get(&(quest, *alias_id))
+            .and_then(|&entity| current_location(world, entity))
+            .and_then(|location| match keyword {
+                Some(keyword) => world
+                    .try_resource::<LocationTable>()?
+                    .with_keyword(location, *keyword),
+                None => Some(location),
+            }),
+        Some(AliasFillType::FromEvent { data, .. }) => story_fills
+            .get(&quest)
+            .and_then(|fill| match event_data_slot(*data as u32)? {
+                EventDataSlot::Location1 => fill.slots.location_1,
+                EventDataSlot::Location2 => fill.slots.location_2,
+                EventDataSlot::Reference1 | EventDataSlot::Reference2 => None,
+            })
+            .filter(|&location| passes(location, locations)),
+        None if !alias.match_conditions.is_empty() => {
+            // Snapshot the pool so no table guard is held while conditions
+            // (which read the table themselves) run.
+            let pool = world
+                .try_resource::<LocationTable>()
+                .map(|table| table.locations().to_vec())
+                .unwrap_or_default();
+            let matching: Vec<u32> = pool
+                .into_iter()
+                .filter(|&location| passes(location, locations))
+                .collect();
+            let pick = world
+                .try_resource_mut::<crate::story_manager::StoryManagerRng>()
+                .map_or(0, |mut rng| rng.pick(matching.len()));
+            matching.get(pick).copied()
+        }
+        _ => None,
+    };
+    if let Some(location) = location {
+        locations.insert(key, location);
+        if let Some(target) = alias.force_into_alias {
+            locations.insert((quest, target), location);
+        }
+    }
 }
 
 /// Scheduler-shaped quest alias refresh independent of SCEN playback.

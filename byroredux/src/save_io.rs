@@ -577,6 +577,12 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::ScriptedFactionChanges>(
             "ScriptedFactionChanges",
         )
+        // M47.2 — quest location-alias bindings. A "Find Matching Location"
+        // fill picks at random, so a reload must keep the pick rather than
+        // re-roll it.
+        .register_resource::<byroredux_scripting::LocationAliasBindings>(
+            "LocationAliasBindings",
+        )
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

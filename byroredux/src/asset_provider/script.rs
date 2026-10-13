@@ -626,6 +626,13 @@ pub(crate) fn populate_scene_runtime(
     if sm_nodes > 0 {
         log::info!("Installed Story Manager tree: {sm_nodes} nodes");
     }
+    // M47.2 — the location runtime (Skyrim+ LCTN): hierarchy, keywords and
+    // the cell / editor-location maps the location conditions and location
+    // aliases read. Empty on Oblivion/FO3/FNV, which author no LCTN.
+    let locations = byroredux_scripting::install_location_table(world, index);
+    if locations > 0 {
+        log::info!("Installed location table: {locations} locations");
+    }
     // M47.2 — the inventory item records a Created Object alias may create
     // "In" another alias's inventory.
     world.insert_resource(byroredux_scripting::InventoryItemForms(

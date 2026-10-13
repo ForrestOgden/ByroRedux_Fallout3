@@ -14,7 +14,7 @@ use super::{
     ContainerRecord, CstyRecord, DialRecord, DlbrRecord, EcznRecord, EfshRecord, EnchRecord,
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
-    IdleRecord, ImadRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
+    IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
     LeveledList, LgtmRecord, LoadScreenRecord, LoadScreenTransform, MesgRecord, MgefRecord,
     MinimalEsmRecord, ResolvedLoadScreenModel,
     NaviRecord, NavmRecord,
@@ -586,6 +586,9 @@ pub struct EsmIndex {
     /// `IMAD` image-space modifier — timed lens/color curves applied by
     /// Papyrus cinematics and CELL.XCIM transitions.
     pub imagespace_modifiers: HashMap<u32, ImadRecord>,
+    /// `LCTN` location (Skyrim+) — hierarchy, keywords and the references
+    /// whose editor location it is. Read by the scripting location runtime.
+    pub locations: HashMap<u32, LctnRecord>,
     /// `LSCR` load screen.
     pub load_screens: HashMap<u32, LoadScreenRecord>,
     /// `TRNS` load-screen stage transform — the record an LSCR's TNAM
@@ -949,6 +952,7 @@ impl EsmIndex {
             // FNV ships 3; FO3/Oblivion ship many more (SpeedTree content).
             map_category!("trees", trees),
             map_category!("imagespace_modifiers", imagespace_modifiers),
+            map_category!("locations", locations),
             map_category!("load_screens", load_screens),
             map_category!("load_screen_transforms", load_screen_transforms),
             map_category!("load_screen_types", load_screen_types),

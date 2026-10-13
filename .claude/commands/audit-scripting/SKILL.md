@@ -230,7 +230,10 @@ Guards: `cleanup.rs::every_drained_marker_is_a_documented_pattern_a_marker`, `cl
   installed; the module-doc table and a row-count pin track the catalog, #5648 `2ed7f8ec3`. `GetQuestRunning`
   reads `is_running` alone — a stopped/completed/failed quest is not running, #5636 `aac92c6ca`; the plugin-side
   `param1_is_form_id` load-order remap mirrors the catalog by index, with rows for 56/71/74 and an exhaustive
-  mirror test, #5637 `722c06a76`; fn 0 is deliberately **unmapped** (xEdit: `GetWantBlocking` on TES5/FO4, no index 0 on
+  mirror test, #5637 `722c06a76`; M47.2 grew `CATALOG` to 34 with 629 `GetVMQuestVariable` and the location
+  family 181/359/360/562/563/565/566/567/605 — those read `ConditionContext` (owning quest's aliases, a
+  location-alias fill's `location_subject`) through `evaluate_contextual` (`reads_context`), and
+  `param2_is_form_id` remaps 605/181's second parameter; 180/610 stay unmapped (Oblivion/FNV collisions); fn 0 is deliberately **unmapped** (xEdit: `GetWantBlocking` on TES5/FO4, no index 0 on
   TES4/FO3/FNV — the short-lived `GetButtonPressed` mapping was removed by #5431; `GetButtonPressed` exists
   only as an ObScript script function in `obscript_quests`)); `GetIsID` compares the Run-On's **base** object
   (`SceneAliasCandidate::base_form_id`), not the placed ref (#5041 `1816bbc14`,

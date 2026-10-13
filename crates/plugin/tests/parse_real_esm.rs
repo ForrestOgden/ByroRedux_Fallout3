@@ -5895,3 +5895,37 @@ fn parse_rate_skyrim_info_response_flags() {
     assert!(with_flags * 100 >= infos.len() * 98, "flags on {with_flags}/{}", infos.len());
     assert!(say_once > 1_000, "Skyrim authors thousands of Say-Once lines, got {say_once}");
 }
+
+/// M47.2 — `LCTN` on vanilla `Skyrim.esm`: the location hierarchy resolves
+/// without a dangling parent, the CK's Whiterun chain is intact, and the
+/// persistent-reference tables carry editor locations.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_location_hierarchy_resolves() {
+    let Some(data) = data_dir(test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT) else {
+        eprintln!("[Skyrim LCTN] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Skyrim.esm")).expect("read Skyrim.esm");
+    let index = parse_esm(&bytes).expect("parse Skyrim.esm");
+    assert_eq!(index.locations.len(), 638);
+    assert!(index
+        .locations
+        .values()
+        .all(|location| location.parent.is_none_or(|parent| index.locations.contains_key(&parent))));
+    let parent_id = |form_id: u32| {
+        let parent = index.locations[&form_id].parent?;
+        Some(index.locations[&parent].editor_id.clone())
+    };
+    // WhiterunDragonsreachLocation → WhiterunLocation → WhiterunHoldLocation
+    // → TamrielLocation (the root).
+    assert_eq!(parent_id(0x0001_F871).as_deref(), Some("WhiterunLocation"));
+    assert_eq!(parent_id(0x0001_8A56).as_deref(), Some("WhiterunHoldLocation"));
+    assert_eq!(parent_id(0x0001_6772).as_deref(), Some("TamrielLocation"));
+    assert_eq!(parent_id(0x0001_30FF), None);
+    let whiterun = &index.locations[&0x0001_8A56];
+    assert_eq!(whiterun.keywords.len(), 12);
+    assert_eq!(whiterun.editor_location_refs.len(), 175);
+    assert!(!whiterun.ref_type_refs.is_empty());
+    assert!(index.cells.cells.values().any(|cell| cell.location_form.is_some()));
+}

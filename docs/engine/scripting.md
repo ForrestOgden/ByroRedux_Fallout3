@@ -102,6 +102,7 @@ workspace total is maintained in [ROADMAP.md](../../ROADMAP.md#project-stats).
 | Globals | [`globals.rs`](../../crates/scripting/src/globals.rs) | Mutable GLOB values consumed by conditions and `SetValue` effects |
 | Triggers and packages | [`trigger.rs`](../../crates/scripting/src/trigger.rs), [`package.rs`](../../crates/scripting/src/package.rs) | Trigger-enter detection and runtime package re-evaluation |
 | Perk entry points | [`perk_entry_points.rs`](../../crates/scripting/src/perk_entry_points.rs) | `PerkEntryTable` + `compose_entry_point` — composes an actor's ranked perks into a calculation hook (M47.2) |
+| Locations | [`location.rs`](../../crates/scripting/src/location.rs) | `LocationTable` (LCTN hierarchy) + current / editor location + `LocationAliasBindings` (M47.2) |
 | Scenes | [`scene/`](../../crates/scripting/src/scene/) | SCEN population, phase playback, actor binding and phase fragments |
 | Papyrus demos | [`papyrus_demo/`](../../crates/scripting/src/papyrus_demo/) | Hand-translated R5 scripts (the "go ECS-native" proof) |
 
@@ -322,6 +323,47 @@ four frames deep at most. Only quest fragments inline: their `VMAD` is the one
 that carries the quest script's properties. A callee that does not fully lower
 declines its caller, so this gains as the effect table grows (+52 fragments
 today; most callees are long, bespoke bodies).
+
+### Locations and location aliases (M47.2)
+
+`LCTN` records parse into `EsmIndex.locations` (parent `PNAM`, keywords, the
+population / unique-actor tables that give persistent references their editor
+location, and the `ACSR`/`LCSR` location-ref-type table). `install_location_table`
+flattens them into the `LocationTable` resource with each cell's `XLCN`.
+
+- **Current location** of a cell-loaded entity: its `CellRoot`'s `CellFormId` →
+  that cell's `XLCN`. The player is not cell-owned, so
+  `story_change_location_system` publishes the player's cell location as
+  `PlayerLocation` (only when the load order authors locations).
+- **Editor location**: the `LCTN` table that lists the reference (unique
+  actors carry their own location field), else its placed cell's.
+
+The CK condition pages define the location family over that hierarchy — "is
+(or has a parent location of)": `GetInCurrentLoc` (359), `GetInCurrentLocAlias`
+(360), `LocationHasKeyword` (562, the location itself, not its parents),
+`LocationHasRefType` (563), `GetIsEditorLocation` (565), `GetIsAliasRef` (566),
+`GetIsEditorLocAlias` (567), `LocAliasIsLocation` (605) and
+`HasSameEditorLocAsRefAlias` (181). FO3/FNV/Oblivion author none of these
+indices; 180 and 610 are left out because Oblivion and FNV author them as
+other functions.
+
+Location aliases (`ALLS`) fill in list order with the reference aliases, in
+`refresh_scene_actor_bindings`, by the CK *Quest Alias Tab*'s four mechanisms:
+Specific Location (`ALFL`), Reference Alias Location (`ALFA` + optional
+keyword-selected parent), External Alias Location, and Find Matching Location
+(the event's `L1`/`L2` slot with "From Event", otherwise a random location
+passing the alias conditions run on the candidate location). Reuse within a
+quest and other quests' "Reserves Location" aliases are honoured. A binding
+holds until its quest stops and is saved (`LocationAliasBindings`), so a random
+pick survives a reload.
+
+Not modelled: cleared state (every location is uncleared, so "Allow Cleared"
+changes nothing) and an unloaded reference's death (`LocationHasRefType` sees
+scripted disables only). Against `Skyrim.esm` with no references loaded, all
+162 Specific aliases, 3 of 4 External aliases and 28 of 136 Find Matching
+aliases bind. The rest of the Find Matching aliases condition on a reference
+alias. The 294 From Event aliases wait for their events (223 are
+script-raised `SCPT` events).
 
 ### Script registry (M47.0)
 

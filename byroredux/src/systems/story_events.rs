@@ -29,6 +29,23 @@ use std::hash::{Hash, Hasher};
 /// No player entity (loose-NIF demo, spawn ladders): no event — a
 /// location change nobody occupies is not a story event.
 pub fn story_change_location_system(world: &World) {
+    // M47.2 — publish the player's current location for the location
+    // conditions (the player is not cell-owned, so it has no `CellRoot` to
+    // follow). Only where the load order authors locations: FO3/FNV/Oblivion
+    // have none and keep #5447's no-per-frame-work contract.
+    if world
+        .try_resource::<byroredux_scripting::LocationTable>()
+        .is_some_and(|table| !table.is_empty())
+    {
+        let location = resolve_current_lctn(world);
+        if let Some(mut published) =
+            world.try_resource_mut::<byroredux_scripting::PlayerLocation>()
+        {
+            if published.0 != location {
+                published.0 = location;
+            }
+        }
+    }
     // #5447 — a load order that authors no Story Manager nodes (FO3, FNV,
     // Oblivion; `install_story_manager` still installs an empty tree and
     // cursor on them) has nothing to dispatch a CLOC to, so skip the key

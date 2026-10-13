@@ -36,6 +36,7 @@ pub mod dialogue;
 mod effects;
 mod equipment;
 mod imagespace;
+mod location;
 mod magic;
 pub mod pack;
 mod quest;
@@ -61,6 +62,7 @@ pub use equipment::{
     BptdRecord, CobjRecord, MinimalEsmRecord, SlgmRecord,
 };
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
+pub use location::{parse_lctn, LctnRecord};
 pub use magic::{
     parse_ench, parse_mgef, parse_mgef_for_game, parse_perk, parse_spel, ActorValueRef, EnchRecord,
     MagicArchetype, MagicEffectItem, MgefRecord, PerkConditionTab, PerkEntry, PerkEntryBody,

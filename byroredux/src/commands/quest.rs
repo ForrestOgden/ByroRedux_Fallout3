@@ -148,11 +148,14 @@ fn alias_state(world: &World, diagnostic: &QuestAliasDiagnostic) -> String {
                 format!("bound entity={entity}")
             }
         }
+        QuestAliasResolutionState::BoundLocation(location) => {
+            format!("bound location=0x{location:08X}")
+        }
         QuestAliasResolutionState::QuestNotRunning => {
             "unbound reason=quest-not-running".to_string()
         }
-        QuestAliasResolutionState::LocationRuntimeUnavailable => {
-            "unbound reason=location-runtime-unavailable".to_string()
+        QuestAliasResolutionState::LocationUnfilled => {
+            "unbound reason=location-unfilled".to_string()
         }
         QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable => {
             "unbound reason=reference-collection-runtime-unavailable".to_string()

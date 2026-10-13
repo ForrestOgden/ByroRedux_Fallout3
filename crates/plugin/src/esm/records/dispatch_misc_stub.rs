@@ -128,6 +128,9 @@ pub(super) fn dispatch_misc_stub_group(
                 .imagespace_modifiers
                 .insert(fid, parse_imad(fid, subs, game));
         })?,
+        b"LCTN" => extract_records(reader, end, b"LCTN", &mut |fid, subs| {
+            index.locations.insert(fid, parse_lctn(fid, subs, &remap));
+        })?,
         b"LSCR" => {
             super::grup_walker::extract_records_with_flags(
                 reader,

@@ -519,8 +519,7 @@ pub fn push_ctda(sub: &SubRecord, remap: &Option<FormIdRemap>, out: &mut Conditi
 /// can't know which params are FormIDs vs literals. This is the minimal
 /// slice of catalog knowledge the remap pass needs: the M47.1 functions
 /// whose first parameter is a FormID (and so must be load-order remapped).
-/// `param_2` is a literal in every one of them (`GetStageDone`'s stage
-/// index), so only `param_1` is ever promoted. Indices mirror the
+/// [`param2_is_form_id`] is the second-parameter twin. Indices mirror the
 /// `ConditionFunction` catalog in `byroredux_scripting::condition` — that
 /// crate sits above this one, so the mirror is held by a drift guard there
 /// (`param1_form_id_table_matches_the_condition_catalog`, #5637) that walks
@@ -548,6 +547,22 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 575 // GetReputationThreshold — REPU FormID (param_2 = axis)
         | 629 // GetVMQuestVariable — quest FormID (CIS2 = variable), Skyrim/FO4
         | 630 // GetVMScriptVariable — object-reference FormID (CIS2 = variable)
+        | 359 // GetInCurrentLoc — LCTN FormID (Skyrim/FO4)
+        | 562 // LocationHasKeyword — KYWD FormID (Skyrim/FO4)
+        | 565 // GetIsEditorLocation — LCTN FormID (Skyrim/FO4)
+        | 563 // LocationHasRefType — LCRT FormID (Skyrim/FO4)
+    )
+}
+
+/// Does `param_2` of the given condition function carry a FormID? Mirrors
+/// the catalogued functions whose second parameter xEdit types as a form
+/// (`ptLocation`); everywhere else `param_2` is a literal (`GetStageDone`'s
+/// stage, `GetReputation`'s axis).
+pub fn param2_is_form_id(function_index: u32) -> bool {
+    matches!(
+        function_index,
+        605 // LocAliasIsLocation — alias id, LCTN FormID (Skyrim/FO4)
+        | 181 // HasSameEditorLocAsRefAlias — alias id, KYWD FormID (Skyrim/FO4)
     )
 }
 
@@ -581,6 +596,9 @@ pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap
     }
     if cond.param_1 != 0 && param1_is_form_id(cond.function_index) {
         cond.param_1 = remap.remap(cond.param_1);
+    }
+    if cond.param_2 != 0 && param2_is_form_id(cond.function_index) {
+        cond.param_2 = remap.remap(cond.param_2);
     }
 }
 

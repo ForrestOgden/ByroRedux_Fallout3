@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **25 functions** at their canonical CTDA
+//! lineage. This catalog ships **34 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -54,6 +54,15 @@
 //! | 586   | IsHardcore             | `HardcoreMode` (FNV)        |
 //! | 629   | GetVMQuestVariable     | `QuestScriptVariables`      |
 //! | 630   | GetVMScriptVariable    | `ScriptVariables`           |
+//! | 359   | GetInCurrentLoc        | `LocationTable` + cell      |
+//! | 360   | GetInCurrentLocAlias   | `LocationAliasBindings`     |
+//! | 562   | LocationHasKeyword     | `LocationTable` keywords    |
+//! | 565   | GetIsEditorLocation    | `LocationTable` editor refs |
+//! | 566   | GetIsAliasRef          | `SceneActorBindings`        |
+//! | 567   | GetIsEditorLocAlias    | `LocationAliasBindings`     |
+//! | 605   | LocAliasIsLocation     | `LocationAliasBindings`     |
+//! | 563   | LocationHasRefType     | `LocationTable` ref types   |
+//! | 181   | HasSameEditorLocAsRefAlias | `LocationTable` editor refs |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -198,6 +207,48 @@ pub enum ConditionFunction {
     /// Skyrim / FO4 function index **629** (xEdit; no FO3/FNV function uses
     /// it).
     GetVMQuestVariable,
+    /// `GetInCurrentLoc(location) → f32` (M47.2). 1.0 when the Run-On
+    /// reference's current location is `param_1` or has it as a parent; run
+    /// on a location (a location-alias fill), when that location's *parent*
+    /// is or descends from it. Skyrim / FO4 index **359**.
+    GetInCurrentLoc,
+    /// `GetInCurrentLocAlias(alias) → f32` (M47.2). As
+    /// [`GetInCurrentLoc`](Self::GetInCurrentLoc), against the location bound
+    /// to the owning quest's location alias `param_1`. Skyrim / FO4 index
+    /// **360**.
+    GetInCurrentLocAlias,
+    /// `LocationHasKeyword(keyword) → f32` (M47.2). 1.0 when the Run-On
+    /// reference's current location carries keyword `param_1` (not its
+    /// parents); run on a location, that location itself. Skyrim / FO4 index
+    /// **562**.
+    LocationHasKeyword,
+    /// `GetIsEditorLocation(location) → f32` (M47.2). 1.0 when the Run-On
+    /// reference's editor location is `param_1` or has it as a parent.
+    /// Skyrim / FO4 index **565**.
+    GetIsEditorLocation,
+    /// `GetIsAliasRef(alias) → f32` (M47.2). 1.0 when the Run-On reference
+    /// fills the owning quest's alias `param_1`. Skyrim / FO4 index **566**.
+    GetIsAliasRef,
+    /// `GetIsEditorLocAlias(alias) → f32` (M47.2). As
+    /// [`GetIsEditorLocation`](Self::GetIsEditorLocation), against the
+    /// owning quest's location alias `param_1`. Skyrim / FO4 index **567**.
+    GetIsEditorLocAlias,
+    /// `LocAliasIsLocation(alias, location) → f32` (M47.2). 1.0 when the
+    /// owning quest's location alias `param_1` holds exactly `param_2`.
+    /// Reads no Run-On. Skyrim / FO4 index **605**.
+    LocAliasIsLocation,
+    /// `LocationHasRefType(location_ref_type) → f32` (M47.2). 1.0 when the
+    /// Run-On reference's current location (run on a location, that location)
+    /// tags an enabled reference with `param_1` (`LCTN` `ACSR`/`LCSR`). Skyrim
+    /// / FO4 index **563**.
+    LocationHasRefType,
+    /// `HasSameEditorLocAsRefAlias(alias, keyword) → f32` (M47.2). 1.0 when the
+    /// Run-On reference and the owning quest's reference alias `param_1` share
+    /// an editor location — or, with keyword `param_2`, the same nearest
+    /// keyworded parent; run on a location, when that location (carrying the
+    /// keyword) is or contains the alias's editor location. Skyrim / FO4 index
+    /// **181**.
+    HasSameEditorLocAsRefAlias,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -250,13 +301,28 @@ impl ConditionFunction {
             586 => Self::IsHardcore,
             629 => Self::GetVMQuestVariable,
             630 => Self::GetVMScriptVariable,
+            // M47.2 — the location family. FO3/FNV/Oblivion author none of
+            // these indices (CTDA census of their masters); 610
+            // (LocAliasHasKeyword) is left out because FNV authors 610 as a
+            // different function.
+            359 => Self::GetInCurrentLoc,
+            360 => Self::GetInCurrentLocAlias,
+            562 => Self::LocationHasKeyword,
+            565 => Self::GetIsEditorLocation,
+            566 => Self::GetIsAliasRef,
+            567 => Self::GetIsEditorLocAlias,
+            605 => Self::LocAliasIsLocation,
+            563 => Self::LocationHasRefType,
+            // 181, not its reference twin 180: Oblivion authors 180 as a
+            // different function.
+            181 => Self::HasSameEditorLocAsRefAlias,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 25] = [
+    pub const CATALOG: [ConditionFunction; 34] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -282,6 +348,15 @@ impl ConditionFunction {
         Self::GetQuestRunning,
         Self::GetGlobalValue,
         Self::GetRandomPercent,
+        Self::GetInCurrentLoc,
+        Self::GetInCurrentLocAlias,
+        Self::LocationHasKeyword,
+        Self::GetIsEditorLocation,
+        Self::GetIsAliasRef,
+        Self::GetIsEditorLocAlias,
+        Self::LocAliasIsLocation,
+        Self::LocationHasRefType,
+        Self::HasSameEditorLocAsRefAlias,
     ];
 
     /// Whether `param_1` of this function is a FormID — the slice of catalog
@@ -311,8 +386,18 @@ impl ConditionFunction {
             | Self::GetReputation
             | Self::GetReputationThreshold
             | Self::GetVMQuestVariable
-            | Self::GetVMScriptVariable => true,
-            Self::GetRandomPercent
+            | Self::GetVMScriptVariable
+            | Self::GetInCurrentLoc
+            | Self::LocationHasKeyword
+            | Self::GetIsEditorLocation
+            | Self::LocationHasRefType => true,
+            // Alias ids are quest-local indices, not FormIDs.
+            Self::GetInCurrentLocAlias
+            | Self::HasSameEditorLocAsRefAlias
+            | Self::GetIsAliasRef
+            | Self::GetIsEditorLocAlias
+            | Self::LocAliasIsLocation
+            | Self::GetRandomPercent
             | Self::GetDead
             | Self::GetLevel
             | Self::GetXPForNextLevel
@@ -350,6 +435,15 @@ impl ConditionFunction {
             Self::GetReputationThreshold => "GetReputationThreshold",
             Self::GetVMScriptVariable => "GetVMScriptVariable",
             Self::GetVMQuestVariable => "GetVMQuestVariable",
+            Self::GetInCurrentLoc => "GetInCurrentLoc",
+            Self::GetInCurrentLocAlias => "GetInCurrentLocAlias",
+            Self::LocationHasKeyword => "LocationHasKeyword",
+            Self::GetIsEditorLocation => "GetIsEditorLocation",
+            Self::GetIsAliasRef => "GetIsAliasRef",
+            Self::GetIsEditorLocAlias => "GetIsEditorLocAlias",
+            Self::LocAliasIsLocation => "LocAliasIsLocation",
+            Self::LocationHasRefType => "LocationHasRefType",
+            Self::HasSameEditorLocAsRefAlias => "HasSameEditorLocAsRefAlias",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -389,8 +483,17 @@ impl ConditionFunction {
             | Self::GetXPForNextLevel
             | Self::HasLoaded3D
             | Self::GetReputation
-            | Self::GetReputationThreshold => true,
-            Self::GetQuestRunning
+            | Self::GetReputationThreshold
+            | Self::GetInCurrentLoc
+            | Self::GetInCurrentLocAlias
+            | Self::LocationHasKeyword
+            | Self::GetIsEditorLocation
+            | Self::GetIsAliasRef
+            | Self::GetIsEditorLocAlias
+            | Self::LocationHasRefType
+            | Self::HasSameEditorLocAsRefAlias => true,
+            Self::LocAliasIsLocation
+            | Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetRandomPercent
             | Self::GetStage
@@ -441,8 +544,37 @@ impl ConditionFunction {
             | Self::IsHardcore
             | Self::GetVMQuestVariable
             | Self::GetVMScriptVariable
+            | Self::GetInCurrentLoc
+            | Self::GetInCurrentLocAlias
+            | Self::LocationHasKeyword
+            | Self::GetIsEditorLocation
+            | Self::GetIsAliasRef
+            | Self::GetIsEditorLocAlias
+            | Self::LocAliasIsLocation
+            | Self::LocationHasRefType
+            | Self::HasSameEditorLocAsRefAlias
             | Self::Unknown(_) => true,
         }
+    }
+
+    /// Whether the value depends on the [`ConditionContext`] beyond the
+    /// resolved Run-On entity — the owning quest's aliases, or the location
+    /// a location-alias fill tests. [`evaluate_condition`] routes these
+    /// through [`evaluate_contextual`]; a context-free [`evaluate_function`]
+    /// call evaluates them with an empty context.
+    pub fn reads_context(self) -> bool {
+        matches!(
+            self,
+            Self::GetInCurrentLoc
+                | Self::GetInCurrentLocAlias
+                | Self::LocationHasKeyword
+                | Self::GetIsEditorLocation
+                | Self::GetIsAliasRef
+                | Self::GetIsEditorLocAlias
+                | Self::LocAliasIsLocation
+                | Self::LocationHasRefType
+                | Self::HasSameEditorLocAsRefAlias
+        )
     }
 
     /// Whether this is an identity test: 1.0 exactly when
@@ -528,6 +660,15 @@ pub struct ConditionContext<'a> {
     /// a quest-stage or dialogue CTDA authored with run-on EventData
     /// fails exactly as before.
     pub event_data: Option<&'a EventDataSlots>,
+    /// The location a location-alias fill is testing (M47.2). Location
+    /// functions run on [`RunOn::Subject`] read it instead of a reference's
+    /// current location — the CK's "if used as a condition to fill a Location
+    /// Alias, it will test the locations themselves".
+    pub location_subject: Option<u32>,
+    /// Location aliases bound so far in the fill pass running, ahead of the
+    /// committed [`crate::location::LocationAliasBindings`] — the location
+    /// twin of [`Self::pending_alias_bindings`].
+    pub pending_location_bindings: Option<&'a HashMap<(QuestFormId, i32), u32>>,
 }
 
 /// The Story Manager event's positional data slots (#5366 Phase 2) —
@@ -573,7 +714,60 @@ impl<'a> ConditionContext<'a> {
             quest: None,
             pending_alias_bindings: None,
             event_data: None,
+            location_subject: None,
+            pending_location_bindings: None,
         }
+    }
+
+    /// Run [`RunOn::Subject`] location functions on `location` itself (a
+    /// location-alias fill). See [`Self::location_subject`].
+    pub fn with_location_subject(mut self, location: u32) -> Self {
+        self.location_subject = Some(location);
+        self
+    }
+
+    /// Attach the in-progress location-alias bindings. See
+    /// [`Self::pending_location_bindings`].
+    pub fn with_pending_location_bindings(
+        mut self,
+        bindings: &'a HashMap<(QuestFormId, i32), u32>,
+    ) -> Self {
+        self.pending_location_bindings = Some(bindings);
+        self
+    }
+
+    /// The entity filling the owning quest's reference alias `alias_id`: the
+    /// in-progress pass first (#2671), then the committed table.
+    fn alias_entity(&self, world: &World, alias_id: i32) -> Option<EntityId> {
+        let quest = self.quest?;
+        // #2671 — the in-progress pass wins. A sibling alias filled
+        // earlier in THIS refresh is not in `SceneActorBindings`
+        // yet (the fill loop commits once, at the end), so reading
+        // only the committed table made cross-alias conditions see
+        // stale data and self-correct a refresh later.
+        if let Some(&entity) = self
+            .pending_alias_bindings
+            .and_then(|pending| pending.get(&(quest, alias_id)))
+        {
+            return Some(entity);
+        }
+        let bindings = world.try_resource::<SceneActorBindings>()?;
+        bindings.resolve(quest, alias_id)
+    }
+
+    /// The location bound to the owning quest's location alias `alias_id`:
+    /// the in-progress pass first, then the committed table.
+    fn alias_location(&self, world: &World, alias_id: i32) -> Option<u32> {
+        let quest = self.quest?;
+        if let Some(&location) = self
+            .pending_location_bindings
+            .and_then(|pending| pending.get(&(quest, alias_id)))
+        {
+            return Some(location);
+        }
+        world
+            .try_resource::<crate::location::LocationAliasBindings>()?
+            .resolve(quest, alias_id)
     }
 
     /// Attach the in-progress alias-binding map so `RunOn::QuestAlias` can
@@ -620,23 +814,7 @@ impl<'a> ConditionContext<'a> {
             RunOn::Reference => {
                 resolve_entity_by_global_form_id(world, condition.reference_form_id)
             }
-            RunOn::QuestAlias => {
-                let quest = self.quest?;
-                let alias_id = condition.extra_data_id as i32;
-                // #2671 — the in-progress pass wins. A sibling alias filled
-                // earlier in THIS refresh is not in `SceneActorBindings`
-                // yet (the fill loop commits once, at the end), so reading
-                // only the committed table made cross-alias conditions see
-                // stale data and self-correct a refresh later.
-                if let Some(&entity) = self
-                    .pending_alias_bindings
-                    .and_then(|pending| pending.get(&(quest, alias_id)))
-                {
-                    return Some(entity);
-                }
-                let bindings = world.try_resource::<SceneActorBindings>()?;
-                bindings.resolve(quest, alias_id)
-            }
+            RunOn::QuestAlias => self.alias_entity(world, condition.extra_data_id as i32),
             RunOn::PackageData => {
                 log::trace!(
                     "M47.1: RunOn::PackageData (extra_data_id={:08X}) — package \
@@ -692,7 +870,15 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
 
     // Run the function — returns the f32 the comparator works against.
     let function = ConditionFunction::from_index(condition.function_index);
-    let function_result = evaluate_function(function, condition, entity, world);
+    let function_result = if function.reads_context() {
+        let subject = match (condition.run_on, ctx.location_subject) {
+            (RunOn::Subject, Some(location)) => LocationSubject::Location(location),
+            _ => LocationSubject::Reference(entity),
+        };
+        evaluate_contextual(function, condition, subject, world, ctx)
+    } else {
+        evaluate_function(function, condition, entity, world)
+    };
 
     condition
         .comparator
@@ -758,6 +944,177 @@ pub fn resolve_entity_by_global_form_id(world: &World, form_id: u32) -> Option<E
     found
 }
 
+/// The global form ID of a live entity — the inverse of
+/// [`resolve_entity_by_global_form_id`], and keyed the same way
+/// (`FormIdPool::resolve(..).local.0`) so the two agree.
+///
+/// #3278 — needed by `Effect::Disable`, whose sink (`ReferenceEnableState`)
+/// is deliberately FormID-keyed rather than entity-keyed so a disable
+/// survives its reference's cell being unloaded; the location runtime keys
+/// a reference's editor location the same way.
+pub fn entity_global_form_id(world: &World, entity: EntityId) -> Option<u32> {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::FormIdPool;
+    let component = world.get::<FormIdComponent>(entity)?;
+    let pool = world.try_resource::<FormIdPool>()?;
+    pool.resolve(component.0).map(|pair| pair.local.0)
+}
+
+/// What a context-reading condition runs on: a reference, or — Run On
+/// Subject during a location-alias fill — the candidate location itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocationSubject {
+    Reference(EntityId),
+    Location(u32),
+}
+
+fn truth(value: bool) -> f32 {
+    if value {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// The [`ConditionFunction::reads_context`] functions (M47.2): the quest's
+/// aliases and the location hierarchy. Semantics are the CK wiki's condition
+/// function pages; a missing location (an untagged cell, an unbound alias, no
+/// [`crate::location::LocationTable`]) fails the test.
+fn evaluate_contextual(
+    function: ConditionFunction,
+    condition: &Condition,
+    subject: LocationSubject,
+    world: &World,
+    ctx: &ConditionContext,
+) -> f32 {
+    use crate::location::{current_location, editor_location, LocationTable};
+    let alias_id = condition.param_1 as i32;
+    // Each location is resolved before the table guard is taken —
+    // `current_location` / `editor_location` take it themselves.
+    let within = |location: Option<u32>, ancestor: Option<u32>| {
+        let (Some(location), Some(ancestor)) = (location, ancestor) else {
+            return false;
+        };
+        world
+            .try_resource::<LocationTable>()
+            .is_some_and(|table| table.is_within(location, ancestor))
+    };
+    let parent = |location: u32| {
+        world
+            .try_resource::<LocationTable>()
+            .and_then(|table| table.parent(location))
+    };
+    match function {
+        ConditionFunction::GetIsAliasRef => match subject {
+            LocationSubject::Reference(entity) => {
+                truth(ctx.alias_entity(world, alias_id) == Some(entity))
+            }
+            LocationSubject::Location(_) => 0.0,
+        },
+        ConditionFunction::LocAliasIsLocation => {
+            truth(ctx.alias_location(world, alias_id) == Some(condition.param_2))
+        }
+        ConditionFunction::GetInCurrentLoc | ConditionFunction::GetInCurrentLocAlias => {
+            let ancestor = if function == ConditionFunction::GetInCurrentLoc {
+                Some(condition.param_1)
+            } else {
+                ctx.alias_location(world, alias_id)
+            };
+            // "If run on a location, returns 1 if the parent of the location
+            // is (or has a parent location of) the supplied location."
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => parent(location),
+            };
+            truth(within(location, ancestor))
+        }
+        ConditionFunction::GetIsEditorLocation | ConditionFunction::GetIsEditorLocAlias => {
+            let ancestor = if function == ConditionFunction::GetIsEditorLocation {
+                Some(condition.param_1)
+            } else {
+                ctx.alias_location(world, alias_id)
+            };
+            // A location has no editor location; the CK defines these on
+            // references only.
+            let LocationSubject::Reference(entity) = subject else {
+                return 0.0;
+            };
+            truth(within(editor_location(world, entity), ancestor))
+        }
+        ConditionFunction::LocationHasKeyword => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            truth(location.is_some_and(|location| {
+                world
+                    .try_resource::<LocationTable>()
+                    .is_some_and(|table| table.has_keyword(location, condition.param_1))
+            }))
+        }
+        ConditionFunction::LocationHasRefType => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            let Some(location) = location else {
+                return 0.0;
+            };
+            let tagged: Vec<u32> = world
+                .try_resource::<LocationTable>()
+                .map(|table| table.refs_of_type(location, condition.param_1).collect())
+                .unwrap_or_default();
+            // "Returns false if the ref type is dead or disabled": a scripted
+            // disable is FormID-keyed and visible here. Death is not — an
+            // unloaded actor's death state lives with the cell streamer — so,
+            // like the missing cleared state, every tagged ref counts as alive.
+            let enabled = world.try_resource::<crate::fragment::ReferenceEnableState>();
+            truth(tagged.iter().any(|&reference| {
+                enabled
+                    .as_ref()
+                    .is_none_or(|state| state.override_for(reference) != Some(false))
+            }))
+        }
+        ConditionFunction::HasSameEditorLocAsRefAlias => {
+            let Some(other) = ctx
+                .alias_entity(world, alias_id)
+                .and_then(|entity| editor_location(world, entity))
+            else {
+                return 0.0;
+            };
+            let keyword = (condition.param_2 != 0).then_some(condition.param_2);
+            let own = match subject {
+                LocationSubject::Reference(entity) => match editor_location(world, entity) {
+                    Some(own) => Some(own),
+                    None => return 0.0,
+                },
+                LocationSubject::Location(_) => None,
+            };
+            let Some(table) = world.try_resource::<LocationTable>() else {
+                return 0.0;
+            };
+            truth(match (subject, own) {
+                (LocationSubject::Reference(_), Some(own)) => match keyword {
+                    None => own == other,
+                    Some(keyword) => table
+                        .with_keyword(own, keyword)
+                        .is_some_and(|level| table.with_keyword(other, keyword) == Some(level)),
+                },
+                // "Filled with a location having the keyword type and that is
+                // (or is the parent location of) the parameter reference's
+                // editor location."
+                (LocationSubject::Location(location), _) => {
+                    keyword.is_none_or(|keyword| table.has_keyword(location, keyword))
+                        && table.is_within(other, location)
+                }
+                (LocationSubject::Reference(_), None) => false,
+            })
+        }
+        // Only `reads_context` functions are routed here.
+        _ => 0.0,
+    }
+}
+
 /// Dispatch one of the M47.1-catalog functions against the supplied
 /// entity. Returns `0.0` for unknown indices (Bethesda safe-default)
 /// or when the function's backing ECS storage isn't registered.
@@ -767,6 +1124,15 @@ pub fn evaluate_function(
     entity: EntityId,
     world: &World,
 ) -> f32 {
+    if function.reads_context() {
+        return evaluate_contextual(
+            function,
+            condition,
+            LocationSubject::Reference(entity),
+            world,
+            &ConditionContext::for_subject(entity),
+        );
+    }
     match function {
         ConditionFunction::GetActorValue => {
             // GetActorValue(avif_form_id) → the Run-On actor's composed value
@@ -1147,6 +1513,16 @@ pub fn evaluate_function(
             crate::quest_variables::quest_variable(world, QuestFormId(condition.param_1), variable)
                 .unwrap_or(0.0)
         }
+        // Answered by `evaluate_contextual` above.
+        ConditionFunction::GetInCurrentLoc
+        | ConditionFunction::GetInCurrentLocAlias
+        | ConditionFunction::LocationHasKeyword
+        | ConditionFunction::GetIsEditorLocation
+        | ConditionFunction::GetIsAliasRef
+        | ConditionFunction::GetIsEditorLocAlias
+        | ConditionFunction::LocAliasIsLocation
+        | ConditionFunction::LocationHasRefType
+        | ConditionFunction::HasSameEditorLocAsRefAlias => 0.0,
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

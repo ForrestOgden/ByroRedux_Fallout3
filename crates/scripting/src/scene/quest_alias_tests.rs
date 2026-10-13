@@ -166,10 +166,7 @@ fn quest_alias_diagnostics_classify_runtime_boundaries_and_dependencies() {
         state(6),
         &QuestAliasResolutionState::ForceIntoSourcesUnbound(vec![1])
     );
-    assert_eq!(
-        state(7),
-        &QuestAliasResolutionState::LocationRuntimeUnavailable
-    );
+    assert_eq!(state(7), &QuestAliasResolutionState::LocationUnfilled);
     assert_eq!(
         state(8),
         &QuestAliasResolutionState::ReferenceCollectionRuntimeUnavailable
@@ -1843,5 +1840,189 @@ fn created_object_in_alias_grants_its_item_once() {
         bindings.resolve(crate::QuestFormId(QUEST), 2),
         None,
         "the created alias stays unbound"
+    );
+}
+
+/// M47.2 — location aliases fill in list order: a specific location, a
+/// reference alias's current location (optionally its keyword-selected
+/// parent), another quest's location alias, an event's location slot, and a
+/// condition-matched location; each holds until its quest stops.
+#[test]
+fn location_aliases_fill_by_each_authored_mechanism_and_hold_until_stop() {
+    use crate::location::tests::{
+        whiterun_index, DRAGONSREACH, DRAGONSREACH_CELL, LOC_TYPE_CITY, LOC_TYPE_HOLD, TAMRIEL,
+        WHITERUN, WHITERUN_HOLD,
+    };
+    use crate::location::{install_location_table, LocationAliasBindings};
+    use crate::story_manager::{StoryEventAliasFill, StoryEventFill};
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionValue, RunOn,
+    };
+    const SOURCE: u32 = 0x300;
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    install_location_table(&mut world, &whiterun_index());
+    world.insert_resource(QuestStageState::default());
+    for quest in [QUEST, SOURCE] {
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(quest), None);
+    }
+    let cell_root = world.spawn();
+    world.insert(cell_root, CellFormId(DRAGONSREACH_CELL));
+    let jarl = world.spawn();
+    world.insert(jarl, CellRoot(cell_root));
+    world.insert(
+        jarl,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(jarl, GlobalTransform::IDENTITY);
+    world.insert_resource(StoryEventAliasFill(HashMap::from([(
+        QuestFormId(QUEST),
+        StoryEventFill {
+            slots: crate::condition::EventDataSlots {
+                location_2: Some(WHITERUN),
+                ..Default::default()
+            },
+            reference_forms: [None, None],
+        },
+    )])));
+    let is_city = Condition {
+        function_index: 562,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: LOC_TYPE_CITY,
+        run_on: RunOn::Subject,
+        ..Default::default()
+    };
+    let location = |alias_id, fill_type| QuestAlias {
+        alias_id,
+        is_location: true,
+        fill_type,
+        ..Default::default()
+    };
+    let l2 = i32::from_le_bytes(*b"L2\0\0");
+    install_scene_quest_aliases(
+        &mut world,
+        [
+            QustRecord {
+                form_id: SOURCE,
+                aliases: vec![location(0, Some(AliasFillType::ForcedLocation(TAMRIEL)))],
+                ..Default::default()
+            },
+            QustRecord {
+                form_id: QUEST,
+                aliases: vec![
+                    QuestAlias {
+                        alias_id: 0,
+                        fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                        ..Default::default()
+                    },
+                    location(1, Some(AliasFillType::ForcedLocation(DRAGONSREACH))),
+                    location(
+                        2,
+                        Some(AliasFillType::LocationAliasReference {
+                            alias_id: 0,
+                            keyword: None,
+                            ref_type: None,
+                        }),
+                    ),
+                    location(
+                        3,
+                        Some(AliasFillType::LocationAliasReference {
+                            alias_id: 0,
+                            keyword: Some(LOC_TYPE_HOLD),
+                            ref_type: None,
+                        }),
+                    ),
+                    location(
+                        4,
+                        Some(AliasFillType::ExternalAlias {
+                            quest: SOURCE,
+                            alias_id: 0,
+                        }),
+                    ),
+                    QuestAlias {
+                        match_conditions: vec![is_city],
+                        ..location(
+                            5,
+                            Some(AliasFillType::FromEvent {
+                                event_type: *b"CLOC",
+                                data: l2,
+                            }),
+                        )
+                    },
+                    QuestAlias {
+                        match_conditions: vec![is_city],
+                        ..location(6, None)
+                    },
+                    location(7, None),
+                    QuestAlias {
+                        match_conditions: vec![is_city],
+                        flags: byroredux_plugin::esm::records::AliasFlags(
+                            byroredux_plugin::esm::records::ALIAS_FLAG_ALLOW_REUSE,
+                        ),
+                        ..location(8, None)
+                    },
+                ],
+                ..Default::default()
+            },
+        ],
+    );
+    refresh_scene_actor_bindings(&world);
+
+    let bound = |world: &World, alias_id| {
+        world
+            .resource::<LocationAliasBindings>()
+            .resolve(QuestFormId(QUEST), alias_id)
+    };
+    assert_eq!(bound(&world, 1), Some(DRAGONSREACH), "specific location");
+    assert_eq!(
+        bound(&world, 2),
+        Some(DRAGONSREACH),
+        "reference alias location"
+    );
+    assert_eq!(
+        bound(&world, 3),
+        Some(WHITERUN_HOLD),
+        "keyword-selected parent"
+    );
+    // The source quest (0x300) fills after this one (FormID order), so the
+    // external alias binds on the next refresh.
+    assert_eq!(bound(&world, 4), None);
+    assert_eq!(
+        bound(&world, 5),
+        Some(WHITERUN),
+        "event location passing its conditions"
+    );
+    assert_eq!(bound(&world, 6), None, "the one city is already in alias 5");
+    assert_eq!(bound(&world, 7), None, "no fill mechanism");
+    assert_eq!(bound(&world, 8), Some(WHITERUN), "Allow Reuse in Quest");
+
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world, 4), Some(TAMRIEL), "external alias");
+    let diagnostics = quest_alias_diagnostics(&world, QuestFormId(QUEST)).unwrap();
+    assert_eq!(
+        diagnostics[1].state,
+        QuestAliasResolutionState::BoundLocation(DRAGONSREACH)
+    );
+
+    world
+        .resource_mut::<QuestStageState>()
+        .stop(QuestFormId(QUEST));
+    world.resource_mut::<SceneActorBindings>().dirty = true;
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(
+        bound(&world, 1),
+        None,
+        "a stopped quest's location aliases clear"
     );
 }

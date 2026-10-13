@@ -21,6 +21,7 @@ pub mod faction_changes;
 pub mod fragment;
 pub mod globals;
 pub mod load_order;
+pub mod location;
 pub mod magic;
 pub mod obscript;
 pub mod obscript_quests;
@@ -102,6 +103,10 @@ pub use faction_changes::{
 };
 pub use globals::Globals;
 pub use load_order::LoadOrderIdentity;
+pub use location::{
+    current_location, editor_location, install_location_table, LocationAliasBindings,
+    LocationTable, PlayerLocation,
+};
 pub use magic::{
     add_race_spells, add_spell, remove_race_spells, remove_spell, CanonicalSpell,
     ConstantModifier, RaceSpells, SpellCatalog, SpellList,
@@ -192,6 +197,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — quest location-alias bindings (saved, like the ledger above).
+    if world.try_resource::<LocationAliasBindings>().is_none() {
+        world.insert_resource(LocationAliasBindings::default());
     }
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();
