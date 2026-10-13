@@ -271,6 +271,11 @@ pub enum ValueExpr {
     Local(String),
     /// Arithmetic over two values.
     Arith(Box<ValueExpr>, ArithOp, Box<ValueExpr>),
+    /// M47.2 — `<actor>.GetValue(<actor value>)`, the current value.
+    ActorValue(ActorRef, ObjectRef),
+    /// M47.2 — `<actor>.GetAV("Name")` / `GetValue(Game.GetHealthAV())`, an
+    /// actor value by name ([`crate::ActorValueNames`]).
+    ActorValueNamed(ActorRef, String),
 }
 
 /// The arithmetic a [`ValueExpr::Arith`] applies.
@@ -354,6 +359,17 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
             .is_empty()
             .then(|| receiver_actor(object, scope).map(ValueExpr::Level))
             .flatten();
+    }
+    // M47.2 — an actor value: `GetValue(av)` (one argument; the bare
+    // `GetValue()` is a global's), or `GetAV` / `GetActorValue("Name")`.
+    if let Some((object, args)) = method_call_any(e, &["GetValue", "GetAV", "GetActorValue"]) {
+        if let [av] = args {
+            let actor = receiver_actor(object, scope)?;
+            return Some(match actor_value_arg(&av.value.node, scope)? {
+                ActorValueArg::Form(form) => ValueExpr::ActorValue(actor, form),
+                ActorValueArg::Named(name) => ValueExpr::ActorValueNamed(actor, name),
+            });
+        }
     }
     Some(match guard_reading(e, scope)? {
         GuardReading::Stage(quest) => ValueExpr::Stage(quest),
@@ -1302,7 +1318,8 @@ pub enum Effect {
     SetActorValue {
         actor: ActorRef,
         actor_value: ObjectRef,
-        value: f32,
+        /// M47.2 — a run-time number since FORMAT 59 (`GetValue(av) + 1`).
+        value: ValueExpr,
     },
     /// M47.2 — `<marker>.AddToMap([abFastTravel = false])`.
     AddToMap { marker: ObjectRef, fast_travel: bool },
@@ -1337,7 +1354,7 @@ pub enum Effect {
     SetActorValueNamed {
         actor: ActorRef,
         name: String,
-        value: f32,
+        value: ValueExpr,
     },
     /// M47.2 — `<alias>.ForceRefTo(akRef)` (`target` = the reference) or
     /// `<alias>.Clear()` (`target` = `None`): a scripted alias override,
@@ -3555,28 +3572,53 @@ fn prim_change_perk(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<alias>.TryToSetActorValue(akAV, afValue)` ("sets the actor value on the
 /// reference in this alias, if any" — an empty alias is a runtime no-op), and
 /// — M47.2 — Skyrim's `SetAV` / `SetActorValue("Name", afValue)`.
-fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
-    if let Some((object, args)) = method_call_any(e, &["SetAV", "SetActorValue"]) {
-        if args.len() != 2 {
-            return None;
-        }
-        let Expr::StringLit(name) = &args[0].value.node else {
-            return None;
-        };
-        return Some(Effect::SetActorValueNamed {
-            actor: receiver_actor(object, scope)?,
-            name: name.clone(),
-            value: as_num(&args[1].value.node)?,
-        });
+/// M47.2 — how a call names an actor value: an `ActorValue` property, or a
+/// name — Skyrim's string (`SetAV("Health", …)`) or FO4's
+/// `Game.Get<Name>AV()` accessor (`GetHealthAV` names `Health`).
+enum ActorValueArg {
+    Form(ObjectRef),
+    Named(String),
+}
+
+fn actor_value_arg(e: &Expr, scope: &Scope) -> Option<ActorValueArg> {
+    if let Expr::StringLit(name) = e {
+        return Some(ActorValueArg::Named(name.clone()));
     }
-    let (object, args) = method_call_any(e, &["SetValue", "TryToSetActorValue"])?;
+    let mut inner = e;
+    while let Expr::Cast { expr, .. } = inner {
+        inner = &expr.node;
+    }
+    if let Expr::Call { callee, args } = inner {
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            let accessor = member.node.0.as_str();
+            let is_game = matches!(&object.node, Expr::Ident(name) if name.0.eq_ignore_ascii_case("game"));
+            if is_game && args.is_empty() {
+                let lower = accessor.to_ascii_lowercase();
+                if lower.starts_with("get") && lower.ends_with("av") && accessor.len() > 5 {
+                    return Some(ActorValueArg::Named(accessor[3..accessor.len() - 2].to_owned()));
+                }
+            }
+        }
+        return None;
+    }
+    receiver_object(e, scope).map(ActorValueArg::Form)
+}
+
+fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) =
+        method_call_any(e, &["SetAV", "SetActorValue", "SetValue", "TryToSetActorValue"])?;
     if args.len() != 2 {
         return None;
     }
-    Some(Effect::SetActorValue {
-        actor: receiver_actor(object, scope)?,
-        actor_value: receiver_object(&args[0].value.node, scope)?,
-        value: as_num(&args[1].value.node)?,
+    let actor = receiver_actor(object, scope)?;
+    let value = classify_value(&args[1].value.node, scope)?;
+    Some(match actor_value_arg(&args[0].value.node, scope)? {
+        ActorValueArg::Form(actor_value) => Effect::SetActorValue {
+            actor,
+            actor_value,
+            value,
+        },
+        ActorValueArg::Named(name) => Effect::SetActorValueNamed { actor, name, value },
     })
 }
 
@@ -5544,17 +5586,17 @@ mod tests {
                 Effect::SetActorValue {
                     actor: ActorRef::Object(ObjectRef::Property("Alias_Danse".into())),
                     actor_value: ObjectRef::Property("CA_WantsToTalk".into()),
-                    value: 2.0,
+                    value: crate::translate::effects::ValueExpr::Literal(2.0),
                 },
                 Effect::SetActorValueNamed {
                     actor: ActorRef::Player,
                     name: "Variable06".into(),
-                    value: 3.0,
+                    value: crate::translate::effects::ValueExpr::Literal(3.0),
                 },
                 Effect::SetActorValueNamed {
                     actor: ActorRef::Object(ObjectRef::Property("Alias_Saadia".into())),
                     name: "Aggression".into(),
-                    value: 0.0,
+                    value: crate::translate::effects::ValueExpr::Literal(0.0),
                 },
             ])
         );
@@ -6062,7 +6104,7 @@ mod tests {
             Effect::SetActorValue {
                 actor: ActorRef::Object(ObjectRef::Property("Alias_SkinnyMalone".into())),
                 actor_value: ObjectRef::Property("pAggression".into()),
-                value: 2.0,
+                value: crate::translate::effects::ValueExpr::Literal(2.0),
             }
         );
         assert!(matches!(effects[1], Effect::SetGlobalValue { .. }));
@@ -8065,6 +8107,49 @@ mod tests {
         );
     }
 
+    /// M47.2 — actor values as run-time numbers: by property, by name, and
+    /// by FO4's `Game.Get<Name>AV()` accessor; and `SetValue` with one.
+    #[test]
+    fn actor_values_lower_as_run_time_numbers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\nActorValue Property Counter Auto\n\
+             Function Fragment_5()\n\
+             If Self.GetStage() >= Game.GetPlayer().GetAV(\"Health\")\n Self.SetStage(10)\n EndIf\n\
+             Game.GetPlayer().SetValue(Counter, Game.GetPlayer().GetValue(Counter) + 1)\n\
+             Game.GetPlayer().SetValue(Game.GetHealthAV(), 100.0)\n EndFunction\n",
+        );
+        let effects = lower_fragment(&body).expect("lowers");
+        let counter = || ObjectRef::Property("Counter".into());
+        assert!(matches!(
+            &effects[0],
+            Effect::Conditional { guards, .. } if matches!(
+                guards.as_slice(),
+                [FragmentGuard::Compare { right: ValueExpr::ActorValueNamed(ActorRef::Player, name), .. }]
+                    if name == "Health"
+            )
+        ), "{effects:?}");
+        assert_eq!(
+            effects[1],
+            Effect::SetActorValue {
+                actor: ActorRef::Player,
+                actor_value: counter(),
+                value: ValueExpr::Arith(
+                    Box::new(ValueExpr::ActorValue(ActorRef::Player, counter())),
+                    ArithOp::Add,
+                    Box::new(ValueExpr::Literal(1.0)),
+                ),
+            }
+        );
+        assert_eq!(
+            effects[2],
+            Effect::SetActorValueNamed {
+                actor: ActorRef::Player,
+                name: "Health".into(),
+                value: ValueExpr::Literal(100.0),
+            }
+        );
+    }
+
     #[test]
     fn declines_unmodeled_conditional_guard() {
         // `GetStage() >= 5`, disjunctions, faction tests and comparisons of
@@ -8075,7 +8160,7 @@ mod tests {
             "Game.GetPlayer().IsInCombat()",
             "Self.GetStageDone(5) || Game.GetPlayer().IsInCombat()",
             "Self.bDone",
-            "Self.GetStage() >= Game.GetPlayer().GetAV(\"Health\")",
+            "Self.GetStage() >= Game.GetPlayer().GetEquippedWeapon().GetBaseDamage()",
         ] {
             let body = first_fn_body(&format!(
                 "ScriptName QF extends Quest\n\

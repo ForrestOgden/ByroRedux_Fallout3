@@ -382,7 +382,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v57 -> v58 (M47.2): `Effect::QuestScope` gained the required `bindings`
 /// (an inlined function's arguments), changing saved fragment continuations.
-pub const FORMAT_MAJOR: u16 = 58;
+///
+/// v58 -> v59 (M47.2): `Effect::SetActorValue` / `SetActorValueNamed`
+/// carry a run-time `ValueExpr` instead of a literal.
+pub const FORMAT_MAJOR: u16 = 59;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

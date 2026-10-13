@@ -5257,12 +5257,12 @@ fn named_actor_value_writes_resolve_through_the_avif_names() {
             Effect::SetActorValueNamed {
                 actor: ActorRef::Player,
                 name: "Variable06".into(),
-                value: 3.0,
+                value: crate::translate::effects::ValueExpr::Literal(3.0),
             },
             Effect::SetActorValueNamed {
                 actor: ActorRef::Player,
                 name: "NoSuchValue".into(),
-                value: 9.0,
+                value: crate::translate::effects::ValueExpr::Literal(9.0),
             },
         ],
     );
@@ -5589,7 +5589,7 @@ fn dispatch_set_actor_value_sets_the_base() {
         vec![Effect::SetActorValue {
             actor: ActorRef::Player,
             actor_value: ObjectRef::Property("pAggression".into()),
-            value: 2.0,
+            value: crate::translate::effects::ValueExpr::Literal(2.0),
         }],
     );
     assert_eq!(world.get::<ActorValues>(player).unwrap().current(AGGRESSION), 2.0);

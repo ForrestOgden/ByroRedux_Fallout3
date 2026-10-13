@@ -1352,7 +1352,8 @@ pub(crate) fn apply_effect(
                 deferred.speaker,
             )?;
             let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
-            set_actor_value_base(world, actor, avif, *value);
+            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
+            set_actor_value_base(world, actor, avif, value);
             None
         }
         Effect::SetActorValueNamed { actor, name, value } => {
@@ -1371,7 +1372,8 @@ pub(crate) fn apply_effect(
                 log::debug!("fragment SetAV skipped: no actor value named '{name}'");
                 return None;
             };
-            set_actor_value_base(world, actor, avif, *value);
+            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
+            set_actor_value_base(world, actor, avif, value);
             None
         }
         Effect::ChangePerk { actor, perk, add } => {
@@ -2839,6 +2841,19 @@ enum PendingMessage {
 /// M47.2 — a [`ValueExpr`]'s run-time number; `None` when something it reads
 /// does not resolve (the guard then declines the conditional). Quest-variable
 /// and relationship reads see a write made earlier in the same fragment.
+/// An actor's current value of `avif` — the `GetActorValue` condition read.
+fn actor_value_now(world: &World, actor: EntityId, avif: u32) -> f32 {
+    crate::condition::evaluate_function(
+        crate::condition::ConditionFunction::GetActorValue,
+        &byroredux_plugin::esm::records::condition::Condition {
+            param_1: avif,
+            ..Default::default()
+        },
+        actor,
+        world,
+    )
+}
+
 fn evaluate_value(
     value: &ValueExpr,
     context: QuestFormId,
@@ -2917,6 +2932,18 @@ fn evaluate_value(
             f32::from(
                 pending.unwrap_or_else(|| crate::relationships::relationship_rank(world, actor, other)),
             )
+        }
+        ValueExpr::ActorValue(actor, actor_value) => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
+            actor_value_now(world, actor, avif)
+        }
+        ValueExpr::ActorValueNamed(actor, name) => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let avif = world
+                .try_resource::<crate::ActorValueNames>()
+                .and_then(|names| names.resolve(name))?;
+            actor_value_now(world, actor, avif)
         }
         ValueExpr::Level(actor) => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
