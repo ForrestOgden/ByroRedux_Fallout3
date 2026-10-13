@@ -2445,6 +2445,8 @@ impl Vm<'_> {
                     | "find"
                     | "gettriggerobjectcount"
                     | "getrace"
+                    | "getfactionowner"
+                    | "getactorowner"
             );
         if !reads {
             return Ok(None);
@@ -2510,6 +2512,19 @@ impl Vm<'_> {
                         .filter(|race| *race != 0)
                         .map_or(Value::None, Value::Form),
                 )
+            }
+            // CK *GetFactionOwner* / *GetActorOwner*: the reference's explicit
+            // owner only (not its container's or cell's), None when the owner
+            // is of the other kind.
+            (Value::Form(reference), "getfactionowner" | "getactorowner") if args.is_empty() => {
+                let owner = self.entity_of(*reference).and_then(|entity| {
+                    if name == "getfactionowner" {
+                        crate::faction_owner(self.world, entity)
+                    } else {
+                        crate::actor_owner(self.world, entity)
+                    }
+                });
+                Some(owner.map_or(Value::None, Value::Form))
             }
             // CK *GetTriggerObjectCount*: "the number of objects currently
             // inside this trigger volume".
@@ -4099,6 +4114,7 @@ impl<'l> Checker<'l> {
             (Kind::Object, "getsize") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object, "gettriggerobjectcount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object, "getfactionowner" | "getactorowner") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
                 return Some(Kind::Object);
             }

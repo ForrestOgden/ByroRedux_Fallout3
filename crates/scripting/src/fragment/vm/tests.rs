@@ -1293,6 +1293,70 @@ fn actor_race_reads_the_background() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `GetFactionOwner()` is the reference's explicit faction owner, and None when
+/// its owner is an actor base.
+#[test]
+fn faction_owner_is_the_explicit_owner() {
+    const FACTION: u32 = 0x0001_0F78;
+    let script = parsed_source(
+        "ScriptName QF_VmOwner extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Faction Property Owners Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetFactionOwner() == Owners && !Marker.GetActorOwner()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let object = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmOwner".into(),
+                status: 0,
+                properties: vec![object("Marker", MARKER), object("Owners", FACTION)],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER),
+    });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(marker, crate::ExplicitOwner(FACTION));
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.factions.insert(
+        FACTION,
+        byroredux_plugin::esm::records::FactionRecord {
+            form_id: FACTION,
+            editor_id: String::new(),
+            full_name: String::new(),
+            flags: 0,
+            relations: Vec::new(),
+            ranks: Vec::new(),
+            reputation: None,
+            vendor: None,
+        },
+    );
+    crate::install_owner_kinds(&mut world, &index);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

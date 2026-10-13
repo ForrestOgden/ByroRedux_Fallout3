@@ -959,6 +959,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_weather_classifications(world, index);
     // M47.2 — FormList.GetSize / GetAt / HasForm / Find.
     byroredux_scripting::install_form_lists(world, index);
+    // M47.2 — GetFactionOwner / GetActorOwner.
+    byroredux_scripting::install_owner_kinds(world, index);
     // M47.2 — the scripts quests attach to their aliases, checked when their
     // quest first runs.
     let alias_scripts = byroredux_scripting::install_quest_alias_scripts(world, index);

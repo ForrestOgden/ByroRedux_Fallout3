@@ -72,6 +72,9 @@ pub(super) fn stamp_quest_reference(
             },
         );
     }
+    if let Some(ownership) = &placed_ref.ownership {
+        world.insert(entity, byroredux_scripting::ExplicitOwner(ownership.owner_form_id));
+    }
     world.insert(
         entity,
         byroredux_scripting::SceneAliasCandidate {

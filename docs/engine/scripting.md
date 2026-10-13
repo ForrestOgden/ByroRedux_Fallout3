@@ -1167,7 +1167,10 @@ the same store — "returns this value, if any. It otherwise returns 0".
   forms (`FormLists`; null entries dropped); `AddForm` is not modelled. Also on the VM:
   `GetTriggerObjectCount()` (CK: "the number of objects currently inside this trigger
   volume", from the occupancy pass) and `Actor.GetRace()` (the record's race,
-  `Background.race_form_id`). These two sets are
+  `Background.race_form_id`), and `GetFactionOwner()` / `GetActorOwner()` (CK: "returns
+  only the explicit owner of an object reference and None when an explicit owner is not
+  found"; the cell loader stamps the REFR's `XOWN` as `ExplicitOwner`, `OwnerKinds` says
+  faction or actor base). These two sets are
   what let Skyrim's ambient critter spawners (`CritterSpawn`, 3,300 references) run: they
   gate on the game hour, the weather and the player's distance, then `PlaceAtMe` a critter.
 

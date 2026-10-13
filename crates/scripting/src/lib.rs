@@ -33,6 +33,7 @@ pub mod alias_collections;
 pub mod followers;
 pub mod form_lists;
 pub mod linked_refs;
+pub mod ownership;
 pub mod weather_state;
 pub mod location_keyword_data;
 pub mod messages;
@@ -138,6 +139,7 @@ pub use editor_location::EditorLocation;
 pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{install_form_lists, FormLists};
+pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
 pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
@@ -291,6 +293,11 @@ pub fn register(world: &mut World) {
     if world.try_resource::<PendingUnloadDeliveries>().is_none() {
         world.insert_resource(PendingUnloadDeliveries::default());
     }
+    // M47.2 — reference owners (derived).
+    if world.try_resource::<OwnerKinds>().is_none() {
+        world.insert_resource(OwnerKinds::default());
+    }
+    world.register::<ExplicitOwner>();
     // M47.2 — form lists scripts read (derived).
     if world.try_resource::<FormLists>().is_none() {
         world.insert_resource(FormLists::default());
