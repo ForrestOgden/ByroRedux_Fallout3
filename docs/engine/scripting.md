@@ -1240,6 +1240,19 @@ archives and plays it one-shot from the source's `GlobalTransform` through the s
 `SoundCache`. A looping descriptor is not played (a one-shot cannot loop). Not modelled:
 the instance id, `PlayAndWait`, `SetInstanceVolume`/`StopInstance`.
 
+### Raw SetMotionType numbers (M47.2)
+
+`SetMotionType(aiMotionType, abAllowActivate)` takes the game's own number (CK *SetMotionType
+- ObjectReference*, Skyrim: Dynamic 1, SphereInertia 2, BoxInertia 3, Keyframed 4, Fixed 5,
+ThinBoxInertia 6, Character 7). The lowering is game-blind, so a raw literal used to decline;
+the VM now reads the load order's game from `ScriptGame` (set by `install_actor_value_names`)
+and passes Skyrim's 1, 4, 5 and 7 as the `Motion_*` constant they name, into the same
+`MotionTypeChangeRequest` bridge `scripted_motion_type_system` drains. The inertia variants and
+every other game's numbers stop the run instead of being guessed (the Fallout 4 page lists only
+the constant names). The traps (`physicstrap`, `soundtrap`, `tripwire`, `magictrap`) now pass
+this native but still stop on `CalculateEncounterLevel`, whose level formula the CK does not
+give.
+
 ### MusicType.Add / Remove (M47.2)
 
 CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start

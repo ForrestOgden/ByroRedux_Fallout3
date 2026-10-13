@@ -38,11 +38,20 @@ impl ActorValueNames {
     }
 }
 
+/// The game the load order belongs to, for the Papyrus constants whose numbers
+/// differ per game (`SetMotionType`'s). `NOT_SAVED_BY_DESIGN`: set from the load
+/// order at install.
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptGame(pub byroredux_plugin::esm::reader::GameKind);
+
+impl Resource for ScriptGame {}
+
 /// Install the load order's [`ActorValueNames`]. Returns how many names map.
 pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     let names = ActorValueNames::from_index(index);
     let count = names.0.len();
     world.insert_resource(names);
+    world.insert_resource(ScriptGame(index.game));
     world.insert_resource(crate::skills::SkillScaling::from_index(index));
     count
 }

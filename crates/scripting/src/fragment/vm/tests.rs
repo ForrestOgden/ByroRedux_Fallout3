@@ -1960,6 +1960,48 @@ fn engine_constant_arguments_pass_by_name() {
     assert_eq!(request, Some(byroredux_core::ecs::components::MotionType::Keyframed));
 }
 
+/// A raw `SetMotionType` number is the game's: Skyrim's 4 is Keyframed (CK
+/// *SetMotionType - ObjectReference*), and in another game it stops the run
+/// instead of guessing.
+#[test]
+fn raw_motion_types_follow_the_game() {
+    use byroredux_core::ecs::components::MotionType;
+    use byroredux_plugin::esm::reader::GameKind;
+    for (game, expected_stage, expected_motion) in [
+        (GameKind::Skyrim, 20, Some(MotionType::Keyframed)),
+        (GameKind::Fallout4, 10, None),
+    ] {
+        let script = parsed_source(
+            "ScriptName QF_VmRawMotion extends Quest\n\
+             ObjectReference Property Marker Auto\n\
+             Function Fragment_1()\n\
+               Marker.SetMotionType(4, True)\n\
+               Self.SetStage(20)\n\
+             EndFunction\n",
+        );
+        assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+        let mut world = world_with_fragment(script);
+        world.insert_resource(crate::ScriptGame(game));
+        world.register::<FormIdComponent>();
+        let mut pool = FormIdPool::default();
+        let id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(MARKER),
+        });
+        world.insert_resource(pool);
+        let marker = world.spawn();
+        world.insert(marker, FormIdComponent(id));
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), expected_stage, "{game:?}");
+        assert_eq!(
+            world.get::<crate::MotionTypeChangeRequest>(marker).map(|request| request.motion_type),
+            expected_motion,
+            "{game:?}"
+        );
+    }
+}
+
 /// Fallout 4 timers: `StartTimer(afInterval, aiTimerID)` fires `OnTimer` once
 /// with its ID; `CancelTimer` stops one; a game-time interval under 0.033
 /// hours rounds up to it.

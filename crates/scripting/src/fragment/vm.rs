@@ -2948,6 +2948,30 @@ impl Vm<'_> {
             // as (`Self.Motion_Keyframed`): its number differs per game, the
             // name does not.
             let constant = constant_name(&arg.value.node).filter(|name| self.engine_constant(name).is_some());
+            // `SetMotionType(4, …)`: the raw number is the game's (see
+            // [`skyrim_motion_constant`]); it passes as the constant it names.
+            if bound.is_empty() && callee_member_is(&callee, "setmotiontype") {
+                if let Some(receiver) = &bound_receiver {
+                    let raw = self.eval(frame, &arg.value.node)?;
+                    let skyrim = self
+                        .world
+                        .try_resource::<crate::ScriptGame>()
+                        .is_some_and(|game| game.0 == byroredux_plugin::esm::reader::GameKind::Skyrim);
+                    if let (Value::Int(raw), true) = (&raw, skyrim) {
+                        let Some(name) = skyrim_motion_constant(*raw) else {
+                            return stop(format!("SetMotionType with the motion type {raw}"));
+                        };
+                        bound.push(CallArg {
+                            name: None,
+                            value: spanned(Expr::MemberAccess {
+                                object: Box::new(receiver.clone()),
+                                member: spanned(Identifier(name.to_owned())),
+                            }),
+                        });
+                        continue;
+                    }
+                }
+            }
             let value = match (constant, &bound_receiver) {
                 (Some(name), Some(receiver)) => spanned(Expr::MemberAccess {
                     object: Box::new(receiver.clone()),
@@ -3255,6 +3279,26 @@ fn help_message_housekeeping(callee: &Expr) -> Option<usize> {
         "unshowashelpmessage" | "clearhelpmessages" => Some(0),
         _ => None,
     }
+}
+
+/// Whether `callee` is a member call named `name` (lowercase).
+fn callee_member_is(callee: &Expr, name: &str) -> bool {
+    matches!(callee, Expr::MemberAccess { member, .. } if member.node.0.eq_ignore_ascii_case(name))
+}
+
+/// The `Motion_*` constant Skyrim's raw `SetMotionType` number names (CK
+/// *SetMotionType - ObjectReference*: Dynamic 1, SphereInertia 2, BoxInertia 3,
+/// Keyframed 4, Fixed 5, ThinBoxInertia 6, Character 7). The inertia variants
+/// are softened simulations the physics layer has no kind for, so they are not
+/// mapped. Fallout 4's numbers differ, and no page here lists them.
+fn skyrim_motion_constant(raw: i32) -> Option<&'static str> {
+    Some(match raw {
+        1 => "Motion_Dynamic",
+        4 => "Motion_Keyframed",
+        5 => "Motion_Fixed",
+        7 => "Motion_Character",
+        _ => return None,
+    })
 }
 
 fn is_trace(callee: &Expr) -> bool {
@@ -4358,7 +4402,15 @@ impl<'l> Checker<'l> {
             }
             let result = self.check_native(receiver.clone(), Kind::None, &name, &arg_kinds, statement);
             if result.is_none() {
-                return self.fail(|| format!("native {class}.{name}/{}", arg_kinds.len()));
+                return self.fail(|| {
+                    // A literal string argument names what was asked for
+                    // (`Game.QueryStat("Bribes")`), which the census groups by.
+                    let named = arg_kinds.iter().find_map(|arg| match arg {
+                        Arg::Literal(Expr::StringLit(text)) => Some(format!(" \"{text}\"")),
+                        _ => None,
+                    });
+                    format!("native {class}.{name}/{}{}", arg_kinds.len(), named.unwrap_or_default())
+                });
             }
             return result;
         }
@@ -4662,6 +4714,16 @@ impl<'l> Checker<'l> {
             args.push(CallArg {
                 name: None,
                 value: match arg {
+                    // Skyrim's raw motion type is checked as the constant it
+                    // names; the run maps it by the game (`synthesize`).
+                    Arg::Literal(Expr::IntLit(raw))
+                        if index == 0 && name.eq_ignore_ascii_case("setmotiontype") && skyrim_motion_constant(*raw as i32).is_some() =>
+                    {
+                        spanned(Expr::MemberAccess {
+                            object: Box::new(receiver.clone()),
+                            member: spanned(Identifier(skyrim_motion_constant(*raw as i32).unwrap_or_default().to_owned())),
+                        })
+                    }
                     Arg::Literal(literal) => spanned(literal.clone()),
                     Arg::Kind(kind) => placeholder(*kind, index + 1, &mut bindings)?,
                     Arg::Constant(name) => spanned(Expr::MemberAccess {

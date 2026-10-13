@@ -150,7 +150,7 @@ pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
-pub use actor_value_names::{install_actor_value_names, ActorValueNames};
+pub use actor_value_names::{install_actor_value_names, ActorValueNames, ScriptGame};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
     CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference, CreatedReferences,
