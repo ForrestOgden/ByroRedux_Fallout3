@@ -372,7 +372,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v54 -> v55 (M47.2): `Effect::EvaluatePackage`'s actor became an
 /// `ActorRef` (so a dialogue line's speaker re-evaluates), changing the
 /// shape of saved fragment continuations.
-pub const FORMAT_MAJOR: u16 = 55;
+///
+/// v55 -> v56 (M47.2): a new resource column, `ScriptedKeywords` (script
+/// `AddKeyword` / `RemoveKeyword`). A pre-v56 save has none, so changed
+/// keywords would revert; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 56;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

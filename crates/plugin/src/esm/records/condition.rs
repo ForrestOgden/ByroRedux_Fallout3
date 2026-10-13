@@ -553,6 +553,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 563 // LocationHasRefType — LCRT FormID (Skyrim/FO4)
         | 250 // GetLocationCleared — LCTN FormID (Skyrim/FO4)
         | 403 // GetRelationshipRank — actor reference FormID (Skyrim/FO4)
+        | 560 // HasKeyword — KYWD FormID (Skyrim/FO4)
     )
 }
 

@@ -682,6 +682,10 @@ pub(crate) fn populate_scene_runtime(
     // M47.2 — MESG messages, display names and globals, for Message.Show.
     let messages = byroredux_scripting::install_message_catalog(world, index);
     log::info!("Installed message catalog: {messages} messages");
+    // M47.2 — base objects' keywords (actors with their race's), for
+    // HasKeyword.
+    let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
+    log::info!("Installed keyword table: {keyworded} base objects");
     // M47.2 — vendor factions and barter prices, for ShowBarterMenu.
     let vendors = crate::barter::install_barter_rules(world, index);
     if vendors > 0 {

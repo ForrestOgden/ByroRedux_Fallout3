@@ -154,6 +154,11 @@ pub struct RaceRecord {
     /// has zero mesh source for it — the FaceGeom NIF bakes head-only
     /// geometry, no body).
     pub default_skin: Option<u32>,
+    /// `KWDA` keywords (Skyrim+): every actor of the race has them too —
+    /// Skyrim.esm authors `ActorTypeDaedra` on 4 races and 1 NPC_, and the
+    /// CK's *Keyword* page has Banish "only affect Actors that have the
+    /// 'ActorTypeDaedra' Keyword".
+    pub keywords: Vec<u32>,
 }
 
 /// RACE `INDX` head-part identifiers, resolved by semantic role.
@@ -293,6 +298,7 @@ pub fn parse_race(
         form_id,
         editor_id: common.editor_id,
         full_name: common.full_name,
+        keywords: common.keywords,
         description: String::new(),
         skill_bonuses: Vec::new(),
         body_models: Vec::new(),

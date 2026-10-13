@@ -649,6 +649,28 @@ Not modelled:
 - The remaining replacement tags: `<BaseName>`, `<Token…>`, `<Alias.PronounObj…>`
   and similar.
 
+### Reference keywords (M47.2)
+
+`crates/scripting/src/keywords.rs` answers condition 560 `HasKeyword` and the
+Papyrus `<reference>.HasKeyword(kw)` guard. It also applies `AddKeyword`,
+`RemoveKeyword`, and FO4's `ResetKeyword`.
+
+A reference's keywords come from three sources:
+- **Script changes.** These are keyed by the reference's FormID, saved in
+  `ScriptedKeywords`, and win over everything else. The FO4 CK *AddKeyword*
+  page says an added keyword "'overrides' the base object and alias", and
+  `ResetKeyword` undoes it.
+- **Alias keywords.** These come from every alias the reference fills
+  (`QuestAliasInjectedOverlays`).
+- **Base object keywords.** These are the base object's `KWDA`, now parsed
+  for every `CommonNamedFields` record. For an actor they include its race's
+  keywords: Skyrim.esm authors `ActorTypeDaedra` on 4 races and only 1
+  `NPC_`, and the CK says Banish affects "Actors that have the
+  'ActorTypeDaedra' Keyword".
+
+The `KeywordTable` covers actors and inventory items. Other base types' keywords
+aren't collected yet.
+
 ### Barter (M47.2)
 
 `Actor.ShowBarterMenu()` takes no arguments in Skyrim, Fallout 4 and

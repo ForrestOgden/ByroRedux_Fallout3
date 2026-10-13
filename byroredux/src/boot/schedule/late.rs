@@ -661,7 +661,16 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's SetRelationshipRank and its guard.
             .reads_resource::<byroredux_scripting::AuthoredRelationships>()
             .reads_resource::<byroredux_scripting::ScriptedRelationships>()
-            .writes_resource::<byroredux_scripting::ScriptedRelationships>(),
+            .writes_resource::<byroredux_scripting::ScriptedRelationships>()
+            // M47.2 — a spoken line's Message.Show / Debug.Notification.
+            .reads_resource::<byroredux_scripting::MessageCatalog>()
+            .writes_resource::<byroredux_scripting::PendingScriptMessages>()
+            // M47.2 — a spoken line's ShowBarterMenu.
+            .writes_resource::<byroredux_scripting::menus::PendingBarterMenu>()
+            // M47.2 — a spoken line's Add/RemoveKeyword and HasKeyword guard.
+            .reads_resource::<byroredux_scripting::keywords::KeywordTable>()
+            .reads_resource::<byroredux_scripting::keywords::ScriptedKeywords>()
+            .writes_resource::<byroredux_scripting::keywords::ScriptedKeywords>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

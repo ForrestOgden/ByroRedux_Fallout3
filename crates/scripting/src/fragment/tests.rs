@@ -5641,3 +5641,47 @@ fn item_counts_evaluate_run_time_values() {
         .sum();
     assert_eq!(gold, 75);
 }
+
+/// M47.2 — `AddKeyword` lands on the reference after the fragment, a guard in
+/// the same fragment sees it pending, and `RemoveKeyword` takes it back.
+#[test]
+fn keyword_changes_reach_has_keyword() {
+    use crate::keywords::KeywordChange;
+    const GUARD: u32 = 0x0002_A1B0;
+    const INJURED: u32 = 0x0009_1234;
+    let mut world = fixture();
+    let guard = spawn_with_form_id(&mut world, GUARD);
+    let vmad = || object_property_vmad(&[("Guard", GUARD), ("Injured", INJURED)]);
+    let change = |change| Effect::ChangeKeyword {
+        object: ActorRef::Object(ObjectRef::Property("::Guard_var".into())),
+        keyword: ObjectRef::Property("::Injured_var".into()),
+        change,
+    };
+    run_stage_effects(
+        &world,
+        vmad(),
+        vec![
+            change(KeywordChange::Add),
+            Effect::Conditional {
+                guards: vec![FragmentGuard::HasKeyword {
+                    object: ActorRef::Object(ObjectRef::Property("::Guard_var".into())),
+                    keyword: ObjectRef::Property("::Injured_var".into()),
+                    expected: true,
+                }],
+                then_effects: vec![Effect::PlayerCaps { delta: 1 }],
+                else_effects: vec![],
+            },
+        ],
+    );
+    assert!(crate::keywords::has_keyword(&world, guard, INJURED));
+    let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    assert_eq!(
+        world
+            .get::<byroredux_core::ecs::components::Inventory>(player)
+            .map_or(0, |inventory| inventory.items.iter().map(|s| s.count).sum::<u32>()),
+        1,
+        "the guard saw the pending AddKeyword"
+    );
+    run_stage_effects(&world, vmad(), vec![change(KeywordChange::Remove)]);
+    assert!(!crate::keywords::has_keyword(&world, guard, INJURED));
+}

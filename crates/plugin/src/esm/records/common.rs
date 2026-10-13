@@ -329,6 +329,10 @@ pub struct CommonNamedFields {
     /// layer reads attached-script names + `Quest`/`Object` property refs
     /// from here. See [`super::script_instance`].
     pub script_instance: Option<super::script_instance::ScriptInstanceData>,
+    /// `KWDA` keyword FormIDs (Skyrim+; empty on the games without
+    /// keywords). A record whose `KWDA` lives inside a sub-block (a quest
+    /// alias's) parses that block itself and ignores this.
+    pub keywords: Vec<u32>,
 }
 
 impl CommonNamedFields {
@@ -372,6 +376,9 @@ impl CommonNamedFields {
                         crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default();
                     out.script_form_id = remap_fid(raw, remap);
                 }
+                b"KWDA" => out.keywords.extend(sub.data.chunks_exact(4).map(|raw| {
+                    remap_fid(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), remap)
+                })),
                 b"VMAD" => {
                     // Presence flag unchanged; the decoded attachments +
                     // property bindings are now available alongside it.
@@ -443,12 +450,6 @@ impl CommonItemFields {
         // structurally impossible to diverge; `value`/`weight` stay on this
         // struct and are filled by the per-record parser as before.
         let named = CommonNamedFields::from_subs_with_remap(subs, remap);
-        let keywords = subs
-            .iter()
-            .filter(|sub| sub.sub_type == *b"KWDA")
-            .flat_map(|sub| sub.data.chunks_exact(4))
-            .map(|raw| remap_fid(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), remap))
-            .collect();
         Self {
             editor_id: named.editor_id,
             full_name: named.full_name,
@@ -457,7 +458,7 @@ impl CommonItemFields {
             script_form_id: named.script_form_id,
             has_script: named.has_script,
             script_instance: named.script_instance,
-            keywords,
+            keywords: named.keywords,
             ..Self::default()
         }
     }

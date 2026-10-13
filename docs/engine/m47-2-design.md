@@ -400,7 +400,7 @@ open:
   global and actor-value writes in every spelling, perks, alias
   `ForceRefTo` / `Clear`, and `BlockActivation`.
 
-Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 64.4% on
+Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 65.0% on
 2026-10-13. The 2026-10-13 work added map markers, script story events,
 cleared locations, `Kill`, `SetEssential` / `SetProtected`, the
 enable-state / faction / 3D-loaded / distance guards, and quests reached

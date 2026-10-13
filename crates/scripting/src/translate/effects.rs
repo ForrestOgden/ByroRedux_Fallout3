@@ -226,6 +226,13 @@ pub enum FragmentGuard {
         keyword: ObjectRef,
         expected: bool,
     },
+    /// M47.2 — `<reference>.HasKeyword(keyword)` is `expected`
+    /// ([`crate::keywords`]).
+    HasKeyword {
+        object: ActorRef,
+        keyword: ObjectRef,
+        expected: bool,
+    },
 }
 
 /// M47.2 — a number a fragment reads at run time, for
@@ -365,6 +372,7 @@ enum GuardReading {
     QuestCompleted(QuestRef),
     ScenePlaying(ObjectRef),
     LocationKeyword(ActorRef, ObjectRef),
+    HasKeyword(ActorRef, ObjectRef),
     MapMarkerVisible(ObjectRef),
     MapMarkerFastTravel(ObjectRef),
     LocationCleared(ObjectRef),
@@ -526,12 +534,18 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .flatten()
     };
     if let Some((object, args)) = method_call(e, "HasKeyword") {
-        let (location_of, location_args) = method_call(object, "GetCurrentLocation")?;
-        if !location_args.is_empty() {
-            return None;
+        if let Some((location_of, location_args)) = method_call(object, "GetCurrentLocation") {
+            if !location_args.is_empty() {
+                return None;
+            }
+            return Some(GuardReading::LocationKeyword(
+                receiver_actor(location_of, scope)?,
+                one_object(args)?,
+            ));
         }
-        return Some(GuardReading::LocationKeyword(
-            receiver_actor(location_of, scope)?,
+        // M47.2 — the reference's own keywords.
+        return Some(GuardReading::HasKeyword(
+            receiver_actor(object, scope)?,
             one_object(args)?,
         ));
     }
@@ -798,6 +812,11 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             keyword,
             expected: bool_expectation(comparison, value)?,
         },
+        GuardReading::HasKeyword(object, keyword) => FragmentGuard::HasKeyword {
+            object,
+            keyword,
+            expected: bool_expectation(comparison, value)?,
+        },
     })
 }
 
@@ -1054,6 +1073,13 @@ pub enum Effect {
     /// M47.2 — `<actor>.ShowBarterMenu()`: open the barter menu with the
     /// actor's vendor faction ([`crate::menus`]).
     ShowBarterMenu { vendor: ActorRef },
+    /// M47.2 — `<reference>.AddKeyword(kw)` / `RemoveKeyword(kw)` /
+    /// `ResetKeyword(kw)` ([`crate::keywords`]).
+    ChangeKeyword {
+        object: ActorRef,
+        keyword: ObjectRef,
+        change: crate::keywords::KeywordChange,
+    },
     /// M47.2 — a local assigned a number computed at run time
     /// (`int n = Utility.RandomInt(0, 3)`), read by later [`ValueExpr::Local`]s
     /// in the same run. A fragment holding one never suspends.
@@ -2467,6 +2493,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_show_message,
     prim_notification,
     prim_show_barter_menu,
+    prim_change_keyword,
     prim_reward_player_xp,
     prim_player_caps,
     prim_set_objective_skipped,
@@ -3098,6 +3125,27 @@ fn prim_notification(e: &Expr, _scope: &Scope) -> Option<Effect> {
         return None;
     };
     Some(Effect::Notification { text: text.clone() })
+}
+
+/// `ObjectReference.AddKeyword(apKeyword)` / `RemoveKeyword(apKeyword)` /
+/// FO4's `ResetKeyword(apKeyword)`.
+fn prim_change_keyword(e: &Expr, scope: &Scope) -> Option<Effect> {
+    use crate::keywords::KeywordChange;
+    let (object, args, change) = [
+        ("AddKeyword", KeywordChange::Add),
+        ("RemoveKeyword", KeywordChange::Remove),
+        ("ResetKeyword", KeywordChange::Reset),
+    ]
+    .into_iter()
+    .find_map(|(method, change)| method_call(e, method).map(|(o, a)| (o, a, change)))?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::ChangeKeyword {
+        object: receiver_actor(object, scope)?,
+        keyword: receiver_object(&args[0].value.node, scope)?,
+        change,
+    })
 }
 
 /// `Actor.ShowBarterMenu()` — the same zero-argument native on Skyrim,
@@ -7924,13 +7972,27 @@ mod tests {
                 "{condition}"
             );
         }
-        // An actor's own keywords are not modelled.
+        // M47.2 — an actor's own keywords.
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_5()\n\
              If Game.GetPlayer().HasKeyword(SomeKeyword)\n Self.SetStage(10)\n EndIf\n EndFunction\n",
         );
-        assert_eq!(lower_fragment(&body), None);
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Conditional {
+                guards: vec![FragmentGuard::HasKeyword {
+                    object: ActorRef::Player,
+                    keyword: ObjectRef::Property("SomeKeyword".into()),
+                    expected: true,
+                }],
+                then_effects: vec![Effect::SetStage {
+                    quest: QuestRef::SelfRef,
+                    stage: 10
+                }],
+                else_effects: vec![],
+            }])
+        );
     }
 
     /// M47.2 — disjunctions: `||` becomes [`FragmentGuard::Any`], nested ones

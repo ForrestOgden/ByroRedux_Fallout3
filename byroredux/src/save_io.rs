@@ -618,6 +618,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::LocationClearState>("LocationClearState")
         // M47.2 — script SetRelationshipRank changes.
         .register_resource::<byroredux_scripting::ScriptedRelationships>("ScriptedRelationships")
+        // M47.2 — script AddKeyword / RemoveKeyword changes.
+        .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.
         .register_resource::<byroredux_scripting::ActorBaseProtectionOverrides>(
             "ActorBaseProtectionOverrides",

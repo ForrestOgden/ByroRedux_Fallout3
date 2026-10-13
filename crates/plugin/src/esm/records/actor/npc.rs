@@ -413,6 +413,9 @@ pub struct NpcRecord {
     /// `PRKR` at all (censused — see [`GameKind::uses_npc_perk_entries`],
     /// the gate this is read under since #3158).
     pub perks: Vec<(u32, u8)>,
+    /// `KWDA` keywords (Skyrim+). An actor also has its race's
+    /// ([`super::RaceRecord::keywords`]).
+    pub keywords: Vec<u32>,
 }
 
 pub fn parse_npc(
@@ -475,6 +478,7 @@ pub fn parse_npc(
         has_script: common.has_script,
         script_form_id: 0,
         script_instance: common.script_instance,
+        keywords: common.keywords,
         face_morphs: None,
         runtime_facegen: None,
         template_form_id: 0,

@@ -370,6 +370,9 @@ pub struct DeferredFragmentEffects {
     messages: Vec<PendingMessage>,
     /// M47.2 — the vendor an `Effect::ShowBarterMenu` asked to trade with.
     barter: Option<EntityId>,
+    /// M47.2 — `Effect::ChangeKeyword`s, applied to
+    /// [`crate::keywords::ScriptedKeywords`] after the guards drop.
+    keyword_changes: Vec<(EntityId, u32, crate::keywords::KeywordChange)>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -449,6 +452,7 @@ impl DeferredFragmentEffects {
             reference_variables: Vec::new(),
             messages: Vec::new(),
             barter: None,
+            keyword_changes: Vec::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -501,6 +505,11 @@ impl DeferredFragmentEffects {
         }
         if let Some(vendor) = self.barter.take() {
             crate::menus::request_barter(world, vendor);
+        }
+        for (object, keyword, change) in std::mem::take(&mut self.keyword_changes) {
+            if !crate::keywords::change_keyword(world, object, keyword, change) {
+                log::debug!("fragment {change:?}Keyword skipped: the reference has no FormID");
+            }
         }
         if !self.reference_variables.is_empty() {
             if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
@@ -1102,6 +1111,16 @@ pub(crate) fn apply_effect(
         Effect::ShowBarterMenu { vendor } => {
             let vendor = guard_actor(vendor, context, vmad, world, deferred)?;
             deferred.barter = Some(vendor);
+            None
+        }
+        Effect::ChangeKeyword {
+            object,
+            keyword,
+            change,
+        } => {
+            let object = guard_actor(object, context, vmad, world, deferred)?;
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            deferred.keyword_changes.push((object, keyword, *change));
             None
         }
         Effect::SetReferenceVariable {
@@ -2637,6 +2656,7 @@ fn apply_quest_scoped_effect(
         | Effect::ShowHelpMessage { .. }
         | Effect::Notification { .. }
         | Effect::ShowBarterMenu { .. }
+        | Effect::ChangeKeyword { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2982,6 +3002,29 @@ fn evaluate_guard(
         FragmentGuard::ScenePlaying { scene, playing } => {
             let scene = resolve_property_form_id(vmad, scene.property_name())?;
             deferred.running_scenes.contains(&scene) == *playing
+        }
+        FragmentGuard::HasKeyword {
+            object,
+            keyword,
+            expected,
+        } => {
+            let object = guard_actor(object, context, vmad, world, deferred)?;
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            // This fragment's own pending change wins, as it will once applied.
+            let pending = deferred
+                .keyword_changes
+                .iter()
+                .rev()
+                .find(|(changed, k, _)| *changed == object && *k == keyword)
+                .map(|(_, _, change)| *change);
+            let has = match pending {
+                Some(crate::keywords::KeywordChange::Add) => true,
+                Some(crate::keywords::KeywordChange::Remove) => false,
+                Some(crate::keywords::KeywordChange::Reset) | None => {
+                    crate::keywords::has_keyword(world, object, keyword)
+                }
+            };
+            has == *expected
         }
         FragmentGuard::LocationKeyword {
             actor,

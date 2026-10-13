@@ -26,6 +26,7 @@ pub mod fragment;
 pub mod globals;
 pub mod load_order;
 pub mod map_markers;
+pub mod keywords;
 pub mod menus;
 pub mod messages;
 pub mod location;
@@ -311,6 +312,7 @@ pub fn register(world: &mut World) {
     equipment::register(world);
     player_control::register(world);
     bleedout::register(world);
+    keywords::register(world);
     menus::register(world);
     messages::register(world);
     cinematic::register(world);
