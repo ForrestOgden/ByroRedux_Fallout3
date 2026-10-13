@@ -1547,7 +1547,9 @@ pub(crate) fn apply_effect(
             }
             None
         }
-        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
+        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::WaitWhile { .. } => {
+            None
+        }
         Effect::Conditional { .. } | Effect::QuestScope { .. } => {
             unreachable!("conditional and quest-scoped effects are expanded by apply_effects")
         }
@@ -2801,6 +2803,7 @@ fn apply_quest_scoped_effect(
         | Effect::EvaluatePackage { .. }
         | Effect::Wait { .. }
         | Effect::WaitForActors3DLoaded { .. }
+        | Effect::WaitWhile { .. }
         | Effect::AddRaceSpells { .. }
         | Effect::RemoveRaceSpells { .. }
         | Effect::ProviderCall(_) => {
@@ -3474,6 +3477,48 @@ pub fn apply_effects(
                 pending.push(&current[index + 1..]);
                 pending.push(branch.as_slice());
                 break;
+            }
+            // M47.2 — a `While … Wait` poll: while its guards hold, suspend
+            // with this effect at the head of the continuation, so the resume
+            // checks again.
+            if let Effect::WaitWhile {
+                guards,
+                poll_seconds,
+            } = effect
+            {
+                let mut resolved = true;
+                let holds = guards.iter().all(|guard| {
+                    match evaluate_guard(guard, context, vmad, world, stages, objectives, deferred) {
+                        Some(pass) => pass,
+                        None => {
+                            resolved = false;
+                            false
+                        }
+                    }
+                });
+                if !resolved {
+                    log::debug!("fragment WaitWhile ended: a guard could not be read");
+                }
+                if holds {
+                    let mut tail = vec![effect.clone()];
+                    tail.extend(remaining_program(current, index, &pending));
+                    if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+                        queue.pending.push(PendingFragmentExecution {
+                            context,
+                            vmad: vmad.cloned(),
+                            effects: tail,
+                            remaining_seconds: *poll_seconds,
+                            resume_when: FragmentResumeCondition::DelayElapsed,
+                        });
+                    } else {
+                        log::debug!(
+                            "fragment continuation dropped: FragmentExecutionQueue is unavailable"
+                        );
+                    }
+                    halted = true;
+                    break;
+                }
+                continue;
             }
             let suspension = match effect {
                 Effect::Wait { seconds } => Some((*seconds, FragmentResumeCondition::DelayElapsed)),

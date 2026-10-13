@@ -1270,6 +1270,14 @@ pub enum Effect {
         actors: Vec<ActorRef>,
         poll_seconds: f32,
     },
+    /// M47.2 — `While <condition>` / `Utility.Wait(poll)` / `EndWhile`: while
+    /// the guards hold the fragment suspends for `poll_seconds` and checks
+    /// again; once they fail it continues. A guard that cannot be read ends
+    /// the wait.
+    WaitWhile {
+        guards: Vec<FragmentGuard>,
+        poll_seconds: f32,
+    },
     /// `<container>.RemoveItem(<item>, <count = 1>, <silent = false>,
     /// <other container = None>)` (M47.2). Removes up to `count` of the base
     /// item (Papyrus removes what is there when there is less); with an
@@ -2113,9 +2121,10 @@ fn locals_never_suspend(effects: &Vec<Effect>) -> bool {
 /// Whether running `effect` can suspend the fragment and queue the rest.
 fn has_latent_tail(effect: &Effect) -> bool {
     match effect {
-        Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::ProviderCall(_) => {
-            true
-        }
+        Effect::Wait { .. }
+        | Effect::WaitForActors3DLoaded { .. }
+        | Effect::WaitWhile { .. }
+        | Effect::ProviderCall(_) => true,
         Effect::Conditional {
             then_effects,
             else_effects,
@@ -2239,7 +2248,10 @@ fn lower_statements(
                 },
             },
             Stmt::While { condition, body } => {
-                effects.push(lower_3d_loaded_wait(&condition.node, body, scope)?);
+                effects.push(
+                    lower_3d_loaded_wait(&condition.node, body, scope)
+                        .or_else(|| lower_wait_while(&condition.node, body, scope))?,
+                );
             }
             Stmt::If {
                 condition,
@@ -2272,7 +2284,9 @@ fn lower_statements(
                     branch.iter().any(|effect| {
                         matches!(
                             effect,
-                            Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. }
+                            Effect::Wait { .. }
+                                | Effect::WaitForActors3DLoaded { .. }
+                                | Effect::WaitWhile { .. }
                         )
                     })
                 };
@@ -2697,6 +2711,33 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
 /// control-flow surface. The condition must be an OR tree whose leaves are
 /// exactly `!<actor>.Is3DLoaded()`, and the loop body must be one positive
 /// `Utility.Wait` call.
+/// M47.2 — `While <condition>` whose body is only `Utility.Wait(<literal>)`:
+/// a poll on any condition the guards model (`While !Quest.IsRunning()`,
+/// `While Alias.GetReference() == None`).
+fn lower_wait_while(condition: &Expr, body: &[Spanned<Stmt>], scope: &Scope) -> Option<Effect> {
+    let [statement] = body else {
+        return None;
+    };
+    let Stmt::ExprStmt(wait) = &statement.node else {
+        return None;
+    };
+    let Effect::Wait {
+        seconds: poll_seconds,
+    } = prim_wait(&wait.node, scope)?
+    else {
+        return None;
+    };
+    if poll_seconds <= 0.0 {
+        return None;
+    }
+    let mut guards = Vec::new();
+    classify_condition(condition, scope, false, &mut guards)?;
+    Some(Effect::WaitWhile {
+        guards,
+        poll_seconds,
+    })
+}
+
 fn lower_3d_loaded_wait(condition: &Expr, body: &[Spanned<Stmt>], scope: &Scope) -> Option<Effect> {
     let [statement] = body else {
         return None;
@@ -7924,12 +7965,31 @@ mod tests {
         );
     }
 
+    /// M47.2 — a `While … Wait` poll on a modelled condition lowers to
+    /// `WaitWhile`; a loop doing more than waiting still declines.
     #[test]
     fn declines_unmodeled_loop_and_prevent_unequip() {
-        let arbitrary_loop = first_fn_body(
+        let poll = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_1()\n\
              While Self.GetStage() < 10\n Utility.Wait(0.2)\n EndWhile\n\
+             EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&poll),
+            Some(vec![Effect::WaitWhile {
+                guards: vec![FragmentGuard::Stage {
+                    quest: QuestRef::SelfRef,
+                    comparison: GuardComparison::Lt,
+                    value: 10.0,
+                }],
+                poll_seconds: 0.2,
+            }])
+        );
+        let arbitrary_loop = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             While Self.GetStage() < 10\n Self.SetStage(5)\n Utility.Wait(0.2)\n EndWhile\n\
              EndFunction\n",
         );
         assert_eq!(lower_fragment(&arbitrary_loop), None);

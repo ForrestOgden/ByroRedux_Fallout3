@@ -5870,3 +5870,43 @@ fn a_quest_started_without_a_start_up_stage_runs_no_stage_fragment() {
     quest_fragment_dispatch_system(&world);
     assert_eq!(caps(&world), 1, "a flagged Start Up Stage 0 runs");
 }
+
+/// M47.2 — `WaitWhile` polls: suspended while its guard holds (re-checked at
+/// each resume), the rest of the fragment runs once it fails.
+#[test]
+fn wait_while_polls_until_its_condition_fails() {
+    use crate::translate::effects::GuardComparison;
+    let world = fixture();
+    world.resource_mut::<QuestStageFragments>().insert(
+        Q,
+        1,
+        vec![
+            Effect::WaitWhile {
+                guards: vec![FragmentGuard::Stage {
+                    quest: QuestRef::SelfRef,
+                    comparison: GuardComparison::Lt,
+                    value: 10.0,
+                }],
+                poll_seconds: 1.0,
+            },
+            Effect::PlayerCaps { delta: 1 },
+        ],
+    );
+    let caps = |world: &World| {
+        let player = world.resource::<PapyrusPlayerEntity>().0;
+        world
+            .get::<byroredux_core::ecs::components::Inventory>(player)
+            .map_or(0, |inventory| {
+                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+            })
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 1);
+    emit_advance(&world, Q, 1);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(caps(&world), 0, "waiting");
+    fragment_continuation_system(&world, 1.0);
+    assert_eq!(caps(&world), 0, "still stage 1 < 10: waiting again");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    fragment_continuation_system(&world, 1.0);
+    assert_eq!(caps(&world), 1, "the condition failed: the fragment ran on");
+}
