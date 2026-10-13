@@ -568,12 +568,9 @@ fn process_dir(stats: &mut Stats, root: &Path) {
                 stack.push(path);
                 continue;
             }
-            let is_nif = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case("nif"))
-                .unwrap_or(false);
-            if is_nif {
+            // #5440 — the one corpus definition, as archive mode uses: a loose
+            // extracted tree holds `.bto` / `.btr` LOD meshes too.
+            if byroredux_nif::corpus::is_nif_entry(&path.to_string_lossy()) {
                 process_file(stats, &path);
             }
         }

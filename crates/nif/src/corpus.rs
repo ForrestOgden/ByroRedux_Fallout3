@@ -129,6 +129,30 @@ mod tests {
         assert!(!is_nif_entry("meshes/nif_notes.txt"));
     }
 
+    /// Whether `line` is a hand-rolled ".is this a NIF" test, in either
+    /// spelling: a suffix match (`ends_with(".nif")`) or an extension compare
+    /// against `"nif"` (`.extension()` … `eq_ignore_ascii_case("nif")`, `== "nif"`,
+    /// `!= "nif"`). #5440 — #5259's scan knew only the first, so `nif_stats`'
+    /// directory walker kept the second and silently dropped every `.bto` /
+    /// `.btr` LOD mesh from a loose corpus.
+    fn hand_rolled_nif_filter(line: &str) -> bool {
+        line.contains("ends_with(\".nif\")")
+            || line.contains("eq_ignore_ascii_case(\"nif\")")
+            || line.contains("== \"nif\"")
+            || line.contains("!= \"nif\"")
+    }
+
+    /// #5440 — both spellings are caught, and the sanctioned call is not.
+    #[test]
+    fn the_corpus_scan_knows_both_hand_rolled_spellings() {
+        assert!(hand_rolled_nif_filter("if p.ends_with(\".nif\") {"));
+        assert!(hand_rolled_nif_filter(".map(|s| s.eq_ignore_ascii_case(\"nif\"))"));
+        assert!(hand_rolled_nif_filter("if lower != \"nif\" {"));
+        assert!(hand_rolled_nif_filter("ext == \"nif\""));
+        assert!(!hand_rolled_nif_filter("corpus::is_nif_entry(&path.to_string_lossy())"));
+        assert!(!hand_rolled_nif_filter("let kind = \"nifskope\";"));
+    }
+
     /// #5259 — the corpus definition lives once, in this file. A
     /// hand-rolled `ends_with(".nif")` filter under `tests/` or
     /// `examples/` silently drops every renamed-NIF LOD entry (22k+
@@ -168,7 +192,7 @@ mod tests {
                     }
                     let src = std::fs::read_to_string(&path).expect("readable source");
                     for (i, line) in src.lines().enumerate() {
-                        if line.contains("ends_with(\".nif\")") {
+                        if hand_rolled_nif_filter(line) {
                             violations.push(format!(
                                 "{}:{}  hand-rolled .nif filter — route through \
                                  corpus::is_nif_entry",

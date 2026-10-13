@@ -41,7 +41,7 @@ use byroredux_bsa::{Ba2Archive, BsaArchive};
 use byroredux_nif::blocks::{NiObject, NiUnknown};
 use byroredux_nif::header::NifHeader;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Games we have real test content for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,77 +709,6 @@ pub fn parse_all_nifs_in_archive(archive: &MeshArchive, limit: Option<usize>) ->
         stats.record(outcome);
     }
 
-    stats.guessed_recoveries = guessed;
-    stats
-}
-
-/// Parse every .nif under a directory (recursively) and collect stats.
-pub fn parse_all_nifs_in_dir(root: &Path, limit: Option<usize>) -> ParseStats {
-    let mut stats = ParseStats::default();
-    // Same per-scene accumulation as `parse_all_nifs_in_archive` — a walker
-    // that left this at its default would report a clean zero it never
-    // measured. #3926.
-    let mut guessed = 0usize;
-    let mut stack = vec![root.to_path_buf()];
-    let mut count = 0usize;
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let lower = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            if lower != "nif" {
-                continue;
-            }
-            if let Some(n) = limit {
-                if count >= n {
-                    return stats;
-                }
-            }
-            count += 1;
-            let display = path.display().to_string();
-            let outcome = match std::fs::read(&path) {
-                Err(e) => ParseOutcome {
-                    path: display,
-                    status: ParseStatus::Failed(format!("read: {e}")),
-                },
-                Ok(bytes) => match byroredux_nif::parse_nif(&bytes) {
-                    Ok(scene) => {
-                        guessed += scene.recovered_by_guess;
-                        // #568 — see sibling site for full rationale.
-                        let status = if scene.truncated || scene.recovered_blocks > 0 {
-                            ParseStatus::Truncated {
-                                block_count: scene.len(),
-                                dropped: scene.dropped_block_count + scene.recovered_blocks,
-                            }
-                        } else {
-                            ParseStatus::Clean {
-                                block_count: scene.len(),
-                            }
-                        };
-                        ParseOutcome {
-                            path: display,
-                            status,
-                        }
-                    }
-                    Err(e) => ParseOutcome {
-                        path: display,
-                        status: ParseStatus::Failed(format!("parse: {e}")),
-                    },
-                },
-            };
-            stats.record(outcome);
-        }
-    }
     stats.guessed_recoveries = guessed;
     stats
 }
