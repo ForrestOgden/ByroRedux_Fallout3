@@ -1778,3 +1778,70 @@ fn from_event_alias_without_recorded_event_stays_unbound() {
         "no recorded event — the alias declines rather than scanning candidates"
     );
 }
+
+/// M47.2 — a Created Object alias created *In* another alias grants one of
+/// its base item to the target's inventory, once (the grant ledger keys it by
+/// the created alias). A base outside the inventory item forms (a leveled
+/// list here) and an "At" creation are not modeled and grant nothing; the
+/// created alias itself stays unbound.
+#[test]
+fn created_object_in_alias_grants_its_item_once() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    let boss = world.spawn();
+    world.insert(
+        boss,
+        SceneAliasCandidate {
+            reference_form_id: 0xA1,
+            base_form_id: 0xB1,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert_resource(crate::InventoryItemForms([0xC9, 0xCA].into_iter().collect()));
+    let created = |alias_id, base, create_mode| QuestAlias {
+        alias_id,
+        fill_type: Some(AliasFillType::CreatedObject {
+            base,
+            target_alias: 1,
+            create_mode,
+            level: 0,
+        }),
+        ..Default::default()
+    };
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![
+                QuestAlias {
+                    alias_id: 1,
+                    fill_type: Some(AliasFillType::ForcedReference(0xA1)),
+                    ..Default::default()
+                },
+                created(2, 0xC9, 0x8000),      // the boss's key: In
+                created(3, 0xCA, 0x0000),      // At: a spawn, not modeled
+                created(4, 0xDEAD_BEEF, 0x8000), // a leveled list: not an item form
+            ],
+            ..Default::default()
+        }],
+    );
+    refresh_scene_actor_bindings(&world);
+    mark_scene_actor_bindings_dirty(&world);
+    refresh_scene_actor_bindings(&world);
+
+    let items: Vec<(u32, u32)> = world
+        .get::<Inventory>(boss)
+        .expect("the created item made an inventory")
+        .items
+        .iter()
+        .map(|stack| (stack.base_form_id, stack.count))
+        .collect();
+    assert_eq!(items, vec![(0xC9, 1)], "granted once, In only, item forms only");
+    let bindings = world.resource::<SceneActorBindings>();
+    assert_eq!(
+        bindings.resolve(crate::QuestFormId(QUEST), 2),
+        None,
+        "the created alias stays unbound"
+    );
+}

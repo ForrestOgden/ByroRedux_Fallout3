@@ -335,7 +335,18 @@ filled entity's `FactionRanks`/`Inventory`, verified against a known
 vanilla companion or radiant quest.
 
 ### Phase 4+ — Bounded follow-ups
-Created Object, Story Manager event fills, true LCTN aliases, unloaded-world
+**Created Object, "In" mode — done (M47.2).** `ALCA`'s create mode is
+`0x0000` At / `0x8000` In (xEdit). An "In" alias whose base is an inventory
+item record grants one of it to the target alias's inventory through the
+`QuestAliasInjectionState` grant ledger (keyed by the created alias, so a
+refresh or a load never grants it twice); the created alias itself stays
+unbound, an item in an inventory being no entity here. Census
+(`alias_created_object_census` example): Skyrim.esm 189 "In" (55 BOOK,
+53 MISC, 20 ARMO, 18 KEYM, 18 WEAP, 17 LVLI…) and 441 "At" (365 NPC_);
+Fallout4.esm 165 "In" and 1,175 "At" (1,024 NPC_). Leveled-list bases and
+every "At" creation (a spawn at the target alias's location) remain open.
+
+Story Manager event fills, true LCTN aliases, unloaded-world
 search, reference collections, and components/consumers for the remaining
 overlay families. Their complete authored records remain available through
 `QuestAliasRuntimeOverlays` until those owning subsystems exist.

@@ -586,6 +586,22 @@ pub(crate) fn populate_scene_runtime(
     if sm_nodes > 0 {
         log::info!("Installed Story Manager tree: {sm_nodes} nodes");
     }
+    // M47.2 — the inventory item records a Created Object alias may create
+    // "In" another alias's inventory.
+    world.insert_resource(byroredux_scripting::InventoryItemForms(
+        index
+            .record_types
+            .iter()
+            .filter(|(_, kind)| {
+                matches!(
+                    *kind,
+                    b"ALCH" | b"AMMO" | b"ARMO" | b"BOOK" | b"INGR" | b"KEYM" | b"MISC" | b"NOTE"
+                        | b"SLGM" | b"WEAP"
+                )
+            })
+            .map(|(&form_id, _)| form_id)
+            .collect(),
+    ));
     // M47.2 — quest script variables: the authored numeric property values
     // of every quest VMAD, the fallback `GetVMQuestVariable` reads until a
     // fragment writes the variable (writes survive a reinstall).

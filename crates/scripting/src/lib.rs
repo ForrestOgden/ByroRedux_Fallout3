@@ -158,7 +158,7 @@ pub use scene::{
     quest_alias_diagnostics, quest_alias_refresh_system, refresh_scene_actor_bindings,
     running_quests_binding_entity, running_quest_bound_entities,
     running_quest_bound_entities_cached, scene_playback_system, ActiveSceneAction,
-    QuestAliasDiagnostic, QuestAliasInjectedOverlays, QuestAliasInjectionState,
+    InventoryItemForms, QuestAliasDiagnostic, QuestAliasInjectedOverlays, QuestAliasInjectionState,
     QuestAliasResolutionState, QuestAliasRuntimeOverlays, RemoteSceneActorStub,
     RunningQuestBoundCache, SceneActionCompletionBatch, SceneActorBindings,
     SceneAliasCandidate, SceneEvent, SceneEventBatch, SceneFragmentInvocation,

@@ -101,6 +101,19 @@ pub struct QuestAliasInjectionState {
 
 impl Resource for QuestAliasInjectionState {}
 
+/// The base FormIDs of every inventory item record (`ALCH` / `AMMO` / `ARMO` /
+/// `BOOK` / `INGR` / `KEYM` / `MISC` / `NOTE` / `SLGM` / `WEAP`) in the load
+/// order — what a Created Object alias may create *in* another alias's
+/// inventory (M47.2). Installed at load-order install; `NOT_SAVED_BY_DESIGN`.
+/// Absent, no created object is granted.
+#[derive(Debug, Clone, Default)]
+pub struct InventoryItemForms(pub HashSet<u32>);
+
+impl Resource for InventoryItemForms {}
+
+/// `ALCA`'s create mode (xEdit: `0x0000` At, `0x8000` In).
+const CREATE_IN: u16 = 0x8000;
+
 #[derive(Debug, Clone, Default)]
 struct InjectedFactionMembership {
     original_rank: Option<i8>,
@@ -466,6 +479,53 @@ fn apply_alias_injections(
         .iter()
         .map(|(entity, candidate)| (*entity, candidate.reference_form_id))
         .collect();
+
+    // M47.2 — Created Object aliases created *In* another alias: one of the
+    // base item lands in the target alias's inventory once per quest run,
+    // through the same reference-keyed grant ledger the CNTO injections use
+    // (keyed by the created alias, so it never collides with the target's
+    // own CNTO). The created alias itself stays unbound — an item inside an
+    // inventory is no entity here. A leveled-list base, and every "At"
+    // creation (a spawn at the target's location), is not modeled yet.
+    let item_forms = world
+        .try_resource::<InventoryItemForms>()
+        .map(|forms| forms.0.clone())
+        .unwrap_or_default();
+    for (quest, aliases) in quests {
+        for alias in aliases {
+            let Some(byroredux_plugin::esm::records::AliasFillType::CreatedObject {
+                base,
+                target_alias,
+                create_mode,
+                ..
+            }) = alias.fill_type
+            else {
+                continue;
+            };
+            if create_mode & CREATE_IN == 0 || !item_forms.contains(&base) {
+                continue;
+            }
+            let Some(&target) = resolved.get(&(*quest, i32::from(target_alias))) else {
+                continue;
+            };
+            match reference_form_ids.get(&target) {
+                Some(&reference_form_id) => desired_inventory.push((
+                    *quest,
+                    alias.alias_id,
+                    target,
+                    reference_form_id,
+                    base,
+                    1,
+                )),
+                None => log::debug!(
+                    "created object {base:08X} for quest {:08X} alias {} skipped: its \
+                     target carries no reference identity to key the grant by",
+                    quest.0,
+                    alias.alias_id
+                ),
+            }
+        }
+    }
 
     for (quest, aliases) in quests {
         for alias in aliases {
