@@ -750,3 +750,39 @@ fn on_death_runs_with_the_killer() {
     assert!(crate::fragment::reference_enabled(&world, MARKER));
     assert!(world.get::<crate::OnDeathEvent>(victim).is_none(), "drained by its consumer");
 }
+
+/// An interpreted topic-info fragment's `akSpeakerRef` is the line's speaker.
+#[test]
+fn info_fragments_bind_the_speaker() {
+    let script = parsed_source(
+        "ScriptName TIF__VmSpeaker extends TopicInfo\n\
+         Function Fragment_0(ObjectReference akSpeakerRef)\n\
+           Actor akSpeaker = akSpeakerRef as Actor\n\
+           akSpeaker.Disable()\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_0", None).err(), None);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(GUARD),
+    });
+    world.insert_resource(pool);
+    let speaker = world.spawn();
+    world.insert(speaker, FormIdComponent(id));
+    world.resource_mut::<crate::QuestStageFragments>().insert_vm_script(script);
+    let effect = Effect::Interpret {
+        script: "TIF__VmSpeaker".into(),
+        function: "Fragment_0".into(),
+        args: Vec::new(),
+        resume: None,
+    };
+    crate::apply_spoken_info_fragment(&world, std::slice::from_ref(&effect), Q, None, Some(speaker));
+    assert!(!crate::fragment::reference_enabled(&world, GUARD));
+}

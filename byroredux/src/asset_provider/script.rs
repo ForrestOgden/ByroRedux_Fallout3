@@ -373,6 +373,9 @@ fn populate_scene_fragments(
         return 0;
     };
     let library = ProviderScriptLibrary::new(&script_provider);
+    // M47.2 — the scripts the Papyrus VM needs for the scene fragments it
+    // runs, installed once the walk is done.
+    let vm_scripts = std::cell::RefCell::new(Vec::new());
 
     let mut total = 0;
     for (&scene_form_id, scene) in &index.scenes {
@@ -416,7 +419,8 @@ fn populate_scene_fragments(
                         &providers,
                         &resolved.principal,
                     )
-                    .with_library(&library),
+                    .with_library(&library)
+                    .with_vm_scripts(&vm_scripts),
                 )
             };
             total += translation.inserted;
@@ -429,7 +433,23 @@ fn populate_scene_fragments(
     }
     drop(library);
     world.insert_resource(script_provider);
+    install_vm_scripts(world, vm_scripts.into_inner());
     total
+}
+
+/// M47.2 — install the scripts a scene or INFO walk's Papyrus VM fragments
+/// need where the VM reads them.
+fn install_vm_scripts(
+    world: &mut byroredux_core::ecs::world::World,
+    scripts: Vec<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>>,
+) {
+    if scripts.is_empty() {
+        return;
+    }
+    let mut fragments = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+    for script in scripts {
+        fragments.insert_vm_script(script);
+    }
 }
 
 /// Populate lowered `INFO` response fragments (the `TIF_` topic-info
@@ -474,6 +494,8 @@ fn populate_info_fragments(
         return;
     };
     let library = ProviderScriptLibrary::new(&script_provider);
+    // M47.2 — as the scene walk: the Papyrus VM's scripts.
+    let vm_scripts = std::cell::RefCell::new(Vec::new());
 
     let mut infos_with_bindings = 0usize;
     let mut total = 0usize;
@@ -521,7 +543,8 @@ fn populate_info_fragments(
                             &providers,
                             &resolved.principal,
                         )
-                        .with_library(&library),
+                        .with_library(&library)
+                        .with_vm_scripts(&vm_scripts),
                     )
                 };
                 total += inserted;
@@ -530,6 +553,7 @@ fn populate_info_fragments(
     }
     drop(library);
     world.insert_resource(script_provider);
+    install_vm_scripts(world, vm_scripts.into_inner());
     if total > 0 {
         log::info!(
             "M47.2: populated {total} INFO response fragments from {infos_with_bindings} bound infos"

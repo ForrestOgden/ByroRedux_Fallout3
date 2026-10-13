@@ -673,7 +673,13 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-With the VM, 76.8% of the Skyrim corpus runs (lowered + interpreted;
+Quest, scene and topic-info fragments all fall back to the VM. The scene and
+INFO walks collect the scripts it needs and install them beside the quest
+walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
+line, as the lowering binds it. Package (`PF_`) fragments are not wired on
+either path yet.
+
+With the VM, 76.6% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
@@ -681,7 +687,7 @@ Not modelled yet:
   `ChangeCarryState`, `akBard.sInstrument = …`), and several actor
   natives (`SetPlayerTeammate`, `AdvanceSkill`, `IncrementStat`);
 - FO4 timers (`StartTimer` / `OnTimer`) and alias update registrations;
-- INFO and scene fragments, which still use the lowering only.
+- package (`PF_`) fragments, which need package begin / end / change events.
 
 ### Reference scripts on the VM (M47.2)
 

@@ -332,7 +332,22 @@ pub(super) fn run_fragment(
             None if super::reference::is_delivered_event(function) => Ok(Flow::Normal),
             None => stop(format!("no function {function}")),
             Some(code) => {
-                let args = args.iter().map(restore).collect();
+                let mut args: Vec<Value> = args.iter().map(restore).collect();
+                // A topic-info fragment's speaker parameter is the line's
+                // speaker, as the lowering binds it.
+                let speaker_parameter = code.callable(function).is_ok_and(|callable| {
+                    callable.params.first().is_some_and(|param| {
+                        param
+                            .name
+                            .node
+                            .0
+                            .eq_ignore_ascii_case(crate::translate::effects::INFO_SPEAKER_PARAMETER)
+                    })
+                });
+                if args.is_empty() && speaker_parameter {
+                    let speaker = vm.deferred.speaker.and_then(|entity| vm.entity_form(entity));
+                    args.push(speaker.map_or(Value::None, Value::Form));
+                }
                 vm.enter(frame, &code, function, args).and_then(|mut frame| {
                     let flow = vm.run_frame(&mut frame, &code, function, None, &[])?;
                     vm.callee_flow(flow, &frame, &code, function)

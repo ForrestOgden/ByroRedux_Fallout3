@@ -525,11 +525,24 @@ fn main() {
                             &shape,
                         );
                         *decline_hist.entry(shape).or_default() += 1;
-                        match byroredux_scripting::fragment::vm::check_function_reason(
-                            std::sync::Arc::clone(&script_arc),
-                            &func.name.node.0,
-                            Some(&library),
-                        ) {
+                        // Production runs the VM fallback on the quest,
+                        // scene and topic-info paths; package (`PF_`) and
+                        // other fragments are not wired.
+                        let info = func
+                            .params
+                            .iter()
+                            .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER));
+                        let wired = quest_library.quest || quest_library.scene || info;
+                        let checked = if wired {
+                            byroredux_scripting::fragment::vm::check_function_reason(
+                                std::sync::Arc::clone(&script_arc),
+                                &func.name.node.0,
+                                Some(&library),
+                            )
+                        } else {
+                            Err("not a quest, scene or topic-info fragment".to_owned())
+                        };
+                        match checked {
                             Ok(_) => interpretable += 1,
                             Err(reason) => *vm_reasons.entry(reason).or_default() += 1,
                         }
