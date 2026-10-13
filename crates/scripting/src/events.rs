@@ -186,6 +186,24 @@ impl Component for OnCellLoadEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// M47.2 — an actor died: Papyrus `OnDeath(akKiller)`. Raised beside the
+/// Story Manager's `KILL` event by every live death producer (combat,
+/// drowning, script `Kill`), on the victim; `killer` is `None` for an
+/// environmental death.
+///
+/// Pattern B: its one consumer, `reference_script_event_system`, drains it at
+/// its head — so a death raised after it in the frame (the Late-stage script
+/// kill) is delivered the next frame rather than lost to end-of-frame
+/// cleanup.
+#[derive(Debug, Clone, Copy)]
+pub struct OnDeathEvent {
+    pub killer: Option<EntityId>,
+}
+
+impl Component for OnDeathEvent {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// One item entering or leaving a wearer's [`Inventory`] — the P3 shape for
 /// a future `OnItemAdded`/`OnItemRemoved` pair. Emitted today by loot
 /// transfers (whole or selective) and world pickups only; consumption does

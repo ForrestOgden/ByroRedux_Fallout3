@@ -30,8 +30,17 @@ use byroredux_plugin::esm::records::condition::ConditionStringId;
 use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 
 /// The events reference scripts receive, in the order one cell load
-/// delivers the first three.
-pub const DELIVERED_EVENTS: [&str; 5] = ["OnInit", "OnLoad", "OnCellLoad", "OnActivate", "OnTriggerEnter"];
+/// delivers the first four (CK *OnCellAttach*: "reliably called before
+/// OnCellLoad"; attach and load are one moment here).
+pub const DELIVERED_EVENTS: [&str; 7] = [
+    "OnInit",
+    "OnCellAttach",
+    "OnLoad",
+    "OnCellLoad",
+    "OnActivate",
+    "OnTriggerEnter",
+    "OnDeath",
+];
 
 /// An event the runtime delivers — to a reference, or an update to the
 /// script that registered for it. One the script does not handle in its
@@ -178,6 +187,13 @@ pub fn reference_script_event_system(world: &World, _dt: f32) {
 /// The deliveries this frame's markers make, snapshotted before any runs:
 /// a run takes the quest guards and may write the marker storages.
 fn collect_deliveries(world: &World) -> Vec<Delivery> {
+    // Pattern B: this system owns `OnDeathEvent`; drain it first, whatever
+    // follows.
+    let deaths: HashMap<EntityId, Option<EntityId>> = world
+        .query::<crate::OnDeathEvent>()
+        .map(|q| q.iter().map(|(entity, event)| (entity, event.killer)).collect())
+        .unwrap_or_default();
+    crate::scene::playback::drain::<crate::OnDeathEvent>(world);
     let Some(attached) = world.query::<PapyrusReferenceScripts>() else {
         return Vec::new();
     };
@@ -202,7 +218,8 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
             .and_then(|q| q.get(entity))
             .map(|event| event.triggerers.clone())
             .unwrap_or_default();
-        if !loaded && activator.is_none() && triggerers.is_empty() {
+        let death = deaths.get(&entity).copied();
+        if !loaded && activator.is_none() && triggerers.is_empty() && death.is_none() {
             continue;
         }
         let Some(owner) = form_of(entity) else {
@@ -222,7 +239,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
                 }
             };
             if loaded {
-                for event in ["OnInit", "OnLoad", "OnCellLoad"] {
+                for event in ["OnInit", "OnCellAttach", "OnLoad", "OnCellLoad"] {
                     deliver(event, Vec::new());
                 }
             }
@@ -231,6 +248,10 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
             }
             for &triggerer in &triggerers {
                 deliver("OnTriggerEnter", vec![reference(triggerer)]);
+            }
+            if let Some(killer) = death {
+                let killer = killer.map_or(VmStored::None, reference);
+                deliver("OnDeath", vec![killer]);
             }
         }
     }

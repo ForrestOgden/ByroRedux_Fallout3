@@ -90,7 +90,7 @@ pub use equipment::{
 };
 pub use events::{
     ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
-    EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnInitEvent,
+    EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
@@ -283,6 +283,7 @@ pub fn register(world: &mut World) {
     world.register::<OnCellLoadEvent>();
     world.register::<OnInitEvent>();
     world.register::<OnTriggerEnterEvent>();
+    world.register::<OnDeathEvent>();
     world.register::<EquipmentEventBatch>();
     // P3 — item add/remove channel (future `OnItemAdded`/`OnItemRemoved`).
     // Emitted by loot transfers (whole/selective) and world pickups; drained

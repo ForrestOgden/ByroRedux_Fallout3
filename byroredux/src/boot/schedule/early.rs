@@ -73,6 +73,7 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             // index / current cell context. Declared so the access analyzer
             // sees them against `npc_dialogue`'s and the dispatcher's rows.
             .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            .writes::<byroredux_scripting::OnDeathEvent>()
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
             .reads_resource::<crate::cell_loader::CurrentCellContext>()
             .reads_resource::<crate::cell_loader::CurrentExteriorContext>()

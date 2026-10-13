@@ -513,23 +513,68 @@ fn state_key(script: &Script) -> ConditionStringId {
 }
 
 /// The value a script variable or property declares (`Int n = 5`,
-/// `Bool Property P = True Auto`), when it is a literal.
+/// `Bool Property P = True Auto`), or an `AutoReadOnly` property's constant,
+/// when it is a literal.
 fn declared_default(script: &Script, name: &str) -> Option<Value> {
     let bare = vmad_property_name(name);
     let named = |n: &Identifier| n.0.eq_ignore_ascii_case(name) || n.0.eq_ignore_ascii_case(bare);
     script.body.iter().find_map(|item| {
         let initial = match &item.node {
             ScriptItem::Variable(v) if named(&v.name.node) => v.initial_value.as_ref(),
-            ScriptItem::Property(p) if named(&p.name.node) => p.initial_value.as_ref(),
+            ScriptItem::Property(p) if named(&p.name.node) => match &p.initial_value {
+                Some(initial) => Some(initial),
+                None => return getter_constant(p),
+            },
             _ => return None,
         };
-        Some(match literal_of(&initial?.node)? {
-            Expr::IntLit(i) => Value::Int(i as i32),
-            Expr::FloatLit(f) => Value::Float(f as f32),
-            Expr::BoolLit(b) => Value::Bool(b),
-            Expr::StringLit(text) => Value::Str(text),
-            _ => Value::None,
-        })
+        literal_value(&initial?.node)
+    })
+}
+
+fn literal_value(e: &Expr) -> Option<Value> {
+    Some(match literal_of(e)? {
+        Expr::IntLit(i) => Value::Int(i as i32),
+        Expr::FloatLit(f) => Value::Float(f as f32),
+        Expr::BoolLit(b) => Value::Bool(b),
+        Expr::StringLit(text) => Value::Str(text),
+        _ => Value::None,
+    })
+}
+
+/// An `AutoReadOnly` property's constant: the compiler gives it a getter
+/// that returns a literal (`ObjectReference.Motion_Keyframed` → 2).
+fn getter_constant(property: &byroredux_papyrus::ast::Property) -> Option<Value> {
+    let getter = property.getter.as_ref()?;
+    match getter.body.as_slice() {
+        [statement] => match &statement.node {
+            Stmt::Return(Some(value)) => literal_value(&value.node),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The engine classes whose `AutoReadOnly` constants a script reads on any
+/// reference (`akRef.Motion_Keyframed`).
+const CONSTANT_CLASSES: [&str; 3] = ["objectreference", "actor", "form"];
+
+/// A constant property's value: an `AutoReadOnly` one's literal, as source
+/// declares it or as the compiled getter returns it.
+fn property_constant(property: &byroredux_papyrus::ast::Property) -> Option<Value> {
+    let read_only = property
+        .flags
+        .contains(byroredux_papyrus::ast::PropertyFlags::AUTO_READ_ONLY);
+    match &property.initial_value {
+        Some(initial) if read_only => literal_value(&initial.node),
+        _ => getter_constant(property),
+    }
+}
+
+/// `name` as a constant property of `script` (not a parent).
+fn constant_property<'s>(script: &'s Script, name: &str) -> Option<&'s byroredux_papyrus::ast::Property> {
+    script.body.iter().find_map(|item| match &item.node {
+        ScriptItem::Property(p) if p.name.node.0.eq_ignore_ascii_case(name) && property_constant(p).is_some() => Some(&**p),
+        _ => None,
     })
 }
 
@@ -1285,6 +1330,11 @@ impl Vm<'_> {
         let Value::Form(form) = owner else {
             return stop(format!("member {name} of {}", owner.text()));
         };
+        if !self.is_quest(*form) {
+            if let Some(value) = self.engine_constant(name) {
+                return Ok(value);
+            }
+        }
         let quest = QuestFormId(*form);
         let vmad = self.deferred.quest_scripts.get(&quest).cloned();
         if let Some(value) = Self::property(vmad.as_ref(), name) {
@@ -1302,6 +1352,14 @@ impl Vm<'_> {
             Some(value) => Ok(Value::Float(value)),
             None => stop(format!("member {name} of {form:08X}")),
         }
+    }
+
+    /// An engine class's constant `name`, from the installed classes.
+    fn engine_constant(&self, name: &str) -> Option<Value> {
+        CONSTANT_CLASSES.iter().find_map(|class| {
+            let script = self.deferred.vm_scripts.get(*class)?;
+            constant_property(script, name).and_then(property_constant)
+        })
     }
 
     /// The quest script that defines `function` for the quest `quest`, if
@@ -1397,6 +1455,7 @@ impl Vm<'_> {
                 name.as_str(),
                 "getowningquest"
                     | "getlinkedref"
+                    | "getnthlinkedref"
                     | "getbaseobject"
                     | "getactorbase"
                     | "getleveledactorbase"
@@ -1450,6 +1509,19 @@ impl Vm<'_> {
                     None => 0,
                 };
                 Some(self.linked_ref(*form, keyword).map_or(Value::None, Value::Form))
+            }
+            // CK *GetNthLinkedRef*: 0 is the object itself, n follows the
+            // unkeyworded link n times.
+            (Value::Form(form), "getnthlinkedref") => {
+                let hops = match args.first() {
+                    Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
+                    None => 0.0,
+                };
+                let mut current = Some(*form);
+                for _ in 0..(hops.max(0.0) as usize).min(64) {
+                    current = current.and_then(|form| self.linked_ref(form, 0));
+                }
+                Some(current.map_or(Value::None, Value::Form))
             }
             (Value::Form(form), "getbaseobject" | "getactorbase" | "getleveledactorbase") => {
                 Some(self.base_of(*form).map_or(Value::None, Value::Form))
@@ -1963,6 +2035,16 @@ impl<'l> Checker<'l> {
         checker
     }
 
+    /// An engine class's constant `name`'s type, registering the class.
+    fn engine_constant_type(&mut self, name: &str) -> Option<Type> {
+        CONSTANT_CLASSES.iter().find_map(|class| {
+            let script = self.library?.script(class)?;
+            let ty = constant_property(&script, name)?.ty.node.clone();
+            self.scripts.insert((*class).to_owned(), Arc::clone(&script));
+            Some(ty)
+        })
+    }
+
     /// `name`'s declared type in `script` or its parents (registering the
     /// parents the run will need).
     fn member_type(&mut self, script: &Script, name: &str) -> Option<Type> {
@@ -1974,7 +2056,11 @@ impl<'l> Checker<'l> {
             let name_of_parent = parent?;
             let lower = name_of_parent.to_ascii_lowercase();
             if matches!(lower.as_str(), "quest" | "topicinfo" | "scene" | "objectreference" | "actor") {
-                return None;
+                // An engine class lends only its constants.
+                let class = self.library?.script(&name_of_parent)?;
+                let ty = constant_property(&class, name)?.ty.node.clone();
+                self.scripts.insert(lower, Arc::clone(&class));
+                return Some(ty);
             }
             let script = self.library?.script(&name_of_parent)?;
             self.scripts.insert(lower, Arc::clone(&script));
@@ -2276,6 +2362,8 @@ impl<'l> Checker<'l> {
                     Kind::Num
                 } else if member.node.0.eq_ignore_ascii_case("value") {
                     Kind::Num
+                } else if let Some(ty) = self.engine_constant_type(&member.node.0).filter(|_| owner != Kind::None) {
+                    kind_of_type(&ty, self.library)
                 } else {
                     let member = member.node.0.clone();
                     return self.fail(|| format!("member .{member} of {owner:?}"));
@@ -2372,6 +2460,11 @@ impl<'l> Checker<'l> {
                 "getlinkedref" | "getbaseobject" | "getactorbase" | "getleveledactorbase" | "getcurrentlocation"
                 | "getdialoguetarget",
             ) => {
+                return Some(Kind::Object);
+            }
+            (Kind::Object | Kind::Player, "getnthlinkedref")
+                if matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) =>
+            {
                 return Some(Kind::Object);
             }
             (Kind::Alias, "getlocation") => return Some(Kind::Object),

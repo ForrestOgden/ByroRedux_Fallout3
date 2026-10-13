@@ -244,6 +244,7 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .writes::<byroredux_core::ecs::components::Dead>()
             .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            .writes::<byroredux_scripting::OnDeathEvent>()
             .reads::<byroredux_scripting::ActorProtection>()
             .reads::<byroredux_scripting::SceneAliasCandidate>()
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()

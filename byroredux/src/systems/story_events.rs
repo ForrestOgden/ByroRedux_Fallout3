@@ -170,6 +170,10 @@ pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Op
     // #5372 — resolve the location BEFORE taking the StoryEvent write
     // guard (`resolve_current_lctn` reads `LoadedCellIndex`).
     let location_1 = resolve_current_lctn(world);
+    // M47.2 — the victim's Papyrus `OnDeath(akKiller)`.
+    if let Some(mut deaths) = world.query_mut::<byroredux_scripting::OnDeathEvent>() {
+        deaths.insert(victim, byroredux_scripting::OnDeathEvent { killer });
+    }
     let Some(mut events) = world.query_mut::<StoryEvent>() else {
         return;
     };

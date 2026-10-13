@@ -667,3 +667,86 @@ fn native_declarations_in_parent_scripts_stay_natives() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
+
+/// An engine class's `AutoReadOnly` constant reads its value — on any
+/// reference, and unqualified in a script that inherits it.
+#[test]
+fn engine_constants_read_their_values() {
+    let object_reference = parsed_source(
+        "ScriptName ObjectReference extends Form\n\
+         Int Property Motion_Keyframed = 2 AutoReadOnly\n\
+         Function Disable(Bool abFadeOut = False) Native\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmConstants extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.Motion_Keyframed == 2\n Self.SetStage(20)\n EndIf\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("objectreference".to_owned(), object_reference)].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// A reference script's `OnDeath(akKiller)` runs from the victim's
+/// `OnDeathEvent`, which its dispatcher drains (Pattern B).
+#[test]
+fn on_death_runs_with_the_killer() {
+    const REF: u32 = 0x0001_0F12;
+    let script = parsed_source(
+        "ScriptName VmDeathScript extends Actor\n\
+         ObjectReference Property Marker Auto\n\
+         Event OnDeath(Actor akKiller)\n\
+           If akKiller == Game.GetPlayer()\n Marker.Enable()\n EndIf\n\
+         EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    assert_eq!(events, ["OnDeath"]);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let victim = world.spawn();
+    world.insert(victim, FormIdComponent(id));
+    world
+        .resource_mut::<crate::fragment::ReferenceEnableState>()
+        .set_enabled(MARKER, false);
+    let instance = ScriptInstance {
+        name: "VmDeathScript".into(),
+        status: 0,
+        properties: vec![ScriptProperty {
+            name: "Marker".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: MARKER,
+                alias: -1,
+            },
+        }],
+    };
+    crate::attach_reference_script(&mut world, victim, &instance, events, scripts);
+    world.insert(victim, crate::OnDeathEvent { killer: Some(player) });
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
+    assert!(world.get::<crate::OnDeathEvent>(victim).is_none(), "drained by its consumer");
+}
