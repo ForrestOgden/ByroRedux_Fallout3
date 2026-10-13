@@ -118,6 +118,8 @@ pub use fragment::{
     PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
+    alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
+    AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
     PackageFragments, PackageTransition, PendingPackageTransitions,
 };
@@ -262,6 +264,14 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted IncrementStat misc stats (saved).
     if world.try_resource::<MiscStats>().is_none() {
         world.insert_resource(MiscStats::default());
+    }
+    // M47.2 — alias scripts: the authored ones (derived) and their owner ids
+    // and started quests (saved).
+    if world.try_resource::<QuestAliasScripts>().is_none() {
+        world.insert_resource(QuestAliasScripts::default());
+    }
+    if world.try_resource::<AliasScriptOwners>().is_none() {
+        world.insert_resource(AliasScriptOwners::default());
     }
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {

@@ -454,6 +454,9 @@ pub struct DeferredFragmentEffects {
     /// before the quest-state guards so the VM never locks
     /// [`crate::CreatedReferences`].
     pub(super) scripted_ids: Option<crate::ScriptedIds>,
+    /// M47.2 — the owner ids of the alias script instances and what each is
+    /// attached to, snapshotted so a run knows what `Self` is.
+    pub(super) alias_owners: Arc<HashMap<u32, (u32, i16)>>,
     /// M47.2 — `PlaceAtMe` creations: (FormID, base, placed at,
     /// delete when able), recorded on [`crate::CreatedReferences`] after the
     /// guards drop.
@@ -588,6 +591,10 @@ impl DeferredFragmentEffects {
                 .try_resource::<crate::CreatedReferences>()
                 .map(|created| created.scripted_ids()),
             created_references: Vec::new(),
+            alias_owners: world
+                .try_resource::<crate::AliasScriptOwners>()
+                .map(|owners| owners.table())
+                .unwrap_or_default(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             alias_collections: Vec::new(),

@@ -248,7 +248,8 @@ pub(super) fn enqueue(
         };
         let owner = QuestFormId(registration.owner);
         let on_quest = quests.contains_key(&owner) || fragments.vmad(owner).is_some();
-        if !super::vm::handler_runs(&scripts, &registration.script, &handler, on_quest) {
+        let kind = super::vm::SelfKind::of_owner(registration.owner, on_quest);
+        if !super::vm::handler_runs(&scripts, &registration.script, &handler, kind) {
             log::debug!(
                 "{:08X}: {}.{handler} skipped: the Papyrus VM does not run it",
                 registration.owner,
@@ -258,6 +259,9 @@ pub(super) fn enqueue(
         }
         let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
             Some(vmad) => Some(vmad.clone()),
+            None if super::is_alias_owner(registration.owner) => {
+                super::alias_owner_vmad(world, registration.owner, &registration.script)
+            }
             None => ReferenceScriptIndex::lookup(world, registration.owner).and_then(|entity| {
                 let attached = world.get::<PapyrusReferenceScripts>(entity)?;
                 attached
@@ -305,7 +309,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
             .filter(|owner| {
                 let quest = QuestFormId(*owner);
                 let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
+                // An alias script's registrations end with its quest too.
                 is_quest && !stages.is_running(quest)
+                    || super::alias_owner_standing(world, *owner, &stages) == Some(false)
             })
             .collect()
     };

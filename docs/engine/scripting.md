@@ -1033,6 +1033,48 @@ lowered yet.
 no faction: the apply step records every faction the actor was in as removed,
 so the spawn re-derivation replays the departure.
 
+### Alias scripts (M47.2)
+
+A quest's `VMAD` carries, after its fragment section, the scripts attached to its
+aliases (xEdit `wbVMADFragmentedQUST`, Skyrim and Fallout 4; the Fallout 4 fragment
+section embeds the fragment script's own flags and properties first). The plugin
+parses them into `QustRecord.alias_scripts` (`parse_quest_alias_scripts_with_remap`;
+`examples/qust_alias_script_census.rs` proves the layout: the section ends on the last
+byte of every fragment-bearing QUST VMAD in Skyrim, Fallout 4 and Starfield).
+Vanilla attaches 2,529 (Skyrim), 2,894 (Fallout 4) and 3,859 (Starfield) alias scripts.
+
+CK *ReferenceAlias Script*: "ReferenceAliases receive events from the ObjectReference
+they are pointing at"; *OnAliasInit*: "Event received when this alias has been filled
+(or not filled) as a result of the quest starting up. Other aliases in the quest will
+have also been filled by this point, and the quest is about to start its startup
+stage"; *OnAliasShutdown*: "Event received when the quest that owns this alias has
+shut down".
+
+- **Install.** `install_quest_alias_scripts` keeps the authored scripts per quest
+  (`QuestAliasScripts`, derived). The host (`check_running_quest_alias_scripts`)
+  decompiles and checks a quest's alias scripts, a few quests a frame, once the
+  quest runs (`check_alias_script`: the reference-script check with `Self` a
+  `ReferenceAlias`, over `DELIVERED_ALIAS_EVENTS`); a script all of whose handlers
+  run whole becomes an `AliasScript`.
+- **Identity.** An alias script instance's variables, state, update/distance/event
+  registrations live in the same saved stores as a reference script's, under an owner
+  id in `0xFC00_0000..`: `AliasScriptOwners` allocates one per (quest, alias) on first
+  use and is saved with the stores it keys. `Self` is the alias (`Value::Alias`) for
+  such an owner; `Self.GetOwningQuest()` is the quest.
+- **Lifecycle** (`alias_script_event_system`). A quest that runs and has no pending
+  alias fill delivers `OnInit`, then `OnAliasInit`, once (`started` is saved); a quest
+  that stops delivers `OnAliasShutdown`, and its alias scripts' registrations end.
+- **Events.** `reference_script_event_system` delivers the events a reference
+  receives (`OnCellAttach`/`OnLoad`/`OnCellLoad`, `OnActivate`, `OnTriggerEnter`,
+  `OnHit`, `OnDeath`) to the alias scripts of every alias it fills, beside its own
+  reference scripts. Lock order: the alias standing is read before the
+  `PapyrusReferenceScripts` guard is taken (the VM holds the quest guard when it reaches
+  for a reference's scripts).
+
+Coverage (`examples/alias_script_coverage.rs`): the VM runs 44 % of Skyrim's alias
+script instances; Fallout 4 12.5 % and Starfield 7 % wait on `RegisterForHitEvent`
+registrations (their `OnHit` is registration-based, not delivered automatically).
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

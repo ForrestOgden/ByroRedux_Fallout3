@@ -173,6 +173,116 @@ pub(crate) fn attach_vm_reference_script(
     true
 }
 
+/// M47.2 — per script name, whether the Papyrus VM runs it as an alias script:
+/// the events it handles and the scripts its runs need, or `None`. Checked
+/// once per session, like [`VmReferenceScriptChecks`].
+#[derive(Default)]
+pub(crate) struct VmAliasScriptChecks(std::collections::HashMap<String, VmReferenceScriptCheck>);
+
+impl byroredux_core::ecs::resource::Resource for VmAliasScriptChecks {}
+
+/// The most quests whose alias scripts one frame decompiles and checks.
+const ALIAS_CHECKS_PER_FRAME: usize = 4;
+
+/// Check the alias scripts of the quests that run and have not been checked
+/// ([`byroredux_scripting::QuestAliasScripts`]), a few per frame: the scripts
+/// of the whole load order would cost a second of load for the quests nothing
+/// ever starts.
+pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::world::World) {
+    let pending: Vec<(
+        byroredux_scripting::QuestFormId,
+        std::sync::Arc<Vec<(i16, byroredux_plugin::esm::records::script_instance::ScriptInstance)>>,
+    )> = {
+        let Some(alias_scripts) = world.try_resource::<byroredux_scripting::QuestAliasScripts>() else {
+            return;
+        };
+        if alias_scripts.is_empty() {
+            return;
+        }
+        let stages = world.resource::<byroredux_scripting::quest_stages::QuestStageState>();
+        alias_scripts
+            .unchecked()
+            .filter(|(quest, _)| stages.is_running(*quest))
+            .take(ALIAS_CHECKS_PER_FRAME)
+            .map(|(quest, scripts)| (quest, std::sync::Arc::clone(scripts)))
+            .collect()
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let Some(provider) = world.try_resource::<ScriptProvider>() else {
+        return;
+    };
+    if provider.is_empty() {
+        // No script archive: nothing can ever be checked.
+        drop(provider);
+        let mut alias_scripts = world.resource_mut::<byroredux_scripting::QuestAliasScripts>();
+        for (quest, _) in pending {
+            alias_scripts.set_checked(quest, Vec::new());
+        }
+        return;
+    }
+    let library = ProviderScriptLibrary::new(&provider);
+    use byroredux_scripting::translate::effects::ScriptLibrary as _;
+    let mut results = Vec::new();
+    for (quest, raw) in pending {
+        let mut checked = Vec::new();
+        let mut installed = Vec::new();
+        for (alias, instance) in raw.iter() {
+            let key = instance.name.to_ascii_lowercase();
+            let cached = world
+                .try_resource::<VmAliasScriptChecks>()
+                .and_then(|checks| checks.0.get(&key).cloned());
+            let outcome = match cached {
+                Some(outcome) => outcome,
+                None => {
+                    let outcome = library.script(&instance.name).and_then(|script| {
+                        byroredux_scripting::check_alias_script(
+                            script,
+                            &byroredux_scripting::DELIVERED_ALIAS_EVENTS,
+                            Some(&library),
+                        )
+                        .map_err(|why| log::trace!("M47.2: the Papyrus VM declines alias script '{}': {why}", instance.name))
+                        .ok()
+                    });
+                    if let Some(mut checks) = world.try_resource_mut::<VmAliasScriptChecks>() {
+                        checks.0.insert(key, outcome.clone());
+                    }
+                    outcome
+                }
+            };
+            let Some((events, scripts)) = outcome else {
+                continue;
+            };
+            installed.extend(scripts);
+            checked.push(byroredux_scripting::AliasScript {
+                alias: *alias,
+                script: instance.name.clone(),
+                vmad: std::sync::Arc::new(byroredux_plugin::esm::records::script_instance::ScriptInstanceData {
+                    version: 5,
+                    object_format: 2,
+                    scripts: vec![instance.clone()],
+                }),
+                events,
+            });
+        }
+        results.push((quest, checked, installed));
+    }
+    drop(library);
+    drop(provider);
+    for (quest, checked, installed) in results {
+        if !checked.is_empty() {
+            log::debug!("M47.2: {} alias script(s) of quest {:08X} run on the Papyrus VM", checked.len(), quest.0);
+        }
+        let mut fragments = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+        for script in installed {
+            fragments.insert_vm_script(script);
+        }
+        drop(fragments);
+        world.resource_mut::<byroredux_scripting::QuestAliasScripts>().set_checked(quest, checked);
+    }
+}
+
 /// Normalise a Papyrus script name to its archive key: lowercase,
 /// backslash-separated, under the `scripts\` folder with a `.pex`
 /// extension. A name authored with the folder and/or extension already
@@ -845,6 +955,15 @@ pub(crate) fn populate_scene_runtime(
     // M47.2 — every quest's VMAD, for quest-script bodies inlined into
     // INFO and scene fragments.
     byroredux_scripting::install_quest_script_instances(world, index);
+    // M47.2 — the scripts quests attach to their aliases, checked when their
+    // quest first runs.
+    let alias_scripts = byroredux_scripting::install_quest_alias_scripts(world, index);
+    if alias_scripts > 0 {
+        log::info!("Installed {alias_scripts} quest alias scripts");
+    }
+    if world.try_resource::<VmAliasScriptChecks>().is_none() {
+        world.insert_resource(VmAliasScriptChecks::default());
+    }
     // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.

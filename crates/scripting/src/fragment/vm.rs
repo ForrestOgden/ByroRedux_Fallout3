@@ -123,6 +123,11 @@ impl Value {
         }
     }
 
+    /// Whether both are the same alias.
+    fn same_alias(&self, other: &Value) -> bool {
+        matches!((self, other), (Value::Alias { quest: a, alias: x }, Value::Alias { quest: b, alias: y }) if a == b && x == y)
+    }
+
     fn is_float(&self) -> bool {
         matches!(self, Value::Float(_))
     }
@@ -1866,7 +1871,7 @@ impl Vm<'_> {
             return Ok(value.clone());
         }
         if key == "self" {
-            return Ok(Value::Form(frame.owner.0));
+            return Ok(self.self_value(frame.owner));
         }
         if is_state_variable(name) {
             let script = Arc::clone(&frame.script);
@@ -1876,6 +1881,15 @@ impl Vm<'_> {
         match self.read_script_member(frame.owner, &script, frame.vmad.as_ref(), name) {
             Some(value) => Ok(value),
             None => stop(format!("unknown name {name}")),
+        }
+    }
+
+    /// What `Self` is for the instance `owner` owns: the alias an alias script
+    /// is attached to, else the quest or reference itself.
+    fn self_value(&self, owner: QuestFormId) -> Value {
+        match self.deferred.alias_owners.get(&owner.0) {
+            Some(&(quest, alias)) => Value::Alias { quest, alias },
+            None => Value::Form(owner.0),
         }
     }
 
@@ -2188,6 +2202,12 @@ impl Vm<'_> {
             }
             Some(object) => match self.eval(frame, object)? {
                 Value::Form(form) if form == frame.owner.0 && own(self, frame).is_some() => own(self, frame),
+                // An alias script calling itself through `Self`.
+                value @ Value::Alias { .. }
+                    if self.self_value(frame.owner).same_alias(&value) && own(self, frame).is_some() =>
+                {
+                    own(self, frame)
+                }
                 Value::Form(form) if self.is_quest(form) => {
                     self.quest_script_with(QuestFormId(form), name).map(|(script, code)| {
                         let vmad = self.deferred.quest_scripts.get(&QuestFormId(form)).cloned();
@@ -2572,6 +2592,25 @@ impl Vm<'_> {
         if self.object_read(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
         }
+        // CK *UpdateCurrentInstanceGlobal - Quest*: "Attempts to update the
+        // stored value of the given global in the instance data for the quest's
+        // current instance", i.e. refreshes a cached copy of the global. This
+        // engine keeps no cached copy (quest text reads the global live), so
+        // the statement has nothing to refresh; only the Bool result (failure
+        // with no active instance) is unmodelled, and the checker only lets
+        // the call through with that result unused.
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if member.node.0.eq_ignore_ascii_case("updatecurrentinstanceglobal")
+                && static_class(&object.node).is_none()
+            {
+                if let Value::Form(quest) = self.eval(frame, &object.node)? {
+                    if self.is_quest(quest) {
+                        self.eval_args(frame, args)?;
+                        return Ok(Flow::Normal);
+                    }
+                }
+            }
+        }
         // A script function called as a statement may wait.
         if let Some((callee_frame, code)) = self.script_call_target(frame, &callee.node)? {
             let name = callee_name(&callee.node);
@@ -2896,6 +2935,31 @@ pub fn check_reference_script(
     Ok((handled, checker.scripts.into_values().collect()))
 }
 
+/// Whether an alias script runs on this VM: [`check_reference_script`] with
+/// `Self` a `ReferenceAlias`, over the events an alias script receives.
+pub fn check_alias_script(
+    script: Arc<Script>,
+    events: &[&str],
+    library: Option<&dyn CheckLibrary>,
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    let mut checker = Checker::new(library, &script);
+    let mut handled = Vec::new();
+    for event in events {
+        if checker.versions(&script, event).is_empty() {
+            continue;
+        }
+        if checker.check_call_into(&script, event, true, Kind::Alias).is_none() {
+            let reason = checker.reason.take().unwrap_or_else(|| "unsupported".into());
+            return Err(format!("{event}: {reason}"));
+        }
+        handled.push((*event).to_owned());
+    }
+    if handled.is_empty() {
+        return Err("handles no delivered event".into());
+    }
+    Ok((handled, checker.scripts.into_values().collect()))
+}
+
 /// The installed scripts as a [`CheckLibrary`].
 struct Installed<'a>(&'a HashMap<String, Arc<Script>>);
 
@@ -2905,13 +2969,39 @@ impl crate::translate::effects::ScriptLibrary for Installed<'_> {
     }
 }
 
+/// What an installed script instance is attached to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SelfKind {
+    Quest,
+    Object,
+    Alias,
+}
+
+impl SelfKind {
+    /// The kind of the instance owned by `owner`: a quest (`on_quest`), a quest
+    /// alias, or a reference.
+    pub(super) fn of_owner(owner: u32, on_quest: bool) -> Self {
+        if on_quest {
+            Self::Quest
+        } else if super::is_alias_owner(owner) {
+            Self::Alias
+        } else {
+            Self::Object
+        }
+    }
+}
+
 /// Whether `handler` of the installed `script` runs whole on this VM,
-/// against the installed scripts — on a quest (`on_quest`) or a reference.
-pub(super) fn handler_runs(scripts: &HashMap<String, Arc<Script>>, script: &str, handler: &str, on_quest: bool) -> bool {
+/// against the installed scripts — on a quest, a reference or an alias.
+pub(super) fn handler_runs(scripts: &HashMap<String, Arc<Script>>, script: &str, handler: &str, self_kind: SelfKind) -> bool {
     let Some(script) = scripts.get(&script.to_ascii_lowercase()) else {
         return false;
     };
-    let kind = if on_quest { Kind::Quest } else { Kind::Object };
+    let kind = match self_kind {
+        SelfKind::Quest => Kind::Quest,
+        SelfKind::Object => Kind::Object,
+        SelfKind::Alias => Kind::Alias,
+    };
     let library = Installed(scripts);
     let mut checker = Checker::new(Some(&library), script);
     checker.versions(script, handler).is_empty() || checker.check_call_into(script, handler, true, kind).is_some()
@@ -3720,6 +3810,13 @@ impl<'l> Checker<'l> {
             (Kind::Alias, "getlocation") => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "placeatme") if place_at_me_args_ok(&arg_kinds) => {
                 return Some(Kind::Object);
+            }
+            // The statement form of CK *UpdateCurrentInstanceGlobal - Quest*,
+            // which has no effect here: see `call_statement`.
+            (Kind::Quest, "updatecurrentinstanceglobal")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object)]) =>
+            {
+                return Some(Kind::None);
             }
             _ => {}
         }

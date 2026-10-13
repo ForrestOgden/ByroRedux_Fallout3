@@ -204,6 +204,9 @@ struct Delivery {
     vmad: Arc<ScriptInstanceData>,
     event: &'static str,
     args: Vec<VmStored>,
+    /// Whether `OnInit` runs once per reference (the reference scripts'
+    /// first-load gate); an alias script's is gated by its quest starting.
+    init_gated: bool,
 }
 
 /// Deliver this frame's events to the reference scripts the VM runs.
@@ -211,13 +214,18 @@ pub fn reference_script_event_system(world: &World, _dt: f32) {
     super::events::prune_stopped_quests(world);
     relay_engine_events(world);
     let deliveries = collect_deliveries(world);
+    run_deliveries(world, deliveries);
+}
+
+/// Run `deliveries` in order, each as an interpreted event of its owner.
+fn run_deliveries(world: &World, deliveries: Vec<Delivery>) {
     if deliveries.is_empty() {
         return;
     }
     let mut advances = Vec::new();
     for delivery in deliveries {
         let owner = QuestFormId(delivery.owner);
-        if delivery.event == "OnInit" {
+        if delivery.event == "OnInit" && delivery.init_gated {
             let key = initialized_key(&delivery.script);
             let Some(mut variables) = world.try_resource_mut::<crate::QuestScriptVariables>() else {
                 continue;
@@ -268,8 +276,52 @@ pub fn reference_script_event_system(world: &World, _dt: f32) {
     crate::quest_stages::push_quest_stage_advances(world, player, advances);
 }
 
+/// The alias scripts of the quests that run, by the entity their alias is
+/// filled with: (owner id, script). Only loaded fills can receive events.
+fn alias_script_targets(world: &World) -> HashMap<EntityId, Vec<(u32, AliasScript)>> {
+    let mut targets: HashMap<EntityId, Vec<(u32, AliasScript)>> = HashMap::new();
+    let Some(alias_scripts) = world.try_resource::<QuestAliasScripts>() else {
+        return targets;
+    };
+    let quests: Vec<(QuestFormId, Arc<Vec<AliasScript>>)> = alias_scripts
+        .checked_quests()
+        .filter_map(|quest| Some((quest, Arc::clone(alias_scripts.scripts(quest)?))))
+        .collect();
+    drop(alias_scripts);
+    if quests.is_empty() {
+        return targets;
+    }
+    let running: Vec<bool> = {
+        let stages = world.resource::<QuestStageState>();
+        quests.iter().map(|(quest, _)| stages.is_running(*quest)).collect()
+    };
+    let (Some(bindings), Some(owners)) = (
+        world.try_resource::<crate::SceneActorBindings>(),
+        world.try_resource::<AliasScriptOwners>(),
+    ) else {
+        return targets;
+    };
+    for ((quest, scripts), running) in quests.iter().zip(running) {
+        if !running {
+            continue;
+        }
+        for script in scripts.iter() {
+            let Some(entity) = bindings.resolve(*quest, i32::from(script.alias)) else {
+                continue;
+            };
+            let Some(owner) = owners.owner_of(*quest, script.alias) else {
+                continue;
+            };
+            targets.entry(entity).or_default().push((owner, script.clone()));
+        }
+    }
+    targets
+}
+
 /// The deliveries this frame's markers make, snapshotted before any runs:
-/// a run takes the quest guards and may write the marker storages.
+/// a run takes the quest guards and may write the marker storages. A marker
+/// on a reference reaches the scripts attached to it and the alias scripts of
+/// the aliases it fills.
 fn collect_deliveries(world: &World) -> Vec<Delivery> {
     // Pattern B: this system owns `OnDeathEvent`; drain it first, whatever
     // follows.
@@ -278,9 +330,10 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
         .map(|q| q.iter().map(|(entity, event)| (entity, event.killer)).collect())
         .unwrap_or_default();
     crate::scene::playback::drain::<crate::OnDeathEvent>(world);
-    let Some(attached) = world.query::<PapyrusReferenceScripts>() else {
-        return Vec::new();
-    };
+    // Before `attached` is held: the quest standing read takes the quest-state
+    // guard, which a VM run holds when it reaches for a reference's scripts.
+    let aliases = alias_script_targets(world);
+    let attached = world.query::<PapyrusReferenceScripts>();
     let player = world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0);
@@ -295,8 +348,14 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     let triggers = world.query::<crate::OnTriggerEnterEvent>();
     let hits = world.query::<crate::HitEvent>();
     let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
+    // Every entity a script is attached to or an alias script follows.
+    let mut entities: Vec<EntityId> = attached
+        .as_ref()
+        .map(|attached| attached.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    entities.extend(aliases.keys().copied().filter(|entity| attached.as_ref().is_none_or(|a| a.get(*entity).is_none())));
     let mut deliveries = Vec::new();
-    for (entity, scripts) in attached.iter() {
+    for entity in entities {
         let loaded = cell_loads.as_ref().is_some_and(|q| q.get(entity).is_some());
         let activator = activations.as_ref().and_then(|q| q.get(entity)).map(|event| event.activator);
         let triggerers: Vec<EntityId> = triggers
@@ -309,63 +368,148 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
         if !loaded && activator.is_none() && triggerers.is_empty() && death.is_none() && hit.is_none() {
             continue;
         }
-        let Some(owner) = form_of(entity) else {
-            log::debug!("reference script events on {entity:?} skipped: the reference has no FormID");
-            continue;
-        };
         let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
-        for script in &scripts.0 {
-            let mut deliver = |event: &'static str, args: Vec<VmStored>| {
-                if script.handles(event) {
+        // The events this reference received, in delivery order.
+        let mut events: Vec<(&'static str, Vec<VmStored>)> = Vec::new();
+        if loaded {
+            for event in ["OnInit", "OnCellAttach", "OnLoad", "OnCellLoad"] {
+                events.push((event, Vec::new()));
+            }
+        }
+        if let Some(activator) = activator {
+            events.push(("OnActivate", vec![reference(activator)]));
+        }
+        for &triggerer in &triggerers {
+            events.push(("OnTriggerEnter", vec![reference(triggerer)]));
+        }
+        // `OnHit(akAggressor, akSource, akProjectile, abPowerAttack,
+        // abSneakAttack, abBashAttack, abHitBlocked)`: the source is the
+        // aggressor's equipped weapon (None unarmed — no weapon form is
+        // invented); projectiles are not modelled.
+        if let Some(hit) = hit {
+            let source = weapons
+                .as_ref()
+                .and_then(|q| q.get(hit.aggressor))
+                .map_or(VmStored::None, |weapon| VmStored::Form(weapon.base_form_id));
+            events.push((
+                "OnHit",
+                vec![
+                    reference(hit.aggressor),
+                    source,
+                    VmStored::None,
+                    VmStored::Bool(hit.power_attack),
+                    VmStored::Bool(hit.sneak_attack),
+                    VmStored::Bool(hit.bash_attack),
+                    VmStored::Bool(hit.blocked),
+                ],
+            ));
+        }
+        if let Some(killer) = death {
+            let killer = killer.map_or(VmStored::None, reference);
+            events.push(("OnDeath", vec![killer]));
+        }
+        if let Some(scripts) = attached.as_ref().and_then(|attached| attached.get(entity)) {
+            let Some(owner) = form_of(entity) else {
+                log::debug!("reference script events on {entity:?} skipped: the reference has no FormID");
+                continue;
+            };
+            for script in &scripts.0 {
+                for (event, args) in &events {
+                    if script.handles(event) {
+                        deliveries.push(Delivery {
+                            owner,
+                            script: script.script.clone(),
+                            vmad: Arc::clone(&script.vmad),
+                            event,
+                            args: args.clone(),
+                            init_gated: true,
+                        });
+                    }
+                }
+            }
+        }
+        for (owner, script) in aliases.get(&entity).into_iter().flatten() {
+            for (event, args) in &events {
+                // An alias script starts with its quest, not with its
+                // reference loading.
+                if *event != "OnInit" && script.handles(event) {
                     deliveries.push(Delivery {
-                        owner,
+                        owner: *owner,
                         script: script.script.clone(),
                         vmad: Arc::clone(&script.vmad),
                         event,
-                        args,
+                        args: args.clone(),
+                        init_gated: false,
                     });
                 }
-            };
-            if loaded {
-                for event in ["OnInit", "OnCellAttach", "OnLoad", "OnCellLoad"] {
-                    deliver(event, Vec::new());
-                }
-            }
-            if let Some(activator) = activator {
-                deliver("OnActivate", vec![reference(activator)]);
-            }
-            for &triggerer in &triggerers {
-                deliver("OnTriggerEnter", vec![reference(triggerer)]);
-            }
-            // `OnHit(akAggressor, akSource, akProjectile, abPowerAttack,
-            // abSneakAttack, abBashAttack, abHitBlocked)`: the source is the
-            // aggressor's equipped weapon (None unarmed — no weapon form is
-            // invented); projectiles are not modelled.
-            if let Some(hit) = hit {
-                let source = weapons
-                    .as_ref()
-                    .and_then(|q| q.get(hit.aggressor))
-                    .map_or(VmStored::None, |weapon| VmStored::Form(weapon.base_form_id));
-                deliver(
-                    "OnHit",
-                    vec![
-                        reference(hit.aggressor),
-                        source,
-                        VmStored::None,
-                        VmStored::Bool(hit.power_attack),
-                        VmStored::Bool(hit.sneak_attack),
-                        VmStored::Bool(hit.bash_attack),
-                        VmStored::Bool(hit.blocked),
-                    ],
-                );
-            }
-            if let Some(killer) = death {
-                let killer = killer.map_or(VmStored::None, reference);
-                deliver("OnDeath", vec![killer]);
             }
         }
     }
     deliveries
+}
+
+/// Start and shut down the alias scripts of the quests that run: a quest that
+/// starts delivers `OnInit` and then `OnAliasInit` to each alias script (CK
+/// *OnAliasInit*: "Other aliases in the quest will have also been filled by
+/// this point"), and one that stops delivers `OnAliasShutdown`.
+pub fn alias_script_event_system(world: &World, _dt: f32) {
+    let (quests, standing) = {
+        let Some(alias_scripts) = world.try_resource::<QuestAliasScripts>() else {
+            return;
+        };
+        let mut quests: Vec<(QuestFormId, Arc<Vec<AliasScript>>)> = alias_scripts
+            .checked_quests()
+            .filter_map(|quest| Some((quest, Arc::clone(alias_scripts.scripts(quest)?))))
+            .collect();
+        quests.sort_unstable_by_key(|(quest, _)| quest.0);
+        drop(alias_scripts);
+        let stages = world.resource::<QuestStageState>();
+        let standing: Vec<bool> = quests.iter().map(|(quest, _)| stages.is_running(*quest)).collect();
+        (quests, standing)
+    };
+    if quests.is_empty() {
+        return;
+    }
+    // A fill still pending would make `OnAliasInit` read an empty alias.
+    let filling = world
+        .try_resource::<crate::SceneActorBindings>()
+        .is_some_and(|bindings| bindings.is_dirty());
+    let mut deliveries = Vec::new();
+    for ((quest, scripts), running) in quests.into_iter().zip(standing) {
+        let started = world.try_resource::<AliasScriptOwners>().is_some_and(|o| o.is_started(quest));
+        let phases: &[&'static str] = match (running, started) {
+            (true, false) if !filling => &["OnInit", "OnAliasInit"],
+            (false, true) => &["OnAliasShutdown"],
+            _ => continue,
+        };
+        let Some(mut owners) = world.try_resource_mut::<AliasScriptOwners>() else {
+            return;
+        };
+        if running {
+            owners.mark_started(quest);
+        } else {
+            owners.mark_stopped(quest);
+        }
+        for event in phases {
+            for script in scripts.iter() {
+                if !script.handles(event) {
+                    continue;
+                }
+                let Some(owner) = owners.ensure(quest, script.alias) else {
+                    continue;
+                };
+                deliveries.push(Delivery {
+                    owner,
+                    script: script.script.clone(),
+                    vmad: Arc::clone(&script.vmad),
+                    event,
+                    args: Vec::new(),
+                    init_gated: false,
+                });
+            }
+        }
+    }
+    run_deliveries(world, deliveries);
 }
 
 /// Relay this frame's engine events to the scripts registered for them

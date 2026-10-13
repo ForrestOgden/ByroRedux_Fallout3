@@ -4,7 +4,8 @@
 use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use super::super::script_instance::{
-    parse_quest_fragments, QuestScriptFragment, ScriptInstanceData,
+    parse_quest_alias_scripts_with_remap, parse_quest_fragments, QuestAliasScripts, QuestScriptFragment,
+    ScriptInstanceData,
 };
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
@@ -408,6 +409,10 @@ pub struct QustRecord {
     /// `SomeOtherQuest.SetStage(..)` call bound via a `Quest Property`)
     /// resolves through at dispatch time.
     pub script_instance: Option<ScriptInstanceData>,
+    /// The scripts attached to this quest's aliases, from the QUST `VMAD`
+    /// alias section (`wbVMADFragmentedQUST`): the alias index and the scripts
+    /// with their properties. M47.2 runs them as alias scripts.
+    pub alias_scripts: Vec<QuestAliasScripts>,
     /// All defined aliases (`ALST`/`ALLS` blocks), in authoring order.
     /// Consumed by the scripting alias-fill/injection runtime. See
     /// [`QuestAlias`].
@@ -569,6 +574,7 @@ fn parse_qust_header(
         b"VMAD" => {
             out.fragments = parse_quest_fragments(&sub.data);
             out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
+            out.alias_scripts = parse_quest_alias_scripts_with_remap(&sub.data, remap);
         }
         b"ANAM" if sub.data.len() >= 4 => {
             out.next_alias_id = Some(SubReader::new(&sub.data).u32_or_default());

@@ -212,7 +212,9 @@ pub fn distance_event_system(world: &World, _dt: f32) {
             .map(|(_, w)| {
                 let quest = QuestFormId(w.owner);
                 let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
-                is_quest.then(|| stages.is_running(quest))
+                is_quest
+                    .then(|| stages.is_running(quest))
+                    .or_else(|| super::alias_owner_standing(world, w.owner, &stages))
             })
             .collect()
     };
@@ -276,13 +278,15 @@ pub fn distance_event_system(world: &World, _dt: f32) {
         let owner = QuestFormId(watch.owner);
         let on_quest = quests.contains_key(&owner) || fragments.vmad(owner).is_some();
         let event = watch.event();
-        let runs = super::vm::handler_runs(&fragments.vm_scripts(), &watch.script, event, on_quest);
+        let kind = super::vm::SelfKind::of_owner(watch.owner, on_quest);
+        let runs = super::vm::handler_runs(&fragments.vm_scripts(), &watch.script, event, kind);
         if !runs {
             log::debug!("{:08X}: {}.{event} skipped: the Papyrus VM does not run it", watch.owner, watch.script);
             continue;
         }
         let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
             Some(vmad) => Some(vmad.clone()),
+            None if super::is_alias_owner(watch.owner) => super::alias_owner_vmad(world, watch.owner, &watch.script),
             None => ReferenceScriptIndex::lookup(world, watch.owner).and_then(|entity| {
                 let attached = world.get::<PapyrusReferenceScripts>(entity)?;
                 attached

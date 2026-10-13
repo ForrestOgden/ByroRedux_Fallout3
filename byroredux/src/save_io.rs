@@ -629,6 +629,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::Achievements>("Achievements")
         // M47.2 — ObjectReference.SetLinkedRef links.
         .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
+        // M47.2 — alias script owner ids and the quests whose alias scripts started.
+        .register_resource::<byroredux_scripting::AliasScriptOwners>("AliasScriptOwners")
         // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
         .register_resource::<byroredux_scripting::FollowerState>("FollowerState")
         // M47.2 — Papyrus distance-event registrations.

@@ -125,6 +125,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .map(|time| time.absolute_hours());
         byroredux_scripting::script_update_system(world, dt, game_hours)
     }
+    fn check_alias_scripts_dispatch(world: &World, _dt: f32) {
+        crate::asset_provider::check_running_quest_alias_scripts(world)
+    }
     fn dlc2_ttr4a_on_init_dispatch(world: &World, _dt: f32) {
         byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
     }
@@ -525,6 +528,14 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // cell-load, activation and trigger events (all produced above). Ahead
     // of quest fragment dispatch, so a stage they set runs its fragment
     // this frame.
+    //
+    // M47.2 — the alias scripts of quests that run go first: checked when a
+    // quest first runs, started (OnInit / OnAliasInit) once its aliases are
+    // filled, shut down when it stops. The events of the references the
+    // aliases are filled with are delivered by the system after them, with the
+    // reference scripts'.
+    scheduler.add_exclusive(Stage::Update, check_alias_scripts_dispatch);
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::alias_script_event_system);
     scheduler.add_exclusive(
         Stage::Update,
         byroredux_scripting::reference_script_event_system,

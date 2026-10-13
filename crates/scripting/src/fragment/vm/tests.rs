@@ -613,6 +613,112 @@ fn reference_scripts_run_their_events() {
     assert!(!crate::fragment::reference_enabled(&world, REF), "OnActivate disabled itself");
 }
 
+/// An alias script the VM runs: `OnInit` then `OnAliasInit` when its quest
+/// starts, the filled reference's `OnDeath`, and `OnAliasShutdown` when the
+/// quest stops — all under one owner id per (quest, alias), with `Self` the
+/// alias.
+#[test]
+fn alias_scripts_start_follow_their_reference_and_shut_down() {
+    const ALIAS: i16 = 3;
+    const FILLED: u32 = 0x0001_0F50;
+    let script = parsed_source(
+        "ScriptName VmAliasScript extends ReferenceAlias\n\
+         ObjectReference Property Marker Auto\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count = 5\n EndEvent\n\
+         Event OnAliasInit()\n Count += 10\n EndEvent\n\
+         Event OnAliasShutdown()\n Count += 100\n EndEvent\n\
+         Event OnDeath(Actor akKiller)\n\
+           If Self.GetReference() == akKiller || akKiller == Game.GetPlayer()\n\
+             Marker.Enable()\n\
+             Self.GetOwningQuest().SetStage(20)\n\
+           EndIf\n\
+         EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_alias_script(Arc::clone(&script), &crate::DELIVERED_ALIAS_EVENTS, None).expect("the VM runs it");
+    assert_eq!(events, ["OnInit", "OnAliasInit", "OnAliasShutdown", "OnDeath"]);
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(FILLED),
+    });
+    world.insert_resource(pool);
+    let filled = world.spawn();
+    world.insert(filled, FormIdComponent(id));
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(MARKER, false);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in scripts {
+            fragments.insert_vm_script(script);
+        }
+    }
+    let instance = ScriptInstance {
+        name: "VmAliasScript".into(),
+        status: 0,
+        properties: vec![ScriptProperty {
+            name: "Marker".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: MARKER,
+                alias: -1,
+            },
+        }],
+    };
+    world.resource_mut::<crate::QuestAliasScripts>().set_checked(
+        Q,
+        vec![crate::AliasScript {
+            alias: ALIAS,
+            script: "VmAliasScript".into(),
+            vmad: Arc::new(ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![instance],
+            }),
+            events,
+        }],
+    );
+    world.resource_mut::<crate::SceneActorBindings>().bind(Q, i32::from(ALIAS), filled);
+
+    // The quest has not started: nothing runs.
+    crate::alias_script_event_system(&world, 0.0);
+    assert!(world.resource::<crate::AliasScriptOwners>().owner_of(Q, ALIAS).is_none());
+
+    world.resource_mut::<QuestStageState>().start_quest(Q, None);
+    crate::alias_script_event_system(&world, 0.0);
+    let owner = world.resource::<crate::AliasScriptOwners>().owner_of(Q, ALIAS).expect("allocated at start");
+    let count = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(owner), crate::QuestScriptVariables::property_key("Count"))
+    };
+    assert_eq!(count(&world), Some(15.0), "OnInit then OnAliasInit");
+    crate::alias_script_event_system(&world, 0.0);
+    assert_eq!(count(&world), Some(15.0), "started once");
+
+    // The filled reference dies: the alias script's OnDeath runs.
+    world.insert(filled, crate::OnDeathEvent { killer: Some(player) });
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+
+    // A stopped quest shuts its alias scripts down, once.
+    world.resource_mut::<QuestStageState>().stop(Q);
+    crate::alias_script_event_system(&world, 0.0);
+    assert_eq!(count(&world), Some(115.0));
+    crate::alias_script_event_system(&world, 0.0);
+    assert_eq!(count(&world), Some(115.0), "shut down once");
+}
+
 /// `RegisterForUpdate` delivers `OnUpdate` every interval until the handler
 /// unregisters; the check accepts the registration because the handler runs.
 #[test]
@@ -1442,6 +1548,36 @@ fn place_at_me_creates_scripted_references() {
     let enable = world.resource::<crate::fragment::ReferenceEnableState>();
     assert_eq!(enable.override_for(0xFF80_0001), Some(false), "only the last is disabled");
     assert_eq!(enable.override_for(0xFF80_0000), None);
+}
+
+/// `UpdateCurrentInstanceGlobal` as a statement refreshes a cached global
+/// copy this engine does not keep: it runs and does nothing; its Bool result
+/// used as a value stays declined.
+#[test]
+fn update_current_instance_global_statement_is_a_no_op() {
+    let script = parsed_source(
+        "ScriptName QF_VmInstance extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Int count = 0\n\
+           While count < 2\n\
+             count += 1\n\
+           EndWhile\n\
+           Self.UpdateCurrentInstanceGlobal(Marker)\n\
+           Self.SetStage(20)\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           If Self.UpdateCurrentInstanceGlobal(Marker)\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_2", None).is_err());
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
 /// `Game.GetForm` answers a loaded plugin's id and None for an unloaded

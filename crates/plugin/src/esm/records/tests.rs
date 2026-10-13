@@ -2942,6 +2942,14 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
 /// short and every entry costs a human decision — that is the point.
 const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
     (
+        "script_instance.rs",
+        "parse_quest_alias_scripts",
+        "The raw decoder: `parse_quest_alias_scripts_with_remap` is the \
+         production entry point and promotes every Object property's FormID, \
+         as `ScriptInstanceData::parse_with_remap` does for the scripts \
+         section.",
+    ),
+    (
         "actor/class.rs",
         "parse_clas",
         "CLAS DATA is attribute/specialization/skill *indices* and a flag \

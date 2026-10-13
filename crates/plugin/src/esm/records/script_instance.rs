@@ -234,62 +234,9 @@ impl ScriptInstanceData {
         // Cleared by every graceful break below. Only an untouched `true`
         // means `c.pos` is a real section boundary a caller may seek to.
         let mut clean = true;
-        let has_status = version >= 4;
-        for _ in 0..script_count {
-            let Some(name) = c.wstring() else {
-                clean = false;
-                break;
-            };
-            let status = if has_status { c.u8().unwrap_or(0) } else { 0 };
-            let Some(prop_count) = c.u16() else {
-                clean = false;
-                break;
-            };
-            let mut properties = Vec::with_capacity(prop_count as usize);
-            let mut script_ok = true;
-            for _ in 0..prop_count {
-                let Some(pname) = c.wstring() else {
-                    script_ok = false;
-                    break;
-                };
-                let Some(ptype) = c.u8() else {
-                    script_ok = false;
-                    break;
-                };
-                let pstatus = if has_status { c.u8().unwrap_or(0) } else { 0 };
-                match c.property_value(ptype, object_format) {
-                    Some(value @ PropertyValue::Unknown(_)) => {
-                        // Width of an unknown type is unknowable — keep
-                        // what we have and stop this script's props.
-                        properties.push(ScriptProperty {
-                            name: pname,
-                            status: pstatus,
-                            value,
-                        });
-                        script_ok = false;
-                        break;
-                    }
-                    Some(value) => properties.push(ScriptProperty {
-                        name: pname,
-                        status: pstatus,
-                        value,
-                    }),
-                    None => {
-                        script_ok = false;
-                        break;
-                    }
-                }
-            }
-            out.scripts.push(ScriptInstance {
-                name,
-                status,
-                properties,
-            });
-            if !script_ok {
-                clean = false;
-                break;
-            }
-        }
+        let (scripts, scripts_clean) = c.scripts(script_count, version, object_format);
+        out.scripts = scripts;
+        clean &= scripts_clean;
         (out, clean.then_some(c.pos))
     }
 }
@@ -411,6 +358,123 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
         });
     }
     out
+}
+
+/// The scripts attached to one quest alias (the QUST `VMAD` alias section).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QuestAliasScripts {
+    /// The alias the scripts are attached to (the alias object's index).
+    pub alias_id: i16,
+    pub scripts: ScriptInstanceData,
+}
+
+/// Decode the trailing alias section of a QUST `VMAD`: per alias, the alias
+/// object, its own version and object format, and its script entries.
+///
+/// xEdit's `wbVMADFragmentedQUST` (TES5 and FO4): after the scripts section
+/// and the fragment section come `u16 aliasCount` and, per alias, a script
+/// property object (the quest and the alias index), `i16 version`,
+/// `i16 objectFormat`, `u16 scriptCount` and the script entries. The Skyrim
+/// fragment section is `u8 unknown, u16 count, wstring fileName`, then the
+/// fragments; Fallout 4's names the script the same way and, when the name is
+/// not empty, embeds that script's flags and property table before the
+/// fragments (`wbScriptFragmentsQuest`). Fallout 4 and later write VMAD
+/// version 6.
+///
+/// Graceful: a section that cannot be walked yields the aliases decoded so far.
+pub fn parse_quest_alias_scripts(vmad: &[u8]) -> Vec<QuestAliasScripts> {
+    quest_alias_section(vmad).0
+}
+
+/// [`parse_quest_alias_scripts`] with every Object property's FormID promoted
+/// into the active global load-order space, as [`ScriptInstanceData::parse_with_remap`]
+/// does for the scripts section.
+pub fn parse_quest_alias_scripts_with_remap(
+    vmad: &[u8],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Vec<QuestAliasScripts> {
+    let mut aliases = parse_quest_alias_scripts(vmad);
+    if let Some(remap) = remap {
+        for alias in &mut aliases {
+            for script in &mut alias.scripts.scripts {
+                for property in &mut script.properties {
+                    remap_property_value(&mut property.value, remap);
+                }
+            }
+        }
+    }
+    aliases
+}
+
+/// [`parse_quest_alias_scripts`], also reporting whether the section was walked
+/// to the very last byte of the `VMAD` — what a corpus census checks to prove
+/// the layout.
+pub fn quest_alias_section(vmad: &[u8]) -> (Vec<QuestAliasScripts>, bool) {
+    let (data, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return (Vec::new(), false);
+    };
+    let Some(section) = vmad.get(consumed..) else {
+        return (Vec::new(), false);
+    };
+    let mut c = Cursor::new(section);
+    let (Some(_unknown), Some(fragment_count), Some(file_name)) = (c.u8(), c.u16(), c.wstring()) else {
+        return (Vec::new(), false);
+    };
+    if data.version >= 6 && !file_name.is_empty() {
+        // Fallout 4: the fragment script's own flags and properties.
+        let has_status = data.version >= 4;
+        if has_status && c.u8().is_none() {
+            return (Vec::new(), false);
+        }
+        let Some(property_count) = c.u16() else {
+            return (Vec::new(), false);
+        };
+        for _ in 0..property_count {
+            let (Some(_name), Some(ptype)) = (c.wstring(), c.u8()) else {
+                return (Vec::new(), false);
+            };
+            if has_status && c.u8().is_none() {
+                return (Vec::new(), false);
+            }
+            match c.property_value(ptype, data.object_format) {
+                Some(PropertyValue::Unknown(_)) | None => return (Vec::new(), false),
+                Some(_) => {}
+            }
+        }
+    }
+    for _ in 0..fragment_count {
+        let (Some(_stage), Some(_), Some(_), Some(_), Some(_script), Some(_function)) =
+            (c.u16(), c.i16(), c.i32(), c.u8(), c.wstring(), c.wstring())
+        else {
+            return (Vec::new(), false);
+        };
+    }
+    let Some(alias_count) = c.u16() else {
+        return (Vec::new(), false);
+    };
+    let mut out = Vec::with_capacity(alias_count as usize);
+    for _ in 0..alias_count {
+        let Some(PropertyValue::Object { alias, .. }) = c.property_value(1, data.object_format) else {
+            break;
+        };
+        let (Some(version), Some(object_format), Some(count)) = (c.i16(), c.i16(), c.u16()) else {
+            break;
+        };
+        let (scripts, clean) = c.scripts(count, version, object_format);
+        out.push(QuestAliasScripts {
+            alias_id: alias,
+            scripts: ScriptInstanceData {
+                version,
+                object_format,
+                scripts,
+            },
+        });
+        if !clean {
+            break;
+        }
+    }
+    let exact = c.pos == section.len();
+    (out, exact)
 }
 
 /// Event that invokes one compiled Papyrus fragment attached to a `SCEN`.
@@ -702,6 +766,69 @@ impl<'a> Cursor<'a> {
         Some(String::from_utf8_lossy(bytes).into_owned())
     }
 
+    /// `count` script entries: name, status byte (version 4+), and the
+    /// property table. The bool is `false` when a truncated entry or a
+    /// property of unknowable width ended the decode early (what decoded is
+    /// kept).
+    fn scripts(&mut self, count: u16, version: i16, object_format: i16) -> (Vec<ScriptInstance>, bool) {
+        let c = self;
+        let mut scripts = Vec::new();
+        let has_status = version >= 4;
+        for _ in 0..count {
+            let Some(name) = c.wstring() else {
+                return (scripts, false);
+            };
+            let status = if has_status { c.u8().unwrap_or(0) } else { 0 };
+            let Some(prop_count) = c.u16() else {
+                return (scripts, false);
+            };
+            let mut properties = Vec::with_capacity(prop_count as usize);
+            let mut script_ok = true;
+            for _ in 0..prop_count {
+                let Some(pname) = c.wstring() else {
+                    script_ok = false;
+                    break;
+                };
+                let Some(ptype) = c.u8() else {
+                    script_ok = false;
+                    break;
+                };
+                let pstatus = if has_status { c.u8().unwrap_or(0) } else { 0 };
+                match c.property_value(ptype, object_format) {
+                    Some(value @ PropertyValue::Unknown(_)) => {
+                        // Width of an unknown type is unknowable — keep
+                        // what we have and stop this script's props.
+                        properties.push(ScriptProperty {
+                            name: pname,
+                            status: pstatus,
+                            value,
+                        });
+                        script_ok = false;
+                        break;
+                    }
+                    Some(value) => properties.push(ScriptProperty {
+                        name: pname,
+                        status: pstatus,
+                        value,
+                    }),
+                    None => {
+                        script_ok = false;
+                        break;
+                    }
+                }
+            }
+            scripts.push(ScriptInstance {
+                name,
+                status,
+                properties,
+            });
+            if !script_ok {
+                return (scripts, false);
+            }
+        }
+        (scripts, true)
+    }
+
     /// Decode one property value by type tag + object format.
     fn property_value(&mut self, ptype: u8, object_format: i16) -> Option<PropertyValue> {
         Some(match ptype {
@@ -763,6 +890,106 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One script entry: `name`, its status byte and an Int property.
+    fn push_script(v: &mut Vec<u8>, name: &str, property: &str, value: i32) {
+        push_wstring(v, name);
+        v.push(0); // status
+        v.extend_from_slice(&1u16.to_le_bytes());
+        push_wstring(v, property);
+        v.push(3); // Int32
+        v.push(1); // property status
+        v.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// An alias object: `{u16 unused, i16 alias, u32 quest}` (object format 2).
+    fn push_alias_object(v: &mut Vec<u8>, alias: i16, quest: u32) {
+        v.extend_from_slice(&0u16.to_le_bytes());
+        v.extend_from_slice(&alias.to_le_bytes());
+        v.extend_from_slice(&quest.to_le_bytes());
+    }
+
+    /// The QUST `VMAD` alias section, Skyrim shape (version 5): the fragment
+    /// script is named by the file name alone.
+    #[test]
+    fn quest_alias_scripts_decode_after_the_skyrim_fragment_section() {
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // no quest scripts
+        vmad.push(2); // fragment header
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        push_wstring(&mut vmad, "QF_Test_00001234");
+        vmad.extend_from_slice(&30u16.to_le_bytes());
+        vmad.extend_from_slice(&0i16.to_le_bytes());
+        vmad.extend_from_slice(&0i32.to_le_bytes());
+        vmad.push(1);
+        push_wstring(&mut vmad, "QF_Test_00001234");
+        push_wstring(&mut vmad, "Fragment_4");
+        vmad.extend_from_slice(&2u16.to_le_bytes()); // two aliases
+        for (alias, name, value) in [(3i16, "WEAliasScript", 7), (9, "SwapAliasOnDeath", -1)] {
+            push_alias_object(&mut vmad, alias, 0x1234);
+            vmad.extend_from_slice(&5i16.to_le_bytes());
+            vmad.extend_from_slice(&2i16.to_le_bytes());
+            vmad.extend_from_slice(&1u16.to_le_bytes());
+            push_script(&mut vmad, name, "Count", value);
+        }
+        let (aliases, exact) = quest_alias_section(&vmad);
+        assert!(exact, "the section is walked to the last byte");
+        assert_eq!(aliases.len(), 2);
+        assert_eq!(aliases[0].alias_id, 3);
+        assert_eq!(aliases[0].scripts.scripts[0].name, "WEAliasScript");
+        assert_eq!(aliases[0].scripts.scripts[0].properties[0].value, PropertyValue::Int32(7));
+        assert_eq!(aliases[1].alias_id, 9);
+        assert_eq!(aliases[1].scripts.scripts[0].properties[0].value, PropertyValue::Int32(-1));
+    }
+
+    /// Fallout 4 (version 6) embeds the fragment script's flags and properties
+    /// after its name.
+    #[test]
+    fn quest_alias_scripts_skip_the_fallout4_fragment_script_data() {
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&6i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&0u16.to_le_bytes());
+        vmad.push(2);
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        push_wstring(&mut vmad, "Fragments:Quests:QF_Test_00001234");
+        vmad.push(0); // script flags
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        push_wstring(&mut vmad, "Alias_Boss");
+        vmad.push(1); // Object
+        vmad.push(1); // property status
+        push_alias_object(&mut vmad, 4, 0x1234);
+        vmad.extend_from_slice(&10u16.to_le_bytes());
+        vmad.extend_from_slice(&0i16.to_le_bytes());
+        vmad.extend_from_slice(&0i32.to_le_bytes());
+        vmad.push(1);
+        push_wstring(&mut vmad, "Fragments:Quests:QF_Test_00001234");
+        push_wstring(&mut vmad, "Fragment_2");
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        push_alias_object(&mut vmad, 4, 0x1234);
+        vmad.extend_from_slice(&6i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&1u16.to_le_bytes());
+        push_script(&mut vmad, "DefaultAliasOnDeath", "Flag", 1);
+        let (aliases, exact) = quest_alias_section(&vmad);
+        assert!(exact);
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].alias_id, 4);
+        assert_eq!(aliases[0].scripts.version, 6);
+        assert_eq!(aliases[0].scripts.scripts[0].name, "DefaultAliasOnDeath");
+    }
+
+    /// A quest with only attached scripts has no alias section.
+    #[test]
+    fn a_quest_vmad_without_a_fragment_section_has_no_alias_scripts() {
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&5i16.to_le_bytes());
+        vmad.extend_from_slice(&2i16.to_le_bytes());
+        vmad.extend_from_slice(&0u16.to_le_bytes());
+        assert!(parse_quest_alias_scripts(&vmad).is_empty());
+    }
 
     // Synthetic Skyrim-shape VMAD: version 5, objectFormat 2, one script
     // "TestScript" with one Object property "MyQuest" → FormID 0x000242af

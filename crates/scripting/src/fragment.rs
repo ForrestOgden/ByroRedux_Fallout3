@@ -57,6 +57,7 @@ use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::{ActorRef, Effect};
 
 pub mod budget;
+mod alias_scripts;
 mod effects;
 mod distance;
 mod events;
@@ -69,6 +70,7 @@ mod updates;
 pub mod vm;
 
 pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST};
+pub use alias_scripts::*;
 pub use effects::*;
 pub use distance::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
@@ -96,6 +98,7 @@ pub use updates::*;
 /// runtime precisely so a test's own source cannot satisfy them.
 #[cfg(test)]
 pub(crate) const SOURCES: &str = concat!(
+    include_str!("fragment/alias_scripts.rs"),
     include_str!("fragment/budget.rs"),
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),

@@ -453,7 +453,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v80 -> v81 (M47.2): `CreatedReferences` gained the script-created records
 /// and FormID counter (`PlaceAtMe`).
-pub const FORMAT_MAJOR: u16 = 81;
+///
+/// v81 -> v82 (M47.2): the `AliasScriptOwners` resource column (alias script
+/// owner ids and started quests).
+pub const FORMAT_MAJOR: u16 = 82;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

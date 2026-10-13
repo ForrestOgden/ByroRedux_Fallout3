@@ -702,6 +702,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's AddAchievement.
             .reads_resource::<byroredux_scripting::Achievements>()
             .writes_resource::<byroredux_scripting::Achievements>()
+            // M47.2 — a spoken line's run knows what `Self` is for alias scripts.
+            .reads_resource::<byroredux_scripting::AliasScriptOwners>()
             // M47.2 — a spoken line's SetLinkedRef / GetLinkedRef.
             .reads_resource::<byroredux_scripting::LinkedRefOverrides>()
             .writes_resource::<byroredux_scripting::LinkedRefOverrides>()
