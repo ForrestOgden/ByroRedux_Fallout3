@@ -1155,6 +1155,19 @@ keyword); a read sees a write made earlier in the same run. The condition functi
 location alias) and *GetKeywordDataForCurrentLocation* (651, the subject's location) read
 the same store — "returns this value, if any. It otherwise returns 0".
 
+### Weather and form lists (M47.2)
+
+- `Weather.GetCurrentWeather()` (CK: "the current weather used by the sky system") is the
+  `WTHR` the host published as `CurrentWeather` when it installed the sky
+  (`apply_environment`); `<weather>.GetClassification()` is the record's classification as
+  the CK numbers it: -1 none, 0 Pleasant, 1 Cloudy, 2 Rainy, 3 Snow
+  (`WeatherClassifications`, first set bit). The weather does not change at run time
+  here, so a script sees the worldspace's weather.
+- `FormList.GetSize()` / `GetAt(i)` / `HasForm(f)` / `Find(f)` read the `FLST` record's
+  forms (`FormLists`; null entries dropped); `AddForm` is not modelled. These two sets are
+  what let Skyrim's ambient critter spawners (`CritterSpawn`, 3,300 references) run: they
+  gate on the game hour, the weather and the player's distance, then `PlaceAtMe` a critter.
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

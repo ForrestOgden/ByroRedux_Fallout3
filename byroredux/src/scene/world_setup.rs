@@ -271,6 +271,10 @@ fn apply_environment(
     // (procedural-fallback branch). See the function doc for the two
     // failure modes this prevents.
     collapse_weather_transition(world);
+    // M47.2 — `Weather.GetCurrentWeather()` answers with this weather.
+    if let Some(mut current) = world.try_resource_mut::<byroredux_scripting::CurrentWeather>() {
+        current.0 = default_weather.map(|wthr| wthr.form_id);
+    }
     if let Some(wthr) = default_weather {
         let sun_dir = compute_sun_arc(
             bootstrap_hour,

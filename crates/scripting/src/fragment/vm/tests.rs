@@ -1166,6 +1166,94 @@ fn location_keyword_data_round_trips() {
     assert_eq!(crate::location_keyword_data(&world, PLACE, COST), 125.0);
 }
 
+/// `Weather.GetCurrentWeather()` answers the weather the host published, and
+/// `GetClassification()` its `WTHR` classification (CK: 2 is Rainy).
+#[test]
+fn current_weather_and_its_classification() {
+    const RAIN: u32 = 0x0001_0F74;
+    let script = parsed_source(
+        "ScriptName QF_VmWeather extends Quest\n\
+         Function Fragment_1()\n\
+           Weather now = Weather.GetCurrentWeather()\n\
+           If now && now.GetClassification() == 2\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.weathers.insert(
+        RAIN,
+        byroredux_plugin::esm::records::WeatherRecord {
+            form_id: RAIN,
+            classification: byroredux_plugin::esm::records::weather::WTHR_RAINY,
+            ..Default::default()
+        },
+    );
+    crate::install_weather_classifications(&mut world, &index);
+    // No weather published: the fragment's guard fails.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10);
+    world.resource_mut::<crate::CurrentWeather>().0 = Some(RAIN);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 5);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// `FormList.GetSize` / `GetAt` / `HasForm` / `Find` read the `FLST` record's forms.
+#[test]
+fn form_list_reads() {
+    const LIST: u32 = 0x0001_0F75;
+    const FIRST: u32 = 0x0001_0F76;
+    const SECOND: u32 = 0x0001_0F77;
+    let script = parsed_source(
+        "ScriptName QF_VmFormList extends Quest\n\
+         FormList Property Types Auto\n\
+         Form Property Wanted Auto\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Types.GetSize() == 2 && Types.HasForm(Wanted) && Types.Find(Wanted) == 1 && Types.GetAt(0) == Types.GetAt(0) && !Types.GetAt(5)\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let object = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmFormList".into(),
+                status: 0,
+                properties: vec![object("Types", LIST), object("Wanted", SECOND), object("Marker", MARKER)],
+            }],
+        },
+    );
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.form_lists.insert(
+        LIST,
+        byroredux_plugin::esm::records::FlstRecord {
+            form_id: LIST,
+            entries: vec![FIRST, 0xFFFF_FFFF, SECOND],
+            ..Default::default()
+        },
+    );
+    crate::install_form_lists(&mut world, &index);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

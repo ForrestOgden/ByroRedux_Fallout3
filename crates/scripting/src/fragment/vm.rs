@@ -889,7 +889,7 @@ fn static_class(e: &Expr) -> Option<&str> {
     let Expr::Ident(name) = e else {
         return None;
     };
-    ["game", "utility", "debug", "math"]
+    ["game", "utility", "debug", "math", "weather"]
         .into_iter()
         .find(|class| name.0.eq_ignore_ascii_case(class))
 }
@@ -2374,6 +2374,13 @@ impl Vm<'_> {
                             .is_some_and(|identity| identity.pair(id).is_some());
                     Some(if valid { Value::Form(id) } else { Value::None })
                 }
+                // CK *GetCurrentWeather - Weather*.
+                ("weather", "getcurrentweather") => Some(
+                    self.world
+                        .try_resource::<crate::CurrentWeather>()
+                        .and_then(|weather| weather.0)
+                        .map_or(Value::None, Value::Form),
+                ),
                 ("math", function) if MATH_NATIVES.contains(&function) => {
                     let values = self.eval_args(frame, args)?;
                     math_native(function, &values)?
@@ -2431,6 +2438,11 @@ impl Vm<'_> {
                     | "placeatme"
                     | "ischild"
                     | "trytogetcurrentlocation"
+                    | "getclassification"
+                    | "getsize"
+                    | "getat"
+                    | "hasform"
+                    | "find"
             );
         if !reads {
             return Ok(None);
@@ -2455,6 +2467,39 @@ impl Vm<'_> {
                     .and_then(|entity| crate::location::current_location(self.world, entity))
                     .map_or(Value::None, Value::Form),
             ),
+            // CK *FormList Script*: the list's own forms (see [`crate::form_lists`]).
+            (Value::Form(list), "getsize" | "getat" | "hasform" | "find")
+                if self.form_list(*list).is_some() =>
+            {
+                let forms = self.form_list(*list).unwrap_or_default();
+                let values = self.eval_args(frame, args)?;
+                let form = |value: Option<&Value>| match value {
+                    Some(Value::Form(form)) => Some(*form),
+                    _ => None,
+                };
+                Some(match name.as_str() {
+                    "getsize" => Value::Int(forms.len() as i32),
+                    "getat" => values
+                        .first()
+                        .and_then(Value::int)
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| forms.get(index).copied())
+                        .map_or(Value::None, Value::Form),
+                    "hasform" => Value::Bool(form(values.first()).is_some_and(|form| forms.contains(&form))),
+                    _ => Value::Int(
+                        form(values.first())
+                            .and_then(|form| forms.iter().position(|&member| member == form))
+                            .map_or(-1, |index| index as i32),
+                    ),
+                })
+            }
+            // CK *GetClassification - Weather*: -1 none, 0 Pleasant, 1 Cloudy,
+            // 2 Rainy, 3 Snow.
+            (Value::Form(weather), "getclassification") if args.is_empty() => Some(Value::Int(
+                self.world
+                    .try_resource::<crate::WeatherClassifications>()
+                    .map_or(-1, |table| table.of(*weather)),
+            )),
             // CK *IsChild - Location*: "Returns true if the other location is a
             // child of this one. If they are the same location, the function
             // returns false."
@@ -2566,6 +2611,13 @@ impl Vm<'_> {
             }
         }
         Ok(last)
+    }
+
+    /// The forms of the `FLST` `list`, if it is one.
+    fn form_list(&self, list: u32) -> Option<Vec<u32>> {
+        self.world
+            .try_resource::<crate::FormLists>()
+            .and_then(|lists| lists.get(list).map(<[u32]>::to_vec))
     }
 
     fn entity_form(&self, entity: EntityId) -> Option<u32> {
@@ -3907,6 +3959,9 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Object);
             }
+            if class == "weather" && name == "getcurrentweather" && arg_kinds.is_empty() {
+                return Some(Kind::Object);
+            }
             if class == "math" && MATH_NATIVES.contains(&name.as_str()) {
                 let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
                 let arity = if matches!(name.as_str(), "min" | "max" | "pow") { 2 } else { 1 };
@@ -4016,6 +4071,17 @@ impl<'l> Checker<'l> {
             }
             (Kind::Alias, "getlocation") => return Some(Kind::Object),
             (Kind::Alias, "trytogetcurrentlocation") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object, "getclassification") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object, "getsize") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
+                return Some(Kind::Object);
+            }
+            (Kind::Object, "hasform") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) => {
+                return Some(Kind::Bool);
+            }
+            (Kind::Object, "find") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) => {
+                return Some(Kind::Num);
+            }
             (Kind::Object | Kind::Player, "ischild")
                 if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) =>
             {

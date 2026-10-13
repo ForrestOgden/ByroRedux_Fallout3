@@ -955,6 +955,10 @@ pub(crate) fn populate_scene_runtime(
     // M47.2 — every quest's VMAD, for quest-script bodies inlined into
     // INFO and scene fragments.
     byroredux_scripting::install_quest_script_instances(world, index);
+    // M47.2 — Weather.GetClassification.
+    byroredux_scripting::install_weather_classifications(world, index);
+    // M47.2 — FormList.GetSize / GetAt / HasForm / Find.
+    byroredux_scripting::install_form_lists(world, index);
     // M47.2 — the scripts quests attach to their aliases, checked when their
     // quest first runs.
     let alias_scripts = byroredux_scripting::install_quest_alias_scripts(world, index);
