@@ -636,6 +636,12 @@ runtime:
   and current locations, and `GetDialogueTarget`.
 - **Quest-script calls.** A call into a quest's script runs here against that
   quest's VMAD.
+- **Other references' scripts.** A call through a cast or a typed variable
+  (`(Trap as TrapBase).Fire()`) reaches the script the VM runs on that
+  reference. The check requires the declared script, not an engine class, to
+  define it. The call runs as that reference's: its `Self`, its properties
+  and its variables. Reading `t.Hits` and writing `t.Armed = False` work the
+  same way, and a write lands under the reference.
 - **Script variables.** A numeric variable lives in `QuestScriptVariables`.
   An object or string variable lives in the saved `QuestScriptObjects`, so it
   holds from one fragment to the next. A variable or property nothing has
@@ -679,13 +685,12 @@ walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
 line, as the lowering binds it. Package (`PF_`) fragments are not wired on
 either path yet.
 
-With the VM, 76.6% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 78.2% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
-- reference- and actor-script functions and members (`ReArmTrigger`,
-  `ChangeCarryState`, `akBard.sInstrument = …`), and several actor
-  natives (`SetPlayerTeammate`, `AdvanceSkill`, `IncrementStat`);
+- several actor natives (`SetPlayerTeammate`, `AdvanceSkill`,
+  `IncrementStat`);
 - FO4 timers (`StartTimer` / `OnTimer`) and alias update registrations;
 - package (`PF_`) fragments, which need package begin / end / change events.
 
@@ -723,7 +728,7 @@ a quest fragment's do. An event the script handles only in other states does
 nothing in the current one. The system runs ahead of quest-fragment dispatch, so
 a stage a reference script sets runs its fragment the same frame.
 
-With the VM, 19.9% of Skyrim's 19,412 scripted references run a script, up from
+With the VM, 20.1% of Skyrim's 19,412 scripted references run a script, up from
 7.5% with recognizers alone (`refr_script_coverage`; `VM_REASONS=1` lists why
 the VM declines the rest, and `VM_REASON_FAMILIES=<text>` which scripts share a
 reason). Bleak Falls Barrow attaches 7, among them MS13's Arvel and spider
@@ -741,7 +746,8 @@ Not modelled yet:
   `OnUpdate` arrives through update registrations);
 - `OnInit` holding back the script's other events while it waits;
 - the variable reset a cell reset brings;
-- calls into another reference's script.
+- calls into a reference whose script a recognizer models (no VM instance to
+  call), or one that is not loaded.
 
 ### Update registrations (M47.2)
 

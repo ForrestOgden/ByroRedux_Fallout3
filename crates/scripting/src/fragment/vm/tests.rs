@@ -786,3 +786,76 @@ fn info_fragments_bind_the_speaker() {
     crate::apply_spoken_info_fragment(&world, std::slice::from_ref(&effect), Q, None, Some(speaker));
     assert!(!crate::fragment::reference_enabled(&world, GUARD));
 }
+
+/// A fragment calls a function of the script the VM runs on another
+/// reference, reads its variable and writes another: the call runs as that
+/// reference's (its `Self`, its variables), the writes land under it.
+#[test]
+fn calls_and_members_reach_scripts_on_other_references() {
+    const TRAP: u32 = 0x0001_0F13;
+    let trap_script = parsed_source(
+        "ScriptName VmTrapBase extends ObjectReference\n\
+         Int Property Hits Auto\n\
+         Bool Armed = True\n\
+         Function Fire()\n\
+           If Armed\n Hits += 1\n Self.Disable()\n EndIf\n\
+         EndFunction\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmCrossRef extends Quest\n\
+         ObjectReference Property Trap Auto\n\
+         Function Fragment_1()\n\
+           VmTrapBase t = Trap as VmTrapBase\n\
+           t.Fire()\n\
+           If t.Hits == 1\n (Trap as VmTrapBase).Armed = False\n Self.SetStage(20)\n EndIf\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("vmtrapbase".to_owned(), Arc::clone(&trap_script))].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(TRAP),
+    });
+    world.insert_resource(pool);
+    let trap = world.spawn();
+    world.insert(trap, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmTrapBase".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, trap, &instance, Vec::new(), vec![trap_script]);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+        // The fragment's `Trap` property.
+        let mut vmad = vmad();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "Trap".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: TRAP,
+                alias: -1,
+            },
+        });
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(!crate::fragment::reference_enabled(&world, TRAP), "Fire ran as the trap");
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "read the trap's Hits");
+    let variable = |name: &str| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(TRAP), crate::QuestScriptVariables::property_key(name))
+    };
+    assert_eq!(variable("Hits"), Some(1.0));
+    assert_eq!(variable("Armed"), Some(0.0), "written under the trap");
+}

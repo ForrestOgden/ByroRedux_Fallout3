@@ -41,8 +41,10 @@
 //! A run that still meets something it cannot do — a native that declines
 //! its actual values — stops there and logs it.
 //!
-//! Not modelled: structs, and calls into scripts attached to other
-//! references.
+//! A call or member access through a cast or a typed variable reaches the
+//! script the VM runs on another reference, as that reference's.
+//!
+//! Not modelled: structs.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -902,8 +904,14 @@ impl Vm<'_> {
         // own for a call into its own script, else the quest's.
         let vmad = if owner == caller.owner && Arc::ptr_eq(&script, &caller.script) {
             caller.vmad.clone()
+        } else if let Some(vmad) = self.deferred.quest_scripts.get(&owner) {
+            Some(vmad.clone())
         } else {
-            self.deferred.quest_scripts.get(&owner).cloned()
+            // A script on another reference: its own properties.
+            self.reference_scripts(owner.0)
+                .into_iter()
+                .find(|(attached, _)| Arc::ptr_eq(attached, &script))
+                .map(|(_, vmad)| (*vmad).clone())
         };
         let frame = Frame {
             script,
@@ -1103,6 +1111,11 @@ impl Vm<'_> {
                     Value::Form(quest) if self.is_quest(quest) => {
                         self.write_quest_variable(QuestFormId(quest), &member.node.0, &value)
                     }
+                    // A variable of a script on another reference, kept
+                    // under that reference.
+                    Value::Form(reference) if reference != 0 && reference != PLAYER_REF => {
+                        self.write_quest_variable(QuestFormId(reference), &member.node.0, &value)
+                    }
                     _ => stop(format!("assignment to {}'s {}", owner.text(), member.node.0)),
                 }
             }
@@ -1294,11 +1307,29 @@ impl Vm<'_> {
             let script = Arc::clone(&frame.script);
             return Ok(Value::Str(self.script_state(frame.owner, &script)));
         }
-        if let Some(value) = Self::property(frame.vmad.as_ref(), name) {
+        let script = Arc::clone(&frame.script);
+        match self.read_script_member(frame.owner, &script, frame.vmad.as_ref(), name) {
+            Some(value) => Ok(value),
+            None => stop(format!("unknown name {name}")),
+        }
+    }
+
+    /// `owner`'s instance of `script` (its properties `vmad`): the property
+    /// or script variable `name` — what a script wrote, else the VMAD's
+    /// value, else what the script declares. `None` when the script has no
+    /// such member.
+    fn read_script_member(
+        &self,
+        owner: QuestFormId,
+        script: &Arc<Script>,
+        vmad: Option<&ScriptInstanceData>,
+        name: &str,
+    ) -> Option<Value> {
+        if let Some(value) = Self::property(vmad, name) {
             // A numeric property a script wrote reads the written value.
             if value.number().is_some() {
-                if let Some(written) = self.read_quest_variable(frame.owner, name) {
-                    return Ok(if value.is_float() {
+                if let Some(written) = self.read_quest_variable(owner, name) {
+                    return Some(if value.is_float() {
                         Value::Float(written)
                     } else {
                         Value::Int(written as i32)
@@ -1306,38 +1337,51 @@ impl Vm<'_> {
                 }
             }
             // An object property a script re-pointed reads the new object.
-            if let Some(written) = self.written_quest_object(frame.owner, name) {
-                return Ok(written);
-            }
-            return Ok(value);
+            return Some(self.written_quest_object(owner, name).unwrap_or(value));
         }
-        // A script variable (or a property no VMAD sets): what a script
-        // wrote, else what the script declares.
         let declared = || {
-            script_chain(&frame.script, &self.deferred.vm_scripts)
+            script_chain(script, &self.deferred.vm_scripts)
                 .iter()
                 .find_map(|script| declared_default(script, name))
         };
-        match member_type_in(&frame.script, name, &self.deferred.vm_scripts) {
-            Some(ty @ (Type::Int | Type::Float | Type::Bool)) => {
-                let value = match self.read_quest_variable(frame.owner, name) {
+        Some(match member_type_in(script, name, &self.deferred.vm_scripts)? {
+            ty @ (Type::Int | Type::Float | Type::Bool) => {
+                let value = match self.read_quest_variable(owner, name) {
                     Some(value) => value,
                     None => declared().and_then(|value| value.number()).unwrap_or(0.0),
                 };
-                Ok(match ty {
+                match ty {
                     Type::Int => Value::Int(value as i32),
                     Type::Bool => Value::Bool(value != 0.0),
                     _ => Value::Float(value),
-                })
+                }
             }
-            Some(Type::String) => Ok(self
-                .written_quest_object(frame.owner, name)
+            Type::String => self
+                .written_quest_object(owner, name)
                 .or_else(declared)
-                .unwrap_or_else(|| Value::Str(String::new()))),
-            Some(Type::Object(_) | Type::Var) => Ok(self.written_quest_object(frame.owner, name).unwrap_or(Value::None)),
-            Some(_) => stop(format!("script variable {name} of an unsupported type")),
-            None => stop(format!("unknown name {name}")),
-        }
+                .unwrap_or_else(|| Value::Str(String::new())),
+            Type::Object(_) | Type::Var => self.written_quest_object(owner, name).unwrap_or(Value::None),
+            Type::Array(_) => return None,
+        })
+    }
+
+    /// The scripts the VM runs on the reference `form`, with their
+    /// properties: (script, its VMAD), loaded references only.
+    fn reference_scripts(&self, form: u32) -> Vec<(Arc<Script>, Arc<ScriptInstanceData>)> {
+        let Some(entity) = self.entity_of(form) else {
+            return Vec::new();
+        };
+        let Some(attached) = self.world.get::<super::PapyrusReferenceScripts>(entity) else {
+            return Vec::new();
+        };
+        attached
+            .0
+            .iter()
+            .filter_map(|r| {
+                let script = self.deferred.vm_scripts.get(&r.script.to_ascii_lowercase())?;
+                Some((Arc::clone(script), Arc::clone(&r.vmad)))
+            })
+            .collect()
     }
 
     /// `quest.Variable` — another quest script's property or variable.
@@ -1348,6 +1392,13 @@ impl Vm<'_> {
         if !self.is_quest(*form) {
             if let Some(value) = self.engine_constant(name) {
                 return Ok(value);
+            }
+            // A member of a script the VM runs on that reference.
+            let owner = QuestFormId(*form);
+            for (script, vmad) in self.reference_scripts(*form) {
+                if let Some(value) = self.read_script_member(owner, &script, Some(&vmad), name) {
+                    return Ok(value);
+                }
             }
         }
         let quest = QuestFormId(*form);
@@ -1429,6 +1480,11 @@ impl Vm<'_> {
                         (script, QuestFormId(form), vmad, code)
                     })
                 }
+                // A function of a script the VM runs on another reference.
+                Value::Form(form) if form != 0 => self.reference_scripts(form).into_iter().find_map(|(script, vmad)| {
+                    let code = self.resolve(&script, QuestFormId(form), name)?;
+                    Some((script, QuestFormId(form), Some((*vmad).clone()), code))
+                }),
                 _ => None,
             },
         };
@@ -2050,6 +2106,22 @@ impl<'l> Checker<'l> {
         checker
     }
 
+    /// The type of `member` of the script an Object receiver is declared as
+    /// (not an engine class).
+    fn reference_member_type(&mut self, frame: &CheckFrame, owner: Kind, receiver: &Expr, member: &str) -> Option<Type> {
+        if owner != Kind::Object {
+            return None;
+        }
+        let script = self.declared_script(frame, receiver)?;
+        if is_engine_class(&script) {
+            return None;
+        }
+        match self.member_type(&script, member)? {
+            Type::Array(_) => None,
+            ty => Some(ty),
+        }
+    }
+
     /// An engine class's constant `name`'s type, registering the class.
     fn engine_constant_type(&mut self, name: &str) -> Option<Type> {
         CONSTANT_CLASSES.iter().find_map(|class| {
@@ -2235,6 +2307,10 @@ impl<'l> Checker<'l> {
                             // `Global.Value = n`.
                             let (callee, args) = set_value_call(object, value);
                             self.check_call(frame, &callee.node, &args, true)?;
+                        } else if value_kind != Kind::Array
+                            && self.reference_member_type(frame, owner, &object.node, &member.node.0).is_some()
+                        {
+                            // A variable of a script on another reference.
                         } else if owner != Kind::Quest || matches!(value_kind, Kind::Str | Kind::Array) {
                             return self.fail(|| format!("{value_kind:?} assignment to a member of {owner:?}"));
                         }
@@ -2379,6 +2455,8 @@ impl<'l> Checker<'l> {
                     Kind::Num
                 } else if let Some(ty) = self.engine_constant_type(&member.node.0).filter(|_| owner != Kind::None) {
                     kind_of_type(&ty, self.library)
+                } else if let Some(ty) = self.reference_member_type(frame, owner, &object.node, &member.node.0) {
+                    kind_of_type(&ty, self.library)
                 } else {
                     let member = member.node.0.clone();
                     return self.fail(|| format!("member .{member} of {owner:?}"));
@@ -2494,7 +2572,7 @@ impl<'l> Checker<'l> {
                     return self.fail(|| format!("{name} as written"));
                 }
                 if !handler.is_empty() {
-                    let Some(script) = self.quest_script_type(frame, receiver) else {
+                    let Some(script) = self.declared_script(frame, receiver) else {
                         return self.fail(|| format!("{name} on a quest of unknown script"));
                     };
                     if !self.versions(&script, handler).is_empty() {
@@ -2502,6 +2580,15 @@ impl<'l> Checker<'l> {
                     }
                 }
                 return Some(Kind::None);
+            }
+        }
+        // A function of a script on another reference, through a cast or a
+        // typed variable: it runs as that reference's.
+        if receiver_kind == Kind::Object {
+            if let Some(script) = self.declared_script(frame, receiver) {
+                if !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
+                    return self.check_call_into(&script, &name, statement, Kind::Object);
+                }
             }
         }
         // A quest script's function, through a cast or a typed property.
@@ -2523,16 +2610,16 @@ impl<'l> Checker<'l> {
     /// The script a quest-typed receiver's `name` lives in: a cast's target
     /// type, or the declared type of a property / local.
     fn quest_script_for(&mut self, frame: &CheckFrame, receiver: &Expr, name: &str) -> Option<Arc<Script>> {
-        let script = self.quest_script_type(frame, receiver)?;
+        let script = self.declared_script(frame, receiver)?;
         if self.versions(&script, name).is_empty() {
             return None;
         }
         Some(script)
     }
 
-    /// The script a quest-typed receiver is declared as — a cast's target
-    /// type, or a property's / local's type — registered for the run.
-    fn quest_script_type(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<Arc<Script>> {
+    /// The script a receiver is declared as — a cast's target type, or a
+    /// property's / local's type — registered for the run.
+    fn declared_script(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<Arc<Script>> {
         let type_name = match receiver {
             Expr::Cast { target_type, .. } => match &target_type.node {
                 Type::Object(ty) => ty.0.clone(),
