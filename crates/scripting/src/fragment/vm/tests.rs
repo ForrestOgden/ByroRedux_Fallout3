@@ -2327,6 +2327,29 @@ fn music_type_add_and_remove_are_accepted_only_on_a_music_type() {
     assert!(check_function_reason(other, "Fragment_1", None).is_err());
 }
 
+/// A helper that forwards its own parameters to `ShowAsHelpMessage` (the
+/// Starfield shape): the check treats the run-time context as the unrestricted
+/// one, and a call with an empty context runs through.
+#[test]
+fn help_message_helper_with_run_time_arguments_runs() {
+    let script = parsed_source(
+        "ScriptName QF_VmHelp extends Quest\n\
+         Message Property Marker Auto\n\
+         Function Help(String asEvent, Float afDuration, String asContext)\n\
+           Marker.ShowAsHelpMessage(asEvent, afDuration, 30.0, 3, asContext, 0, None)\n\
+         EndFunction\n\
+         Function Fragment_1()\n\
+           Help(\"Jump\", 5.0, \"\")\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

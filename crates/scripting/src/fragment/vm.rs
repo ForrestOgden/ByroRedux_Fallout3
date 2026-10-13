@@ -4622,11 +4622,16 @@ impl<'l> Checker<'l> {
         statement: bool,
     ) -> Option<Kind> {
         let mut bindings = NativeBindings::default();
+        let name_is_help_message = name.eq_ignore_ascii_case("showashelpmessage");
         let placeholder = |kind: Kind, index: usize, bindings: &mut NativeBindings| -> Option<Spanned<Expr>> {
             let name = format!("__vm{index}");
             Some(match kind {
                 Kind::Num => spanned(Expr::IntLit(1)),
                 Kind::Bool => spanned(Expr::BoolLit(false)),
+                // `ShowAsHelpMessage`'s context is shown only when empty or
+                // `"NoMenu"`; a run-time one is checked as the unrestricted
+                // `""` (a menu name stops the run when it arrives).
+                Kind::Str if name_is_help_message && index == 5 => spanned(Expr::StringLit(String::new())),
                 Kind::Str => spanned(Expr::StringLit("x".into())),
                 Kind::None => spanned(Expr::NoneLit),
                 Kind::Player => {
