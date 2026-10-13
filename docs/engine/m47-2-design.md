@@ -389,6 +389,22 @@ membership, Skyrim alias getters, FO4 actor-value `SetValue`, quest-script
 call inlining, perk entry-point composition (with the corrected PERK decode),
 created-object "In" alias grants, and `PlayIdle` on any content-named IDLE.
 
+The follow-up pass (2026-10-12 → 13) closed the items the first closeout left
+open:
+- The LCTN location runtime: location conditions and location aliases.
+- Created Object "At" spawning, with saved identity.
+- New Vegas Damage Threshold and Fallout kill experience as perk-hook
+  consumers.
+- The player's `MoveTo`.
+- Fragment breadth: disjunctive and actor/quest/scene/location guards,
+  global and actor-value writes in every spelling, perks, alias
+  `ForceRefTo` / `Clear`, and `BlockActivation`.
+
+Fragment lowering went 51.5% → 57.2%. Each piece was verified on the vanilla
+masters and, where a session can show it, live: the Dragonsreach location
+chain, MQ104's created Messenger surviving a quickload, a teleport into
+Hillgrund's Tomb, and FNV melee through DT in `p2-melee-core`.
+
 What remains is outside this milestone's shape, each owned by a subsystem
 that does not exist yet:
 
