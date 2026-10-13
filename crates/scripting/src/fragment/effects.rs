@@ -1543,9 +1543,7 @@ pub(crate) fn apply_effect(
             let perk = resolve_property_form_id(vmad, perk.property_name())?;
             // `Perks` is direct component storage, written in place like
             // `ActorValues` above.
-            let Some(mut perks) = world.query_mut::<byroredux_core::character::Perks>() else {
-                return None;
-            };
+            let mut perks = world.query_mut::<byroredux_core::character::Perks>()?;
             if perks.get_mut(actor).is_none() {
                 perks.insert(actor, byroredux_core::character::Perks::default());
             }

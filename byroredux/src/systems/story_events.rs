@@ -51,9 +51,9 @@ pub fn story_change_location_system(world: &World) {
     // cursor on them) has nothing to dispatch a CLOC to, so skip the key
     // derivation instead of paying it every frame. No tree at all is the
     // same case: the cursor is installed alongside it.
-    if !world
+    if world
         .try_resource::<SmTree>()
-        .is_some_and(|tree| !tree.nodes.is_empty())
+        .is_none_or(|tree| tree.nodes.is_empty())
     {
         return;
     }

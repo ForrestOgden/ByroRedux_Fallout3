@@ -26,9 +26,9 @@ only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` is **red** (8 lints in `core` and `scripting`; the
-crates behind them were not reached, Known Issues). The ABBA lock-order lane
-ran clean locally (9848 tests, no cycle). All 9955 tests pass.
+--workspace -- -D warnings` is **clean** (re-run 2026-10-13; `--all-targets`
+is not, Known Issues). The ABBA lock-order lane ran clean locally (9848 tests,
+no cycle). All 9955 tests pass.
 The bench-of-record below was taken at
 `a3a7a43b0`, this close's HEAD. Its one open
 regression, **R6a-regress-22**, turned out to be
@@ -685,12 +685,10 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [ ] **Clippy step red** (2026-10-13). `cargo clippy --workspace -- -D
-  warnings` on 1.96.0 stops at `core` (`character/leveling.rs:180`,
-  `manual_is_multiple_of`); with it allowed, `scripting` adds 7
-  (`translate/effects.rs`, `fragment/effects.rs`, `fragment/vm.rs`) and the
-  `byroredux` bin is not reached. `9896b1cf7` had re-zeroed the gate on
-  10-12. The ABBA lane ran clean locally at HEAD. Not yet filed.
+- [ ] **Clippy `--all-targets` is red** (2026-10-13): about a dozen lints in
+  test and example targets of `scripting` and `byroredux` (#5621, #5744). The
+  CI form without `--all-targets` is clean; it went red twice in three days
+  (10-12, 10-13), each time from a sweep of new code.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role

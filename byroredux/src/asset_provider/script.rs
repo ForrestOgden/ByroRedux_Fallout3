@@ -118,9 +118,11 @@ impl byroredux_scripting::translate::effects::ScriptLibrary for ProviderScriptLi
 /// Checked once per session — a script decompiles and checks the same for
 /// every reference that carries it.
 #[derive(Default)]
-pub(crate) struct VmReferenceScriptChecks(
-    std::collections::HashMap<String, Option<(Vec<String>, Vec<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>>)>>,
-);
+pub(crate) struct VmReferenceScriptChecks(std::collections::HashMap<String, VmReferenceScriptCheck>);
+
+/// A script's handled events and the scripts its runs need.
+type VmReferenceScriptCheck =
+    Option<(Vec<String>, Vec<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>>)>;
 
 impl byroredux_core::ecs::resource::Resource for VmReferenceScriptChecks {}
 
@@ -577,9 +579,9 @@ fn populate_package_fragments(
     world
         .resource_mut::<byroredux_scripting::PackageFragments>()
         .mark_populated();
-    if !world
+    if world
         .try_resource::<ScriptProvider>()
-        .is_some_and(|provider| !provider.is_empty())
+        .is_none_or(|provider| provider.is_empty())
     {
         return;
     }

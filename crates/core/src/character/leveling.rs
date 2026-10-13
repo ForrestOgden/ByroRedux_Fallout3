@@ -177,7 +177,7 @@ impl LevelingModel {
                 ..
             } => Some((
                 base + int_mult * intelligence,
-                perk_cadence > 0 && new_level % u16::from(perk_cadence) == 0,
+                perk_cadence > 0 && new_level.is_multiple_of(u16::from(perk_cadence)),
             )),
             Self::XpCurve {
                 reward: LevelReward::SpecialOrPerk,

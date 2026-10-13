@@ -988,10 +988,10 @@ impl App {
     /// quest has created anything.
     pub(crate) fn step_created_references(&mut self) {
         if self.interior_transition.is_some()
-            || !self
+            || self
                 .world
                 .try_resource::<byroredux_scripting::CreatedReferences>()
-                .is_some_and(|created| created.iter().next().is_some())
+                .is_none_or(|created| created.iter().next().is_none())
         {
             return;
         }

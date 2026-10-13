@@ -381,14 +381,12 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     }
     // M47.2 — an actor value: `GetValue(av)` (one argument; the bare
     // `GetValue()` is a global's), or `GetAV` / `GetActorValue("Name")`.
-    if let Some((object, args)) = method_call_any(e, &["GetValue", "GetAV", "GetActorValue"]) {
-        if let [av] = args {
-            let actor = receiver_actor(object, scope)?;
-            return Some(match actor_value_arg(&av.value.node, scope)? {
-                ActorValueArg::Form(form) => ValueExpr::ActorValue(actor, form),
-                ActorValueArg::Named(name) => ValueExpr::ActorValueNamed(actor, name),
-            });
-        }
+    if let Some((object, [av])) = method_call_any(e, &["GetValue", "GetAV", "GetActorValue"]) {
+        let actor = receiver_actor(object, scope)?;
+        return Some(match actor_value_arg(&av.value.node, scope)? {
+            ActorValueArg::Form(form) => ValueExpr::ActorValue(actor, form),
+            ActorValueArg::Named(name) => ValueExpr::ActorValueNamed(actor, name),
+        });
     }
     Some(match guard_reading(e, scope)? {
         GuardReading::Stage(quest) => ValueExpr::Stage(quest),
@@ -1692,7 +1690,7 @@ pub fn lower_fragment_with_script_metadata(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(locals_never_suspend)
+        .filter(|effects| locals_never_suspend(effects))
 }
 
 /// Decompiled scripts by name, for inlining calls into a quest's own script
@@ -1740,7 +1738,7 @@ pub fn lower_quest_fragment(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(locals_never_suspend)
+        .filter(|effects| locals_never_suspend(effects))
 }
 
 /// M47.2 — [`lower_fragment_with_script_metadata`] for a scene (`SF_…`)
@@ -1761,7 +1759,7 @@ pub fn lower_scene_fragment(
     };
     lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(locals_never_suspend)
+        .filter(|effects| locals_never_suspend(effects))
 }
 
 /// `<quest>.Function()` where `<quest>` is this fragment's own quest (a quest
@@ -2077,7 +2075,7 @@ pub fn lower_info_fragment(
     }
     let effects = lower_statements(body, &mut scope, providers, 0)
         .map(prune_unread_locals)
-        .filter(locals_never_suspend)?;
+        .filter(|effects| locals_never_suspend(effects))?;
     if scope.uses_speaker.get() && effects.iter().any(has_latent_tail) {
         return None;
     }
@@ -2164,7 +2162,7 @@ fn prune_unread_locals(effects: Vec<Effect>) -> Vec<Effect> {
 /// M47.2 — a fragment's run-time locals ([`Effect::SetLocal`]) live for one
 /// run; a continuation resumed after a suspension would not carry them, so a
 /// fragment holding both declines.
-fn locals_never_suspend(effects: &Vec<Effect>) -> bool {
+fn locals_never_suspend(effects: &[Effect]) -> bool {
     fn sets_local(effect: &Effect) -> bool {
         match effect {
             Effect::SetLocal { .. } => true,
@@ -3465,8 +3463,8 @@ fn prim_show_message(e: &Expr, scope: &Scope) -> Option<Effect> {
         if args.len() != 4 || !matches!(args[0].value.node, Expr::StringLit(_)) {
             return None;
         }
-        for index in 1..4 {
-            as_num(&args[index].value.node)?;
+        for arg in &args[1..4] {
+            as_num(&arg.value.node)?;
         }
         return Some(Effect::ShowHelpMessage {
             message: receiver_object(object, scope)?,
@@ -3719,7 +3717,7 @@ fn prim_set_base_protection(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     let base = match method_call(object, "GetActorBase") {
-        Some((actor, getter_args)) if getter_args.is_empty() => {
+        Some((actor, [])) => {
             ActorBaseRef::OfActor(receiver_actor(actor, scope)?)
         }
         Some(_) => return None,
@@ -4800,7 +4798,7 @@ fn receiver_location(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
         return receiver_location(&expr.node, scope);
     }
     match method_call(object, "GetLocation") {
-        Some((alias, args)) if args.is_empty() => receiver_object(alias, scope),
+        Some((alias, [])) => receiver_object(alias, scope),
         Some(_) => None,
         None => receiver_object(object, scope),
     }

@@ -2937,7 +2937,7 @@ impl<'l> Checker<'l> {
             // A literal argument is checked as written: the run sees it too;
             // so is an engine constant, which the run passes by name.
             let constant = constant_name(&arg.value.node)
-                .filter(|name| frame.locals.get(&name.to_ascii_lowercase()).is_none())
+                .filter(|name| !frame.locals.contains_key(&name.to_ascii_lowercase()))
                 .filter(|name| self.engine_constant_type(name).is_some());
             arg_kinds.push(match (constant, literal_of(&arg.value.node)) {
                 (Some(name), _) => Arg::Constant(name.to_owned()),
