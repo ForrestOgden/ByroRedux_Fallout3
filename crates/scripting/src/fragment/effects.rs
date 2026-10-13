@@ -1420,6 +1420,7 @@ pub(crate) fn apply_effect(
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
         | Effect::SetUnconscious { .. }
+        | Effect::SetGhost { .. }
         | Effect::EvaluatePackage { .. } => {
             apply_ai_combat_effect(effect, context, vmad, world, deferred)
         }
@@ -2439,6 +2440,11 @@ fn apply_ai_combat_effect(
             // player (`Attacker.StartCombat(PlayerRef)` is the common shape).
             let actor =
                 resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
+            // M47.2 — a ghost "will not enter combat" (CS / GECK *SetGhost*).
+            if crate::is_ghost(world, actor) {
+                log::debug!("fragment StartCombat skipped: the actor is a ghost");
+                return None;
+            }
             let target =
                 resolve_actor(vmad, world, context, target, &deferred.scene_actor_bindings, deferred.speaker)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
@@ -2465,6 +2471,21 @@ fn apply_ai_combat_effect(
                 resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                 states.remove(actor);
+            }
+            None
+        }
+        Effect::SetGhost { actor, ghost } => {
+            let bindings = &deferred.scene_actor_bindings;
+            let actor = resolve_actor(vmad, world, context, actor, bindings, deferred.speaker)?;
+            if !crate::update_actor_control(world, actor, |state| state.ghost = *ghost) {
+                log::debug!("fragment SetGhost skipped: actor-control storage is unavailable");
+                return None;
+            }
+            // A ghost "will not enter combat".
+            if *ghost {
+                if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                    states.remove(actor);
+                }
             }
             None
         }
@@ -2695,6 +2716,7 @@ fn apply_quest_scoped_effect(
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
         | Effect::SetUnconscious { .. }
+        | Effect::SetGhost { .. }
         | Effect::AddSpell { .. }
         | Effect::RemoveSpell { .. }
         | Effect::PlayIdle { .. }

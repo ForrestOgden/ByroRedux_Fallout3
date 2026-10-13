@@ -1177,6 +1177,9 @@ pub enum Effect {
     /// suppresses. Wakes FO4's dormant "Starts Unconscious" robots and
     /// turrets.
     SetUnconscious { actor: ActorRef, unconscious: bool },
+    /// M47.2 — `<actor>.SetGhost([abIsGhost = true])`
+    /// ([`crate::ActorControlState::ghost`]).
+    SetGhost { actor: ActorRef, ghost: bool },
     /// #4415 — `<actor>.AddSpell(<spell>[, abVerbose])`: put the spell on the
     /// actor's `SpellList`, applying a constant spell's value changes. The
     /// verbose flag only chooses whether a HUD message shows.
@@ -2577,6 +2580,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_start_combat,
     prim_stop_combat,
     prim_set_unconscious,
+    prim_set_ghost,
     prim_add_spell,
     prim_remove_spell,
     prim_add_race_spells,
@@ -3896,6 +3900,19 @@ fn prim_set_unconscious(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Actor.SetGhost(bool abIsGhost = true)`. The player may be a ghost too
+/// (the CS page's `player.SetGhost 1`).
+fn prim_set_ghost(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetGhost")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetGhost {
+        actor: receiver_actor(object, scope)?,
+        ghost: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
 /// #4415 — Skyrim's `actor.psc` declares `AddSpell(Spell akSpell, Bool
 /// abVerbose = true)`; the flag only picks whether the "spell added"
 /// message shows, so either form lowers.
@@ -4887,14 +4904,15 @@ mod tests {
 
     #[test]
     fn declines_on_unmodeled_effect() {
-        // An object-targeting effect (SetGhost) isn't in the table — the
+        // An object-targeting effect (PushActorAway) isn't in the table — the
         // whole fragment declines, never partially applies. (#3489 — this
-        // used to exercise `Enable()`, then `Kill()`; both are modeled now.)
+        // used to exercise `Enable()`, then `Kill()`, then `SetGhost()`; all
+        // are modeled now.)
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_4()\n\
              Self.SetStage(10)\n\
-             akTarget.SetGhost()\n EndFunction\n",
+             akTarget.PushActorAway(akTarget, 5.0)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
     }

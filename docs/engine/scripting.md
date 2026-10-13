@@ -649,6 +649,20 @@ Not modelled:
 - The remaining replacement tags: `<BaseName>`, `<Token…>`, `<Alias.PronounObj…>`
   and similar.
 
+### Ghosts (M47.2)
+
+`Actor.SetGhost([abIsGhost])` sets `ActorControlState.ghost`, which is saved
+and parked with the actor's other control flags. Condition 237 `GetIsGhost`
+reads the flag. Per the CS / GECK *SetGhost* pages, a ghost:
+- "will not enter combat": the ambient faction-hostility pass and
+  `StartCombat` both skip it, and setting the flag ends its current fight;
+- "cannot be harmed by a weapon or spell in any way": a weapon hit lands for
+  0;
+- "can inflict damage" and is still hurt by water, so drowning isn't exempt.
+
+Not modelled: spell immunity and "not affected by any new magic effects",
+because hostile magic doesn't reach actors yet.
+
 ### Reference keywords (M47.2)
 
 `crates/scripting/src/keywords.rs` answers condition 560 `HasKeyword` and the

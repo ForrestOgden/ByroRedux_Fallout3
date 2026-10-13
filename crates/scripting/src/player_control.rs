@@ -129,8 +129,8 @@ impl PlayerControlState {
     }
 }
 
-/// Per-actor state written by `Actor.SetRestrained` and
-/// `Actor.SetUnconscious`.
+/// Per-actor state written by `Actor.SetRestrained`, `Actor.SetUnconscious`
+/// and `Actor.SetGhost`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorControlState {
@@ -142,6 +142,12 @@ pub struct ActorControlState {
     /// turn hostile when attacked, but does once conscious again. Mutually
     /// exclusive with [`Self::restrained`]: see [`Self::set_unconscious`].
     pub unconscious: bool,
+    /// M47.2 — `Actor.SetGhost`. The CS / GECK *SetGhost* pages: a ghost
+    /// "will not enter combat", "cannot be harmed by a weapon or spell in any
+    /// way" and "will not be affected by any new magic effects", but "can
+    /// inflict damage", "will be hurt by water damage and some traps", and
+    /// "is still able to talk".
+    pub ghost: bool,
 }
 
 impl ActorControlState {
@@ -176,6 +182,27 @@ pub fn is_unconscious(world: &World, entity: EntityId) -> bool {
         .get::<ActorControlState>(entity)
         .is_some_and(|state| state.unconscious)
         || crate::bleedout::is_bleeding_out(world, entity)
+}
+
+/// Whether `entity` is a ghost (M47.2, `SetGhost`).
+pub fn is_ghost(world: &World, entity: EntityId) -> bool {
+    world
+        .get::<ActorControlState>(entity)
+        .is_some_and(|state| state.ghost)
+}
+
+/// Every ghost, collected before a per-frame system takes its own queries
+/// (the [`collect_unconscious`] discipline).
+pub fn collect_ghosts(world: &World, out: &mut Vec<EntityId>) {
+    out.clear();
+    if let Some(states) = world.query::<ActorControlState>() {
+        out.extend(
+            states
+                .iter()
+                .filter(|(_, state)| state.ghost)
+                .map(|(entity, _)| entity),
+        );
+    }
 }
 
 /// Refill `out` with every unconscious entity (bleedout included), taking

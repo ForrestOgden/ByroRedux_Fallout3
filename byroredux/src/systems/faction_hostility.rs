@@ -356,6 +356,9 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
     // it like any other perceiver.
     let mut unconscious = Vec::new();
     byroredux_scripting::collect_unconscious(world, &mut unconscious);
+    // M47.2 — a ghost "will not enter combat" (CS / GECK *SetGhost*).
+    let mut ghosts = Vec::new();
+    byroredux_scripting::collect_ghosts(world, &mut ghosts);
 
     for (perceiver_index, perceiver) in actors.iter().enumerate() {
         let Some(disposition) = perceiver.disposition else {
@@ -364,6 +367,7 @@ fn faction_hostility_system_inner(world: &World, dt: f32, scratch: &mut Hostilit
         if disposition.confidence == Confidence::Cowardly
             || fighting.contains(&perceiver.entity)
             || unconscious.contains(&perceiver.entity)
+            || ghosts.contains(&perceiver.entity)
         {
             continue;
         }

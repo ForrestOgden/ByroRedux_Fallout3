@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **42 functions** at their canonical CTDA
+//! lineage. This catalog ships **43 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -71,6 +71,7 @@
 //! | 580   | IsBleedingOut          | `Bleedout`                  |
 //! | 403   | GetRelationshipRank    | `relationships`             |
 //! | 560   | HasKeyword             | `keywords`                  |
+//! | 237   | GetIsGhost             | `ActorControlState`         |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -289,6 +290,9 @@ pub enum ConditionFunction {
     /// has the keyword — its base object's (an actor's race's too), an
     /// alias it fills, or a script's `AddKeyword` ([`crate::keywords`]).
     HasKeyword,
+    /// `GetIsGhost → f32` (M47.2): 1.0 when the Run-On actor is a ghost
+    /// (`SetGhost`, [`crate::ActorControlState::ghost`]).
+    GetIsGhost,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -364,13 +368,14 @@ impl ConditionFunction {
             580 => Self::IsBleedingOut,
             403 => Self::GetRelationshipRank,
             560 => Self::HasKeyword,
+            237 => Self::GetIsGhost,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 42] = [
+    pub const CATALOG: [ConditionFunction; 43] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -413,6 +418,7 @@ impl ConditionFunction {
         Self::IsBleedingOut,
         Self::GetRelationshipRank,
         Self::HasKeyword,
+        Self::GetIsGhost,
     ];
 
     /// Whether `param_1` of this function is a FormID — the slice of catalog
@@ -468,6 +474,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetIsGhost
             | Self::Unknown(_) => false,
         }
     }
@@ -517,6 +524,7 @@ impl ConditionFunction {
             Self::IsBleedingOut => "IsBleedingOut",
             Self::GetRelationshipRank => "GetRelationshipRank",
             Self::HasKeyword => "HasKeyword",
+            Self::GetIsGhost => "GetIsGhost",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -568,6 +576,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetIsGhost
             | Self::GetRelationshipRank
             | Self::HasKeyword => true,
             Self::LocAliasIsLocation
@@ -640,6 +649,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetIsGhost
             | Self::GetRelationshipRank
             | Self::HasKeyword
             | Self::Unknown(_) => true,
@@ -1389,6 +1399,7 @@ pub fn evaluate_function(
                 None => 0.0,
             }
         }
+        ConditionFunction::GetIsGhost => truth(crate::is_ghost(world, entity)),
         ConditionFunction::HasKeyword => {
             truth(crate::keywords::has_keyword(world, entity, condition.param_1))
         }

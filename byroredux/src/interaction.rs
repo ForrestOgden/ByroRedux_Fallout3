@@ -2184,7 +2184,7 @@ mod tests {
             unconscious,
             ActorControlState {
                 unconscious: true,
-                restrained: false,
+                ..Default::default()
             },
         );
         // Living actor whose quest is installed but never started.

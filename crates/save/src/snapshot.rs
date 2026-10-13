@@ -376,7 +376,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v55 -> v56 (M47.2): a new resource column, `ScriptedKeywords` (script
 /// `AddKeyword` / `RemoveKeyword`). A pre-v56 save has none, so changed
 /// keywords would revert; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 56;
+///
+/// v56 -> v57 (M47.2): `ActorControlState` gained the required `ghost`
+/// flag (`Actor.SetGhost`); a pre-v57 save has none.
+pub const FORMAT_MAJOR: u16 = 57;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

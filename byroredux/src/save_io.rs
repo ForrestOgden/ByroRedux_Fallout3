@@ -137,8 +137,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "GuardState",
     "PatrolState",
     "Escorted",
-    // #2292 / SAVE-D1-09 — `ActorControlState { restrained, unconscious }`
-    // (#5017 added the second bool). No session-local identity. Replacing registration (#5052): a
+    // #2292 / SAVE-D1-09 — `ActorControlState { restrained, unconscious,
+    // ghost }` (#5017 added the second bool, M47.2 `SetGhost` the third). No session-local identity. Replacing registration (#5052): a
     // saved absence clears a live restraint on the process-lifetime player.
     "ActorControlState",
     // M47.2 — `Bleedout { remaining_secs: f32 }`. No session-local identity.

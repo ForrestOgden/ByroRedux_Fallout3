@@ -353,7 +353,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         // `blocked` is the target's defense, so it is resolved here rather
         // than folded into the producer's `damage` (#2980); so is its
         // Damage Threshold (M47.2).
-        let damage = if event.blocked {
+        // M47.2 — a ghost "cannot be harmed by a weapon or spell in any way"
+        // (CS / GECK *SetGhost*): the hit lands for nothing.
+        let damage = if event.blocked || byroredux_scripting::is_ghost(world, target) {
             0.0
         } else {
             apply_damage_threshold(world, event.aggressor, target, event.damage.max(0.0))
@@ -1874,6 +1876,20 @@ mod tests {
         assert_eq!(last.damage, 0.0);
         assert_eq!(last.health_before, Some(50.0));
         assert_eq!(last.health_after, Some(50.0));
+    }
+
+    /// M47.2 — a ghost "cannot be harmed by a weapon or spell in any way"
+    /// (CS / GECK *SetGhost*): the lethal hit lands for nothing.
+    #[test]
+    fn a_ghost_takes_no_weapon_damage() {
+        let (mut world, _aggressor, target) = damage_fixture(10.0, Some(18.0), false);
+        world.register::<byroredux_scripting::ActorControlState>();
+        assert!(byroredux_scripting::update_actor_control(&world, target, |state| {
+            state.ghost = true
+        }));
+        combat_damage_system(&world, 0.0);
+        assert_eq!(world.get::<ActorValues>(target).unwrap().current(0x2D4), 10.0);
+        assert!(world.get::<Dead>(target).is_none());
     }
 
     #[test]
