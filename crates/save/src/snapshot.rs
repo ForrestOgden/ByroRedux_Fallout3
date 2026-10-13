@@ -439,7 +439,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `RefCollectionAlias` members).
 ///
 /// v75 -> v76 (M47.2): `FragmentGuard::HasLocRefType`.
-pub const FORMAT_MAJOR: u16 = 76;
+///
+/// v76 -> v77 (M47.2): the `EventRegistrations` resource column (Papyrus
+/// custom / remote events) and `VmStored::Array` (an event's `Var[]`).
+pub const FORMAT_MAJOR: u16 = 77;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

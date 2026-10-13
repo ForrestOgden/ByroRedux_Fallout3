@@ -694,7 +694,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's reference-collection natives.
             .reads_resource::<byroredux_scripting::CollectionAliasKinds>()
             .reads_resource::<byroredux_scripting::AliasCollections>()
-            .writes_resource::<byroredux_scripting::AliasCollections>(),
+            .writes_resource::<byroredux_scripting::AliasCollections>()
+            // M47.2 — a spoken line's custom / remote event registrations.
+            .reads_resource::<byroredux_scripting::EventRegistrations>()
+            .writes_resource::<byroredux_scripting::EventRegistrations>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

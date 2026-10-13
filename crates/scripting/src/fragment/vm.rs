@@ -314,6 +314,20 @@ fn restore(stored: &VmStored) -> Value {
             quest: *quest,
             alias: *alias,
         },
+        VmStored::Array(items) => Value::Array(Rc::new(RefCell::new(items.iter().map(restore).collect()))),
+    }
+}
+
+/// `value` as an event argument: a scalar, or an array of scalars.
+fn event_arg(value: &Value) -> Option<VmStored> {
+    match value {
+        Value::Array(items) => items
+            .borrow()
+            .iter()
+            .map(|item| if matches!(item, Value::Array(_)) { None } else { event_arg(item) })
+            .collect::<Option<Vec<_>>>()
+            .map(VmStored::Array),
+        other => store(other),
     }
 }
 
@@ -982,6 +996,9 @@ impl Vm<'_> {
     /// script attached to it that handles the update registers (or all of
     /// them unregister).
     fn quest_update(&mut self, frame: &mut Frame, quest: u32, name: &str, args: &[CallArg]) -> Run<()> {
+        if super::EventRequest::is_call(name) {
+            return self.event_registration(frame, Some(quest), name, args);
+        }
         if super::DistanceRequest::handler(name).is_some() {
             return self.distance_registration(frame, Some(quest), name, args);
         }
@@ -1007,6 +1024,70 @@ impl Vm<'_> {
                 self.deferred.script_updates.push((quest, name, request));
             }
         }
+        Ok(())
+    }
+
+    /// `RegisterForCustomEvent` / `RegisterForRemoteEvent` and the unregister
+    /// calls, on the script itself (`quest` `None`) or on another quest, whose
+    /// attached scripts all register.
+    fn event_registration(&mut self, frame: &mut Frame, quest: Option<u32>, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let sender = match values.first() {
+            Some(Value::Form(form)) if *form != 0 => Some(super::DistanceTarget::Reference(*form)),
+            Some(Value::Alias { quest, alias }) => Some(super::DistanceTarget::Alias {
+                quest: *quest,
+                alias: *alias,
+            }),
+            _ => None,
+        };
+        let event = match values.get(1) {
+            Some(Value::Str(event)) => Some(event.clone()),
+            _ => None,
+        };
+        if !name.starts_with("unregisterforall") && (sender.is_none() || event.is_none()) {
+            // CK: the sender must be a script object; a None registers nothing.
+            return Ok(());
+        }
+        let Some(request) = super::EventRequest::of_call(name, sender, event) else {
+            return stop(format!("{name} as written"));
+        };
+        let scripts: Vec<(u32, String)> = match quest {
+            None => vec![(frame.owner.0, frame.script.name.node.0.clone())],
+            Some(quest) => self
+                .deferred
+                .quest_scripts
+                .get(&QuestFormId(quest))
+                .map(|vmad| vmad.scripts.iter().map(|script| (quest, script.name.clone())).collect())
+                .unwrap_or_default(),
+        };
+        for (owner, script) in scripts {
+            self.deferred.event_requests.push((owner, script, request.clone()));
+        }
+        Ok(())
+    }
+
+    /// `SendCustomEvent(name, args)` on the script itself: every registered
+    /// receiver's handler is queued to run on its own, after this run.
+    fn send_custom_event(&mut self, frame: &mut Frame, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let Some(Value::Str(event)) = values.first() else {
+            return stop("SendCustomEvent without an event name");
+        };
+        let payload = match values.get(1) {
+            None | Some(Value::None) => VmStored::None,
+            Some(array @ Value::Array(_)) => match event_arg(array) {
+                Some(stored) => stored,
+                None => return stop("a custom event argument that cannot be sent"),
+            },
+            Some(other) => return stop(format!("custom event arguments are an array, not {}", other.text())),
+        };
+        let stored = self
+            .world
+            .try_resource::<super::EventRegistrations>()
+            .map(|registrations| registrations.clone())
+            .unwrap_or_default();
+        let registrants = super::events::registrants(&stored, &self.deferred.event_requests, frame.owner.0, event, false);
+        super::events::enqueue(self.world, &registrants, frame.owner.0, &[payload]);
         Ok(())
     }
 
@@ -2460,7 +2541,13 @@ impl Vm<'_> {
                 }
             }
         }
+        if self_call_named(&callee.node, "sendcustomevent") {
+            return self.send_custom_event(frame, args).map(|_| Flow::Normal);
+        }
         if let Some(name) = update_call(&callee.node) {
+            if super::EventRequest::is_call(&name) {
+                return self.event_registration(frame, None, &name, args).map(|_| Flow::Normal);
+            }
             if super::DistanceRequest::handler(&name).is_some() {
                 return self.distance_registration(frame, None, &name, args).map(|_| Flow::Normal);
             }
@@ -2535,7 +2622,9 @@ fn quest_update_call(callee: &Expr) -> Option<(&Expr, String)> {
 /// The handler a registration call delivers to (`""` for a cancellation):
 /// an update, timer or distance registration, by lowercase name.
 fn registration_handler(name: &str) -> Option<&'static str> {
-    super::UpdateRequest::handler(name).or_else(|| super::DistanceRequest::handler(name))
+    super::UpdateRequest::handler(name)
+        .or_else(|| super::DistanceRequest::handler(name))
+        .or_else(|| super::EventRequest::is_call(name).then_some(""))
 }
 
 /// An update (un)registration on the script itself, by lowercase name.
@@ -3060,6 +3149,42 @@ impl<'l> Checker<'l> {
         self.call_waits(waits, statement).map(|_| returns)
     }
 
+    /// A custom / remote event registration call on an instance of `script`:
+    /// the handler it would deliver to must run, and a remote event must be one
+    /// the engine raises.
+    fn check_event_registration(
+        &mut self,
+        script: &Arc<Script>,
+        name: &str,
+        args: &[Arg],
+        statement: bool,
+        self_kind: Kind,
+    ) -> Option<Kind> {
+        let object = |arg: &Arg| matches!(arg, Arg::Kind(Kind::Object | Kind::Player | Kind::Alias | Kind::Quest));
+        let literal = match args {
+            [sender, Arg::Literal(Expr::StringLit(event))] if object(sender) => Some(event.clone()),
+            _ => None,
+        };
+        let shaped = statement
+            && args.len() == super::EventRequest::arity(name)
+            && (name.starts_with("unregisterforall") || literal.is_some());
+        if !shaped {
+            return self.fail(|| format!("{name} as written"));
+        }
+        let remote = name.contains("remote");
+        if name.starts_with("unregisterfor") {
+            return Some(Kind::None);
+        }
+        let event = literal.unwrap_or_default();
+        if remote && !super::REMOTE_EVENTS.contains(&event.to_ascii_lowercase().as_str()) {
+            return self.fail(|| format!("remote event {event} is not raised by the engine"));
+        }
+        if let Some(handler) = super::events::handler_in(script, &event, remote) {
+            self.check_handler(script, &handler, self_kind)?;
+        }
+        Some(Kind::None)
+    }
+
     /// Check an event handler a registration delivers to later, installing
     /// the scripts it needs when it runs. A handler the VM cannot run does
     /// not fail the registering code — the delivery checks it again and
@@ -3349,10 +3474,25 @@ impl<'l> Checker<'l> {
             if is_state_event(callee) {
                 return Some(Kind::None);
             }
+            if name == "sendcustomevent" {
+                let ok = statement
+                    && matches!(arg_kinds.first(), Some(Arg::Literal(Expr::StringLit(_))))
+                    && match arg_kinds.get(1) {
+                        None | Some(Arg::Kind(Kind::Array | Kind::None)) | Some(Arg::Literal(Expr::NoneLit)) => arg_kinds.len() <= 2,
+                        _ => false,
+                    };
+                if !ok {
+                    return self.fail(|| "SendCustomEvent as written".into());
+                }
+                return Some(Kind::None);
+            }
             if name == "getstate" {
                 return Some(Kind::Str);
             }
             // An update registration: the handler it delivers to must run.
+            if super::EventRequest::is_call(&name) {
+                return self.check_event_registration(&script, &name, &arg_kinds, statement, frame.self_kind);
+            }
             if let Some(handler) = registration_handler(&name) {
                 let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {
@@ -3522,6 +3662,12 @@ impl<'l> Checker<'l> {
         }
         // Another quest's update registration: its handler must run.
         if receiver_kind == Kind::Quest {
+            if super::EventRequest::is_call(&name) {
+                let Some(script) = self.declared_script(frame, receiver) else {
+                    return self.fail(|| format!("{name} on a quest of unknown script"));
+                };
+                return self.check_event_registration(&script, &name, &arg_kinds, statement, Kind::Quest);
+            }
             if let Some(handler) = registration_handler(&name) {
                 let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {

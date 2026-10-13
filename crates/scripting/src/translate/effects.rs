@@ -2756,6 +2756,8 @@ pub enum VmStored {
     Str(String),
     Form(u32),
     Alias { quest: u32, alias: i16 },
+    /// An array an event passes (`Var[] akArgs`): its elements, each scalar.
+    Array(Vec<VmStored>),
 }
 
 /// M47.2 — how the Papyrus VM ([`crate::vm`]) names the values it binds for

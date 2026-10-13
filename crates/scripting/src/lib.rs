@@ -115,7 +115,7 @@ pub use fragment::{
     attach_reference_script, check_reference_script, reference_script_event_system,
     PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
-    distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
+    EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
     PackageFragments, PackageTransition, PendingPackageTransitions,
 };

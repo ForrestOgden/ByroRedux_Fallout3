@@ -760,7 +760,7 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.2% of the Skyrim corpus runs (Fallout 4: 75.7%, Starfield
+With the VM, 81.2% of the Skyrim corpus runs (Fallout 4: 76.6%, Starfield
 71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
@@ -776,7 +776,7 @@ is server-side), so its fragment number is not meaningful.
 Not modelled yet:
 - `AdvanceSkill`, which needs per-skill usage progression in CHARAL, and
   other actor natives;
-- alias update registrations and FO4's custom-event registrations (`RegisterForCustomEvent`);
+- alias update registrations;
 - package End fragments (procedure completion).
 
 Per-game decline heads behind the remaining fragment gap
@@ -984,6 +984,28 @@ checks them every frame, and the distance is the one the `GetDistance` guard
 reads, between world positions. A reference with no placement is infinitely
 far, so it triggers a greater-than event and never a less-than one. A
 registration the frame's interpreter allowance cannot start stays registered.
+
+### Custom and remote events (M47.2)
+
+`crates/scripting/src/fragment/events.rs` implements the FO4 CK's
+*RegisterForCustomEvent* / *SendCustomEvent* / *RegisterForRemoteEvent* family:
+- a script registers for a named event of a sender; the event goes only to that
+  script;
+- `SendCustomEvent(name, args)` "returns immediately": each registered
+  receiver's `(akSender, akArgs)` handler is queued on the continuation queue
+  and runs on its own, after the sender's run, with the `Var[]` it sent
+  (`VmStored::Array`);
+- the compiler mangles the names. A custom event is sent as
+  `scripttype_Event` and handled by `Event ScriptType_Event`, and a remote one
+  by `Event Type_OnEvent`. The registration finds its handler by those names.
+- a **remote** registration relays what the sender *receives*. Only the events
+  the engine raises on a reference are accepted (`REMOTE_EVENTS`:
+  `OnActivate`, `OnDeath`, `OnHit`, `OnTriggerEnter`), so the check refuses
+  one that could never fire. `reference_script_event_system` relays them
+  from the engine's markers.
+
+The saved `EventRegistrations` holds them. A quest that stops does not yet drop
+its registrations, so a stopped quest's handler can still run once.
 
 ### Explicit-start pin (M47.2)
 

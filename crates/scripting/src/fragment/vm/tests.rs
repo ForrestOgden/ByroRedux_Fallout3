@@ -2291,3 +2291,77 @@ fn has_loc_ref_type_reads_the_placement_tags() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
+
+/// Custom events: a registered script's `(akSender, akArgs)` handler runs from
+/// the continuation queue after the sender's run, with the array it sent; an
+/// unregistered one does not. Remote events relay what a reference received.
+#[test]
+fn custom_and_remote_events_reach_registered_scripts() {
+    const DOOR: u32 = 0x0001_0F80;
+    let script = parsed_source(
+        "ScriptName QF_VmEvents extends Quest\n\
+         CustomEvent Ping\n\
+         ObjectReference Property Marker Auto\n\
+         ObjectReference Property Door Auto\n\
+         Int Pings\n\
+         Function Fragment_1()\n\
+           RegisterForCustomEvent(Self as ScriptObject, \"qf_vmevents_Ping\")\n\
+           RegisterForRemoteEvent(Door, \"OnActivate\")\n\
+           Var[] args = new Var[2]\n\
+           args[0] = 5\n\
+           args[1] = 2.5\n\
+           SendCustomEvent(\"qf_vmevents_Ping\", args)\n\
+           Pings = 100\n\
+         EndFunction\n\
+         Event QF_VmEvents_Ping(QF_VmEvents akSender, Var[] akArgs)\n\
+           Pings += 1\n\
+           If akArgs.Length == 2 && (akArgs[0] as Int) == 5\n Marker.Enable()\n EndIf\n\
+         EndEvent\n\
+         Event ObjectReference_OnActivate(ObjectReference akSender, ObjectReference akActionRef)\n\
+           Pings += 10\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(DOOR),
+    });
+    world.insert_resource(pool);
+    let door = world.spawn();
+    world.insert(door, FormIdComponent(id));
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "Door".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: DOOR,
+                alias: -1,
+            },
+        });
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let pings = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(Q, crate::QuestScriptVariables::property_key("Pings"))
+    };
+    // The sender's run finished (Pings = 100) before the receiver ran.
+    assert_eq!(pings(&world), Some(100.0));
+    assert!(!crate::fragment::reference_enabled(&world, MARKER));
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(pings(&world), Some(101.0), "the custom handler ran once, with the sent array");
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
+    // The door is activated: the remote registrant hears it.
+    world.insert(door, crate::ActivateEvent { activator: door });
+    crate::reference_script_event_system(&world, 0.0);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(pings(&world), Some(111.0));
+}

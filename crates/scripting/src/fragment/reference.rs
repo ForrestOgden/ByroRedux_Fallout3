@@ -208,6 +208,7 @@ struct Delivery {
 
 /// Deliver this frame's events to the reference scripts the VM runs.
 pub fn reference_script_event_system(world: &World, _dt: f32) {
+    relay_engine_events(world);
     let deliveries = collect_deliveries(world);
     if deliveries.is_empty() {
         return;
@@ -364,4 +365,74 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
         }
     }
     deliveries
+}
+
+/// Relay this frame's engine events to the scripts registered for them
+/// remotely (`RegisterForRemoteEvent`): the event a reference received, handled
+/// by the registrant with the sender first and the event's own arguments after.
+/// Read without draining: the consumers below and end-of-frame cleanup own the
+/// markers.
+fn relay_engine_events(world: &World) {
+    let any = world
+        .try_resource::<super::EventRegistrations>()
+        .is_some_and(|registrations| registrations.entries().iter().any(|e| e.remote));
+    if !any {
+        return;
+    }
+    let player = world
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0);
+    let form_of = |entity: EntityId| -> Option<u32> {
+        if Some(entity) == player {
+            return Some(0x14);
+        }
+        crate::condition::entity_global_form_id(world, entity)
+    };
+    let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
+    let mut relays: Vec<(u32, &'static str, Vec<VmStored>)> = Vec::new();
+    if let Some(events) = world.query::<crate::ActivateEvent>() {
+        for (entity, event) in events.iter() {
+            if let Some(form) = form_of(entity) {
+                relays.push((form, "OnActivate", vec![reference(event.activator)]));
+            }
+        }
+    }
+    if let Some(events) = world.query::<crate::OnTriggerEnterEvent>() {
+        for (entity, event) in events.iter() {
+            if let Some(form) = form_of(entity) {
+                for &triggerer in &event.triggerers {
+                    relays.push((form, "OnTriggerEnter", vec![reference(triggerer)]));
+                }
+            }
+        }
+    }
+    if let Some(events) = world.query::<crate::OnDeathEvent>() {
+        for (entity, event) in events.iter() {
+            if let Some(form) = form_of(entity) {
+                relays.push((form, "OnDeath", vec![event.killer.map_or(VmStored::None, reference)]));
+            }
+        }
+    }
+    if let Some(events) = world.query::<crate::HitEvent>() {
+        for (entity, hit) in events.iter() {
+            if let Some(form) = form_of(entity) {
+                relays.push((
+                    form,
+                    "OnHit",
+                    vec![
+                        reference(hit.aggressor),
+                        VmStored::None,
+                        VmStored::None,
+                        VmStored::Bool(hit.power_attack),
+                        VmStored::Bool(hit.sneak_attack),
+                        VmStored::Bool(hit.bash_attack),
+                        VmStored::Bool(hit.blocked),
+                    ],
+                ));
+            }
+        }
+    }
+    for (sender, event, args) in relays {
+        super::events::relay_remote(world, sender, event, &args);
+    }
 }

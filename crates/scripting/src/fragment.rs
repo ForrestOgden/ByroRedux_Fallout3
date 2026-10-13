@@ -59,6 +59,7 @@ use crate::translate::effects::{ActorRef, Effect};
 pub mod budget;
 mod effects;
 mod distance;
+mod events;
 mod package;
 mod populate;
 mod reference;
@@ -70,6 +71,7 @@ pub mod vm;
 pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST};
 pub use effects::*;
 pub use distance::*;
+pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
 pub use populate::*;
 pub use reference::*;
@@ -98,6 +100,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),
     include_str!("fragment/distance.rs"),
+    include_str!("fragment/events.rs"),
     include_str!("fragment/package.rs"),
     include_str!("fragment/populate.rs"),
     include_str!("fragment/reference.rs"),

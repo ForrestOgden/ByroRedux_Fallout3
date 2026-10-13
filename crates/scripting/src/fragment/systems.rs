@@ -197,6 +197,7 @@ pub fn register(world: &mut World) {
     world.insert_resource(ScriptUpdates::default());
     world.insert_resource(UpdateHandlerChecks::default());
     world.insert_resource(DistanceWatches::default());
+    world.insert_resource(EventRegistrations::default());
     world.insert_resource(PackageFragments::default());
     world.insert_resource(PendingPackageTransitions::default());
 }

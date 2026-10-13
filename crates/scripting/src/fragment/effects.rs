@@ -456,6 +456,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — reference-collection members a Papyrus VM run wrote back,
     /// applied to [`crate::AliasCollections`] after the guards drop.
     pub(super) alias_collections: Vec<(crate::alias_collections::CollectionKey, Vec<u32>)>,
+    /// M47.2 — custom / remote event registration changes a Papyrus VM run
+    /// asked for: the owner, the script, the change.
+    pub(super) event_requests: Vec<(u32, String, super::EventRequest)>,
     /// Which collection aliases the quests leave to their scripts, taken
     /// before any quest-state lock (see [`crate::CollectionAliasKinds`]).
     pub(super) collection_kinds: std::sync::Arc<HashMap<crate::alias_collections::CollectionKey, bool>>,
@@ -570,6 +573,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             alias_collections: Vec::new(),
+            event_requests: Vec::new(),
             collection_kinds: world
                 .try_resource::<crate::CollectionAliasKinds>()
                 .map(|kinds| std::sync::Arc::clone(&kinds.0))
@@ -664,6 +668,14 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.event_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::EventRegistrations>() {
+                for (owner, script, request) in self.event_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.event_requests.clear();
         }
         if !self.alias_collections.is_empty() {
             if let Some(mut collections) = world.try_resource_mut::<crate::AliasCollections>() {
