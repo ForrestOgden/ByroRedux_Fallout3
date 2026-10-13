@@ -143,11 +143,12 @@ pub struct PendingScriptStoryEvents(pub Vec<StoryEvent>);
 
 impl Resource for PendingScriptStoryEvents {}
 
-/// M47.2 — `Effect::Kill` requests, `(victim, killer)`, queued after the
+/// M47.2 — `Effect::Kill` requests, `(victim, killer, silent)`, queued after the
 /// quest-state guards drop and drained by the engine's death path the same
-/// frame; `NOT_SAVED_BY_DESIGN`.
+/// frame; `NOT_SAVED_BY_DESIGN`. A silent kill (`KillSilent`) raises no KILL
+/// story event.
 #[derive(Debug, Default)]
-pub struct PendingScriptKills(pub Vec<(EntityId, Option<EntityId>)>);
+pub struct PendingScriptKills(pub Vec<(EntityId, Option<EntityId>, bool)>);
 
 impl Resource for PendingScriptKills {}
 

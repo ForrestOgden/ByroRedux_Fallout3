@@ -1074,11 +1074,12 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
     run(&[Effect::Kill {
         actor: actor(),
         killer: Some(crate::translate::effects::ActorRef::Player),
+        silent: false,
     }]);
     let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
     assert_eq!(
         world.resource::<crate::story_manager::PendingScriptKills>().0,
-        vec![(attacker, Some(player))]
+        vec![(attacker, Some(player), false)]
     );
 }
 
@@ -5909,6 +5910,34 @@ fn linked_refs_resolve_through_the_sources_links() {
     );
     assert!(!super::reference_enabled(&world, GATE), "keyworded link");
     assert!(!super::reference_enabled(&world, LEVER), "unkeyworded link");
+}
+
+/// `MoveToMyEditorLocation` puts a moved reference back at its authored pose.
+#[test]
+fn move_to_editor_location_restores_the_authored_pose() {
+    use byroredux_core::ecs::Transform;
+    use byroredux_core::math::{Quat, Vec3};
+    const MOVED: u32 = 0x0001_0A20;
+    let mut world = fixture();
+    let entity = spawn_with_form_id(&mut world, MOVED);
+    world.register::<crate::EditorLocation>();
+    world.register::<Transform>();
+    let authored = crate::EditorLocation {
+        translation: Vec3::new(1.0, 2.0, 3.0),
+        rotation: Quat::from_rotation_y(0.5),
+    };
+    world.insert(entity, authored);
+    world.insert(entity, Transform::new(Vec3::new(9.0, 9.0, 9.0), Quat::IDENTITY, 1.0));
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Moved", MOVED)]),
+        vec![Effect::MoveToEditorLocation {
+            moved: ObjectRef::Property("Moved".into()),
+        }],
+    );
+    let transform = *world.get::<Transform>(entity).unwrap();
+    assert_eq!(transform.translation, authored.translation);
+    assert_eq!(transform.rotation, authored.rotation);
 }
 
 /// `SetLinkedRef` overrides the authored link under its keyword; `None`

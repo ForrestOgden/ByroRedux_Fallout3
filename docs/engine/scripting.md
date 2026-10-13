@@ -1102,6 +1102,28 @@ every one) and checked where the script registers.
 The delivery systems (updates, distance, custom/remote and hit events) share
 `ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and properties.
 
+### Parent calls, locations and editor placement (M47.2)
+
+- `Parent.Fn()` runs the version of `Fn` in the script the running function is defined
+  in extends (in the instance's current state): `Frame.defined_in` is set when a
+  function starts, and the check walks the same chain. `Parent.OnInit()` and the like
+  past the scripts to an engine class has no body to run, so the call does nothing
+  (events only).
+- `Owner.Member.Fn()`: a receiver written as a member of another script (`(GetOwningQuest()
+  as REScript).REParent.KillWithForce(…)`) is resolved through the script type the member
+  is declared as in the owner's script.
+- *IsChild - Location*: "true if the other location is a child of this one. If they are
+  the same location, the function returns false" (`LocationTable::is_within`).
+  `ReferenceAlias.TryToGetCurrentLocation()` (Starfield) is the current location of the
+  reference filling the alias, None while empty.
+- A quest's `OnStageSet(auiStageID, auiItemID)` is a remote event (`REMOTE_EVENTS`):
+  raised for every stage set, fragment or not, with the log entry index 0.
+- `MoveToMyEditorLocation()` (CK: "Moves this reference to its original editor location
+  and orientation") restores the `EditorLocation` the cell loader stamps when it spawns
+  a placed reference.
+- `KillSilent` is `Kill` "without a kill event" (CK *KillSilent - Actor*): the Story
+  Manager's KILL is not raised; the victim's own `OnDeath` still is.
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

@@ -1168,7 +1168,7 @@ pub(crate) fn scripted_kill_system(world: &World, _dt: f32) {
         .try_resource_mut::<byroredux_scripting::story_manager::PendingScriptKills>()
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
-    for (victim, killer) in kills {
+    for (victim, killer, silent) in kills {
         if world.get::<Dead>(victim).is_some()
             || byroredux_scripting::spare_from_death(world, victim, killer)
         {
@@ -1178,7 +1178,13 @@ pub(crate) fn scripted_kill_system(world: &World, _dt: f32) {
             dead.insert(victim, Dead);
         }
         queue_dead_actor_reconciliation(world, victim);
-        crate::systems::story_events::raise_kill_story_event(world, victim, killer);
+        if silent {
+            // CK *KillSilent*: "without a kill event" — the Story Manager's
+            // KILL is not raised; the victim's own `OnDeath` still is.
+            crate::systems::story_events::raise_death_event(world, victim, killer);
+        } else {
+            crate::systems::story_events::raise_kill_story_event(world, victim, killer);
+        }
     }
 }
 
@@ -1502,7 +1508,7 @@ mod tests {
         world
             .resource_mut::<byroredux_scripting::story_manager::PendingScriptKills>()
             .0
-            .extend([(target, Some(killer)), (essential, None)]);
+            .extend([(target, Some(killer), false), (essential, None, false)]);
 
         scripted_kill_system(&world, 0.0);
         assert!(world.get::<Dead>(target).is_some());
@@ -1514,6 +1520,26 @@ mod tests {
             .resource::<byroredux_scripting::story_manager::PendingScriptKills>()
             .0
             .is_empty());
+    }
+
+    /// M47.2 — `KillSilent` is the same death "without a kill event" (CK
+    /// *KillSilent - Actor*): Dead and the queued teardown, the victim's own
+    /// `OnDeath`, but no KILL story event.
+    #[test]
+    fn a_silent_scripted_kill_raises_no_kill_story_event() {
+        let (mut world, killer, target) = damage_fixture(50.0, None, false);
+        world.insert_resource(PendingDeathReconciliations::default());
+        world.register::<byroredux_scripting::story_manager::StoryEvent>();
+        world.register::<byroredux_scripting::OnDeathEvent>();
+        world
+            .resource_mut::<byroredux_scripting::story_manager::PendingScriptKills>()
+            .0
+            .push((target, Some(killer), true));
+        scripted_kill_system(&world, 0.0);
+        assert!(world.get::<Dead>(target).is_some());
+        assert_eq!(world.resource::<PendingDeathReconciliations>().queued(), &[target]);
+        assert!(world.get::<byroredux_scripting::story_manager::StoryEvent>(target).is_none());
+        assert!(world.get::<byroredux_scripting::OnDeathEvent>(target).is_some());
     }
 
     /// M47.2 — a lethal hit on an essential actor leaves it in bleedout, not

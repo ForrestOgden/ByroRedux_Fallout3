@@ -227,6 +227,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::AddAchievement { .. } => "AddAchievement",
         Effect::AdvanceSkill { .. } => "AdvanceSkill",
         Effect::SetLinkedRef { .. } => "SetLinkedRef",
+        Effect::MoveToEditorLocation { .. } => "MoveToEditorLocation",
         Effect::SetPlayerTeammate { .. } => "SetPlayerTeammate",
         Effect::SetDoingFavor { .. } => "SetDoingFavor",
         Effect::PlayerCaps { .. } => "PlayerCaps",

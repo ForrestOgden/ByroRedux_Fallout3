@@ -235,6 +235,9 @@ struct Frame {
     owner: QuestFormId,
     vmad: Option<ScriptInstanceData>,
     locals: HashMap<String, Value>,
+    /// The script whose body is running — the instance's script or one it
+    /// extends — which `Parent.Fn()` calls past. Set when a function starts.
+    defined_in: Option<Arc<Script>>,
 }
 
 enum Flow {
@@ -413,6 +416,7 @@ pub(super) fn run_fragment(
         owner: context,
         vmad: vmad.cloned(),
         locals: HashMap::new(),
+        defined_in: None,
     };
     let run = match resume.and_then(|state| state.frames.split_first()) {
         Some((top, inner)) => vm.resume_frame(frame, top, inner),
@@ -1244,6 +1248,7 @@ impl Vm<'_> {
                     owner: frame.owner,
                     vmad: frame.vmad.clone(),
                     locals: HashMap::new(),
+                    defined_in: None,
                 };
                 self.call_function(handler, &code, event, Vec::new())?;
             }
@@ -1274,6 +1279,7 @@ impl Vm<'_> {
             return stop("call depth");
         }
         let callable = code.callable(function)?;
+        frame.defined_in = Some(Arc::clone(&code.script));
         self.depth += 1;
         let flow = self.exec_block(frame, callable.body, path, inner, true);
         self.depth -= 1;
@@ -1378,6 +1384,7 @@ impl Vm<'_> {
             owner,
             vmad,
             locals: HashMap::new(),
+            defined_in: None,
         };
         self.resume_frame(frame, callee, deeper)
     }
@@ -2272,6 +2279,20 @@ impl Vm<'_> {
         let target = match receiver {
             None => own(self, frame),
             Some(object) if static_class(object).is_some() => None,
+            // `Parent.Fn()`: the version of the script the running function is
+            // defined in extends; an engine class's event (`Parent.OnInit()`)
+            // has no body to run.
+            Some(Expr::ParentAccess) => {
+                let parent = frame
+                    .defined_in
+                    .as_ref()
+                    .and_then(|defined| defined.parent.as_ref())
+                    .and_then(|parent| self.deferred.vm_scripts.get(&parent.node.0.to_ascii_lowercase()).cloned());
+                let state = self.script_state(frame.owner, &frame.script);
+                parent
+                    .and_then(|parent| resolve_in(&parent, &state, name, &self.deferred.vm_scripts))
+                    .map(|code| (Arc::clone(&frame.script), frame.owner, frame.vmad.clone(), code))
+            }
             // `ScriptName.Fn()`: a global function, which has no `Self`.
             Some(Expr::Ident(script_name)) if self.global_script(frame, &script_name.0).is_some() => {
                 let script = self.global_script(frame, &script_name.0).expect("checked above");
@@ -2307,6 +2328,7 @@ impl Vm<'_> {
                     owner,
                     vmad,
                     locals: HashMap::new(),
+                    defined_in: None,
                 },
                 code,
             )
@@ -2407,6 +2429,8 @@ impl Vm<'_> {
                     | "getcurrentlocation"
                     | "getdialoguetarget"
                     | "placeatme"
+                    | "ischild"
+                    | "trytogetcurrentlocation"
             );
         if !reads {
             return Ok(None);
@@ -2421,6 +2445,32 @@ impl Vm<'_> {
                     .map_or(Value::None, Value::Form),
             ),
             (Value::Alias { quest, .. }, "getowningquest") => Some(Value::Form(*quest)),
+            // `ReferenceAlias.TryToGetCurrentLocation()` (Starfield): the
+            // `GetCurrentLocation` of the reference filling the alias, None
+            // while it is empty.
+            (Value::Alias { quest, alias }, "trytogetcurrentlocation") => Some(
+                self.deferred
+                    .scene_actor_bindings
+                    .resolve(QuestFormId(*quest), i32::from(*alias))
+                    .and_then(|entity| crate::location::current_location(self.world, entity))
+                    .map_or(Value::None, Value::Form),
+            ),
+            // CK *IsChild - Location*: "Returns true if the other location is a
+            // child of this one. If they are the same location, the function
+            // returns false."
+            (Value::Form(this), "ischild") if args.len() == 1 => {
+                let other = match self.eval(frame, &args[0].value.node)? {
+                    Value::Form(other) => other,
+                    _ => 0,
+                };
+                let child = other != 0
+                    && other != *this
+                    && self
+                        .world
+                        .try_resource::<crate::location::LocationTable>()
+                        .is_some_and(|table| table.is_within(other, *this));
+                Some(Value::Bool(child))
+            }
             // `LocationAlias.GetLocation()` — the location runtime's fill.
             (Value::Alias { quest, alias }, "getlocation") => Some(
                 self.world
@@ -2702,6 +2752,14 @@ impl Vm<'_> {
             self.blocked_callers -= usize::from(blocked);
             return self.callee_flow(flow?, &callee_frame, &code, &name);
         }
+        // `Parent.OnInit()` and the like past the scripts to an engine class:
+        // its events have no body, so the call does nothing.
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if matches!(object.node, Expr::ParentAccess) && is_event_name(&member.node.0) {
+                self.eval_args(frame, args)?;
+                return Ok(Flow::Normal);
+            }
+        }
         // `GotoState`'s `OnEndState` / `OnBeginState` the script does not
         // handle: the empty events every script inherits.
         if is_state_event(&callee.node) {
@@ -2830,6 +2888,11 @@ fn is_state_event(callee: &Expr) -> bool {
     };
     let on_self = receiver.is_none_or(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")));
     on_self && (name.0.eq_ignore_ascii_case("onbeginstate") || name.0.eq_ignore_ascii_case("onendstate"))
+}
+
+/// Whether `name` is written like an event (`OnInit`, `OnActivate`).
+fn is_event_name(name: &str) -> bool {
+    name.len() > 2 && name[..2].eq_ignore_ascii_case("on") && name[2..3].chars().all(|c| c.is_ascii_uppercase())
 }
 
 fn is_trace(callee: &Expr) -> bool {
@@ -2964,6 +3027,9 @@ struct Checker<'l> {
 
 struct CheckFrame {
     script: Arc<Script>,
+    /// The script whose body is being checked: the instance's script or one it
+    /// extends. `Parent.Fn()` calls past it.
+    defined_in: Arc<Script>,
     /// What `Self` is: a quest, or a reference for a reference script.
     self_kind: Kind,
     locals: HashMap<String, Kind>,
@@ -3370,6 +3436,7 @@ impl<'l> Checker<'l> {
             let callable = callable_in(defined_in, state.as_deref(), function)?;
             let mut frame = CheckFrame {
                 script: Arc::clone(script),
+                defined_in: Arc::clone(defined_in),
                 self_kind,
                 locals: HashMap::new(),
                 types: HashMap::new(),
@@ -3783,6 +3850,25 @@ impl<'l> Checker<'l> {
         let Some(receiver) = receiver else {
             return self.fail(|| format!("global {name}"));
         };
+        // `Parent.Fn()`: the version past the script this body is defined in.
+        if matches!(receiver, Expr::ParentAccess) {
+            let defined = Arc::clone(&frame.defined_in);
+            let parent = defined
+                .parent
+                .as_ref()
+                .and_then(|parent| self.library.and_then(|library| library.script(&parent.node.0)));
+            if let Some(parent) = parent {
+                self.scripts.insert(parent.name.node.0.to_ascii_lowercase(), Arc::clone(&parent));
+                if !is_engine_class(&parent) && !self.versions(&parent, &name).is_empty() {
+                    return self.check_call_into(&parent, &name, statement, frame.self_kind);
+                }
+            }
+            // An engine class's event has no body to run.
+            if statement && is_event_name(&callee_name(callee)) {
+                return Some(Kind::None);
+            }
+            return self.fail(|| format!("Parent.{name}"));
+        }
         // `ScriptName.Fn()`: a global function of a script the library has.
         if let Expr::Ident(script_name) = receiver {
             let key = script_name.0.to_ascii_lowercase();
@@ -3929,6 +4015,12 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Object);
             }
             (Kind::Alias, "getlocation") => return Some(Kind::Object),
+            (Kind::Alias, "trytogetcurrentlocation") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "ischild")
+                if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) =>
+            {
+                return Some(Kind::Bool);
+            }
             (Kind::Object | Kind::Player, "placeatme") if place_at_me_args_ok(&arg_kinds) => {
                 return Some(Kind::Object);
             }
@@ -4018,6 +4110,15 @@ impl<'l> Checker<'l> {
                 Some(Type::Object(ty)) => ty.0.clone(),
                 _ => return None,
             },
+            // `Owner.Member`: the script type `Member` is declared as in
+            // `Owner`'s script (`(GetOwningQuest() as REScript).REParent`).
+            Expr::MemberAccess { object, member } => {
+                let owner = self.declared_script(frame, &object.node)?;
+                match self.member_type(&owner, &member.node.0)? {
+                    Type::Object(ty) => ty.0,
+                    _ => return None,
+                }
+            }
             _ => return None,
         };
         let script = self.library?.script(&type_name)?;

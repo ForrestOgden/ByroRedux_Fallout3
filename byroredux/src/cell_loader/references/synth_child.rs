@@ -62,6 +62,16 @@ pub(super) fn stamp_quest_reference(
         local: LocalFormId(placed_ref.form_id),
     });
     world.insert(entity, FormIdComponent(placement));
+    // The pose it spawned at is the authored one (`MoveToMyEditorLocation`).
+    if let Some(transform) = world.get::<byroredux_core::ecs::Transform>(entity).map(|t| *t) {
+        world.insert(
+            entity,
+            byroredux_scripting::EditorLocation {
+                translation: transform.translation,
+                rotation: transform.rotation,
+            },
+        );
+    }
     world.insert(
         entity,
         byroredux_scripting::SceneAliasCandidate {

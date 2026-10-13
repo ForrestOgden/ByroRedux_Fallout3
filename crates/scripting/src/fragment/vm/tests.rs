@@ -960,6 +960,148 @@ fn native_declarations_in_parent_scripts_stay_natives() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `Parent.Fn()` runs the version of the script the running function is defined
+/// in extends — in the instance's state — and `Parent.OnInit()` past the
+/// scripts to an engine class is the empty event.
+#[test]
+fn parent_calls_run_the_inherited_version() {
+    let quest = parsed_source("ScriptName Quest extends Form\nBool Function SetStage(Int aiStage) Native\n");
+    let base = parsed_source(
+        "ScriptName VmParentBase extends Quest\n\
+         Function Touch(Int aiStage)\n Self.SetStage(aiStage)\n EndFunction\n\
+         Event OnInit()\n Self.SetStage(15)\n EndEvent\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmParent extends VmParentBase\n\
+         Function Touch(Int aiStage)\n Parent.Touch(aiStage + 5)\n EndFunction\n\
+         Event OnInit()\n Parent.OnInit()\n EndEvent\n\
+         Function Fragment_1()\n Touch(15)\n EndFunction\n\
+         Function Fragment_2()\n Parent.Missing()\n EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> =
+        [("quest".to_owned(), quest), ("vmparentbase".to_owned(), base)].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    assert!(
+        check_function_reason(Arc::clone(&script), "Fragment_2", Some(&library)).is_err(),
+        "a parent function that does not exist"
+    );
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "Touch(15) -> Parent.Touch(20)");
+}
+
+/// CK *IsChild - Location*: true when the other location is a child of this one,
+/// false for the same location.
+#[test]
+fn location_is_child() {
+    const PARENT: u32 = 0x0001_0F70;
+    const CHILD: u32 = 0x0001_0F71;
+    let script = parsed_source(
+        "ScriptName QF_VmLoc extends Quest\n\
+         Location Property ParentLoc Auto\n\
+         Location Property ChildLoc Auto\n\
+         Function Fragment_1()\n\
+           If ParentLoc.IsChild(ChildLoc) && !ChildLoc.IsChild(ParentLoc) && !ParentLoc.IsChild(ParentLoc)\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let object = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmLoc".into(),
+                status: 0,
+                properties: vec![object("ParentLoc", PARENT), object("ChildLoc", CHILD)],
+            }],
+        },
+    );
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    for (form_id, parent) in [(PARENT, None), (CHILD, Some(PARENT))] {
+        index.locations.insert(
+            form_id,
+            byroredux_plugin::esm::records::LctnRecord {
+                form_id,
+                parent,
+                ..Default::default()
+            },
+        );
+    }
+    world.insert_resource(crate::location::LocationTable::from_index(&index));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// A quest's `OnStageSet` reaches the scripts registered for it remotely, with
+/// the sender first, for every stage set — a stage with no fragment included.
+#[test]
+fn quest_stage_set_is_a_remote_event() {
+    const WATCHED: QuestFormId = QuestFormId(0x0001_0F80);
+    let watcher = parsed_source(
+        "ScriptName VmStageWatcher extends Quest\n\
+         Quest Property Watched Auto\n\
+         Int Property Seen Auto\n\
+         Function Fragment_1()\n\
+           RegisterForRemoteEvent(Watched as ScriptObject, \"OnStageSet\")\n\
+         EndFunction\n\
+         Event Quest_OnStageSet(Quest akSender, Int auiStageID, Int auiItemID)\n\
+           Seen = auiStageID\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&watcher), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(watcher);
+    // The watched quest is a property of the watcher.
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "VmStageWatcher".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Watched".into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id: WATCHED.0,
+                        alias: -1,
+                    },
+                }],
+            }],
+        },
+    );
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    // The registration is made; the watched quest advances (it has no fragment).
+    world.resource_mut::<QuestStageState>().set_stage(WATCHED, 40);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    let seen = world
+        .resource::<crate::QuestScriptVariables>()
+        .get(Q, crate::QuestScriptVariables::property_key("Seen"));
+    assert_eq!(seen, Some(40.0));
+}
+
 /// An engine class's `AutoReadOnly` constant reads its value — on any
 /// reference, and unqualified in a script that inherits it.
 #[test]

@@ -158,6 +158,13 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
     );
 }
 
+/// M47.2 — the victim's Papyrus `OnDeath(akKiller)`.
+pub(crate) fn raise_death_event(world: &World, victim: EntityId, killer: Option<EntityId>) {
+    if let Some(mut deaths) = world.query_mut::<byroredux_scripting::OnDeathEvent>() {
+        deaths.insert(victim, byroredux_scripting::OnDeathEvent { killer });
+    }
+}
+
 /// #5434 — `KILL` (Actor Kill), raised from every LIVE death producer
 /// (combat damage, NPC/player drowning, the SDK actor-value batch) — never
 /// from corpse restores, which re-assert a death that already fired.
@@ -170,10 +177,7 @@ pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Op
     // #5372 — resolve the location BEFORE taking the StoryEvent write
     // guard (`resolve_current_lctn` reads `LoadedCellIndex`).
     let location_1 = resolve_current_lctn(world);
-    // M47.2 — the victim's Papyrus `OnDeath(akKiller)`.
-    if let Some(mut deaths) = world.query_mut::<byroredux_scripting::OnDeathEvent>() {
-        deaths.insert(victim, byroredux_scripting::OnDeathEvent { killer });
-    }
+    raise_death_event(world, victim, killer);
     let Some(mut events) = world.query_mut::<StoryEvent>() else {
         return;
     };

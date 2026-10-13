@@ -1255,6 +1255,9 @@ pub enum Effect {
     /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
     /// ([`crate::Achievements`]).
     AddAchievement { id: i32 },
+    /// M47.2 — `<reference>.MoveToMyEditorLocation()`: back to where the plugin
+    /// placed it ([`crate::EditorLocation`]).
+    MoveToEditorLocation { moved: ObjectRef },
     /// M47.2 — `<reference>.SetLinkedRef(apRef, apKeyword = None)`
     /// ([`crate::LinkedRefOverrides`]); a `None` target clears the link.
     SetLinkedRef {
@@ -1287,9 +1290,12 @@ pub enum Effect {
     },
     /// M47.2 — `<actor>.Kill([akKiller = None])`: the actor dies through the
     /// engine's death path, or goes into bleedout when essential (CK *Kill*).
+    /// `silent` is `KillSilent`: the same death "without a kill event" (CK
+    /// *KillSilent - Actor*), so the Story Manager's KILL event is not raised.
     Kill {
         actor: ActorRef,
         killer: Option<ActorRef>,
+        silent: bool,
     },
     /// #4816 — `<actor>.StopCombat()`: end the combat [`Self::StartCombat`]
     /// (or ambient faction hostility) armed on this actor. The ambient
@@ -2907,6 +2913,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_objective_skipped,
     prim_equip_item,
     prim_move_to,
+    prim_move_to_editor_location,
     prim_disable,
     prim_enable,
     prim_start_scene,
@@ -3778,10 +3785,17 @@ fn prim_set_relationship_rank(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
-/// `Actor.Kill(Actor akKiller = None)`. A player victim declines: the
-/// player's death is not a quest effect the runtime models.
+/// `Actor.Kill(Actor akKiller = None)` and `KillSilent(Actor akKiller = None)`.
+/// A player victim declines: the player's death is not a quest effect the
+/// runtime models.
 fn prim_kill(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "Kill")?;
+    let (object, args, silent) = match method_call(e, "Kill") {
+        Some((object, args)) => (object, args, false),
+        None => {
+            let (object, args) = method_call(e, "KillSilent")?;
+            (object, args, true)
+        }
+    };
     if args.len() > 1 {
         return None;
     }
@@ -3793,7 +3807,7 @@ fn prim_kill(e: &Expr, scope: &Scope) -> Option<Effect> {
         None | Some(Expr::NoneLit) => None,
         Some(killer) => Some(receiver_actor(killer, scope)?),
     };
-    Some(Effect::Kill { actor, killer })
+    Some(Effect::Kill { actor, killer, silent })
 }
 
 /// `ActorBase.SetEssential(bool abEssential = true)` /
@@ -4062,6 +4076,18 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     }
     let moved = receiver_object(object, scope)?;
     Some(Effect::MoveTo { moved, destination })
+}
+
+/// `<reference>.MoveToMyEditorLocation()` (CK: "Moves this reference to its
+/// original editor location and orientation").
+fn prim_move_to_editor_location(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "MoveToMyEditorLocation")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::MoveToEditorLocation {
+        moved: receiver_object(object, scope)?,
+    })
 }
 
 /// `Disable([abFadeOut])`, FO4/Starfield's `DisableNoWait([abFadeOut])` (the
@@ -5864,15 +5890,28 @@ mod tests {
                 Effect::Kill {
                     actor: ActorRef::Object(alias("Alias_Kyr")),
                     killer: None,
+                    silent: false,
                 },
                 Effect::Kill {
                     actor: ActorRef::Object(alias("Alias_Victim")),
                     killer: Some(ActorRef::Player),
+                    silent: false,
                 },
                 Effect::EvaluatePackage {
                     actor: ActorRef::Object(alias("Alias_Spectator1")),
                 },
             ])
+        );
+        let silent = first_fn_body(
+            "ScriptName QF extends Quest\nFunction Fragment_8()\nAlias_Kyr.GetActorRef().KillSilent(Game.GetPlayer())\nEndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&silent),
+            Some(vec![Effect::Kill {
+                actor: ActorRef::Object(alias("Alias_Kyr")),
+                killer: Some(ActorRef::Player),
+                silent: true,
+            }])
         );
         let player = first_fn_body(
             "ScriptName QF extends Quest\nFunction Fragment_8()\nGame.GetPlayer().Kill(None)\nEndFunction\n",

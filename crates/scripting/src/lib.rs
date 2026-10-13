@@ -17,6 +17,7 @@ pub mod cleanup;
 pub mod combat;
 pub mod compatibility;
 pub mod condition;
+pub mod editor_location;
 pub mod created_references;
 pub mod dialogue;
 pub mod equipment;
@@ -129,6 +130,7 @@ pub use faction_changes::{
 };
 pub use globals::Globals;
 pub use alias_collections::{AliasCollections, CollectionAliasKinds};
+pub use editor_location::EditorLocation;
 pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};

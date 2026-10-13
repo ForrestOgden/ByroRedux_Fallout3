@@ -459,7 +459,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v82 -> v83 (M47.2): the `HitRegistrations` resource column
 /// (`RegisterForHitEvent`).
-pub const FORMAT_MAJOR: u16 = 83;
+///
+/// v83 -> v84 (M47.2): `Effect::Kill.silent` (`KillSilent`) and
+/// `Effect::MoveToEditorLocation`.
+pub const FORMAT_MAJOR: u16 = 84;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

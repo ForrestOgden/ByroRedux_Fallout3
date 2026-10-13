@@ -434,7 +434,7 @@ pub struct DeferredFragmentEffects {
     story_events: Vec<crate::story_manager::StoryEvent>,
     /// M47.2 — `Effect::Kill` requests, queued in
     /// [`crate::story_manager::PendingScriptKills`] after the guards drop.
-    kills: Vec<(EntityId, Option<EntityId>)>,
+    kills: Vec<(EntityId, Option<EntityId>, bool)>,
     /// M47.2 — `Effect::RewardPlayerXp` grants, queued in
     /// [`crate::story_manager::PendingPlayerXp`] after the guards drop.
     player_xp: Vec<(u32, bool)>,
@@ -1252,7 +1252,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
 ///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` —
 ///     M47.2), `SceneAliasCandidate` (read, `Effect::SetBaseProtection`'s
-///     actor base — M47.2)
+///     actor base — M47.2), `EditorLocation` (read,
+///     `Effect::MoveToEditorLocation` — M47.2; copied out and released
+///     before the `Transform` write)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -1332,6 +1334,7 @@ pub(crate) fn apply_effect(
             apply_inventory_effect(effect, context, vmad, world, stages, deferred)
         }
         Effect::MoveTo { .. }
+        | Effect::MoveToEditorLocation { .. }
         | Effect::MovePlayerTo { .. }
         | Effect::Disable { .. }
         | Effect::Enable { .. } => {
@@ -1555,12 +1558,12 @@ pub(crate) fn apply_effect(
                 .push((crate::relationships::pair(actor, other), *rank));
             None
         }
-        Effect::Kill { actor, killer } => {
+        Effect::Kill { actor, killer, silent } => {
             let victim = guard_actor(actor, context, vmad, world, deferred)?;
             let killer = killer
                 .as_ref()
                 .and_then(|killer| guard_actor(killer, context, vmad, world, deferred));
-            deferred.kills.push((victim, killer));
+            deferred.kills.push((victim, killer, *silent));
             None
         }
         Effect::SetBaseProtection {
@@ -2137,6 +2140,24 @@ fn apply_placement_effect(
                 context.0
             );
             transform.translation = translation;
+            None
+        }
+        Effect::MoveToEditorLocation { moved } => {
+            let moved_entity =
+                resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
+            let Some(placed) = world.get::<crate::EditorLocation>(moved_entity).map(|placed| *placed) else {
+                log::debug!("fragment MoveToMyEditorLocation skipped: the reference has no editor location");
+                return None;
+            };
+            let mut transforms = world.query_mut::<Transform>()?;
+            let transform = transforms.get_mut(moved_entity)?;
+            log::debug!(
+                "fragment MoveToMyEditorLocation (quest {:08X}): {moved_entity:?} -> {:?}",
+                context.0,
+                placed.translation
+            );
+            transform.translation = placed.translation;
+            transform.rotation = placed.rotation;
             None
         }
         Effect::MovePlayerTo { destination } => {
@@ -3049,6 +3070,7 @@ fn apply_quest_scoped_effect(
         | Effect::AddAchievement { .. }
         | Effect::AdvanceSkill { .. }
         | Effect::SetLinkedRef { .. }
+        | Effect::MoveToEditorLocation { .. }
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }

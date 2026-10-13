@@ -14,9 +14,9 @@
 //! - `RegisterForRemoteEvent(sender, "OnActivate")` relays an event the sender
 //!   *receives* — "Calling the event directly on the source object will not
 //!   relay the event to this script" — to a handler that takes the sender
-//!   first. Only the events the engine raises on a reference
-//!   ([`REMOTE_EVENTS`]) are accepted, so a registration is never one that
-//!   would silently never fire.
+//!   first. Only the events the engine raises on a reference, and a quest's
+//!   `OnStageSet(auiStageID, auiItemID)` ([`REMOTE_EVENTS`]), are accepted, so a
+//!   registration is never one that would silently never fire.
 //!
 //! The compiler mangles the names: an event named `Ambush` in
 //! `AmbushTriggerScript` is sent as the string `ambushtriggerscript_Ambush` and
@@ -30,7 +30,7 @@ use crate::translate::effects::VmStored;
 
 /// The events the engine raises on a reference that a remote registration may
 /// ask for, lowercase.
-pub const REMOTE_EVENTS: [&str; 4] = ["onactivate", "ondeath", "onhit", "ontriggerenter"];
+pub const REMOTE_EVENTS: [&str; 5] = ["onactivate", "ondeath", "onhit", "ontriggerenter", "onstageset"];
 
 /// One script's registration for another object's event.
 #[derive(Debug, Clone, PartialEq)]

@@ -377,6 +377,9 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         return;
     }
 
+    // Every stage set, whether or not a fragment runs for it: the quests'
+    // `OnStageSet` remote event is raised for each.
+    let mut stage_sets: Vec<(QuestFormId, u16)> = Vec::new();
     while let Some((quest, stage, is_cascade)) = queue.pop_front() {
         if is_cascade {
             cascade_steps += 1;
@@ -389,6 +392,7 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             );
             break;
         }
+        stage_sets.push((quest, stage));
         let Some(effects) = frags.get(quest, stage) else {
             continue;
         };
@@ -415,6 +419,21 @@ pub fn quest_fragment_dispatch_system(world: &World) {
             }
             chained.push(adv);
         }
+    }
+
+    // FO4 `OnStageSet(auiStageID, auiItemID)`: "Event called when the quest's
+    // stage is set", to the scripts registered for the quest's remote event.
+    // The log entry index is not tracked, so the item is 0.
+    for (quest, stage) in stage_sets {
+        super::events::relay_remote(
+            world,
+            quest.0,
+            "OnStageSet",
+            &[
+                crate::translate::effects::VmStored::Int(i32::from(stage)),
+                crate::translate::effects::VmStored::Int(0),
+            ],
+        );
     }
 
     // Emit markers for the chained advances so other consumers (journal
