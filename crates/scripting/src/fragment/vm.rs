@@ -1403,6 +1403,18 @@ impl Vm<'_> {
         }
         let quest = QuestFormId(*form);
         let vmad = self.deferred.quest_scripts.get(&quest).cloned();
+        // A member of a script attached to the quest the VM has installed:
+        // what a script wrote, the VMAD's value, or what it declares.
+        if let Some(vmad) = &vmad {
+            for attached in &vmad.scripts {
+                let Some(script) = self.deferred.vm_scripts.get(&attached.name.to_ascii_lowercase()).cloned() else {
+                    continue;
+                };
+                if let Some(value) = self.read_script_member(quest, &script, Some(vmad), name) {
+                    return Ok(value);
+                }
+            }
+        }
         if let Some(value) = Self::property(vmad.as_ref(), name) {
             return Ok(value);
         }
@@ -2461,9 +2473,18 @@ impl<'l> Checker<'l> {
                     return Some(Kind::Num);
                 }
                 if owner == Kind::Quest {
-                    // Another quest script's numeric variable; its type is
-                    // not known here, numbers are what the VM reads.
-                    Kind::Num
+                    // Another quest script's member: its declared type when
+                    // the quest's script is known (an `ActorValue Property`
+                    // is no number), else a numeric variable, what the VM
+                    // reads from an untyped quest.
+                    let declared = self
+                        .declared_script(frame, &object.node)
+                        .and_then(|script| self.member_type(&script, &member.node.0));
+                    match declared {
+                        Some(Type::Array(_)) => return self.fail(|| "an array member of a quest".into()),
+                        Some(ty) => kind_of_type(&ty, self.library),
+                        None => Kind::Num,
+                    }
                 } else if member.node.0.eq_ignore_ascii_case("value") {
                     Kind::Num
                 } else if let Some(ty) = self.engine_constant_type(&member.node.0).filter(|_| owner != Kind::None) {

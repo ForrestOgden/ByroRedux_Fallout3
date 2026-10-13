@@ -1046,3 +1046,69 @@ fn timers_fire_once_with_their_id() {
     crate::script_update_system(&world, 10.0, Some(1.0));
     assert_eq!(fired(&world), Some(1.0), "a timer fires once");
 }
+
+/// Another quest's member reads by its declared type — here an object
+/// script variable the other quest's script holds — not as a number.
+#[test]
+fn another_quests_members_read_by_their_declared_type() {
+    const OTHER: QuestFormId = QuestFormId(0x0001_0F20);
+    let other_script = parsed_source(
+        "ScriptName VmOtherScript extends Quest\n\
+         ObjectReference Stored\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmQuestMembers extends Quest\n\
+         Quest Property Other Auto\n\
+         Function Fragment_1()\n\
+           VmOtherScript o = Other as VmOtherScript\n\
+           o.Stored.Disable()\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("vmotherscript".to_owned(), Arc::clone(&other_script))].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(GUARD),
+    });
+    world.insert_resource(pool);
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(id));
+    let other_vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "VmOtherScript".into(),
+            status: 0,
+            properties: Vec::new(),
+        }],
+    };
+    world.insert_resource(crate::QuestScriptInstances(Arc::new([(OTHER, other_vmad)].into())));
+    world.resource_mut::<crate::QuestScriptObjects>().set(
+        OTHER,
+        crate::QuestScriptVariables::property_key("Stored"),
+        crate::ScriptObject::Form(GUARD),
+    );
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+        let mut vmad = vmad();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "Other".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: OTHER.0,
+                alias: -1,
+            },
+        });
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(!crate::fragment::reference_enabled(&world, GUARD));
+}

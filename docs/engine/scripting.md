@@ -635,7 +635,10 @@ runtime:
   `GetOwningQuest`, `GetPlayer`, `GetLinkedRef`, base objects, location-alias
   and current locations, and `GetDialogueTarget`.
 - **Quest-script calls.** A call into a quest's script runs here against that
-  quest's VMAD.
+  quest's VMAD. A member of another quest reads by its declared type when the
+  quest's script is known (`kmyQuest.SomeAlias`, an `ActorValue Property`),
+  from the script attached to that quest; only an untyped quest's member is
+  taken for a number.
 - **Other references' scripts.** A call through a cast or a typed variable
   (`(Trap as TrapBase).Fire()`) reaches the script the VM runs on that
   reference. The check requires the declared script, not an engine class, to
@@ -688,7 +691,7 @@ walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
 line, as the lowering binds it. Package (`PF_`) fragments are not wired on
 either path yet.
 
-With the VM, 78.3% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 79.2% of the Skyrim corpus runs (Fallout 4: 70.2%) (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
