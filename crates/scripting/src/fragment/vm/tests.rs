@@ -306,6 +306,76 @@ fn a_wait_in_a_called_function_resumes_the_call_chain() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30);
 }
 
+/// #5681 — a `Utility.Wait` past the shared cap stops the run instead of
+/// parking an immortal continuation. The literal arm is the value the
+/// lowerer already declines; the computed arm is a run-time number only
+/// the VM sees. Both die with nothing queued, and the code after the wait
+/// never runs.
+#[test]
+fn waits_past_the_shared_cap_stop_the_run() {
+    for (name, source) in [
+        (
+            "QF_VmWaitCapLiteral",
+            "ScriptName QF_VmWaitCapLiteral extends Quest\n\
+             Function Fragment_1()\n\
+               Utility.Wait(86401.0)\n\
+               Self.SetStage(20)\n\
+             EndFunction\n",
+        ),
+        (
+            "QF_VmWaitCapComputed",
+            "ScriptName QF_VmWaitCapComputed extends Quest\n\
+             Function Fragment_1()\n\
+               Float secs = 864010.0\n\
+               Utility.Wait(secs)\n\
+               Self.SetStage(20)\n\
+             EndFunction\n",
+        ),
+    ] {
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let script = Arc::new(script);
+        assert!(
+            check_function(Arc::clone(&script), "Fragment_1", None).is_some(),
+            "the check still takes the handler; the cap is a run-time decline"
+        );
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(PapyrusPlayerEntity(player));
+        world.insert_resource(QuestStageState::default());
+        {
+            let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+            fragments.insert_vmad(Q, vmad());
+            fragments.insert_vm_script(Arc::clone(&script));
+            fragments.insert(
+                Q,
+                10,
+                vec![Effect::Interpret {
+                    script: name.into(),
+                    function: "Fragment_1".into(),
+                    args: Vec::new(),
+                    resume: None,
+                }],
+            );
+        }
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        assert_eq!(
+            world.resource::<QuestStageState>().get_stage(Q),
+            10,
+            "{name}: the wait must stop the run, not run the code behind it"
+        );
+        assert!(
+            world.resource::<crate::FragmentExecutionQueue>().is_empty(),
+            "{name}: an over-cap wait must not park a continuation"
+        );
+        // No amount of time satisfies it: the queue stays empty forever.
+        crate::fragment::fragment_continuation_system(&world, 1.0e30);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10);
+    }
+}
+
 /// `Global.Value = n` is `Global.SetValue(n)`; with `+=` it counts from the
 /// global's current value.
 #[test]

@@ -41,7 +41,7 @@ use byroredux_papyrus::ast::{BinaryOp, Expr, Stmt, UnaryOp};
 use byroredux_papyrus::span::Spanned;
 
 use crate::cinematic::CinematicAnimationEvent;
-use crate::papyrus_provider::{lower_provider_call, PapyrusProviderCatalog};
+use crate::papyrus_provider::{lower_provider_call, MAX_PROVIDER_WAIT_SECONDS, PapyrusProviderCatalog};
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
     as_num, int_arg, is_game_get_player, method_call, method_call_any, quest_via, ObjectRef,
@@ -4612,7 +4612,13 @@ fn prim_wait(e: &Expr, _scope: &Scope) -> Option<Effect> {
         return None;
     }
     let seconds = as_num(&args[0].value.node)?;
-    (seconds.is_finite() && seconds >= 0.0).then_some(Effect::Wait { seconds })
+    // #5681 — a wait the session can never satisfy (`3.0e38` is a finite
+    // f32) would park an immortal entry in `FragmentExecutionQueue`, saved
+    // with the rest of the world. Decline above the shared cap; the VM
+    // fallback stops the same run at its own suspend site, so the wait
+    // dies on both paths instead of moving between them.
+    (seconds.is_finite() && (0.0..=MAX_PROVIDER_WAIT_SECONDS).contains(&seconds))
+        .then_some(Effect::Wait { seconds })
 }
 
 fn game_call<'a>(e: &'a Expr, method: &str) -> Option<&'a [byroredux_papyrus::ast::CallArg]> {
@@ -8191,6 +8197,36 @@ mod tests {
                 },
             ])
         );
+    }
+
+    /// #5681 — a wait past the shared cap (or one whose f32 shape is
+    /// infinite) must decline, not lower into an immortal continuation.
+    /// The boundary itself still lowers.
+    #[test]
+    fn waits_past_the_shared_cap_decline() {
+        let at_cap = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_1()\n\
+             Utility.Wait(86400.0)\n\
+             Self.SetStage(20)\n EndFunction\n",
+        );
+        assert!(
+            lower_fragment(&at_cap).is_some(),
+            "exactly MAX_PROVIDER_WAIT_SECONDS is a legal (if long) wait"
+        );
+        for seconds in ["86401.0", "340282346638528859811704183484516925440.0"] {
+            let over = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_1()\n\
+                 Utility.Wait({seconds})\n\
+                 Self.SetStage(20)\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&over),
+                None,
+                "Utility.Wait({seconds}) must decline, not park an immortal continuation"
+            );
+        }
     }
 
     #[test]

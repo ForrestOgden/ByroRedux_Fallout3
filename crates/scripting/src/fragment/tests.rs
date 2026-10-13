@@ -3694,6 +3694,47 @@ fn actor_3d_load_gate_gives_up_after_max_wait_and_declines_tail() {
     assert!(!world.resource::<crate::PlayerControlState>().hud_cart_mode);
 }
 
+/// Regression: #5681 — the continuation queue is saved with the world, so
+/// it is bounded: entries past `MAX_FRAGMENT_CONTINUATIONS` drop
+/// newest-first (the same overflow policy as the provider continuation
+/// queue), keeping the oldest tails. A mod that re-fires a fragment per
+/// player action cannot grow the persisted queue without limit.
+#[test]
+fn continuation_queue_drops_newest_past_the_cap() {
+    let world = fixture();
+    let overflow = 8;
+    {
+        let mut queue = world.resource_mut::<FragmentExecutionQueue>();
+        for i in 0..MAX_FRAGMENT_CONTINUATIONS + overflow {
+            // `remaining_seconds` doubles as the entry's index, so the
+            // survivors' order is observable. dt 0 below readies nothing.
+            queue.pending.push(PendingFragmentExecution {
+                context: Q,
+                vmad: None,
+                effects: Vec::new(),
+                remaining_seconds: 100.0 + i as f32,
+                resume_when: FragmentResumeCondition::DelayElapsed,
+            });
+        }
+    }
+    fragment_continuation_system(&world, 0.0);
+    let queue = world.resource::<FragmentExecutionQueue>();
+    assert_eq!(
+        queue.len(),
+        MAX_FRAGMENT_CONTINUATIONS,
+        "the queue must be capped, not grown by every push"
+    );
+    assert_eq!(
+        queue.pending.first().unwrap().remaining_seconds,
+        100.0,
+        "overflow drops the newest tails, so the oldest entry survives"
+    );
+    assert_eq!(
+        queue.pending.last().unwrap().remaining_seconds,
+        100.0 + MAX_FRAGMENT_CONTINUATIONS as f32 - 1.0
+    );
+}
+
 #[test]
 fn dispatch_tethers_cart_and_equips_carried_armor() {
     use crate::translate::effects::ActorRef;

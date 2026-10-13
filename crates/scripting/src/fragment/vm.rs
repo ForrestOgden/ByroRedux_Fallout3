@@ -67,6 +67,7 @@ use byroredux_plugin::esm::records::script_instance::{
 };
 
 use super::effects::{apply_effects, evaluate_guard, evaluate_value, DeferredFragmentEffects};
+use crate::papyrus_provider::MAX_PROVIDER_WAIT_SECONDS;
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageState};
 use crate::translate::compose::vmad_property_name;
 use crate::translate::effects::{
@@ -2114,6 +2115,15 @@ impl Vm<'_> {
                     Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
                     None => 0.0,
                 };
+                // #5681 — the seconds are a run-time value here, so a literal
+                // the lowerer already declined can still reach the VM. A wait
+                // past the shared cap would park an immortal continuation in
+                // `FragmentExecutionQueue`; stopping the run is the
+                // decline-safe outcome, same choice the provider lowerer
+                // makes for the same literal.
+                if seconds > MAX_PROVIDER_WAIT_SECONDS {
+                    return stop("Utility.Wait beyond MAX_PROVIDER_WAIT_SECONDS");
+                }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
         }

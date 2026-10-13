@@ -71,7 +71,12 @@ const MAX_PENDING_PAPYRUS_MOD_EVENTS: usize = 256;
 /// of the session — and, persisted with the save, across sessions —
 /// letting one mod starve every other latent handler. One game day is
 /// far above every legitimate wait in the vanilla corpus.
-const MAX_PROVIDER_WAIT_SECONDS: f32 = 86_400.0;
+///
+/// #5681 — the same bound is shared by the fragment paths: the quest /
+/// scene / INFO / package lowerer's `prim_wait` declines above it, and the
+/// Papyrus VM stops a run whose `Utility.Wait` exceeds it, so no fragment
+/// continuation can outlive the session either.
+pub(crate) const MAX_PROVIDER_WAIT_SECONDS: f32 = 86_400.0;
 const PAPYRUS_SELF_PROVIDER: &str = "Self";
 const PAPYRUS_SELF_LOCAL: &str = "self";
 

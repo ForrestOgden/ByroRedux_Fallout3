@@ -631,6 +631,13 @@ pub(crate) enum FragmentResumeCondition {
 /// still guaranteeing every entry eventually leaves the queue.
 pub(crate) const MAX_ACTORS_3D_LOADED_WAIT_SECONDS: f32 = 30.0;
 pub(crate) const MAX_PROVIDER_FRAGMENT_BARRIERS: usize = 64;
+/// #5681 — bound on `FragmentExecutionQueue` entries, the fragment-path
+/// sibling of the provider queue's `MAX_PROVIDER_CONTINUATIONS`. Overflow
+/// drops the *newest* tails (the entries pushed latest), so a mod that
+/// re-fires an INFO or scene fragment per player action cannot grow the
+/// queue — saved with the world — without limit. Real cells park single
+/// digits; 4 096 is orders of magnitude above any legitimate backlog.
+pub(crate) const MAX_FRAGMENT_CONTINUATIONS: usize = 4_096;
 
 /// Runtime queue for latent time waits and bounded-work `Is3DLoaded` polling
 /// continuations.
