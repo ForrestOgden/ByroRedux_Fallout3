@@ -1652,9 +1652,12 @@ fn lower_statements(
                 // property: that write is persistent state `bind_local` would
                 // record as a side-effect-free local and drop (#5638).
                 if !scope.declares(&name) {
-                    // M47.2 — inside an inlined quest-script body `Self` is
-                    // the quest, so `::X_var` is its script's own variable.
-                    if !scope.inline_stack.is_empty() && is_script_variable(&ident.0, scope) {
+                    // M47.2 — where the VMAD is the quest's (a quest
+                    // fragment, an inlined quest-script body) the script is
+                    // attached to the quest, so `::X_var` is one of the
+                    // quest's script variables. An INFO's or scene's own
+                    // variables are not, and still decline.
+                    if scope.vmad_is_quest && is_script_variable(&ident.0, scope) {
                         effects.push(lower_self_variable_write(&ident.0, *op, &value.node, scope)?);
                         continue;
                     }
@@ -5473,6 +5476,48 @@ mod tests {
                 }],
             }])
         );
+    }
+
+    /// M47.2 — a quest fragment's write to its own script variable
+    /// (`::SudiFound_var = True`, `::chestCount_var += 1` as decompiled) is a
+    /// quest script variable; without a quest VMAD it still declines.
+    #[test]
+    fn quest_fragment_script_variable_writes_lower() {
+        use byroredux_papyrus::ast::AssignOp;
+        let var = |name: &str| sp(Expr::Ident(Identifier(name.into())));
+        let body = vec![
+            sp(Stmt::Assign {
+                target: var("::SudiFound_var"),
+                op: AssignOp::Eq,
+                value: sp(Expr::BoolLit(true)),
+            }),
+            sp(Stmt::Assign {
+                target: var("::chestCount_var"),
+                op: AssignOp::Eq,
+                value: sp(Expr::BinaryOp {
+                    left: Box::new(var("::chestCount_var")),
+                    op: BinaryOp::Add,
+                    right: Box::new(sp(Expr::IntLit(1))),
+                }),
+            }),
+        ];
+        let library = PscLibrary::new(&[]);
+        assert_eq!(
+            lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library)),
+            Some(vec![
+                Effect::SetQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "::SudiFound_var".into(),
+                    value: 1.0,
+                },
+                Effect::ModQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "::chestCount_var".into(),
+                    delta: 1.0,
+                },
+            ])
+        );
+        assert_eq!(lower_fragment(&body), None, "no quest VMAD");
     }
 
     /// M47.2 — a quest reached through the fragment quest's own typed
