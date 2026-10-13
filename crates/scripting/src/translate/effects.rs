@@ -1255,6 +1255,13 @@ pub enum Effect {
     /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
     /// ([`crate::Achievements`]).
     AddAchievement { id: i32 },
+    /// M47.2 — `<reference>.SetLinkedRef(apRef, apKeyword = None)`
+    /// ([`crate::LinkedRefOverrides`]); a `None` target clears the link.
+    SetLinkedRef {
+        object: ObjectRef,
+        target: Option<ObjectRef>,
+        keyword: Option<ObjectRef>,
+    },
     /// M47.2 — `Game.AdvanceSkill(asSkillName, afMagnitude)` with literal
     /// arguments ([`crate::skills`]).
     AdvanceSkill { skill: String, magnitude: f32 },
@@ -2892,6 +2899,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_reward_player_xp,
     prim_increment_stat,
     prim_add_achievement,
+    prim_set_linked_ref,
     prim_advance_skill,
     prim_set_player_teammate,
     prim_set_doing_favor,
@@ -3612,6 +3620,34 @@ fn prim_set_doing_favor(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::SetDoingFavor {
         actor: receiver_actor(object, scope)?,
         doing: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
+/// `ObjectReference.SetLinkedRef(apRef, apKeyword = None)`; `None` for the
+/// target or the keyword is written `None`. Starfield's signature adds
+/// `abPromoteParentRefr`: it promotes a non-persistent parent reference so
+/// the link survives, which [`crate::LinkedRefOverrides`] already does by
+/// keying the saved link on FormIDs, so the flag changes nothing here.
+fn prim_set_linked_ref(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetLinkedRef")?;
+    if args.is_empty() || args.len() > 3 {
+        return None;
+    }
+    if let Some(promote) = args.get(2) {
+        if !matches!(promote.value.node, Expr::BoolLit(_)) {
+            return None;
+        }
+    }
+    let optional = |index: usize| -> Option<Option<ObjectRef>> {
+        match args.get(index).map(|arg| &arg.value.node) {
+            None | Some(Expr::NoneLit) => Some(None),
+            Some(other) => receiver_object(other, scope).map(Some),
+        }
+    };
+    Some(Effect::SetLinkedRef {
+        object: receiver_object(object, scope)?,
+        target: optional(0)?,
+        keyword: optional(1)?,
     })
 }
 

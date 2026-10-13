@@ -1383,6 +1383,31 @@ fn math_game_time_and_achievements() {
     assert!(world.resource::<crate::Achievements>().has(9));
 }
 
+/// Starfield's `SetLinkedRef(apRef, apKeyword, abPromoteParentRefr)` link
+/// lands in the saved overrides, and `None` clears it again.
+#[test]
+fn set_linked_ref_writes_the_saved_link() {
+    let script = parsed_source(
+        "ScriptName QF_VmLink extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Int count = 0\n\
+           While count < 2\n\
+             count += 1\n\
+           EndWhile\n\
+           Marker.SetLinkedRef(Marker, None, True)\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    assert_eq!(crate::linked_ref(&world, MARKER, 0), None);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(crate::linked_ref(&world, MARKER, 0), Some(MARKER));
+}
+
 /// `Game.GetForm` answers a loaded plugin's id and None for an unloaded
 /// one; `Delete()` flags a created reference like `DeleteWhenAble`.
 #[test]

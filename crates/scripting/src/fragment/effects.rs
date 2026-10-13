@@ -170,12 +170,10 @@ fn linked_target(
         None => 0,
     };
     let source = resolve_object(vmad, world, context, from, bindings)?;
-    let target = world
-        .get::<crate::scene::SceneAliasCandidate>(source)?
-        .linked_refs
-        .iter()
-        .find(|(link, _)| *link == keyword || (keyword == 0 && *link == 0xFFFF_FFFF))
-        .map(|(_, target)| *target);
+    let target = match entity_global_form_id(world, source) {
+        Some(form) => crate::linked_ref(world, form, keyword),
+        None => None,
+    };
     if target.is_none() {
         log::debug!("fragment effect skipped: no linked ref under keyword {keyword:08X}");
     }
@@ -449,6 +447,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AdvanceSkill`s, queued on
     /// [`crate::PendingSkillAdvances`] after the guards drop.
     skill_advances: Vec<(String, f32)>,
+    /// M47.2 — `Effect::SetLinkedRef`s: (source, keyword, target), applied to
+    /// [`crate::LinkedRefOverrides`] after the guards drop.
+    linked_ref_changes: Vec<(u32, u32, u32)>,
     /// M47.2 — follower-flag writes: (actor FormID, teammate (with can-do-
     /// favor) or doing-favor), applied to [`crate::FollowerState`] after the
     /// guards drop.
@@ -574,6 +575,7 @@ impl DeferredFragmentEffects {
             misc_stats: Vec::new(),
             achievements: Vec::new(),
             skill_advances: Vec::new(),
+            linked_ref_changes: Vec::new(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             alias_collections: Vec::new(),
@@ -709,6 +711,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.follower_changes.clear();
+        }
+        if !self.linked_ref_changes.is_empty() {
+            if let Some(mut links) = world.try_resource_mut::<crate::LinkedRefOverrides>() {
+                for (source, keyword, target) in self.linked_ref_changes.drain(..) {
+                    links.set(source, keyword, target);
+                }
+            }
+            self.linked_ref_changes.clear();
         }
         if !self.skill_advances.is_empty() {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingSkillAdvances>() {
@@ -1428,6 +1438,23 @@ pub(crate) fn apply_effect(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let form = crate::condition::entity_global_form_id(world, actor)?;
             deferred.follower_changes.push((form, FollowerChange::DoingFavor(*doing)));
+            None
+        }
+        Effect::SetLinkedRef {
+            object,
+            target,
+            keyword,
+        } => {
+            let source = object_form_id(vmad, world, context, object, deferred)?;
+            let target = match target {
+                Some(target) => object_form_id(vmad, world, context, target, deferred)?,
+                None => 0,
+            };
+            let keyword = match keyword {
+                Some(keyword) => resolve_property_form_id(vmad, keyword.property_name())?,
+                None => 0,
+            };
+            deferred.linked_ref_changes.push((source, keyword, target));
             None
         }
         Effect::AdvanceSkill { skill, magnitude } => {
@@ -2962,6 +2989,7 @@ fn apply_quest_scoped_effect(
         | Effect::IncrementStat { .. }
         | Effect::AddAchievement { .. }
         | Effect::AdvanceSkill { .. }
+        | Effect::SetLinkedRef { .. }
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }

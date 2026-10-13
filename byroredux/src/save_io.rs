@@ -627,6 +627,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::MiscStats>("MiscStats")
         // M47.2 — Game.AddAchievement awards.
         .register_resource::<byroredux_scripting::Achievements>("Achievements")
+        // M47.2 — ObjectReference.SetLinkedRef links.
+        .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
         // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
         .register_resource::<byroredux_scripting::FollowerState>("FollowerState")
         // M47.2 — Papyrus distance-event registrations.

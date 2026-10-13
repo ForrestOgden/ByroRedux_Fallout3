@@ -1025,6 +1025,22 @@ The CK says the amount is "automatically modified by any active effects such as
 a Guardian Stone"; those modifiers are not modelled. `IncrementSkill` is not
 lowered yet.
 
+### Scripted links (M47.2)
+
+`ObjectReference.SetLinkedRef(apRef, apKeyword = None)` ("Sets the reference
+linked to this one under the specified keyword", CK) writes the saved
+`LinkedRefOverrides`, keyed by (source FormID, keyword FormID or 0). A script's
+link overrides the authored `XLKR` link under the same keyword and a `None`
+target clears it. `GetLinkedRef` and the lowered `ObjectRef::Linked` both read
+through `crate::linked_ref`, overrides first, then the loaded source's
+`SceneAliasCandidate.linked_refs`. The write is queued on
+`DeferredFragmentEffects` and applied after the quest guards drop.
+
+Starfield's declaration adds `abPromoteParentRefr` (Starfield `ObjectReference.pex`):
+the engine promotes a non-persistent parent reference so the link survives.
+Keying the saved link on FormIDs already survives the cell unloading, so the
+literal flag is accepted and changes nothing.
+
 ### Explicit-start pin (M47.2)
 
 A launch with no named location is a new game, and the Start Game Enabled

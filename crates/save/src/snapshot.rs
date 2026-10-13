@@ -445,7 +445,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v77 -> v78 (M47.2): `Effect::AdvanceSkill` and the `SkillProgress`
 /// resource column (banked skill usage XP).
-pub const FORMAT_MAJOR: u16 = 78;
+///
+/// v78 -> v79 (M47.2): `Effect::SetLinkedRef` and the `LinkedRefOverrides`
+/// resource column (links scripts set).
+pub const FORMAT_MAJOR: u16 = 79;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -30,6 +30,7 @@ pub mod keywords;
 pub mod menus;
 pub mod alias_collections;
 pub mod followers;
+pub mod linked_refs;
 pub mod messages;
 pub mod skills;
 pub mod misc_stats;
@@ -125,6 +126,7 @@ pub use faction_changes::{
 };
 pub use globals::Globals;
 pub use alias_collections::{AliasCollections, CollectionAliasKinds};
+pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
@@ -260,6 +262,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted IncrementStat misc stats (saved).
     if world.try_resource::<MiscStats>().is_none() {
         world.insert_resource(MiscStats::default());
+    }
+    // M47.2 — scripted SetLinkedRef links (saved).
+    if world.try_resource::<LinkedRefOverrides>().is_none() {
+        world.insert_resource(LinkedRefOverrides::default());
     }
     // M47.2 — Game.AdvanceSkill: banked usage XP (saved) and the advances
     // scripts queued (transient).

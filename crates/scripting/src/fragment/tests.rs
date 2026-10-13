@@ -5880,6 +5880,58 @@ fn linked_refs_resolve_through_the_sources_links() {
     assert!(!super::reference_enabled(&world, LEVER), "unkeyworded link");
 }
 
+/// `SetLinkedRef` overrides the authored link under its keyword; `None`
+/// clears it; links under another keyword are untouched.
+#[test]
+fn set_linked_ref_overrides_and_clears_links() {
+    const SOURCE: u32 = 0x0001_0A10;
+    const LINK_GATE: u32 = 0x0009_0001;
+    const AUTHORED: u32 = 0x0001_0A11;
+    const REPLACED: u32 = 0x0001_0A12;
+    const LEVER: u32 = 0x0001_0A13;
+    let mut world = fixture();
+    let source = spawn_with_form_id(&mut world, SOURCE);
+    world.register::<crate::scene::SceneAliasCandidate>();
+    world.insert(
+        source,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: SOURCE,
+            linked_refs: vec![(LINK_GATE, AUTHORED), (0, LEVER)],
+            ..Default::default()
+        },
+    );
+    if world.try_resource::<crate::LinkedRefOverrides>().is_none() {
+        world.insert_resource(crate::LinkedRefOverrides::default());
+    }
+    assert_eq!(crate::linked_ref(&world, SOURCE, LINK_GATE), Some(AUTHORED));
+    let vmad = object_property_vmad(&[
+        ("Source", SOURCE),
+        ("LinkGate", LINK_GATE),
+        ("Replaced", REPLACED),
+    ]);
+    run_stage_effects(
+        &world,
+        vmad.clone(),
+        vec![Effect::SetLinkedRef {
+            object: ObjectRef::Property("Source".into()),
+            target: Some(ObjectRef::Property("Replaced".into())),
+            keyword: Some(ObjectRef::Property("LinkGate".into())),
+        }],
+    );
+    assert_eq!(crate::linked_ref(&world, SOURCE, LINK_GATE), Some(REPLACED));
+    assert_eq!(crate::linked_ref(&world, SOURCE, 0), Some(LEVER), "other keyword untouched");
+    run_stage_effects(
+        &world,
+        vmad,
+        vec![Effect::SetLinkedRef {
+            object: ObjectRef::Property("Source".into()),
+            target: None,
+            keyword: Some(ObjectRef::Property("LinkGate".into())),
+        }],
+    );
+    assert_eq!(crate::linked_ref(&world, SOURCE, LINK_GATE), None, "cleared");
+}
+
 
 /// M47.2 — the CK *Quest Stages Tab*: a stage runs on start only when it is
 /// flagged "Start Up Stage". A quest started without one (Skyrim's MS12, Start

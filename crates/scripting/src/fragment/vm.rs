@@ -2390,13 +2390,7 @@ impl Vm<'_> {
     }
 
     fn linked_ref(&self, form: u32, keyword: u32) -> Option<u32> {
-        let entity = self.entity_of(form)?;
-        self.world
-            .get::<crate::scene::SceneAliasCandidate>(entity)?
-            .linked_refs
-            .iter()
-            .find(|(link, _)| *link == keyword || (keyword == 0 && *link == 0xFFFF_FFFF))
-            .map(|(_, target)| *target)
+        crate::linked_ref(self.world, form, keyword)
     }
 
     fn base_of(&self, form: u32) -> Option<u32> {
