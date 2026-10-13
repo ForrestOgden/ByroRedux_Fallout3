@@ -77,6 +77,8 @@ struct Stats {
 /// The exact number of top-level [`byroredux_papyrus::ast::ScriptItem`]s
 /// `decompile_script` produces for `object`, derived from its own
 /// documented rule (`decompile/lower.rs::decompile_script`): one item per
+/// struct definition (FO4+ — Skyrim objects carry none, and the reader
+/// models that with an always-empty `struct_infos`), one item per
 /// non-synthetic (`::`-prefixed are dropped) variable, one per property,
 /// one per function in the auto/default state, and one per NAMED state
 /// (bundling that whole state's functions into a single `State` item,
@@ -90,7 +92,7 @@ fn expected_top_level_item_count(object: &byroredux_pex::Object) -> usize {
         .iter()
         .filter(|v| !v.name.starts_with("::"))
         .count();
-    let mut items = non_synthetic_vars + object.properties.len();
+    let mut items = non_synthetic_vars + object.properties.len() + object.struct_infos.len();
     for state in &object.states {
         // #4319 — script scope is the empty-named state, not the auto state.
         // This used to call the decompiler's own auto-state predicate

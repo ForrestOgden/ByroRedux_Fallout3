@@ -265,6 +265,37 @@ impl BoolPass<'_> {
             return Ok(false);
         }
 
+        // The removed blocks must be *private* to this short-circuit. The
+        // fold below deletes the operand block, and for a non-exit rejoin
+        // the rejoin block too; any other incoming edge into a deleted
+        // block is left pointing at a hole, and `control_flow::reconstruct`
+        // then fails on it — the two corpus decompile failures this guard
+        // closes (FO4 `StimBoxScript`, FO76 `Debug.TraceLog`: an early-exit
+        // `return`'s jump to the function's shared `return` epilogue, which
+        // the `||`/`&&` fold wanted to claim as its rejoin). Rewiring such
+        // an edge to `current` instead would not be a fix: that predecessor
+        // means "skip to the join point", not "re-run the folded chain".
+        // Decline — the un-collapsed short-circuit rebuilds through
+        // `reconstruct` as an equivalent `If`. Expected in-edges: the
+        // operand gets exactly the source's conditional edge; the rejoin
+        // additionally gets the operand's fall-through (counted only when
+        // the rejoin is an interior block — the exit anchor is never
+        // removed, so extra edges into it are harmless).
+        let incoming = |key: usize| {
+            self.cfg
+                .blocks
+                .values()
+                .filter(|b| b.next == key || b.on_false == key)
+                .count()
+        };
+        if incoming(operand_key) != 1 {
+            return Ok(false);
+        }
+        let rejoin_is_removed = self.cfg.block(rejoin_key).is_some_and(|r| r.end != END);
+        if rejoin_is_removed && incoming(rejoin_key) != 2 {
+            return Ok(false);
+        }
+
         let mut operand_scope = match self.scopes.get(&operand_key) {
             Some(s) => s.clone(),
             None => return Ok(false),
@@ -407,8 +438,22 @@ mod tests {
     fn child_ifs(nodes: &[Node]) -> usize {
         nodes
             .iter()
-            .filter(|n| matches!(n.kind, NodeKind::IfElse { .. }))
+            .filter(|n| matches!(&n.kind, NodeKind::IfElse { .. }))
             .count()
+    }
+    fn count_ifs(nodes: &[Node]) -> usize {
+        nodes
+            .iter()
+            .map(node_count_ifs)
+            .sum::<usize>()
+    }
+    fn node_count_ifs(node: &Node) -> usize {
+        let here = matches!(&node.kind, NodeKind::IfElse { .. }) as usize;
+        here + node
+            .child_nodes()
+            .into_iter()
+            .map(node_count_ifs)
+            .sum::<usize>()
     }
 
     #[test]
@@ -859,6 +904,172 @@ mod tests {
         assert!(
             guard < read,
             "the block-shape test must run BEFORE the scope is touched"
+        );
+    }
+
+    /// A short-circuit whose rejoin is the function's shared `return`
+    /// epilogue, ALSO targeted by an early-exit `return` jump, must NOT
+    /// be collapsed — the fold would delete the rejoin block and leave
+    /// the early exit's edge dangling into it, and `reconstruct` then
+    /// fails on the hole. Both shapes below are verbatim from the two
+    /// corpus scripts that used to be the only decompile failures across
+    /// all four games' vanilla archives (FO4 `StimBoxScript.
+    /// CheckTriggeringObjectAndDoOnceStatus`; FO76 `Debug.TraceLog`) —
+    /// 14 026 + 7 875 + 4 740 + 7 233 scripts at 100% after the guard.
+    #[test]
+    fn or_whose_rejoin_is_a_shared_epilogue_is_left_uncollapsed() {
+        // Verbatim StimBox tail (jump targets are `ip + offset`):
+        //   0: assign returnVal, false
+        //   1: cmp_eq ::temp55, S_AllowPlayerToTrigger_var, false
+        //   2: cast   ::temp59, ::temp55
+        //   3: jmpf   ::temp59, +5  -> 8
+        //   4: callstatic Game.GetPlayer -> ::temp56
+        //   5: cast   ::temp57, ::temp56
+        //   6: cmp_eq ::temp58, ObjectToCheck, ::temp57
+        //   7: cast   ::temp59, ::temp58
+        //   8: jmpf   ::temp59, +3  -> 11
+        //   9: assign returnVal, false        ; early-exit body
+        //  10: jmp    +7  -> 17               ; early exit to the epilogue
+        //  11: cast   ::temp60, ObjectToCheck
+        //  12: callmethod self.CheckFactions -> ::temp61
+        //  13: cast   returnVal, ::temp61     ; `||` left operand
+        //  14: jmpt   returnVal, +3 -> 17     ; short-circuit — target 17
+        //  15: callmethod self.CheckKeywords -> ::temp62
+        //  16: cast   returnVal, ::temp62     ; `||` right operand
+        //  17: return returnVal               ; rejoin, shared with 10
+        let f = Function {
+            name: "CheckTriggeringObjectAndDoOnceStatus".into(),
+            return_type_name: "Bool".into(),
+            params: vec![local("ObjectToCheck", "ObjectReference")],
+            locals: vec![
+                local("::nonevar", "None"),
+                local("::temp55", "Bool"),
+                local("::temp56", "actor"),
+                local("::temp57", "ObjectReference"),
+                local("::temp58", "Bool"),
+                local("::temp59", "Bool"),
+                local("returnVal", "Bool"),
+                local("::temp60", "actor"),
+                local("::temp61", "Bool"),
+                local("::temp62", "Bool"),
+            ],
+            instructions: vec![
+                ins(OpCode::Assign, vec![id("returnVal"), Value::Bool(false)]),
+                ins(OpCode::CmpEq, vec![id("::temp55"), id("::S_AllowPlayerToTrigger_var"), Value::Bool(false)]),
+                ins(OpCode::Cast, vec![id("::temp59"), id("::temp55")]),
+                ins(OpCode::JmpF, vec![id("::temp59"), Value::Integer(5)]),
+                ins(OpCode::CallStatic, vec![id("Game"), id("GetPlayer"), id("::temp56")]),
+                ins(OpCode::Cast, vec![id("::temp57"), id("::temp56")]),
+                ins(OpCode::CmpEq, vec![id("::temp58"), id("ObjectToCheck"), id("::temp57")]),
+                ins(OpCode::Cast, vec![id("::temp59"), id("::temp58")]),
+                ins(OpCode::JmpF, vec![id("::temp59"), Value::Integer(3)]),
+                ins(OpCode::Assign, vec![id("returnVal"), Value::Bool(false)]),
+                ins(OpCode::Jmp, vec![Value::Integer(7)]),
+                ins(OpCode::Cast, vec![id("::temp60"), id("ObjectToCheck")]),
+                ins(OpCode::CallMethod, vec![id("CheckFactions"), id("self"), id("::temp61")]),
+                ins(OpCode::Cast, vec![id("returnVal"), id("::temp61")]),
+                ins(OpCode::JmpT, vec![id("returnVal"), Value::Integer(3)]),
+                ins(OpCode::CallMethod, vec![id("CheckKeywords"), id("self"), id("::temp62")]),
+                ins(OpCode::Cast, vec![id("returnVal"), id("::temp62")]),
+                ins(OpCode::Return, vec![id("returnVal")]),
+            ],
+            ..Function::default()
+        };
+        // The leading `&&` (block 0 + the player-check operand) still
+        // collapses — its rejoin IS private; the trailing `||` must not.
+        let tree = decompile(f);
+        assert!(has_binop(&tree, "&&"), "the private && still folds");
+        assert!(
+            !has_binop(&tree, "||"),
+            "the || with a shared epilogue rejoin must be declined, not folded"
+        );
+        assert!(
+            count_ifs(&tree) >= 2,
+            "the || rebuilds as an If, not a hole"
+        );
+    }
+
+    /// The `&&` twin of the shared-epilogue shape, from FO76
+    /// `Debug.TraceLog`: the short-circuit's rejoin is the trailing
+    /// `return returnVal`, which an early-exit `jmp` also targets.
+    #[test]
+    fn and_whose_rejoin_is_a_shared_epilogue_is_left_uncollapsed() {
+        // Verbatim tail:
+        //  12: callstatic Debug.OpenUserLog -> ::temp15
+        //  13: callstatic Debug.TraceUser  -> returnVal   ; guard value
+        //  14..17: strcat subLogName / dejaChannel
+        //  18: callstatic Debug.OpenUserLog -> ::temp16
+        //  19: cast   returnVal, returnVal                ; && guard
+        //  20: jmpf   returnVal, +3 -> 23                 ; short-circuit
+        //  21: callstatic Debug.TraceUser -> ::temp16
+        //  22: cast   returnVal, ::temp16
+        //  23: return returnVal                           ; shared rejoin
+        // (instrs 0..11 lead in: a plain if, a `DejaSubChannel == ""`
+        // guard whose body `jmp 12` early-exits to 23.)
+        let f = Function {
+            name: "TraceLog".into(),
+            return_type_name: "Bool".into(),
+            params: vec![
+                local("CallingObject", "ScriptObject"),
+                local("asTextToPrint", "String"),
+                local("logName", "String"),
+                local("DejaSubChannel", "String"),
+                local("aiSeverity", "Int"),
+                local("bShowNormalTrace", "Bool"),
+            ],
+            locals: vec![
+                local("::temp11", "String"),
+                local("::temp12", "String"),
+                local("::temp13", "String"),
+                local("::temp14", "Bool"),
+                local("traceString", "String"),
+                local("::nonevar", "None"),
+                local("returnVal", "Bool"),
+                local("::temp15", "Bool"),
+                local("::temp16", "Bool"),
+                local("subLogName", "String"),
+                local("dejaChannel", "String"),
+            ],
+            instructions: vec![
+                ins(OpCode::Cast, vec![id("::temp11"), id("CallingObject")]),
+                ins_v(
+                    OpCode::StrCat,
+                    vec![id("::temp12"), id("::temp11"), Value::Str(": ".into())],
+                    vec![],
+                ),
+                ins(OpCode::StrCat, vec![id("traceString"), id("::temp12"), id("asTextToPrint")]),
+                ins(OpCode::JmpF, vec![id("bShowNormalTrace"), Value::Integer(3)]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("Trace"), id("::nonevar")]),
+                ins(OpCode::Jmp, vec![Value::Integer(1)]),
+                ins(OpCode::Assign, vec![id("returnVal"), Value::Bool(false)]),
+                ins(OpCode::CmpEq, vec![id("::temp14"), id("DejaSubChannel"), Value::Str(String::new())]),
+                ins(OpCode::JmpF, vec![id("::temp14"), Value::Integer(4)]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("OpenUserLog"), id("::temp15")]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("TraceUser"), id("returnVal")]),
+                ins(OpCode::Jmp, vec![Value::Integer(12)]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("OpenUserLog"), id("::temp15")]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("TraceUser"), id("returnVal")]),
+                ins(OpCode::StrCat, vec![id("::temp11"), id("logName"), Value::Str("_".into())]),
+                ins(OpCode::StrCat, vec![id("subLogName"), id("::temp11"), id("DejaSubChannel")]),
+                ins(OpCode::StrCat, vec![id("::temp13"), id("logName"), Value::Str("_".into())]),
+                ins(OpCode::StrCat, vec![id("dejaChannel"), id("::temp13"), id("DejaSubChannel")]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("OpenUserLog"), id("::temp16")]),
+                ins(OpCode::Cast, vec![id("returnVal"), id("returnVal")]),
+                ins(OpCode::JmpF, vec![id("returnVal"), Value::Integer(3)]),
+                ins(OpCode::CallStatic, vec![id("Debug"), id("TraceUser"), id("::temp16")]),
+                ins(OpCode::Cast, vec![id("returnVal"), id("::temp16")]),
+                ins(OpCode::Return, vec![id("returnVal")]),
+            ],
+            ..Function::default()
+        };
+        let tree = decompile(f);
+        assert!(
+            !has_binop(&tree, "&&"),
+            "the && with a shared epilogue rejoin must be declined, not folded"
+        );
+        assert!(
+            count_ifs(&tree) >= 2,
+            "it rebuilds as nested Ifs, not a hole"
         );
     }
 }
