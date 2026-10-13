@@ -418,9 +418,9 @@ that does not exist yet:
   `ForceRefTo` / `Clear` 2026-10-13.
 - **Perk hooks beyond strike damage:** damage threshold shipped 2026-10-12
   (New Vegas DT, hooks 56 / 58 — [scripting.md §Perk entry points](scripting.md#perk-entry-points-m472)).
-  Kill experience (hook 9) shipped the same day. Skill points (no level-up
-  menu) and carry weight (no encumbrance) still have no consuming systems;
-  weapon-tab subjects need equipped weapons as entities.
+  Kill experience (hook 9) shipped the same day, carry weight (encumbrance,
+  hooks 22 / 10) on 2026-10-13. Skill points (no level-up menu) still have no
+  consuming system; weapon-tab subjects need equipped weapons as entities.
 - **Created Object "At"** (1,389 Skyrim + FO4 aliases, mostly NPC spawns):
   shipped 2026-10-12 — see [m47-3-quest-alias-design.md](m47-3-quest-alias-design.md)
   §Phase 4+. Still open: applying `ALCL`'s encounter level, and targets in

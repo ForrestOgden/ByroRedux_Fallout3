@@ -272,6 +272,20 @@ levels by the ruleset's `LevelingModel`, up to its cap. The masters author no
 `validate_progression_state` guard. Skill points (hook 10) and the level-up
 menu remain.
 
+The fourth is **encumbrance** (`byroredux/src/encumbrance.rs`). The player's
+carried weight is the inventory's item weights times counts (the inventory
+menu's total). It is written to the `InventoryWeight` actor value every frame,
+so conditions and scripts read it. Capacity is `CarryWeight` composed by Get
+Max Carry Weight (FO3/FNV hook 22, Skyrim hook 10; neither master authors an
+entry, so this is for mods). The GECK *Stats List*: "If InventoryWeight >
+CarryWeight, the actor is over-encumbered". On FO3/FNV, movement speed is
+then multiplied by `fMoveEncumEffect` (0.4, the GECK and Fallout3.exe
+default). The holstered-weapon variant is not split out, since the player has
+no holstered state yet. On Skyrim the player is "limited to walking" (UESP
+*Carry Weight*), so sprint is refused. Oblivion's hard-coded encumbrance value
+and FO4 / Starfield's effects are not modelled. Live (FNV Goodsprings): 21
+chainsaws put the player at 420 of 200, and they moved slower afterwards.
+
 The record layout and the composition rules are pinned to xEdit's
 `wbDefinitionsFNV` / `wbDefinitionsTES5` and checked against the vanilla masters
 (`cargo run --release -p byroredux-plugin --example perk_entry_census -- <ESM>`,

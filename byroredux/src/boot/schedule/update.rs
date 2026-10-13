@@ -35,6 +35,19 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .writes::<byroredux_core::ecs::components::ActorValues>(),
     );
+    // M47.2 — the player's carried weight against Carry Weight; the
+    // movement effect reads it next frame.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::encumbrance::encumbrance_system,
+        Access::new()
+            .reads_resource::<crate::encumbrance::EncumbranceRules>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::inventory::InventoryCatalog>()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes_resource::<crate::encumbrance::PlayerEncumbrance>(),
+    );
     // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
     // event-driven (early-return when no ActivateEvent /
     // OnUpdateEvent / RecurringUpdate is present), so they

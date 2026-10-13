@@ -212,6 +212,10 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // player to AI, or restrain the actor. Keep gravity/collision ticking in
     // all three cases; only suppress user-authored horizontal/jump intent.
     let accepts_movement_input = player_accepts_movement_input(world, player_entity);
+    // M47.2 — over-encumbrance slows the player or takes the sprint away.
+    let (encumbrance_speed, sprint_allowed) = world
+        .try_resource::<crate::encumbrance::PlayerEncumbrance>()
+        .map_or((1.0, true), |encumbrance| encumbrance.movement());
 
     // Pitch as well as yaw: a swimmer's movement is rotated by both
     // (WATAL W1, reference OpenMW `movementsolver.cpp:161-165`), so the look
@@ -238,7 +242,8 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         move_dir.x += 1.0;
     }
     let want_jump_now = accepts_movement_input && actions.is_held(InputAction::Jump);
-    let want_sprint = accepts_movement_input && actions.is_held(InputAction::Sprint);
+    let want_sprint =
+        accepts_movement_input && sprint_allowed && actions.is_held(InputAction::Sprint);
     drop(actions);
 
     // Snapshot character params + current state.
@@ -323,7 +328,7 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // Compute the desired horizontal motion in world-space, yaw-aligned.
     // The helper normalises the WASD vector before scaling so diagonal
     // strafe doesn't go √2× faster than pure forward.
-    let speed_mul = if want_sprint { 2.0 } else { 1.0 };
+    let speed_mul = (if want_sprint { 2.0 } else { 1.0 }) * encumbrance_speed;
     // Swimming takes the pitched 3D form; walking keeps the yaw-only one. The
     // vertical share is kept separate so it can be added to the buoyancy
     // spring's own motion and clamped against the surface as one quantity.

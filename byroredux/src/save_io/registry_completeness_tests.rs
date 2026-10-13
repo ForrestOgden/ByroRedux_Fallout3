@@ -509,6 +509,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
         ("ExperienceRules", "Fallout kill-experience bands and health share; rebuilt from the load order's GMSTs by install_experience_rules every boot"),
         ("PlayerDamageDealt", "the player's damage on each actor still standing, for the kill-experience share; mid-fight session state"),
+        ("EncumbranceRules", "the CarryWeight / InventoryWeight AVIFs and the over-encumbered movement effect; rebuilt from the load order by install_encumbrance_rules every boot"),
+        ("PlayerEncumbrance", "the player's carried weight against Carry Weight; re-derived from the inventory by encumbrance_system every frame"),
         ("BleedoutRules", "fEssentialDeathTime / fEssentialHealthPercentReGain; rebuilt from the load order (else the engine defaults) by install_bleedout_rules every boot"),
         ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),

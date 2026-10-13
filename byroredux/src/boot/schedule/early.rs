@@ -24,6 +24,8 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
         Access::new()
             .reads_resource::<crate::systems::PlayerMode>()
             .reads_resource::<crate::systems::PlayerEntity>()
+            // M47.2 — over-encumbrance's movement effect.
+            .reads_resource::<crate::encumbrance::PlayerEncumbrance>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()
             .reads_resource::<ActionBindings>()

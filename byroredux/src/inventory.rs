@@ -83,6 +83,23 @@ pub(crate) struct InventoryCatalog {
 }
 
 impl InventoryCatalog {
+    /// One `base_form_id` item's weight; 0 for an item outside the catalog.
+    pub(crate) fn item_weight(&self, base_form_id: u32) -> f32 {
+        self.entries
+            .get(&base_form_id)
+            .map_or(0.0, |definition| definition.weight)
+    }
+
+    /// The total weight `inventory` carries (M47.2 encumbrance, the
+    /// inventory menu's total).
+    pub(crate) fn inventory_weight(&self, inventory: &Inventory) -> f32 {
+        inventory
+            .items
+            .iter()
+            .map(|stack| self.item_weight(stack.base_form_id) * stack.count as f32)
+            .sum()
+    }
+
     pub(crate) fn sdk_metadata(&self, form_id: u32) -> Option<ItemMetadata> {
         let definition = self.entries.get(&form_id)?;
         let category = match definition.category {
@@ -1308,7 +1325,6 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
     let catalog = world.try_resource::<InventoryCatalog>();
 
     let mut items = Vec::with_capacity(inventory.items.len());
-    let mut total_weight = 0.0;
     for (raw_index, stack) in inventory.items.iter().enumerate() {
         if stack.count == 0 {
             continue;
@@ -1317,7 +1333,6 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .as_ref()
             .and_then(|catalog| catalog.entries.get(&stack.base_form_id));
         let weight = definition.map_or(0.0, |definition| definition.weight);
-        total_weight += weight * stack.count as f32;
         let index = raw_index as u32;
         items.push(byroredux_debug_ui::InventoryItemView {
             index,
@@ -1352,7 +1367,9 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
 
     Some(byroredux_debug_ui::InventorySnapshot {
         items,
-        total_weight,
+        total_weight: catalog
+            .as_ref()
+            .map_or(0.0, |catalog| catalog.inventory_weight(&inventory)),
     })
 }
 
@@ -2509,6 +2526,80 @@ mod tests {
             ]),
         });
         (world, player)
+    }
+
+    /// M47.2 — encumbrance weighs the fixture's 38 units against Carry
+    /// Weight, writes InventoryWeight, and slows a Fallout player once over.
+    #[test]
+    fn encumbrance_weighs_the_player_inventory_against_carry_weight() {
+        use crate::encumbrance::{encumbrance_system, PlayerEncumbrance};
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::records::AvifRecord;
+        let (mut world, player) = fixture();
+        world.register::<ActorValues>();
+        world.insert_resource(PlayerEncumbrance::default());
+        let mut index = EsmIndex {
+            game: byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        for (form_id, editor_id) in [(0x2D1, "CarryWeight"), (0x2D2, "InventoryWeight")] {
+            index.actor_values.insert(
+                form_id,
+                AvifRecord {
+                    form_id,
+                    editor_id: editor_id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        crate::encumbrance::install_encumbrance_rules(&mut world, &index);
+        world.insert(player, ActorValues::from_pairs([(0x2D1, 40.0)]));
+
+        encumbrance_system(&world, 0.0);
+        let encumbrance = *world.resource::<PlayerEncumbrance>();
+        assert_eq!((encumbrance.weight, encumbrance.capacity), (38.0, 40.0));
+        assert_eq!(encumbrance.movement(), (1.0, true));
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(0x2D2), 38.0);
+
+        world.get_mut::<ActorValues>(player).unwrap().set_base(0x2D1, 30.0);
+        encumbrance_system(&world, 0.0);
+        assert_eq!(world.resource::<PlayerEncumbrance>().movement(), (0.4, true));
+
+        // A Get Max Carry Weight (22) perk adding 25 lifts the capacity to 55.
+        use byroredux_core::character::Perks;
+        use byroredux_plugin::esm::records::{
+            PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord,
+        };
+        const STRONG_BACK: u32 = 0x0003_1DBA;
+        index.perks.insert(
+            STRONG_BACK,
+            PerkRecord {
+                form_id: STRONG_BACK,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: 22,
+                        function: 2,
+                        tab_count: 1,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(25.0),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
+        world.register::<Perks>();
+        let mut perks = Perks::default();
+        perks.set_rank(STRONG_BACK, 1);
+        world.insert(player, perks);
+        encumbrance_system(&world, 0.0);
+        let encumbrance = *world.resource::<PlayerEncumbrance>();
+        assert_eq!((encumbrance.capacity, encumbrance.over()), (55.0, false));
     }
 
     fn activated_container(

@@ -331,6 +331,20 @@ pub fn compose_damage_threshold(
     )
 }
 
+/// `actor`'s carry capacity (M47.2 encumbrance): its CarryWeight `base`
+/// through the Get Max Carry Weight entry point (FO3 / FNV 22, Skyrim 10).
+pub fn compose_max_carry_weight(world: &World, actor: EntityId, base: f32) -> f32 {
+    let hook = match world
+        .try_resource::<PerkEntryTable>()
+        .and_then(|table| table.game())
+    {
+        Some(GameKind::Fallout3NV) => fnv::GET_MAX_CARRY_WEIGHT,
+        Some(GameKind::Skyrim) => skyrim::GET_MAX_CARRY_WEIGHT,
+        _ => return base,
+    };
+    compose_entry_point(world, actor, hook, base, &[None, None])
+}
+
 /// Install the [`PerkEntryTable`] for a load order. Returns the number of
 /// perks that contribute value-math entries.
 pub fn install_perk_entry_points(world: &mut World, index: &EsmIndex) -> usize {

@@ -672,6 +672,10 @@ pub(crate) fn populate_scene_runtime(
     if crate::combat::install_damage_threshold_rules(world, index) {
         log::info!("Installed Damage Threshold rules");
     }
+    // M47.2 — encumbrance (CarryWeight against the carried weight).
+    if crate::encumbrance::install_encumbrance_rules(world, index) {
+        log::info!("Installed encumbrance rules");
+    }
     // M47.2 — essential actors' bleedout timing (fEssentialDeathTime).
     byroredux_scripting::install_bleedout_rules(world, index);
     // M47.2 — Fallout 3 / New Vegas kill experience (GMST level bands).
