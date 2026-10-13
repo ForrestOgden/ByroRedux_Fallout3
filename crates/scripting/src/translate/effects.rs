@@ -711,7 +711,18 @@ impl Effect {
 /// an effect receiver but not quest-bound must **decline**, never be
 /// misread as a same-named `Quest Property`.
 #[derive(Clone, Default)]
-struct Scope {
+struct Scope<'lib> {
+    /// M47.2 — where a call into the quest's own script (`kmyQuest.Startup()`)
+    /// finds the callee's decompiled body to inline. `None` outside quest
+    /// fragments (their VMAD is the only one that carries the quest script's
+    /// properties) and in every bare harness.
+    library: Option<&'lib dyn ScriptLibrary>,
+    /// The declared object type (lowercased script name) of each local
+    /// (`MyQuestScript kmyQuest`), for resolving an inlined call's callee.
+    local_types: HashMap<String, String>,
+    /// `(script, function)` frames currently being inlined — the cycle guard
+    /// and depth cap of [`inline_quest_script_call`].
+    inline_stack: Vec<(String, String)>,
     quest_locals: HashMap<String, QuestRef>,
     object_locals: HashMap<String, ObjectRef>,
     player_locals: HashSet<String>,
@@ -763,7 +774,7 @@ enum LocalBinding {
     Plain,
 }
 
-impl Scope {
+impl Scope<'_> {
     /// The binding of a name declared in this function, or `None` when no
     /// `VarDecl`/`Assign` has bound it.
     fn binding_of(&self, name: &str) -> Option<LocalBinding> {
@@ -872,6 +883,133 @@ pub fn lower_fragment_with_script_metadata(
     lower_statements(body, &mut scope, providers, 0)
 }
 
+/// Decompiled scripts by name, for inlining calls into a quest's own script
+/// (M47.2). The app implements it over the script archives.
+pub trait ScriptLibrary {
+    /// The script named `name` (case-insensitive), decompiled; `None` when
+    /// the archives do not carry it or it does not decompile.
+    fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_papyrus::ast::Script>>;
+}
+
+/// The Papyrus AST a [`ScriptLibrary`] serves.
+pub use byroredux_papyrus::ast::Script as PapyrusScript;
+
+/// Decompile compiled `.pex` bytes for a [`ScriptLibrary`]. `None` on a parse
+/// or decompile failure, and on a decompiler panic (one bad callee must not
+/// abort a population walk).
+pub fn decompile_pex_for_library(bytes: &[u8]) -> Option<std::sync::Arc<PapyrusScript>> {
+    let pex = byroredux_pex::parse(bytes).ok()?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        byroredux_pex::decompile::decompile_script(&pex)
+    }))
+    .ok()?
+    .ok()
+    .map(std::sync::Arc::new)
+}
+
+/// How deep calls into quest scripts are inlined (a callee calling another).
+const MAX_INLINE_DEPTH: usize = 4;
+
+/// [`lower_fragment_with_script_metadata`] for a quest-stage fragment, with a
+/// [`ScriptLibrary`] to inline calls into the quest's own script.
+pub fn lower_quest_fragment(
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+    own_argless_function_names: &HashSet<String>,
+    providers: Option<&PapyrusProviderCatalog>,
+    library: Option<&dyn ScriptLibrary>,
+) -> Option<Vec<Effect>> {
+    let mut scope = Scope {
+        library,
+        known_quest_properties: quest_property_names.clone(),
+        own_argless_functions: own_argless_function_names.clone(),
+        ..Scope::default()
+    };
+    lower_statements(body, &mut scope, providers, 0)
+}
+
+/// `<quest>.Function()` where `<quest>` is this fragment's own quest (a quest
+/// local bound to `Self` / `GetOwningQuest()`, or such a call cast to the
+/// quest's script type) and the function takes no arguments: lower the
+/// callee's body in its own script's scope and splice its effects in.
+///
+/// The callee's `Self` is the same quest, so its quest effects resolve to the
+/// context quest at dispatch; its properties resolve through the quest's
+/// `VMAD`, which carries every script attached to the quest. Declines when the
+/// library is absent, the callee is missing / native / takes parameters,
+/// the call would recurse, inlining is [`MAX_INLINE_DEPTH`] deep, or any
+/// callee statement does not lower.
+fn inline_quest_script_call(
+    e: &Expr,
+    scope: &Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Vec<Effect>> {
+    let library = scope.library?;
+    let Expr::Call { callee, args } = e else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
+    }
+    let Expr::MemberAccess { object, member } = &callee.node else {
+        return None;
+    };
+    let script_type = match &object.node {
+        Expr::Ident(name) => {
+            let key = name.0.to_ascii_lowercase();
+            match scope.quest_locals.get(&key)? {
+                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+                QuestRef::Property(_) => return None,
+            }
+            scope.local_types.get(&key)?.clone()
+        }
+        Expr::Cast { target_type, .. } => {
+            match quest_expr_ref(&object.node, scope)? {
+                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+                QuestRef::Property(_) => return None,
+            }
+            let byroredux_papyrus::ast::Type::Object(ty) = &target_type.node else {
+                return None;
+            };
+            ty.0.to_ascii_lowercase()
+        }
+        _ => return None,
+    };
+    let function_name = member.node.0.to_ascii_lowercase();
+    let frame = (script_type.clone(), function_name.clone());
+    if scope.inline_stack.len() >= MAX_INLINE_DEPTH || scope.inline_stack.contains(&frame) {
+        return None;
+    }
+    let script = library.script(&script_type)?;
+    let function = script.body.iter().find_map(|item| match &item.node {
+        byroredux_papyrus::ast::ScriptItem::Function(f)
+            if f.name.node.0.eq_ignore_ascii_case(&function_name) =>
+        {
+            Some(f)
+        }
+        _ => None,
+    })?;
+    if !function.params.is_empty()
+        || function
+            .flags
+            .intersects(byroredux_papyrus::ast::FunctionFlags::NATIVE | byroredux_papyrus::ast::FunctionFlags::GLOBAL)
+    {
+        return None;
+    }
+    let mut callee_scope = Scope {
+        library: Some(library),
+        known_quest_properties: crate::fragment::quest_property_names(&script),
+        own_argless_functions: crate::fragment::argless_function_names(&script),
+        inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
+        ..Scope::default()
+    };
+    // Inside the callee, `Self` is the quest; bind it so `Self.Foo()` (a
+    // call to another of its own functions) inlines through the same path.
+    callee_scope.quest_locals.insert("self".into(), QuestRef::SelfRef);
+    callee_scope.local_types.insert("self".into(), script_type);
+    lower_statements(&function.body, &mut callee_scope, providers, 0)
+}
+
 /// The parameter through which an INFO (`TIF_…`) fragment receives the
 /// speaking actor — `Function Fragment_N(ObjectReference akSpeakerRef)` in
 /// every Skyrim / Fallout 4 / Starfield topic-info fragment script.
@@ -964,6 +1102,9 @@ fn lower_statements(
             // plain local.
             Stmt::VarDecl(var) => {
                 let name = var.name.node.0.to_ascii_lowercase();
+                if let byroredux_papyrus::ast::Type::Object(ty) = &var.ty.node {
+                    scope.local_types.insert(name.clone(), ty.0.to_ascii_lowercase());
+                }
                 match &var.initial_value {
                     Some(init) => bind_local(scope, name, &init.node)?,
                     None => {
@@ -997,9 +1138,11 @@ fn lower_statements(
             // unconditionally, so decline (#5631). The provider lowerer
             // draws the same line (`lower_program.rs`).
             Stmt::Return(None) if depth == 0 && position + 1 == body.len() => {}
-            Stmt::ExprStmt(e) => {
-                effects.push(classify_effect_with_providers(&e.node, scope, providers)?)
-            }
+            Stmt::ExprStmt(e) => match classify_effect_with_providers(&e.node, scope, providers) {
+                Some(effect) => effects.push(effect),
+                // M47.2 — a call into the quest's own script, inlined.
+                None => effects.extend(inline_quest_script_call(&e.node, scope, providers)?),
+            },
             Stmt::While { condition, body } => {
                 effects.push(lower_3d_loaded_wait(&condition.node, body, scope)?);
             }
@@ -3331,6 +3474,103 @@ mod tests {
              Alias_A.GetActorRef().SetValue(pAggression, fLevel)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&computed), None);
+    }
+
+    /// A [`ScriptLibrary`] over `.psc` sources, keyed by lowercased name.
+    struct PscLibrary(HashMap<String, std::sync::Arc<byroredux_papyrus::ast::Script>>);
+
+    impl PscLibrary {
+        fn new(sources: &[&str]) -> Self {
+            Self(
+                sources
+                    .iter()
+                    .map(|src| {
+                        let (script, errs) = parse_script(src).expect("parses");
+                        assert!(errs.is_empty(), "{errs:?}");
+                        (script.name.node.0.to_ascii_lowercase(), std::sync::Arc::new(script))
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl ScriptLibrary for PscLibrary {
+        fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_papyrus::ast::Script>> {
+            self.0.get(&name.to_ascii_lowercase()).cloned()
+        }
+    }
+
+    const MOTHPRIEST_SCRIPT: &str = "ScriptName DLC1VQ03MothpriestFightScript extends Quest\n\
+        ReferenceAlias Property Dexion Auto\n\
+        Spell Property DLC1AbMothpriestThrallFX1 Auto\n\
+        Function StartUp()\n\
+        Dexion.GetActorReference().AddSpell(DLC1AbMothpriestThrallFX1, false)\n\
+        Self.Finish()\n\
+        EndFunction\n\
+        Function Finish()\n\
+        Self.SetStage(99)\n\
+        EndFunction\n\
+        Function Loops()\n\
+        Self.Loops()\n\
+        EndFunction\n\
+        Function WithArgs(Int n)\n\
+        Self.SetStage(1)\n\
+        EndFunction\n";
+
+    /// M47.2 — a quest fragment's call into its quest's own script inlines
+    /// the callee's body (transitively, `Self.Finish()` included), in the
+    /// quest's scope.
+    #[test]
+    fn quest_fragments_inline_calls_into_the_quest_script() {
+        let library = PscLibrary::new(&[MOTHPRIEST_SCRIPT]);
+        let body = first_fn_body(
+            "ScriptName QF_DLC1VQ03 extends Quest\n\
+             Function Fragment_25()\n\
+             Quest __temp\n\
+             DLC1VQ03MothpriestFightScript kmyQuest\n\
+             __temp = Self as Quest\n\
+             kmyQuest = __temp as DLC1VQ03MothpriestFightScript\n\
+             Self.SetObjectiveCompleted(41)\n\
+             kmyQuest.StartUp()\n EndFunction\n",
+        );
+        let lowered = lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library));
+        assert_eq!(
+            lowered,
+            Some(vec![
+                Effect::SetObjectiveCompleted {
+                    quest: QuestRef::SelfRef,
+                    objective: 41,
+                    completed: true,
+                },
+                Effect::AddSpell {
+                    actor: ActorRef::Object(ObjectRef::Property("Dexion".into())),
+                    spell: ObjectRef::Property("DLC1AbMothpriestThrallFX1".into()),
+                },
+                Effect::SetStage { quest: QuestRef::SelfRef, stage: 99 },
+            ])
+        );
+        // Without a library (and on every non-quest path) the call declines.
+        assert_eq!(lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, None), None);
+    }
+
+    /// Recursion, a callee with parameters, an unknown function and a
+    /// receiver that is another quest all decline.
+    #[test]
+    fn quest_script_inlining_declines_what_it_cannot_bound() {
+        let library = PscLibrary::new(&[MOTHPRIEST_SCRIPT]);
+        for call in ["kmyQuest.Loops()", "kmyQuest.Missing()", "OtherQuest.StartUp()"] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF_DLC1VQ03 extends Quest\n\
+                 Function Fragment_25()\n\
+                 DLC1VQ03MothpriestFightScript kmyQuest = Self as DLC1VQ03MothpriestFightScript\n\
+                 {call}\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library)),
+                None,
+                "{call}"
+            );
+        }
     }
 
     #[test]

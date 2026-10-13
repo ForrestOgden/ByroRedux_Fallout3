@@ -162,6 +162,9 @@ pub fn populate_quest_fragments_from_pex_detailed(
 pub struct OwnedFragmentProviders<'a> {
     pub catalog: &'a crate::PapyrusProviderCatalog,
     pub principal: &'a byroredux_sdk::identity::PrincipalId,
+    /// M47.2 — decompiled scripts for inlining a quest fragment's calls into
+    /// its quest's own script. Only quest-stage population consults it.
+    pub library: Option<&'a dyn crate::translate::effects::ScriptLibrary>,
 }
 
 impl<'a> OwnedFragmentProviders<'a> {
@@ -169,7 +172,17 @@ impl<'a> OwnedFragmentProviders<'a> {
         catalog: &'a crate::PapyrusProviderCatalog,
         principal: &'a byroredux_sdk::identity::PrincipalId,
     ) -> Self {
-        Self { catalog, principal }
+        Self {
+            catalog,
+            principal,
+            library: None,
+        }
+    }
+
+    /// Attach a [`crate::translate::effects::ScriptLibrary`] (M47.2).
+    pub fn with_library(mut self, library: &'a dyn crate::translate::effects::ScriptLibrary) -> Self {
+        self.library = Some(library);
+        self
     }
 }
 
@@ -177,6 +190,7 @@ impl<'a> OwnedFragmentProviders<'a> {
 pub(crate) struct FragmentProviderScope<'a> {
     catalog: &'a crate::PapyrusProviderCatalog,
     principal: Option<&'a byroredux_sdk::identity::PrincipalId>,
+    library: Option<&'a dyn crate::translate::effects::ScriptLibrary>,
 }
 
 /// Provider-aware quest-fragment lowering attributed to the archive package
@@ -196,6 +210,7 @@ pub fn populate_owned_quest_fragments_from_pex_detailed_with_providers(
         Some(FragmentProviderScope {
             catalog: providers.catalog,
             principal: Some(providers.principal),
+            library: providers.library,
         }),
     )
 }
@@ -284,6 +299,7 @@ pub fn populate_owned_quest_fragments_from_script_with_providers(
         Some(FragmentProviderScope {
             catalog: providers.catalog,
             principal: Some(providers.principal),
+            library: providers.library,
         }),
     )
 }
@@ -323,14 +339,15 @@ fn populate_quest_fragments_from_script_internal(
         // fully lower is skipped, not partially applied. An empty
         // fully-lowered fragment carries no effects, so it needn't occupy
         // the map (a lookup miss is equivalent to an empty entry).
-        if let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_script_metadata(
-                body,
-                &quest_properties,
-                &argless_functions,
-                providers.map(|scope| scope.catalog),
-            )
-        {
+        // M47.2 — quest fragments inline calls into the quest's own script
+        // when a script library is supplied.
+        if let Some(mut effects) = crate::translate::effects::lower_quest_fragment(
+            body,
+            &quest_properties,
+            &argless_functions,
+            providers.map(|scope| scope.catalog),
+            providers.and_then(|scope| scope.library),
+        ) {
             if let Some(principal) = providers.and_then(|scope| scope.principal) {
                 crate::translate::effects::attribute_provider_calls(&mut effects, principal);
             }
@@ -416,6 +433,7 @@ pub fn populate_owned_scene_fragments_from_pex_detailed_with_providers(
         Some(FragmentProviderScope {
             catalog: providers.catalog,
             principal: Some(providers.principal),
+            library: providers.library,
         }),
     )
 }
@@ -525,6 +543,7 @@ pub fn populate_owned_scene_fragments_from_script_with_providers(
         Some(FragmentProviderScope {
             catalog: providers.catalog,
             principal: Some(providers.principal),
+            library: providers.library,
         }),
     )
 }
@@ -618,6 +637,7 @@ pub fn populate_owned_info_fragments_from_pex_with_providers(
             Some(FragmentProviderScope {
                 catalog: providers.catalog,
                 principal: Some(providers.principal),
+                library: providers.library,
             }),
         )
     })

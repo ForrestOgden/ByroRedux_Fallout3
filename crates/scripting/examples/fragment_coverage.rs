@@ -29,8 +29,60 @@ use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_scripting::fragment::quest_property_names;
 use byroredux_papyrus::ast::Param;
 use byroredux_scripting::translate::effects::{
-    lower_fragment_with_quest_properties, lower_info_fragment, Effect, INFO_SPEAKER_PARAMETER,
+    lower_fragment_with_quest_properties, lower_info_fragment, lower_quest_fragment, Effect,
+    ScriptLibrary, INFO_SPEAKER_PARAMETER,
 };
+
+/// Every opened archive's `.pex`, decompiled on demand — the coverage twin of
+/// the app's `ScriptProvider`-backed library, so quest fragments inline calls
+/// into their quest's own script exactly as production does.
+struct ArchiveLibrary<'a> {
+    archives: &'a [Archive],
+    /// `scripts\a\b.pex` (lowercased, `:` namespaces as folders) →
+    /// (archive, path). First archive wins, like `--scripts-bsa` order.
+    index: std::collections::HashMap<String, (usize, String)>,
+    cache: std::cell::RefCell<
+        std::collections::HashMap<String, Option<std::sync::Arc<byroredux_papyrus::ast::Script>>>,
+    >,
+}
+
+impl<'a> ArchiveLibrary<'a> {
+    fn new(archives: &'a [Archive]) -> Self {
+        let mut index = std::collections::HashMap::new();
+        for (i, archive) in archives.iter().enumerate() {
+            for file in archive.list_files() {
+                let key = file.to_ascii_lowercase().replace('/', "\\");
+                if key.ends_with(".pex") {
+                    index.entry(key).or_insert((i, file.to_string()));
+                }
+            }
+        }
+        Self {
+            archives,
+            index,
+            cache: Default::default(),
+        }
+    }
+}
+
+impl ScriptLibrary for ArchiveLibrary<'_> {
+    fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_papyrus::ast::Script>> {
+        let key = format!("scripts\\{}.pex", name.to_ascii_lowercase().replace(':', "\\"));
+        if let Some(hit) = self.cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let decoded = self.index.get(&key).and_then(|(archive, path)| {
+            let data = self.archives[*archive].extract(path).ok()?;
+            let pex = parse(&data).ok()?;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decompile_script(&pex)))
+                .ok()?
+                .ok()
+                .map(std::sync::Arc::new)
+        });
+        self.cache.borrow_mut().insert(key, decoded.clone());
+        decoded
+    }
+}
 
 /// Lower a fragment the way production does: a topic-info (`TIF_…`) fragment
 /// — the one carrying the speaker parameter — through the INFO entry point
@@ -39,12 +91,17 @@ fn lower_as_production(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
+    quest_library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
     if params
         .iter()
         .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER))
     {
         lower_info_fragment(params, body, quest_properties, &HashSet::new(), None)
+    } else if let Some(library) = quest_library {
+        // A quest fragment (`QF_…`): production inlines calls into the
+        // quest's own script.
+        lower_quest_fragment(body, quest_properties, &HashSet::new(), None, Some(library))
     } else {
         lower_fragment_with_quest_properties(body, quest_properties)
     }
@@ -134,9 +191,10 @@ fn decline_shape(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
+    quest_library: Option<&dyn ScriptLibrary>,
 ) -> String {
     for i in 0..body.len() {
-        if lower_as_production(params, &body[..=i], quest_properties).is_none() {
+        if lower_as_production(params, &body[..=i], quest_properties, quest_library).is_none() {
             return stmt_shape(&body[i].node);
         }
     }
@@ -214,6 +272,7 @@ fn sample_decline(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
+    quest_library: Option<&dyn ScriptLibrary>,
     shape: &str,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -230,7 +289,9 @@ fn sample_decline(
         return;
     }
     let Some(stmt) = (0..body.len())
-        .find(|&i| lower_as_production(params, &body[..=i], quest_properties).is_none())
+        .find(|&i| {
+            lower_as_production(params, &body[..=i], quest_properties, quest_library).is_none()
+        })
         .map(|i| &body[i].node)
     else {
         return;
@@ -260,11 +321,18 @@ fn main() {
     // #3498 — the tally the module doc always claimed to produce.
     let mut decline_hist: BTreeMap<String, usize> = BTreeMap::new();
 
-    for path in &args {
-        let Ok(arch) = Archive::open(path) else {
-            eprintln!("!! could not open {path}");
-            continue;
-        };
+    let archives: Vec<Archive> = args
+        .iter()
+        .filter_map(|path| match Archive::open(path) {
+            Ok(archive) => Some(archive),
+            Err(_) => {
+                eprintln!("!! could not open {path}");
+                None
+            }
+        })
+        .collect();
+    let library = ArchiveLibrary::new(&archives);
+    for (path, arch) in args.iter().zip(&archives) {
         let pex_files: Vec<String> = arch
             .list_files()
             .into_iter()
@@ -287,6 +355,11 @@ fn main() {
             // and fed to `lower_fragment_with_quest_properties` below so
             // this measures the SAME lowering path production runs.
             let quest_properties = quest_property_names(&script);
+            // Quest-fragment scripts: `QF_…`, `DLC1_QF_…`, FO4's
+            // `Fragments:Quests:QF_…` — the ones production populates through
+            // the quest path, which inlines calls into the quest's script.
+            let is_quest_fragment_script = script.name.node.0.to_ascii_lowercase().contains("qf_");
+            let quest_library: Option<&dyn ScriptLibrary> = is_quest_fragment_script.then_some(&library);
             for item in &script.body {
                 let ScriptItem::Function(func) = &item.node else {
                     continue;
@@ -305,7 +378,7 @@ fn main() {
                     continue;
                 }
                 behavioral += 1;
-                match lower_as_production(&func.params, &func.body, &quest_properties) {
+                match lower_as_production(&func.params, &func.body, &quest_properties, quest_library) {
                     Some(effects) => {
                         claimed += 1;
                         claimed_effects += effects.len();
@@ -317,8 +390,16 @@ fn main() {
                         }
                     }
                     None => {
-                        let shape = decline_shape(&func.params, &func.body, &quest_properties);
-                        sample_decline(&f, &func.params, &func.body, &quest_properties, &shape);
+                        let shape =
+                            decline_shape(&func.params, &func.body, &quest_properties, quest_library);
+                        sample_decline(
+                            &f,
+                            &func.params,
+                            &func.body,
+                            &quest_properties,
+                            quest_library,
+                            &shape,
+                        );
                         *decline_hist.entry(shape).or_default() += 1;
                     }
                 }
@@ -494,7 +575,7 @@ mod tests {
             "sanity: the full body must actually decline"
         );
         assert_eq!(
-            decline_shape(&[], &body, &HashSet::new()),
+            decline_shape(&[], &body, &HashSet::new(), None),
             "Assign(field/index)"
         );
     }

@@ -312,6 +312,17 @@ saved `ScriptedFactionChanges` ledger by reference FormID (PlayerRef `0x14`)
 and replayed by `reapply_scripted_faction_changes` from `stamp_quest_reference`
 and the load path.
 
+Quest-stage fragments inline calls into their quest's own script
+(`kmyQuest.StartUp()`, `(Self.GetOwningQuest() as X).Reset()`): when the
+receiver is the fragment's own quest and the callee takes no arguments, the
+callee's decompiled body (fetched through a `ScriptLibrary` — the app's
+`ProviderScriptLibrary` over `--scripts-bsa`) is lowered in its script's scope
+and spliced in, transitively through `Self.Other()` calls, cycle-guarded and
+four frames deep at most. Only quest fragments inline: their `VMAD` is the one
+that carries the quest script's properties. A callee that does not fully lower
+declines its caller, so this gains as the effect table grows (+52 fragments
+today; most callees are long, bespoke bodies).
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

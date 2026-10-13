@@ -79,6 +79,40 @@ impl ScriptProvider {
 
 impl byroredux_core::ecs::resource::Resource for ScriptProvider {}
 
+/// M47.2 — the [`ScriptProvider`]'s scripts, decompiled on demand and cached,
+/// for inlining a quest fragment's calls into its quest's own script. Script
+/// type names map to archive keys the way the compiler lays them out
+/// (`DN101:QuestScript` → `scripts\dn101\questscript.pex`).
+pub(crate) struct ProviderScriptLibrary<'a> {
+    provider: &'a ScriptProvider,
+    cache: std::cell::RefCell<
+        std::collections::HashMap<String, Option<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>>>,
+    >,
+}
+
+impl<'a> ProviderScriptLibrary<'a> {
+    pub(crate) fn new(provider: &'a ScriptProvider) -> Self {
+        Self {
+            provider,
+            cache: Default::default(),
+        }
+    }
+}
+
+impl byroredux_scripting::translate::effects::ScriptLibrary for ProviderScriptLibrary<'_> {
+    fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>> {
+        let key = name.to_ascii_lowercase().replace(':', "\\");
+        if let Some(hit) = self.cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let decoded = self.provider.extract_pex(&key).and_then(|bytes| {
+            byroredux_scripting::translate::effects::decompile_pex_for_library(&bytes)
+        });
+        self.cache.borrow_mut().insert(key, decoded.clone());
+        decoded
+    }
+}
+
 /// Normalise a Papyrus script name to its archive key: lowercase,
 /// backslash-separated, under the `scripts\` folder with a `.pex`
 /// extension. A name authored with the folder and/or extension already
@@ -183,6 +217,13 @@ pub(crate) fn populate_quest_fragments(
         .resource::<byroredux_scripting::PapyrusProviderRuntime>()
         .servable_catalog();
 
+    // M47.2 — own the provider for the walk (re-inserted below) so the
+    // callee library can read it while the fragment table is written,
+    // without a provider guard held across that write.
+    let Some(script_provider) = world.remove_resource::<ScriptProvider>() else {
+        return;
+    };
+    let library = ProviderScriptLibrary::new(&script_provider);
     let mut total = 0usize;
     let mut quests_with_fragments = 0usize;
     for (&form_id, quest) in index.quests.iter() {
@@ -211,11 +252,7 @@ pub(crate) fn populate_quest_fragments(
         for (script_name, bindings) in by_script {
             // Scope the provider borrow: extract owned `.pex` bytes, then
             // drop the resource read before the `&mut` resource access.
-            let resolved = {
-                let provider = world.resource::<ScriptProvider>();
-                provider.resolve_pex(script_name)
-            };
-            let Some(resolved) = resolved else {
+            let Some(resolved) = script_provider.resolve_pex(script_name) else {
                 log::trace!(
                     "M47.2 quest-fragment: .pex '{script_name}' not in archive (quest {form_id:08X})"
                 );
@@ -231,7 +268,8 @@ pub(crate) fn populate_quest_fragments(
                     byroredux_scripting::OwnedFragmentProviders::new(
                         &providers,
                         &resolved.principal,
-                    ),
+                    )
+                    .with_library(&library),
                 )
             };
             total += translation.inserted;
@@ -242,6 +280,8 @@ pub(crate) fn populate_quest_fragments(
             );
         }
     }
+    drop(library);
+    world.insert_resource(script_provider);
     if total > 0 {
         log::info!(
             "M47.2: populated {total} quest-stage fragments from {quests_with_fragments} scripted quests"
