@@ -629,6 +629,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::Achievements>("Achievements")
         // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
         .register_resource::<byroredux_scripting::FollowerState>("FollowerState")
+        // M47.2 — Papyrus distance-event registrations.
+        .register_resource::<byroredux_scripting::DistanceWatches>("DistanceWatches")
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.

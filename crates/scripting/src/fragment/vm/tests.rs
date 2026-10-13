@@ -1985,3 +1985,87 @@ fn a_value_named_like_an_engine_class_still_resolves_as_a_value() {
         "MyMessage is a property — the call lowers through the instance path"
     );
 }
+
+/// Distance events: `RegisterForDistanceLessThanEvent` delivers a single
+/// `OnDistanceLessThan` once the pair is close, an alias counts once filled,
+/// a re-registration only updates the distance, and
+/// `UnregisterForDistanceEvents` cancels it.
+#[test]
+fn distance_events_fire_once_when_the_pair_is_close() {
+    use byroredux_core::ecs::components::GlobalTransform;
+    use byroredux_core::math::{Quat, Vec3};
+    const FAR: u32 = 0x0001_0F50;
+    const NEAR: u32 = 0x0001_0F51;
+    let script = parsed_source(
+        "ScriptName QF_VmDistance extends Quest\n\
+         ObjectReference Property A Auto\n\
+         ObjectReference Property B Auto\n\
+         ObjectReference Property C Auto\n\
+         Int Fired\n\
+         Function Fragment_1()\n\
+           RegisterForDistanceLessThanEvent(A, B, 50.0)\n\
+           RegisterForDistanceLessThanEvent(B, A, 500.0)\n\
+           RegisterForDistanceLessThanEvent(A, C, 50.0)\n\
+           UnregisterForDistanceEvents(A, C)\n\
+         EndFunction\n\
+         Event OnDistanceLessThan(ObjectReference akObj1, ObjectReference akObj2, Float afDistance)\n\
+           Fired += 1\n\
+           If afDistance < 300.0 && akObj1 == A\n Self.SetStage(20)\n EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    world.register::<GlobalTransform>();
+    let mut pool = FormIdPool::default();
+    let mut spawn_at = |world: &mut World, local: u32, x: f32| {
+        let id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(local),
+        });
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(id));
+        world.insert(entity, GlobalTransform::new(Vec3::new(x, 0.0, 0.0), Quat::IDENTITY, 1.0));
+        entity
+    };
+    let a = spawn_at(&mut world, FAR, 0.0);
+    let b = spawn_at(&mut world, NEAR, 400.0);
+    world.insert_resource(pool);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        for (name, form) in [("A", FAR), ("B", NEAR), ("C", 0x0001_0F52)] {
+            vmad.scripts[0].properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: form,
+                    alias: -1,
+                },
+            });
+        }
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    // (B, A) re-registered the pair at 500: one watch, not two.
+    assert_eq!(world.resource::<crate::DistanceWatches>().watches().len(), 1);
+    assert_eq!(world.resource::<crate::DistanceWatches>().watches()[0].distance, 500.0);
+    crate::distance_event_system(&world, 0.0);
+    // 400 < 500: delivered once, with the pair in its first order.
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "400 units is not under 300");
+    assert!(world.resource::<crate::DistanceWatches>().watches().is_empty(), "single event");
+    let fired = world
+        .resource::<crate::QuestScriptVariables>()
+        .get(Q, crate::QuestScriptVariables::property_key("Fired"));
+    assert_eq!(fired, Some(1.0));
+    crate::distance_event_system(&world, 0.0);
+    assert_eq!(
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(Q, crate::QuestScriptVariables::property_key("Fired")),
+        Some(1.0)
+    );
+    let _ = (a, b);
+}

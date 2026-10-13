@@ -428,7 +428,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v71 -> v72 (M47.2, #5763): `VmResume` gained the required `carried_steps`
 /// (the statements a frame-budget yield carries so the per-run cap still
 /// bounds the whole run), reachable through a saved continuation.
-pub const FORMAT_MAJOR: u16 = 72;
+///
+/// v72 -> v73 (M47.2): the `DistanceWatches` resource column (Papyrus
+/// `RegisterFor…DistanceEvent` registrations).
+pub const FORMAT_MAJOR: u16 = 73;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

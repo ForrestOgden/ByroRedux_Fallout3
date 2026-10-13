@@ -549,6 +549,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // OnUpdate / OnUpdateGameTime for the scripts registered for them,
     // beside the other latent-script clock.
     scheduler.add_exclusive(Stage::Update, script_update_dispatch);
+    // M47.2 — the distance events whose pair is now close (or far).
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::distance_event_system);
     // Translate the resulting Skyrim PlayIdle FormID requests into decoded
     // HKX AnimationPlayers. The parallel animation batch observes a request
     // no later than the following frame, preserving deterministic restarts.

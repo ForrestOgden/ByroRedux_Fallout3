@@ -895,6 +895,9 @@ impl Vm<'_> {
     /// script attached to it that handles the update registers (or all of
     /// them unregister).
     fn quest_update(&mut self, frame: &mut Frame, quest: u32, name: &str, args: &[CallArg]) -> Run<()> {
+        if super::DistanceRequest::handler(name).is_some() {
+            return self.distance_registration(frame, Some(quest), name, args);
+        }
         let mut numbers = Vec::with_capacity(args.len());
         for arg in args {
             numbers.push(self.eval(frame, &arg.value.node)?.number());
@@ -916,6 +919,54 @@ impl Vm<'_> {
             if handles {
                 self.deferred.script_updates.push((quest, name, request));
             }
+        }
+        Ok(())
+    }
+
+    /// `Register…DistanceEvent` / `UnregisterForDistanceEvents` on the script
+    /// itself (`quest` `None`) or on another quest, whose attached scripts that
+    /// handle the event all register.
+    fn distance_registration(&mut self, frame: &mut Frame, quest: Option<u32>, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let target = |value: &Value| match value {
+            Value::Form(form) if *form != 0 => Some(super::DistanceTarget::Reference(*form)),
+            Value::Alias { quest, alias } => Some(super::DistanceTarget::Alias {
+                quest: *quest,
+                alias: *alias,
+            }),
+            _ => None,
+        };
+        let (Some(a), Some(b)) = (values.first().and_then(target), values.get(1).and_then(target)) else {
+            // CK: the objects "must be an ObjectReference or ReferenceAlias";
+            // a None registers nothing.
+            return Ok(());
+        };
+        let Some(request) = super::DistanceRequest::of_call(name, a, b, values.get(2).and_then(Value::number)) else {
+            return stop(format!("{name} without a distance"));
+        };
+        let handler = super::DistanceRequest::handler(name).unwrap_or_default();
+        let (owner, scripts): (u32, Vec<String>) = match quest {
+            None => (frame.owner.0, vec![frame.script.name.node.0.clone()]),
+            Some(quest) => {
+                let owner = QuestFormId(quest);
+                let attached: Vec<String> = self
+                    .deferred
+                    .quest_scripts
+                    .get(&owner)
+                    .map(|vmad| vmad.scripts.iter().map(|script| script.name.clone()).collect())
+                    .unwrap_or_default();
+                let scripts = attached
+                    .into_iter()
+                    .filter(|name| {
+                        let script = self.deferred.vm_scripts.get(&name.to_ascii_lowercase()).cloned();
+                        script.is_some_and(|script| handler.is_empty() || self.resolve(&script, owner, handler).is_some())
+                    })
+                    .collect();
+                (quest, scripts)
+            }
+        };
+        for script in scripts {
+            self.deferred.distance_requests.push((owner, script, request));
         }
         Ok(())
     }
@@ -2159,6 +2210,9 @@ impl Vm<'_> {
             }
         }
         if let Some(name) = update_call(&callee.node) {
+            if super::DistanceRequest::handler(&name).is_some() {
+                return self.distance_registration(frame, None, &name, args).map(|_| Flow::Normal);
+            }
             let mut numbers = Vec::with_capacity(args.len());
             for arg in args {
                 numbers.push(self.eval(frame, &arg.value.node)?.number());
@@ -2223,14 +2277,20 @@ fn quest_update_call(callee: &Expr) -> Option<(&Expr, String)> {
     };
     let name = member.node.0.to_ascii_lowercase();
     let on_self = matches!(&object.node, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self"));
-    (super::UpdateRequest::handler(&name).is_some() && !on_self && static_class(&object.node).is_none())
+    (registration_handler(&name).is_some() && !on_self && static_class(&object.node).is_none())
         .then_some((&object.node, name))
+}
+
+/// The handler a registration call delivers to (`""` for a cancellation):
+/// an update, timer or distance registration, by lowercase name.
+fn registration_handler(name: &str) -> Option<&'static str> {
+    super::UpdateRequest::handler(name).or_else(|| super::DistanceRequest::handler(name))
 }
 
 /// An update (un)registration on the script itself, by lowercase name.
 fn update_call(callee: &Expr) -> Option<String> {
     let name = callee_name(callee).to_ascii_lowercase();
-    (super::UpdateRequest::handler(&name).is_some() && self_call_named(callee, &name)).then_some(name)
+    (registration_handler(&name).is_some() && self_call_named(callee, &name)).then_some(name)
 }
 
 /// A call of `name` (lowercase) on the script itself.
@@ -3047,7 +3107,7 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Str);
             }
             // An update registration: the handler it delivers to must run.
-            if let Some(handler) = super::UpdateRequest::handler(&name) {
+            if let Some(handler) = registration_handler(&name) {
                 let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {
                     return self.fail(|| format!("{name} as written"));
@@ -3189,7 +3249,7 @@ impl<'l> Checker<'l> {
         }
         // Another quest's update registration: its handler must run.
         if receiver_kind == Kind::Quest {
-            if let Some(handler) = super::UpdateRequest::handler(&name) {
+            if let Some(handler) = registration_handler(&name) {
                 let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {
                     return self.fail(|| format!("{name} as written"));
@@ -3345,6 +3405,14 @@ impl<'l> Checker<'l> {
 /// An update or timer call's arguments: numbers, at most as many as it
 /// takes, and the interval when it starts one.
 fn update_args_ok(name: &str, args: &[Arg]) -> bool {
+    // A distance registration: two objects (a reference, a player or an alias)
+    // and, registering, a number.
+    if super::DistanceRequest::handler(name).is_some() {
+        let object = |arg: &Arg| matches!(arg, Arg::Kind(Kind::Object | Kind::Player | Kind::Alias));
+        let number = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
+        let arity = super::DistanceRequest::arity(name);
+        return args.len() == arity && args[..2].iter().all(object) && args.get(2).is_none_or(number);
+    }
     let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
     let starts = !super::UpdateRequest::handler(name).unwrap_or_default().is_empty();
     args.len() <= super::UpdateRequest::max_args(name) && (!starts || !args.is_empty()) && args.iter().all(numeric)

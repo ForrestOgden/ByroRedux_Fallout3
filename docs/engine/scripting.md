@@ -745,7 +745,7 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 72.3%, Starfield
+With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 73.5%, Starfield
 71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
@@ -761,8 +761,7 @@ is server-side), so its fragment number is not meaningful.
 Not modelled yet:
 - `AdvanceSkill`, which needs per-skill usage progression in CHARAL, and
   other actor natives;
-- alias update registrations and FO4's distance / custom-event
-  registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
+- alias update registrations and FO4's custom-event registrations (`RegisterForCustomEvent`);
 - package End fragments (procedure completion).
 
 Per-game decline heads behind the remaining fragment gap
@@ -945,6 +944,31 @@ the delivery checks it again against the installed scripts (cached per
 script). A registration whose handler can't run doesn't fail the registering
 code, so its other effects still run; the handler is skipped entirely, never
 run partway.
+
+### Distance events (M47.2)
+
+`crates/scripting/src/fragment/distance.rs` implements the FO4 CK's
+*RegisterForDistanceLessThanEvent - ScriptObject* family:
+- the registering script receives a **single** `OnDistanceLessThan(akObj1,
+  akObj2, afDistance)` once two objects are closer than the distance (sent
+  immediately if they already are), or `OnDistanceGreaterThan` when they are
+  farther;
+- an object is a reference or a `ReferenceAlias`, which resolves to its
+  reference each check, so an alias filled later counts from then on;
+- the pair is interchangeable. Registering it again in either order only
+  updates the distance, and the event keeps the order it was first registered
+  in. A script holds one less-than and one greater-than registration per pair;
+- the receiver need not be either object, and `kmyQuest.Register…` registers
+  every script attached to that quest that handles the event;
+- `UnregisterForDistanceEvents(a, b)` removes both kinds for the pair, and a
+  stopped quest drops its registrations. A reference's registration waits
+  while it is unloaded.
+
+The saved `DistanceWatches` holds the registrations. `distance_event_system`
+checks them every frame, and the distance is the one the `GetDistance` guard
+reads, between world positions. A reference with no placement is infinitely
+far, so it triggers a greater-than event and never a less-than one. A
+registration the frame's interpreter allowance cannot start stays registered.
 
 ### Misc stats (M47.2)
 

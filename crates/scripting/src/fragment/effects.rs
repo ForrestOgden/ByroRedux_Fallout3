@@ -450,6 +450,9 @@ pub struct DeferredFragmentEffects {
     /// favor) or doing-favor), applied to [`crate::FollowerState`] after the
     /// guards drop.
     follower_changes: Vec<(u32, FollowerChange)>,
+    /// M47.2 — distance registrations a Papyrus VM run asked for: the owner,
+    /// the script, the change.
+    pub(super) distance_requests: Vec<(u32, String, super::DistanceRequest)>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
@@ -559,6 +562,7 @@ impl DeferredFragmentEffects {
             misc_stats: Vec::new(),
             achievements: Vec::new(),
             follower_changes: Vec::new(),
+            distance_requests: Vec::new(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
@@ -649,6 +653,14 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.distance_requests.is_empty() {
+            if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {
+                for (owner, script, request) in self.distance_requests.drain(..) {
+                    watches.request(owner, &script, request);
+                }
+            }
+            self.distance_requests.clear();
         }
         if !self.follower_changes.is_empty() {
             if let Some(mut state) = world.try_resource_mut::<crate::FollowerState>() {
