@@ -72,8 +72,8 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
 - **Scripting.** ECS-native event hooks and condition evaluator
   (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
   recognizer chain (QUST fragments, aliases, SCEN/PACK scenes; MQ101 plays
-  end-to-end), with a bounded Papyrus interpreter for the fragments and
-  reference scripts it declines (M47.2). An SCDA interpreter runs Oblivion
+  end-to-end), with a bounded Papyrus interpreter for the fragments,
+  reference scripts and quest-alias scripts it declines (M47.2). An SCDA interpreter runs Oblivion
   quest scripts (M47.3). A first magic-runtime slice covers spell lists and
   the RACE `SPLO` racial pair (#4415).
   Dialogue: NPC activation selects a topic, a native response surface
