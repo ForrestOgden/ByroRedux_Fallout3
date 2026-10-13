@@ -301,3 +301,66 @@ fn a_wait_in_a_called_function_resumes_the_call_chain() {
     // continues after the call and sets 30.
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30);
 }
+
+/// `Global.Value = n` is `Global.SetValue(n)`; with `+=` it counts from the
+/// global's current value.
+#[test]
+fn global_value_assignment_writes_the_global() {
+    const COUNT: u32 = 0x0001_0F03;
+    const SOURCE: &str = "ScriptName QF_VmGlobals extends Quest\n\
+        GlobalVariable Property Count Auto\n\
+        Function Fragment_1()\n\
+          Count.Value += 2\n\
+          Count.Value = Count.Value * 10\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    assert_eq!(
+        check_function_reason(Arc::clone(&script), "Fragment_1", None).err(),
+        None
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut globals = crate::Globals::default();
+    globals.set(COUNT, 1.0);
+    world.insert_resource(globals);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_VmGlobals".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "Count".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: COUNT,
+                            alias: -1,
+                        },
+                    }],
+                }],
+            },
+        );
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret {
+                script: "QF_VmGlobals".into(),
+                function: "Fragment_1".into(),
+                resume: None,
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::Globals>().get(COUNT), Some(30.0));
+}

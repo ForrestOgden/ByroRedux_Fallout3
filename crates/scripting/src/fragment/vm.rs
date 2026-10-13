@@ -465,6 +465,10 @@ impl Synth {
 }
 
 impl Vm<'_> {
+    fn is_quest_form(&self, value: &Value) -> bool {
+        matches!(value, Value::Form(form) if self.is_quest(*form))
+    }
+
     fn is_quest(&self, form: u32) -> bool {
         let quest = QuestFormId(form);
         self.deferred.quest_scripts.contains_key(&quest) || self.stages.is_started(quest)
@@ -745,6 +749,13 @@ impl Vm<'_> {
             }
             Expr::MemberAccess { object, member } => {
                 let owner = self.eval(frame, &object.node)?;
+                if member.node.0.eq_ignore_ascii_case("value") && matches!(owner, Value::Form(_)) && !self.is_quest_form(&owner) {
+                    let Some(number) = value.number() else {
+                        return stop("a non-number GlobalVariable.Value");
+                    };
+                    let (callee, args) = set_value_call(object, &spanned(Expr::FloatLit(f64::from(number))));
+                    return self.call_statement(frame, &Expr::Call { callee, args }).map(|_| ());
+                }
                 match owner {
                     Value::Form(quest) if self.is_quest(quest) => {
                         self.write_quest_variable(QuestFormId(quest), &member.node.0, &value)
@@ -1289,6 +1300,19 @@ impl Vm<'_> {
     }
 }
 
+/// `Global.Value = n` as the native it is: `Global.SetValue(n)`.
+fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned<Expr>>, Vec<CallArg>) {
+    let callee = spanned(Expr::MemberAccess {
+        object: Box::new(global.clone()),
+        member: spanned(Identifier("SetValue".into())),
+    });
+    let args = vec![CallArg {
+        name: None,
+        value: value.clone(),
+    }];
+    (Box::new(callee), args)
+}
+
 fn is_trace(callee: &Expr) -> bool {
     let Expr::MemberAccess { object, member } = callee else {
         return false;
@@ -1594,11 +1618,14 @@ impl Checker<'_> {
                             return self.fail(|| format!("{value_kind:?} write to a script variable"));
                         }
                     }
-                    Expr::MemberAccess { object, .. } => {
-                        if self.kind(frame, &object.node)? != Kind::Quest
-                            || matches!(value_kind, Kind::Str | Kind::Array)
-                        {
-                            return self.fail(|| "member assignment".into());
+                    Expr::MemberAccess { object, member } => {
+                        let owner = self.kind(frame, &object.node)?;
+                        if owner == Kind::Object && member.node.0.eq_ignore_ascii_case("value") && value_kind == Kind::Num {
+                            // `Global.Value = n`.
+                            let (callee, args) = set_value_call(object, value);
+                            self.check_call(frame, &callee.node, &args, true)?;
+                        } else if owner != Kind::Quest || matches!(value_kind, Kind::Str | Kind::Array) {
+                            return self.fail(|| format!("{value_kind:?} assignment to a member of {owner:?}"));
                         }
                     }
                     Expr::Index { object, index } => {

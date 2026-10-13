@@ -639,6 +639,8 @@ runtime:
 - **Script variables.** A numeric variable lives in `QuestScriptVariables`; an
   object variable (a reference, alias, or quest) lives in the saved
   `QuestScriptObjects`, so it holds from one fragment to the next.
+- **Global values.** `Global.Value = n` (and `+=` and the like) runs as the
+  `Global.SetValue(n)` native it stands for.
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the
   fragment and in any function it calls as a statement. The suspended state
   is an `Effect::Interpret` carrying a `VmResume`. It holds one `VmFrame` per
@@ -657,13 +659,12 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-With the VM, 74.5% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 75.0% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
-- assignment to another script's member (`akRef.Prop = x`), now the largest
-  rejection;
-- reference- and actor-script functions (`ReArmTrigger`) and several actor
+- reference- and actor-script functions and members (`ReArmTrigger`,
+  `ChangeCarryState`, `akBard.sInstrument = …`), and several actor
   natives (`SetPlayerTeammate`, `AdvanceSkill`, `IncrementStat`);
 - update and timer registration (`RegisterForUpdate`, `StartTimer`);
 - INFO and scene fragments, which still use the lowering only.
