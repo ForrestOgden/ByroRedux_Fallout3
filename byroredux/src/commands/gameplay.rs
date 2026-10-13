@@ -570,5 +570,27 @@ mod level_up_tests {
         let _ = LevelUpCommand.execute(&world, "perk 31DD8");
         assert_eq!(world.get::<Perks>(player).unwrap().rank(EDUCATED), 2);
         assert_eq!(world.get::<LevelUpPoints>(player).unwrap().perk_points, 0);
+
+        // `Game.RewardPlayerXP(100)` with FO4's modifier (fXPModBase 1.0 +
+        // fXPModMult 0.03 · INT 9) grants 127; `abDirect` grants 100.
+        use byroredux_plugin::esm::records::{GameSetting, SettingValue};
+        for (form_id, editor_id, value) in [(1, "fXPModBase", 1.0), (2, "fXPModMult", 0.03)] {
+            index.game_settings.insert(
+                form_id,
+                GameSetting {
+                    form_id,
+                    editor_id: editor_id.into(),
+                    value: SettingValue::Float(value),
+                },
+            );
+        }
+        assert!(crate::combat::install_xp_modifier_rules(&mut world, &index));
+        let before = world.get::<CharacterLevel>(player).unwrap().xp;
+        world
+            .resource_mut::<byroredux_scripting::story_manager::PendingPlayerXp>()
+            .0
+            .extend([(100, false), (100, true)]);
+        crate::combat::scripted_experience_system(&world, 0.0);
+        assert_eq!(world.get::<CharacterLevel>(player).unwrap().xp, before + 227);
     }
 }

@@ -222,6 +222,19 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .writes::<byroredux_core::ecs::components::Dead>(),
     );
+    // M47.2 — script RewardPlayerXP grants, through the level roll.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::combat::scripted_experience_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::story_manager::PendingPlayerXp>()
+            .reads_resource::<crate::combat::XpModifierRules>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes::<byroredux_core::character::CharacterLevel>()
+            .writes::<byroredux_core::character::LevelUpPoints>()
+            .reads::<byroredux_core::ecs::components::ActorValues>(),
+    );
     // M47.2 — script Kill requests, ahead of the shared death reconciler.
     scheduler.add_exclusive_with_access(
         Stage::Late,
@@ -622,7 +635,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ReferenceActivationBlocks>()
             .writes_resource::<byroredux_scripting::ReferenceActivationBlocks>()
             // M47.2 — a spoken line's SendStoryEvent queues a script event,
-            // and its Kill a death request.
+            // its Kill a death request and its RewardPlayerXP a grant.
+            .writes_resource::<byroredux_scripting::story_manager::PendingPlayerXp>()
             .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>()
             .writes_resource::<byroredux_scripting::story_manager::PendingScriptKills>()
             // M47.2 — a spoken line's AddToMap, and the marker guards.

@@ -353,6 +353,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::Kill` requests, queued in
     /// [`crate::story_manager::PendingScriptKills`] after the guards drop.
     kills: Vec<(EntityId, Option<EntityId>)>,
+    /// M47.2 — `Effect::RewardPlayerXp` grants, queued in
+    /// [`crate::story_manager::PendingPlayerXp`] after the guards drop.
+    player_xp: Vec<(u32, bool)>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -427,6 +430,7 @@ impl DeferredFragmentEffects {
             relationship_changes: Vec::new(),
             story_events: Vec::new(),
             kills: Vec::new(),
+            player_xp: Vec::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -467,6 +471,13 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.player_xp.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
+            {
+                pending.0.append(&mut self.player_xp);
+            }
+        }
         if !self.kills.is_empty() {
             if let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
@@ -1030,6 +1041,26 @@ pub(crate) fn apply_effect(
             deferred.map_markers.push((reference, *fast_travel));
             None
         }
+        Effect::RewardPlayerXp { amount, direct } => {
+            let amount = resolve_item_count(amount, vmad, world)?;
+            deferred.player_xp.push((amount, *direct));
+            None
+        }
+        Effect::PlayerCaps { delta } => {
+            // `Game.GetCaps()` is `Game.GetForm(15)` in FO4's `Game.psc`.
+            const CAPS: u32 = 0x0000_000F;
+            let player = world
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                .map(|player| player.0)?;
+            match delta.cmp(&0) {
+                std::cmp::Ordering::Greater => add_items(world, player, CAPS, *delta as u32),
+                std::cmp::Ordering::Less => {
+                    remove_items(world, player, CAPS, delta.unsigned_abs(), None);
+                }
+                std::cmp::Ordering::Equal => {}
+            }
+            None
+        }
         Effect::SetRelationshipRank { actor, other, rank } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let other = guard_actor(other, context, vmad, world, deferred)?;
@@ -1492,34 +1523,7 @@ fn apply_inventory_effect(
             )?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
             let count = &resolve_item_count(count, vmad, world)?;
-            let Some(mut inventories) = world.query_mut::<Inventory>() else {
-                log::debug!("fragment AddItem skipped: Inventory component never registered");
-                return None;
-            };
-            if inventories.get_mut(container_entity).is_none() {
-                // The container doesn't carry an Inventory yet — every
-                // object can receive items in Bethesda's runtime, so
-                // create one on demand (an interior-mutable insert onto
-                // an already-registered storage, not a structural
-                // `&mut World` mutation).
-                inventories.insert(container_entity, Inventory::new());
-            }
-            inventories
-                .get_mut(container_entity)
-                .expect("just present or inserted above")
-                .push(ItemStack::new(item_form_id, *count));
-            drop(inventories);
-            // `OnItemAdded` sees a scripted add like any other (M47.2).
-            crate::emit_item_transfers(
-                world,
-                container_entity,
-                [crate::ItemTransfer {
-                    item_form_id,
-                    count: *count,
-                    added: true,
-                    stolen: false,
-                }],
-            );
+            add_items(world, container_entity, item_form_id, *count);
             None
         }
         Effect::RemoveItem {
@@ -1612,6 +1616,36 @@ fn apply_inventory_effect(
         }
         _ => unreachable!("apply_inventory_effect received a non-inventory effect"),
     }
+}
+
+/// Add `count` of `item_form_id` to `container`'s inventory (creating one: in
+/// Bethesda's runtime every object can receive items), emitting `OnItemAdded`.
+fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u32) {
+    let Some(mut inventories) = world.query_mut::<Inventory>() else {
+        log::debug!("fragment AddItem skipped: Inventory component never registered");
+        return;
+    };
+    if inventories.get_mut(container).is_none() {
+        // An interior-mutable insert onto an already-registered storage, not
+        // a structural `&mut World` mutation.
+        inventories.insert(container, Inventory::new());
+    }
+    inventories
+        .get_mut(container)
+        .expect("just present or inserted above")
+        .push(ItemStack::new(item_form_id, count));
+    drop(inventories);
+    // `OnItemAdded` sees a scripted add like any other (M47.2).
+    crate::emit_item_transfers(
+        world,
+        container,
+        [crate::ItemTransfer {
+            item_form_id,
+            count,
+            added: true,
+            stolen: false,
+        }],
+    );
 }
 
 /// `MoveTo` / `Disable` / `Enable` — placement and reference-enable state.
@@ -2510,6 +2544,8 @@ fn apply_quest_scoped_effect(
         | Effect::SetBaseProtection { .. }
         | Effect::Kill { .. }
         | Effect::SetRelationshipRank { .. }
+        | Effect::RewardPlayerXp { .. }
+        | Effect::PlayerCaps { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }

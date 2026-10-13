@@ -887,7 +887,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v53 -> v54): the new
     // `ScriptedRelationships` resource column, the appended
     // `Effect::SetRelationshipRank` and `FragmentGuard::RelationshipRank`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x226d_455f_beca_f000;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::RewardPlayerXp` and `Effect::PlayerCaps` variants.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4336_e6de_9d7f_7369;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

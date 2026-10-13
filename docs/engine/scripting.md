@@ -282,7 +282,13 @@ Gained Skill Points`: `Educated`, +3 in FO3 and +2 in FNV). With no level-up
 menu yet, the `levelup` console command spends them: a skill rises one per
 point, never past 100, and a perk point adds a perk rank (requirements are
 not checked). Live (FNV, INT 5): 600 XP reached level 3 and banked 25 points
-and one perk.
+and one perk. FO4's level grants one SPECIAL-or-perk point, banked the same way.
+`Game.RewardPlayerXP(n[, abDirect])` (a literal or a global) runs through the
+same roll. A non-direct grant takes FO4's XP modifier `fXPModBase +
+fXPModMult · INT` (Fallout4.esm: 1.0 + 0.03·INT, the 3%-per-point the Fallout
+wiki measured). `Game.GivePlayerCaps` / `RemovePlayerCaps` add or remove
+`Game.GetCaps()` (form 0xF). `SetObjectiveSkipped(id)` lowers to its
+`Quest.psc` body, which hides the objective unless it is completed.
 
 The fourth is **encumbrance** (`byroredux/src/encumbrance.rs`). The player's
 carried weight is the inventory's item weights times counts (the inventory

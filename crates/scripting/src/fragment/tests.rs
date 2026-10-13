@@ -4946,6 +4946,40 @@ fn a_backing_variable_quest_property_resolves_through_its_authored_name() {
     );
 }
 
+/// M47.2 — `PlayerCaps` adds / removes caps (form `0xF`) on the player and
+/// `RewardPlayerXp` queues the grant.
+#[test]
+fn player_caps_and_reward_xp_reach_the_player() {
+    use byroredux_core::ecs::components::Inventory;
+    let world = fixture();
+    let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![
+            Effect::PlayerCaps { delta: 100 },
+            Effect::PlayerCaps { delta: -30 },
+            Effect::RewardPlayerXp {
+                amount: crate::translate::effects::ItemCount::Literal(50),
+                direct: false,
+            },
+        ],
+    );
+    let caps: u32 = world
+        .get::<Inventory>(player)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|stack| stack.base_form_id == 0xF)
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(caps, 70);
+    assert_eq!(
+        world.resource::<crate::story_manager::PendingPlayerXp>().0,
+        vec![(50, false)]
+    );
+}
+
 /// M47.2 — `CopyQuestVariable` copies a value written earlier in the same
 /// fragment, and an unset source leaves the target untouched.
 #[test]

@@ -127,6 +127,9 @@ pub fn register(world: &mut World) {
     if world.try_resource::<PendingScriptKills>().is_none() {
         world.insert_resource(PendingScriptKills::default());
     }
+    if world.try_resource::<PendingPlayerXp>().is_none() {
+        world.insert_resource(PendingPlayerXp::default());
+    }
 }
 
 /// Script-raised story events (M47.2, `Keyword.SendStoryEvent`) waiting for
@@ -147,6 +150,14 @@ impl Resource for PendingScriptStoryEvents {}
 pub struct PendingScriptKills(pub Vec<(EntityId, Option<EntityId>)>);
 
 impl Resource for PendingScriptKills {}
+
+/// M47.2 — `Effect::RewardPlayerXp` grants, `(amount, direct)`, queued after
+/// the quest-state guards drop and drained by the engine's level roll;
+/// `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub struct PendingPlayerXp(pub Vec<(u32, bool)>);
+
+impl Resource for PendingPlayerXp {}
 
 /// One node of the folded [`SmTree`] arena.
 pub struct SmTreeNode {

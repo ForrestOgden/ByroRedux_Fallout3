@@ -650,33 +650,24 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     if reached.is_empty() {
         return;
     }
-    let intelligence = world
-        .try_resource::<byroredux_scripting::ActorValueNames>()
-        .and_then(|names| names.resolve("Intelligence"))
-        .map_or(0.0, |intelligence| {
-            byroredux_scripting::condition::evaluate_function(
-                byroredux_scripting::condition::ConditionFunction::GetActorValue,
-                &byroredux_plugin::esm::records::condition::Condition {
-                    param_1: intelligence,
-                    ..Default::default()
-                },
-                player,
-                world,
-            )
-        });
+    let intelligence = player_intelligence(world, player);
     let mut granted = (0.0f32, 0u32);
     for level in reached {
         let Some((points, perk)) = leveling.skill_point_reward(level, intelligence) else {
             return;
         };
-        granted.0 += byroredux_scripting::perk_entry_points::compose_entry_point(
-            world,
-            player,
-            byroredux_scripting::perk_entry_points::fnv::ADJUST_GAINED_SKILL_POINTS,
-            points,
-            &[],
-        )
-        .max(0.0);
+        // Hook 10 is Adjust Gained Skill Points on FO3 / FNV only; FO4's
+        // level grants no skill points to adjust.
+        if points > 0.0 {
+            granted.0 += byroredux_scripting::perk_entry_points::compose_entry_point(
+                world,
+                player,
+                byroredux_scripting::perk_entry_points::fnv::ADJUST_GAINED_SKILL_POINTS,
+                points,
+                &[],
+            )
+            .max(0.0);
+        }
         granted.1 += u32::from(perk);
     }
     let Some(mut rewards) = world.query_mut::<LevelUpPoints>() else {
@@ -1047,6 +1038,88 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     match crate::ragdoll::activate_ragdoll(world, skeleton_root) {
         Ok(body_count) => format!("; ragdoll activated ({body_count} bodies)"),
         Err(error) => format!("; ragdoll unavailable: {error}"),
+    }
+}
+
+/// M47.2 — `Game.RewardPlayerXP`'s XP modifier (FO4): `fXPModBase +
+/// fXPModMult · INT` (Fallout4.esm authors 1.0 / 0.03 — 3% per point, the
+/// Fallout wiki's measured Intelligence rule). Installed where both settings
+/// are authored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct XpModifierRules {
+    base: f32,
+    per_intelligence: f32,
+}
+
+impl Resource for XpModifierRules {}
+
+pub(crate) fn install_xp_modifier_rules(
+    world: &mut World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> bool {
+    match (
+        index.game_setting_float("fXPModBase"),
+        index.game_setting_float("fXPModMult"),
+    ) {
+        (Some(base), Some(per_intelligence)) => {
+            world.insert_resource(XpModifierRules {
+                base,
+                per_intelligence,
+            });
+            true
+        }
+        _ => {
+            world.remove_resource::<XpModifierRules>();
+            false
+        }
+    }
+}
+
+/// The player's Intelligence, through the ruleset's composition.
+fn player_intelligence(world: &World, player: EntityId) -> f32 {
+    world
+        .try_resource::<byroredux_scripting::ActorValueNames>()
+        .and_then(|names| names.resolve("Intelligence"))
+        .map_or(0.0, |intelligence| {
+            byroredux_scripting::condition::evaluate_function(
+                byroredux_scripting::condition::ConditionFunction::GetActorValue,
+                &byroredux_plugin::esm::records::condition::Condition {
+                    param_1: intelligence,
+                    ..Default::default()
+                },
+                player,
+                world,
+            )
+        })
+}
+
+/// M47.2 — script `Game.RewardPlayerXP` grants (`PendingPlayerXp`): a
+/// non-direct grant takes the XP modifier, then the shared level roll.
+pub(crate) fn scripted_experience_system(world: &World, _dt: f32) {
+    let grants = world
+        .try_resource_mut::<byroredux_scripting::story_manager::PendingPlayerXp>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    if grants.is_empty() {
+        return;
+    }
+    let Some(player) = world
+        .try_resource::<crate::systems::PlayerEntity>()
+        .and_then(|player| player.0)
+    else {
+        return;
+    };
+    let modifier = world.try_resource::<XpModifierRules>().map(|rules| *rules);
+    for (amount, direct) in grants {
+        let xp = match modifier {
+            Some(rules) if !direct => {
+                let mult = rules.base + rules.per_intelligence * player_intelligence(world, player);
+                (amount as f32 * mult).round().max(0.0) as u32
+            }
+            _ => amount,
+        };
+        log::info!("Script experience: +{xp} XP");
+        grant_experience(world, player, xp);
     }
 }
 

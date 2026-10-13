@@ -151,6 +151,8 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::QuestScope { .. } => "QuestScope",
         Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
         Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
+        Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
+        Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

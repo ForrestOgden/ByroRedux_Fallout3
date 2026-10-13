@@ -893,6 +893,14 @@ pub enum Effect {
     /// with `quest` as their context and its VMAD for their properties.
     /// Never holds a latent effect.
     QuestScope { quest: QuestRef, effects: Vec<Effect> },
+    /// M47.2 — `Game.RewardPlayerXP(auiXPAmount, abDirect = false)` (FO4 /
+    /// Starfield): experience through the engine's level roll; `direct`
+    /// bypasses the XP modifiers.
+    RewardPlayerXp { amount: ItemCount, direct: bool },
+    /// M47.2 — `Game.GivePlayerCaps(n)` / `RemovePlayerCaps(n)` (FO4): the
+    /// script bodies add / remove `n` of `Game.GetCaps()` (form `0xF`) on the
+    /// player when `n > 0`. Negative `delta` removes.
+    PlayerCaps { delta: i32 },
     /// M47.2 — `<actor>.SetRelationshipRank(akOther, aiRank)` (+4 Lover …
     /// −4 Archnemesis), on the two actors' bases.
     SetRelationshipRank {
@@ -2021,6 +2029,9 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_base_protection,
     prim_kill,
     prim_set_relationship_rank,
+    prim_reward_player_xp,
+    prim_player_caps,
+    prim_set_objective_skipped,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2551,6 +2562,61 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::AddToMap {
         marker: receiver_object(object, scope)?,
         fast_travel: bool_arg(args, 0)?.unwrap_or(false),
+    })
+}
+
+/// `Game.RewardPlayerXP(int auiXPAmount, bool abDirect = false)` with a
+/// literal amount.
+fn prim_reward_player_xp(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "RewardPlayerXP")?;
+    if args.is_empty() || args.len() > 2 {
+        return None;
+    }
+    // A literal, or the `XPMiscQuestSmall.GetValue() as Int` global FO4
+    // quests reward.
+    Some(Effect::RewardPlayerXp {
+        amount: item_count_arg(args, 0, 0, scope)?,
+        direct: bool_arg(args, 1)?.unwrap_or(false),
+    })
+}
+
+/// `Game.GivePlayerCaps(int nCaps)` / `Game.RemovePlayerCaps(int nCaps)` with
+/// a literal count; FO4's `Game.psc` bodies act only when `nCaps > 0`.
+fn prim_player_caps(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let (args, sign) = match static_call(e, "Game", "GivePlayerCaps") {
+        Some(args) => (args, 1),
+        None => (static_call(e, "Game", "RemovePlayerCaps")?, -1),
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let count = i32::try_from(int_arg(args, 0)?).ok()?;
+    Some(Effect::PlayerCaps {
+        delta: sign * count.max(0),
+    })
+}
+
+/// `Quest.SetObjectiveSkipped(int aiObjectiveID)` — FO4's `Quest.psc` body:
+/// `If !IsObjectiveCompleted(id) SetObjectiveDisplayed(id, false, false)`.
+fn prim_set_objective_skipped(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetObjectiveSkipped")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let objective = i32::try_from(int_arg(args, 0)?).ok()?;
+    let quest = receiver_quest(object, scope)?;
+    Some(Effect::Conditional {
+        guards: vec![FragmentGuard::ObjectiveCompleted {
+            quest: quest.clone(),
+            objective,
+            expected: false,
+        }],
+        then_effects: vec![Effect::SetObjectiveDisplayed {
+            quest,
+            objective,
+            displayed: false,
+        }],
+        else_effects: vec![],
     })
 }
 
@@ -4428,6 +4494,49 @@ mod tests {
                         },
                     ],
                     then_effects: vec![stage(20)],
+                    else_effects: vec![],
+                },
+            ])
+        );
+    }
+
+    /// M47.2 — FO4's `Game.RewardPlayerXP`, `GivePlayerCaps` /
+    /// `RemovePlayerCaps`, and `SetObjectiveSkipped` (its `Quest.psc` body).
+    #[test]
+    fn fallout4_game_rewards_and_skipped_objectives_lower() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Game.RewardPlayerXP(50)\n\
+             Game.RewardPlayerXP(25, True)\n\
+             Game.GivePlayerCaps(100)\n\
+             Game.RemovePlayerCaps(20)\n\
+             Self.SetObjectiveSkipped(10)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::RewardPlayerXp {
+                    amount: ItemCount::Literal(50),
+                    direct: false
+                },
+                Effect::RewardPlayerXp {
+                    amount: ItemCount::Literal(25),
+                    direct: true
+                },
+                Effect::PlayerCaps { delta: 100 },
+                Effect::PlayerCaps { delta: -20 },
+                Effect::Conditional {
+                    guards: vec![FragmentGuard::ObjectiveCompleted {
+                        quest: QuestRef::SelfRef,
+                        objective: 10,
+                        expected: false,
+                    }],
+                    then_effects: vec![Effect::SetObjectiveDisplayed {
+                        quest: QuestRef::SelfRef,
+                        objective: 10,
+                        displayed: false,
+                    }],
                     else_effects: vec![],
                 },
             ])

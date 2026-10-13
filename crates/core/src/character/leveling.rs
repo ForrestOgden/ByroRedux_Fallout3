@@ -159,11 +159,12 @@ impl LevelingModel {
         level_cap: 0,
     };
 
-    /// What reaching `new_level` grants under the Fallout 3 / New Vegas
-    /// [`LevelReward::SkillPoints`] reward: `base + int_mult·INT` skill
-    /// points (before the Adjust Gained Skill Points perk hook), and whether a
-    /// perk comes with it (every `perk_cadence` levels). `None` for every
-    /// other reward or model.
+    /// What reaching `new_level` grants under the Fallout rewards: for FO3 /
+    /// FNV [`LevelReward::SkillPoints`], `base + int_mult·INT` skill points
+    /// (before the Adjust Gained Skill Points perk hook) and whether a perk
+    /// comes with it (every `perk_cadence` levels); for FO4
+    /// [`LevelReward::SpecialOrPerk`], no skill points and the level's one
+    /// SPECIAL-or-perk point. `None` for the Elder Scrolls models.
     pub fn skill_point_reward(&self, new_level: u16, intelligence: f32) -> Option<(f32, bool)> {
         match *self {
             Self::XpCurve {
@@ -178,6 +179,10 @@ impl LevelingModel {
                 base + int_mult * intelligence,
                 perk_cadence > 0 && new_level % u16::from(perk_cadence) == 0,
             )),
+            Self::XpCurve {
+                reward: LevelReward::SpecialOrPerk,
+                ..
+            } => Some((0.0, true)),
             _ => None,
         }
     }
@@ -284,6 +289,7 @@ mod tests {
         assert_eq!(LevelingModel::FNV.skill_point_reward(2, 9.0), Some((14.5, true)));
         assert_eq!(LevelingModel::FNV.skill_point_reward(3, 9.0), Some((14.5, false)));
         assert_eq!(LevelingModel::SKYRIM.skill_point_reward(2, 9.0), None);
+        assert_eq!(LevelingModel::FO4.skill_point_reward(2, 9.0), Some((0.0, true)));
         let mut banked = LevelUpPoints::default();
         banked.grant_skill_points(14.5);
         assert_eq!(banked.skill_points, 14);

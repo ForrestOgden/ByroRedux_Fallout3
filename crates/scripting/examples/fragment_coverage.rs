@@ -299,6 +299,8 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::QuestScope { .. } => "QuestScope",
         Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
         Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
+        Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
+        Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
@@ -521,7 +523,11 @@ fn main() {
         "\ndeclined by first unmodeled statement (top {}):",
         declines.len().min(30)
     );
-    for (shape, n) in declines.into_iter().take(30) {
+    let top: usize = std::env::var("DECLINE_TOP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    for (shape, n) in declines.into_iter().take(top) {
         println!("  {shape:<32} {n}");
     }
 }
