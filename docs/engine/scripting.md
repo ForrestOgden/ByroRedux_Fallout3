@@ -386,6 +386,19 @@ relationship data on the base, "NOT … for Templated Actors". The saved
 read a script change first, then the record, else 0, the scale's neutral
 middle. The player's base is `0x7`.
 
+Run-time numbers (2026-10-13): when no specific guard fits a comparison, the
+two sides lower as `ValueExpr`s into `FragmentGuard::Compare`. A value is:
+- a literal;
+- a numeric reading (stage, global, quest variable, item count, distance,
+  relationship rank);
+- `GetLevel()`;
+- `Utility.RandomInt` (literal bounds, drawn from the seeded quest RNG);
+- a fragment local;
+- `+ - * /` over those.
+A local assigned a number lowers to `Effect::SetLocal`, kept for the run
+(unread ones are pruned). A fragment holding locals never suspends, because a
+resumed continuation would not carry them, so one that would declines.
+
 Fragment `If`s lower when their condition is built from `FragmentGuard`s
 with `&&`, `||` (`FragmentGuard::Any`) and `!`. Negation is pushed to the
 atoms by De Morgan. The atoms: `GetStageDone` / FO4 `IsStageDone`,

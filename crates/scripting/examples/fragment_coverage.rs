@@ -301,6 +301,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
         Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
         Effect::PlayerCaps { .. } => "PlayerCaps",
+        Effect::SetLocal { .. } => "SetLocal",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

@@ -250,6 +250,9 @@ pub enum ValueExpr {
     Level(ActorRef),
     /// `Utility.RandomInt(min, max)`, both inclusive.
     RandomInt(i32, i32),
+    /// A fragment local assigned a number ([`Effect::SetLocal`]); 0 until
+    /// assigned, Papyrus's default.
+    Local(String),
     /// Arithmetic over two values.
     Arith(Box<ValueExpr>, ArithOp, Box<ValueExpr>),
 }
@@ -286,6 +289,12 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
     }
     if let Some(value) = as_num(e) {
         return Some(ValueExpr::Literal(value));
+    }
+    if let Expr::Ident(name) = e {
+        let key = name.0.to_ascii_lowercase();
+        if scope.runtime_locals.contains(&key) {
+            return Some(ValueExpr::Local(local_slot(scope, &key)));
+        }
     }
     if let Expr::BinaryOp { op, left, right } = e {
         let op = match op {
@@ -1014,6 +1023,10 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// M47.2 — a local assigned a number computed at run time
+    /// (`int n = Utility.RandomInt(0, 3)`), read by later [`ValueExpr::Local`]s
+    /// in the same run. A fragment holding one never suspends.
+    SetLocal { local: String, value: ValueExpr },
     /// M47.2 — effects inlined from the quest script's function
     /// (`kmyQuest.UpdateRadio()`) into an INFO or scene fragment: they run
     /// with `quest` as their context and its VMAD for their properties.
@@ -1297,6 +1310,9 @@ struct Scope<'lib> {
     object_locals: HashMap<String, ObjectRef>,
     player_locals: HashSet<String>,
     decl_locals: HashSet<String>,
+    /// M47.2 — locals (lowercased) holding a run-time number
+    /// ([`Effect::SetLocal`]).
+    runtime_locals: HashSet<String>,
     /// M47.2 — names (lowercased) that denote the dialogue line's speaker:
     /// an INFO fragment's `akSpeakerRef` parameter and every local bound
     /// from it (`akSpeaker = akSpeakerRef as Actor`). Empty outside INFO
@@ -1451,6 +1467,8 @@ pub fn lower_fragment_with_script_metadata(
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
+        .map(prune_unread_locals)
+        .filter(locals_never_suspend)
 }
 
 /// Decompiled scripts by name, for inlining calls into a quest's own script
@@ -1497,6 +1515,8 @@ pub fn lower_quest_fragment(
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
+        .map(prune_unread_locals)
+        .filter(locals_never_suspend)
 }
 
 /// M47.2 — [`lower_fragment_with_script_metadata`] for a scene (`SF_…`)
@@ -1516,6 +1536,8 @@ pub fn lower_scene_fragment(
         ..Scope::default()
     };
     lower_statements(body, &mut scope, providers, 0)
+        .map(prune_unread_locals)
+        .filter(locals_never_suspend)
 }
 
 /// `<quest>.Function()` where `<quest>` is this fragment's own quest (a quest
@@ -1691,11 +1713,104 @@ pub fn lower_info_fragment(
             scope.speaker_locals.insert(param.name.node.0.to_ascii_lowercase());
         }
     }
-    let effects = lower_statements(body, &mut scope, providers, 0)?;
+    let effects = lower_statements(body, &mut scope, providers, 0)
+        .map(prune_unread_locals)
+        .filter(locals_never_suspend)?;
     if scope.uses_speaker.get() && effects.iter().any(has_latent_tail) {
         return None;
     }
     Some(effects)
+}
+
+/// M47.2 — drop the [`Effect::SetLocal`]s no [`ValueExpr::Local`] reads (a
+/// local assigned a number and never compared or used).
+fn prune_unread_locals(effects: Vec<Effect>) -> Vec<Effect> {
+    fn read_value(value: &ValueExpr, out: &mut HashSet<String>) {
+        match value {
+            ValueExpr::Local(local) => {
+                out.insert(local.clone());
+            }
+            ValueExpr::Arith(left, _, right) => {
+                read_value(left, out);
+                read_value(right, out);
+            }
+            _ => {}
+        }
+    }
+    fn read_guard(guard: &FragmentGuard, out: &mut HashSet<String>) {
+        match guard {
+            FragmentGuard::Compare { left, right, .. } => {
+                read_value(left, out);
+                read_value(right, out);
+            }
+            FragmentGuard::Any(alternatives) => {
+                alternatives.iter().flatten().for_each(|guard| read_guard(guard, out));
+            }
+            _ => {}
+        }
+    }
+    fn reads(effects: &[Effect], out: &mut HashSet<String>) {
+        for effect in effects {
+            match effect {
+                Effect::SetLocal { value, .. } => read_value(value, out),
+                Effect::Conditional {
+                    guards,
+                    then_effects,
+                    else_effects,
+                } => {
+                    guards.iter().for_each(|guard| read_guard(guard, out));
+                    reads(then_effects, out);
+                    reads(else_effects, out);
+                }
+                Effect::QuestScope { effects, .. } => reads(effects, out),
+                _ => {}
+            }
+        }
+    }
+    fn prune(effects: Vec<Effect>, read: &HashSet<String>) -> Vec<Effect> {
+        effects
+            .into_iter()
+            .filter(|effect| !matches!(effect, Effect::SetLocal { local, .. } if !read.contains(local)))
+            .map(|effect| match effect {
+                Effect::Conditional {
+                    guards,
+                    then_effects,
+                    else_effects,
+                } => Effect::Conditional {
+                    guards,
+                    then_effects: prune(then_effects, read),
+                    else_effects: prune(else_effects, read),
+                },
+                Effect::QuestScope { quest, effects } => Effect::QuestScope {
+                    quest,
+                    effects: prune(effects, read),
+                },
+                other => other,
+            })
+            .collect()
+    }
+    let mut read = HashSet::new();
+    reads(&effects, &mut read);
+    prune(effects, &read)
+}
+
+/// M47.2 — a fragment's run-time locals ([`Effect::SetLocal`]) live for one
+/// run; a continuation resumed after a suspension would not carry them, so a
+/// fragment holding both declines.
+fn locals_never_suspend(effects: &Vec<Effect>) -> bool {
+    fn sets_local(effect: &Effect) -> bool {
+        match effect {
+            Effect::SetLocal { .. } => true,
+            Effect::Conditional {
+                then_effects,
+                else_effects,
+                ..
+            } => then_effects.iter().chain(else_effects).any(sets_local),
+            Effect::QuestScope { effects, .. } => effects.iter().any(sets_local),
+            _ => false,
+        }
+    }
+    !(effects.iter().any(sets_local) && effects.iter().any(has_latent_tail))
 }
 
 /// Whether running `effect` can suspend the fragment and queue the rest.
@@ -1757,7 +1872,11 @@ fn lower_statements(
                     scope.local_types.insert(name.clone(), ty.0.to_ascii_lowercase());
                 }
                 match &var.initial_value {
-                    Some(init) => bind_local(scope, name, &init.node)?,
+                    Some(init) => {
+                        if let Some(set) = bind_local(scope, name, &init.node)? {
+                            effects.push(set);
+                        }
+                    }
                     None => {
                         scope.decl_locals.insert(name);
                     }
@@ -1789,7 +1908,9 @@ fn lower_statements(
                     }
                     return None;
                 }
-                bind_local(scope, name, &value.node)?;
+                if let Some(set) = bind_local(scope, name, &value.node)? {
+                    effects.push(set);
+                }
             }
             // `Return` with no value is Champollion's fragment terminator —
             // and only as the body's final statement. Anywhere else (an
@@ -2048,12 +2169,14 @@ fn cast_to_quest_script(object: &Expr, scope: &Scope) -> bool {
 ///   `k = akActor.PlaceAtMe(...)`) is an unmodeled statement whose effect
 ///   this table can't lower — decline rather than silently drop the
 ///   side-effect (#1907), matching the flat-sequence decline contract.
-fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
+fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<Option<Effect>> {
     enum Binding {
         Quest(QuestRef),
         Player,
         Speaker,
         Object(ObjectRef),
+        /// M47.2 — a number computed at run time ([`Effect::SetLocal`]).
+        Value(ValueExpr),
         Plain,
     }
     let binding = if let Some(via) = quest_expr_ref(init, scope) {
@@ -2064,6 +2187,8 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
         Binding::Speaker
     } else if let Some(via) = object_expr_ref(init, scope) {
         Binding::Object(via)
+    } else if let Some(value) = classify_value(init, scope) {
+        Binding::Value(value)
     } else if is_side_effect_free(init) {
         Binding::Plain
     } else {
@@ -2075,6 +2200,7 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
     scope.player_locals.remove(&name);
     scope.speaker_locals.remove(&name);
     scope.decl_locals.remove(&name);
+    let mut set = None;
     match binding {
         Binding::Quest(via) => {
             scope.quest_locals.insert(name, via);
@@ -2088,11 +2214,28 @@ fn bind_local(scope: &mut Scope, name: String, init: &Expr) -> Option<()> {
         Binding::Object(via) => {
             scope.object_locals.insert(name, via);
         }
+        Binding::Value(value) => {
+            set = Some(Effect::SetLocal {
+                local: local_slot(scope, &name),
+                value,
+            });
+            scope.runtime_locals.insert(name.clone());
+            scope.decl_locals.insert(name);
+        }
         Binding::Plain => {
             scope.decl_locals.insert(name);
         }
     }
-    Some(())
+    Some(set)
+}
+
+/// M47.2 — the run-time slot of local `name`: qualified by the inlined
+/// function it belongs to, so a callee's locals never meet its caller's.
+fn local_slot(scope: &Scope, name: &str) -> String {
+    match scope.inline_stack.last() {
+        Some((script, function)) => format!("{script}.{function}.{name}"),
+        None => name.to_owned(),
+    }
 }
 
 /// Whether evaluating `e` invokes no function/method call. Papyrus side
@@ -7379,6 +7522,50 @@ mod tests {
             }]),
             "negation flips the comparison"
         );
+    }
+
+    /// M47.2 — a local holding a run-time number feeds a later comparison;
+    /// with a suspension in the same fragment it declines.
+    #[test]
+    fn run_time_locals_lower_and_never_suspend() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             Int roll = Utility.RandomInt(1, 3)\n\
+             If roll == 1\n Self.SetStage(10)\n Else\n Self.SetStage(20)\n EndIf\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetLocal {
+                    local: "roll".into(),
+                    value: ValueExpr::RandomInt(1, 3),
+                },
+                Effect::Conditional {
+                    guards: vec![FragmentGuard::Compare {
+                        left: ValueExpr::Local("roll".into()),
+                        comparison: GuardComparison::Eq,
+                        right: ValueExpr::Literal(1.0),
+                    }],
+                    then_effects: vec![Effect::SetStage {
+                        quest: QuestRef::SelfRef,
+                        stage: 10
+                    }],
+                    else_effects: vec![Effect::SetStage {
+                        quest: QuestRef::SelfRef,
+                        stage: 20
+                    }],
+                },
+            ])
+        );
+        let suspends = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             Int roll = Utility.RandomInt(1, 3)\n\
+             Utility.Wait(1.0)\n\
+             If roll == 1\n Self.SetStage(10)\n EndIf\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&suspends), None, "locals do not survive a suspension");
     }
 
     /// M47.2 — actor, quest, scene and location guard atoms.

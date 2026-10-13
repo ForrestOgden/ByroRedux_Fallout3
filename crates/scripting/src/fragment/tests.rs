@@ -4980,6 +4980,48 @@ fn player_caps_and_reward_xp_reach_the_player() {
     );
 }
 
+/// M47.2 — a `SetLocal` value feeds a later `Compare` guard in the same run.
+#[test]
+fn set_local_feeds_a_compare_guard() {
+    use crate::translate::effects::{ArithOp, GuardComparison, ValueExpr};
+    use crate::QuestScriptVariables;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![
+            Effect::SetLocal {
+                local: "n".into(),
+                value: ValueExpr::Arith(
+                    Box::new(ValueExpr::Literal(2.0)),
+                    ArithOp::Mul,
+                    Box::new(ValueExpr::Literal(3.0)),
+                ),
+            },
+            Effect::Conditional {
+                guards: vec![FragmentGuard::Compare {
+                    left: ValueExpr::Local("n".into()),
+                    comparison: GuardComparison::Eq,
+                    right: ValueExpr::Literal(6.0),
+                }],
+                then_effects: vec![Effect::SetQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "Six".into(),
+                    value: 1.0,
+                }],
+                else_effects: vec![],
+            },
+        ],
+    );
+    assert_eq!(
+        world
+            .resource::<QuestScriptVariables>()
+            .get(Q, QuestScriptVariables::property_key("Six")),
+        Some(1.0)
+    );
+}
+
 /// M47.2 — `CopyQuestVariable` copies a value written earlier in the same
 /// fragment, and an unset source leaves the target untouched.
 #[test]

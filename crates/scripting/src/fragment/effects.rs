@@ -356,6 +356,8 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::RewardPlayerXp` grants, queued in
     /// [`crate::story_manager::PendingPlayerXp`] after the guards drop.
     player_xp: Vec<(u32, bool)>,
+    /// M47.2 — `Effect::SetLocal` values for this fragment run.
+    locals: HashMap<String, f32>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -431,6 +433,7 @@ impl DeferredFragmentEffects {
             story_events: Vec::new(),
             kills: Vec::new(),
             player_xp: Vec::new(),
+            locals: HashMap::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -1039,6 +1042,11 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::SetLocal { local, value } => {
+            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
+            deferred.locals.insert(local.clone(), value);
             None
         }
         Effect::RewardPlayerXp { amount, direct } => {
@@ -2546,6 +2554,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetRelationshipRank { .. }
         | Effect::RewardPlayerXp { .. }
         | Effect::PlayerCaps { .. }
+        | Effect::SetLocal { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2594,6 +2603,7 @@ fn evaluate_value(
 ) -> Option<f32> {
     Some(match value {
         ValueExpr::Literal(value) => *value,
+        ValueExpr::Local(local) => deferred.locals.get(local).copied().unwrap_or(0.0),
         ValueExpr::Stage(via) => f32::from(stages.get_stage(resolve_quest_logged(via, context, vmad)?)),
         ValueExpr::Global(global) => {
             let form_id = resolve_property_form_id(vmad, global.property_name())?;
