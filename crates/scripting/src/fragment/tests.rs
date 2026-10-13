@@ -4556,6 +4556,45 @@ fn run_stage_effects(
     quest_fragment_dispatch_system(world);
 }
 
+/// M47.2 — `SetLocRefType` records the ref type against the reference, the
+/// `HasLocRefType` guard and the alias candidates see it, and a `None` ref type
+/// clears it again.
+#[test]
+fn set_loc_ref_type_assigns_and_clears() {
+    const SPAWNED: u32 = 0x0000_6A00;
+    const BOSS: u32 = 0x0000_6A01;
+    let mut world = fixture();
+    let entity = spawn_with_form_id(&mut world, SPAWNED);
+    let vmad = || object_property_vmad(&[("Spawned", SPAWNED), ("Boss", BOSS)]);
+    run_stage_effects(
+        &world,
+        vmad(),
+        vec![Effect::SetLocRefType {
+            object: ObjectRef::Property("Spawned".into()),
+            ref_type: Some(ObjectRef::Property("Boss".into())),
+        }],
+    );
+    let spawned = crate::condition::entity_global_form_id(&world, entity).expect("a form id");
+    assert!(crate::has_loc_ref_type(&world, entity, spawned, BOSS));
+    assert!(!crate::has_loc_ref_type(&world, entity, spawned, BOSS + 1));
+    let mut candidates = vec![(
+        entity,
+        crate::SceneAliasCandidate { reference_form_id: spawned, ..Default::default() },
+    )];
+    crate::loc_ref_types::apply_to_candidates(&world, &mut candidates);
+    assert_eq!(candidates[0].1.location_ref_types, vec![BOSS]);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    run_stage_effects(
+        &world,
+        vmad(),
+        vec![Effect::SetLocRefType {
+            object: ObjectRef::Property("Spawned".into()),
+            ref_type: None,
+        }],
+    );
+    assert!(!crate::has_loc_ref_type(&world, entity, spawned, BOSS));
+}
+
 /// M47.2 — `Game.GetPlayer().AddItem(..)` reaches the player's inventory and
 /// is seen by `OnItemAdded`.
 #[test]

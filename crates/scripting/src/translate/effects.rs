@@ -1308,6 +1308,13 @@ pub enum Effect {
         target: Option<ObjectRef>,
         keyword: Option<ObjectRef>,
     },
+    /// M47.2 — `<reference>.SetLocRefType(akLoc, akRefType)`
+    /// ([`crate::LocRefTypeOverrides`]); a `None` ref type clears what scripts
+    /// assigned. The location is not part of the key.
+    SetLocRefType {
+        object: ObjectRef,
+        ref_type: Option<ObjectRef>,
+    },
     /// M47.2 — `Game.AdvanceSkill(asSkillName, afMagnitude)` with literal
     /// arguments ([`crate::skills`]).
     AdvanceSkill { skill: String, magnitude: f32 },
@@ -2953,6 +2960,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_increment_stat,
     prim_add_achievement,
     prim_set_linked_ref,
+    prim_set_loc_ref_type,
     prim_advance_skill,
     prim_set_player_teammate,
     prim_set_doing_favor,
@@ -3736,6 +3744,26 @@ fn prim_set_linked_ref(e: &Expr, scope: &Scope) -> Option<Effect> {
         object: receiver_object(object, scope)?,
         target: optional(0)?,
         keyword: optional(1)?,
+    })
+}
+
+/// `<reference>.SetLocRefType(akLoc, akRefType)` (CK *SetLocRefType -
+/// ObjectReference*); the location is a reference to a `Location` or `None`.
+fn prim_set_loc_ref_type(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetLocRefType")?;
+    if args.len() != 2 {
+        return None;
+    }
+    if !matches!(args[0].value.node, Expr::NoneLit) {
+        receiver_object(&args[0].value.node, scope)?;
+    }
+    let ref_type = match &args[1].value.node {
+        Expr::NoneLit => None,
+        other => Some(receiver_object(other, scope)?),
+    };
+    Some(Effect::SetLocRefType {
+        object: receiver_object(object, scope)?,
+        ref_type,
     })
 }
 
@@ -7173,6 +7201,29 @@ mod tests {
              k.AddItem(SomeItem, 5)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    #[test]
+    fn lowers_set_loc_ref_type() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_11()\n\
+             SomeRef.SetLocRefType(SomeLoc, BossType)\n\
+             SomeRef.SetLocRefType(SomeLoc, None)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetLocRefType {
+                    object: ObjectRef::Property("SomeRef".into()),
+                    ref_type: Some(ObjectRef::Property("BossType".into())),
+                },
+                Effect::SetLocRefType {
+                    object: ObjectRef::Property("SomeRef".into()),
+                    ref_type: None,
+                },
+            ])
+        );
     }
 
     #[test]

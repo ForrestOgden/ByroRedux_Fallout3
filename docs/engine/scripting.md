@@ -1274,6 +1274,17 @@ combination of conflicting memberships is undocumented; this is engine policy. T
 relations reach the VM through `FactionCatalog`, published beside the resolver by
 `install_form_resolver`. An actor that is not loaded stops the run.
 
+### SetLocRefType (M47.2)
+
+CK *SetLocRefType - ObjectReference*: "Sets an in-game created object to be the given loc ref
+type for the given location"; a `None` ref type clears one already set. `Effect::SetLocRefType`
+records the assignment in the saved `LocRefTypeOverrides` (reference FormID to ref types). The
+two consumers read it beside the placement's authored `XLRT` tags: the `HasLocRefType` guard
+(`has_loc_ref_type`) and the quest-alias fill by location ref type, whose candidate list gets
+the assigned types at every refresh (a change marks the bindings dirty). The CK scopes the type
+to a location; both consumers ask about the reference's own types, so the location is not part of
+the key, and a `None` clears every type scripts assigned to that reference.
+
 ### MusicType.Add / Remove (M47.2)
 
 CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start

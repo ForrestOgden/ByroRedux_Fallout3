@@ -807,6 +807,7 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                 .collect()
         })
         .unwrap_or_default();
+    crate::loc_ref_types::apply_to_candidates(world, &mut candidates);
     // Loaded candidates ahead of remote stubs, each group in entity order.
     // Stubs are few, so collect them once instead of probing their storage
     // from the comparator — a lock round trip per comparison, ~1 ms of every

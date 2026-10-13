@@ -34,6 +34,7 @@ pub mod followers;
 pub mod form_lists;
 pub mod input_layers;
 pub mod linked_refs;
+pub mod loc_ref_types;
 pub mod reference_flags;
 pub mod sound_requests;
 pub mod ownership;
@@ -147,6 +148,7 @@ pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
 pub use linked_refs::{linked_ref, LinkedRefOverrides};
+pub use loc_ref_types::{has_loc_ref_type, LocRefTypeOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
@@ -338,6 +340,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {
         world.insert_resource(LinkedRefOverrides::default());
+    }
+    // M47.2 — scripted SetLocRefType assignments (saved).
+    if world.try_resource::<LocRefTypeOverrides>().is_none() {
+        world.insert_resource(LocRefTypeOverrides::default());
     }
     // M47.2 — Game.AdvanceSkill: banked usage XP (saved) and the advances
     // scripts queued (transient).

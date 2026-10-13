@@ -707,6 +707,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's SetLinkedRef / GetLinkedRef.
             .reads_resource::<byroredux_scripting::LinkedRefOverrides>()
             .writes_resource::<byroredux_scripting::LinkedRefOverrides>()
+            // M47.2 — a spoken line's SetLocRefType / HasLocRefType.
+            .reads_resource::<byroredux_scripting::LocRefTypeOverrides>()
+            .writes_resource::<byroredux_scripting::LocRefTypeOverrides>()
             // M47.2 — a spoken line's follower flags.
             .reads_resource::<byroredux_scripting::FollowerState>()
             .writes_resource::<byroredux_scripting::FollowerState>()

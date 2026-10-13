@@ -450,6 +450,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetLinkedRef`s: (source, keyword, target), applied to
     /// [`crate::LinkedRefOverrides`] after the guards drop.
     linked_ref_changes: Vec<(u32, u32, u32)>,
+    /// M47.2 — `Effect::SetLocRefType`s: (reference, ref type or 0), applied to
+    /// [`crate::LocRefTypeOverrides`] after the guards drop.
+    loc_ref_type_changes: Vec<(u32, u32)>,
     /// M47.2 — the handle a run draws `PlaceAtMe` FormIDs through, taken
     /// before the quest-state guards so the VM never locks
     /// [`crate::CreatedReferences`].
@@ -599,6 +602,7 @@ impl DeferredFragmentEffects {
             achievements: Vec::new(),
             skill_advances: Vec::new(),
             linked_ref_changes: Vec::new(),
+            loc_ref_type_changes: Vec::new(),
             scripted_ids: world
                 .try_resource::<crate::CreatedReferences>()
                 .map(|created| created.scripted_ids()),
@@ -794,6 +798,16 @@ impl DeferredFragmentEffects {
                 }
             }
             self.linked_ref_changes.clear();
+        }
+        if !self.loc_ref_type_changes.is_empty() {
+            if let Some(mut types) = world.try_resource_mut::<crate::LocRefTypeOverrides>() {
+                for (reference, ref_type) in self.loc_ref_type_changes.drain(..) {
+                    types.set(reference, ref_type);
+                }
+            }
+            self.loc_ref_type_changes.clear();
+            // An alias may now fill by the new type.
+            crate::scene::mark_scene_actor_bindings_dirty(world);
         }
         if !self.skill_advances.is_empty() {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingSkillAdvances>() {
@@ -1548,6 +1562,15 @@ pub(crate) fn apply_effect(
                 None => 0,
             };
             deferred.linked_ref_changes.push((source, keyword, target));
+            None
+        }
+        Effect::SetLocRefType { object, ref_type } => {
+            let reference = object_form_id(vmad, world, context, object, deferred)?;
+            let ref_type = match ref_type {
+                Some(ref_type) => resolve_property_form_id(vmad, ref_type.property_name())?,
+                None => 0,
+            };
+            deferred.loc_ref_type_changes.push((reference, ref_type));
             None
         }
         Effect::AdvanceSkill { skill, magnitude } => {
@@ -3119,6 +3142,7 @@ fn apply_quest_scoped_effect(
         | Effect::AddAchievement { .. }
         | Effect::AdvanceSkill { .. }
         | Effect::SetLinkedRef { .. }
+        | Effect::SetLocRefType { .. }
         | Effect::MoveToEditorLocation { .. }
         | Effect::SetLocationKeywordData { .. }
         | Effect::ForceLocationTo { .. }
@@ -3514,9 +3538,8 @@ pub(super) fn evaluate_guard(
         } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let ref_type = resolve_property_form_id(vmad, ref_type.property_name())?;
-            let has = world
-                .get::<crate::scene::SceneAliasCandidate>(actor)
-                .is_some_and(|candidate| candidate.location_ref_types.contains(&ref_type));
+            let reference = crate::condition::entity_global_form_id(world, actor).unwrap_or(0);
+            let has = crate::has_loc_ref_type(world, actor, reference, ref_type);
             has == *expected
         }
         FragmentGuard::Loaded3D { object, expected } => {

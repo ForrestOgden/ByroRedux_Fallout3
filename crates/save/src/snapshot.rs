@@ -481,7 +481,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `GetValuePercentage`).
 ///
 /// v90 -> v91 (M47.2): `Effect::MoveTo` gained `offset` and `match_rotation`.
-pub const FORMAT_MAJOR: u16 = 91;
+///
+/// v91 -> v92 (M47.2): `Effect::SetLocRefType` and the `LocRefTypeOverrides`
+/// resource column.
+pub const FORMAT_MAJOR: u16 = 92;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
