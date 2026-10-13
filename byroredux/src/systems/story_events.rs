@@ -286,7 +286,7 @@ mod tests {
         drop(cursor);
         assert!(world
             .query::<byroredux_scripting::StoryEvent>()
-            .map_or(true, |events| events.get(player).is_none()));
+            .is_none_or(|events| events.get(player).is_none()));
     }
 
     /// #5447 — the same system with a populated tree still raises CLOC on
@@ -306,7 +306,7 @@ mod tests {
         assert!(
             world
                 .query::<byroredux_scripting::StoryEvent>()
-                .map_or(true, |events| events.get(player).is_none()),
+                .is_none_or(|events| events.get(player).is_none()),
             "an unchanged location raises nothing"
         );
     }

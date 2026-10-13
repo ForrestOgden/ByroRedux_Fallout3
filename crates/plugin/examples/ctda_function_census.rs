@@ -9,10 +9,13 @@ use std::collections::BTreeMap;
 
 use byroredux_plugin::esm::reader::EsmReader;
 
+/// Per-function census: total CTDAs, then splits by record type and Run-On.
+type FunctionCensus = (usize, BTreeMap<String, usize>, BTreeMap<u32, usize>);
+
 fn walk(
     reader: &mut EsmReader<'_>,
     end: usize,
-    counts: &mut BTreeMap<u32, (usize, BTreeMap<String, usize>, BTreeMap<u32, usize>)>,
+    counts: &mut BTreeMap<u32, FunctionCensus>,
 ) -> anyhow::Result<()> {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
@@ -47,11 +50,11 @@ fn main() -> anyhow::Result<()> {
     walk(&mut reader, bytes.len(), &mut counts)?;
     let total: usize = counts.values().map(|c| c.0).sum();
     let mut ranked: Vec<_> = counts.into_iter().collect();
-    ranked.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    ranked.sort_by_key(|(_, c)| std::cmp::Reverse(c.0));
     println!("=== {path}: {total} CTDAs, {} functions", ranked.len());
     for (function, (count, kinds, run_ons)) in ranked.into_iter().take(top) {
         let mut kinds: Vec<_> = kinds.into_iter().collect();
-        kinds.sort_by(|a, b| b.1.cmp(&a.1));
+        kinds.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         kinds.truncate(4);
         println!("  {function:>4} {count:>6}  run_on {run_ons:?}  {kinds:?}");
     }

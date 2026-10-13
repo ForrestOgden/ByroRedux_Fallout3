@@ -6132,14 +6132,12 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
         }
-        for call in [
-            "Counter.SetValue(Counter.GetValue() * Game.GetPlayer().GetEquippedWeapon().GetBaseDamage())",
-        ] {
-            let body = first_fn_body(&format!(
-                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
-            ));
-            assert_eq!(lower_fragment(&body), None, "{call}");
-        }
+        let call =
+            "Counter.SetValue(Counter.GetValue() * Game.GetPlayer().GetEquippedWeapon().GetBaseDamage())";
+        let body = first_fn_body(&format!(
+            "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+        ));
+        assert_eq!(lower_fragment(&body), None, "{call}");
     }
 
     /// A computed item (`Game.GetCaps()`), a count from an unknown call, a

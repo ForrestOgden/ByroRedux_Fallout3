@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .filter(|(name, _)| vm_checks.get(*name).is_some_and(|check| check.as_ref().is_err_and(|why| why.contains(&needle))))
             .map(|(name, (count, _))| (name, *count))
             .collect();
-        hits.sort_by(|a, b| b.1.cmp(&a.1));
+        hits.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
         for (name, count) in hits.into_iter().take(25) {
             println!("    {needle}: {count:>6}  {name}  ({})", vm_checks[name].as_ref().unwrap_err());
         }

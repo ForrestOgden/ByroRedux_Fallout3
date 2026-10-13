@@ -137,18 +137,13 @@ fn main() -> anyhow::Result<()> {
             }
         }
         // Multi-rank evidence: perks carrying entries above rank 0.
-        let mut shown = 0;
         let mut multi: Vec<_> = index
             .perks
             .values()
             .filter(|p| p.entries.iter().any(|e| e.rank > 0))
             .collect();
         multi.sort_by_key(|p| p.form_id);
-        for perk in multi {
-            if shown >= 6 {
-                break;
-            }
-            shown += 1;
+        for perk in multi.into_iter().take(6) {
             println!("  multi-rank {} ({:08X}) num_ranks {}:", perk.editor_id, perk.form_id, perk.num_ranks);
             for e in &perk.entries {
                 println!("    rank {} prio {} {:?}", e.rank, e.priority, e.body);

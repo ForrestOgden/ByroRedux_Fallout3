@@ -116,8 +116,10 @@ fn count(world: &World, entity: EntityId, form: u32) -> u32 {
 /// next session (or the chest's own cell load) sees the traded stock.
 #[test]
 fn barter_trades_with_an_unloaded_merchant_chest_and_parks_its_stock() {
-    let mut index = EsmIndex::default();
-    index.game = GameKind::Skyrim;
+    let mut index = EsmIndex {
+        game: GameKind::Skyrim,
+        ..Default::default()
+    };
     index.items.insert(SWORD, misc(SWORD, "Iron Sword", 25));
     index.items.insert(GEM, misc(GEM, "Garnet", 100));
     index.items.insert(CURRENCY, misc(CURRENCY, "Gold", 1));

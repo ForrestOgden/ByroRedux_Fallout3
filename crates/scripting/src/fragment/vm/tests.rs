@@ -1574,7 +1574,7 @@ fn vm_cost_idle_burst_polling_runaway() {
                 world.remove::<crate::OnCellLoadEvent>(*r);
             }
             let (mut drain, mut frames, mut worst) = (first, 1, first);
-            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| q.len() > 0) && frames < 10_000 {
+            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| !q.is_empty()) && frames < 10_000 {
                 let ms = census_frame(&world);
                 drain += ms;
                 worst = worst.max(ms);
@@ -1603,7 +1603,7 @@ fn vm_cost_idle_burst_polling_runaway() {
             // Settle the start-up burst before measuring steady polling.
             for _ in 0..200 {
                 census_frame(&world);
-                if world.try_resource::<crate::FragmentExecutionQueue>().is_none_or(|q| q.len() == 0) {
+                if world.try_resource::<crate::FragmentExecutionQueue>().is_none_or(|q| q.is_empty()) {
                     break;
                 }
             }
@@ -1631,7 +1631,7 @@ fn vm_cost_idle_burst_polling_runaway() {
                 world.remove::<crate::ActivateEvent>(*r);
             }
             let (mut total, mut frames, mut worst) = (first, 1, first);
-            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| q.len() > 0) && frames < 10_000 {
+            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| !q.is_empty()) && frames < 10_000 {
                 let ms = census_frame(&world);
                 total += ms;
                 worst = worst.max(ms);
@@ -1702,7 +1702,7 @@ fn a_run_the_budget_cuts_short_resumes_where_it_stopped() {
     assert_eq!(world.resource::<crate::VmFrameBudget>().used().yielded, 1);
 
     let mut frames = 0;
-    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+    while !world.resource::<crate::FragmentExecutionQueue>().is_empty() {
         next_frame(&world);
         frames += 1;
         assert!(frames < 200, "the run never finished");
@@ -1740,7 +1740,7 @@ fn several_runaway_handlers_stay_inside_the_frame_budget() {
     // Frame after frame: never over the allowance; every run dies at the cap.
     let mut frames = 0;
     let mut worst = 0;
-    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+    while !world.resource::<crate::FragmentExecutionQueue>().is_empty() {
         crate::event_cleanup_system(&world, 0.0);
         crate::fragment_continuation_system(&world, 1.0 / 60.0);
         worst = worst.max(world.resource::<crate::VmFrameBudget>().used().spent);
@@ -1858,7 +1858,7 @@ fn deferred_deliveries_run_once_on_a_later_frame() {
         world.remove::<crate::OnCellLoadEvent>(*r);
     }
     let mut frames = 0;
-    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+    while !world.resource::<crate::FragmentExecutionQueue>().is_empty() {
         next_frame(&world);
         frames += 1;
         assert!(frames < 100);

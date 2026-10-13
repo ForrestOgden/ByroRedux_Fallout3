@@ -296,7 +296,7 @@ fn sample_decline(
         .and_then(|v| v.parse().ok())
         .unwrap_or(150)
         .max(1);
-    if SEEN.fetch_add(1, Ordering::Relaxed) % every != 0 {
+    if !SEEN.fetch_add(1, Ordering::Relaxed).is_multiple_of(every) {
         return;
     }
     let Some(stmt) = (0..body.len())

@@ -686,10 +686,15 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [ ] **Clippy `--all-targets` is red** (2026-10-13): about a dozen lints in
+- [x] **Clippy `--all-targets` is red** (2026-10-13): about a dozen lints in
   test and example targets of `scripting` and `byroredux` (#5621, #5744). The
   CI form without `--all-targets` is clean; it went red twice in three days
-  (10-12, 10-13), each time from a sweep of new code.
+  (10-12, 10-13), each time from a sweep of new code. **Re-zeroed same day**:
+  all 18 lints fixed and both gates green at the fix commit; #5744's HKX
+  deny-level error included. The lane is not in CI — the plain
+  `cargo clippy --workspace` form stays the CI gate, so this can rot again;
+  re-run `cargo clippy --workspace --all-targets --keep-going -- -D warnings`
+  (1.96.0) before closing any sweep that adds test/example code.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
