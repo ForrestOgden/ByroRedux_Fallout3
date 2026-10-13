@@ -775,8 +775,8 @@ and `package_fragment_system` runs that package's End fragment. Sandbox,
 Wander and the other procedures never finish here, so their End fragments
 don't run.
 
-With the VM, 81.3% of the Skyrim corpus runs (Fallout 4: 76.9%, Starfield
-73.8%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
+With the VM, 84.1% of the Skyrim corpus runs (Fallout 4: 79.9%, Starfield
+78.5%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
 games (Skyrim 14 026, FO4 7 875, FO76 7 233, Starfield 4 740 scripts; the
@@ -794,19 +794,20 @@ Not modelled yet:
 - package End fragments for procedures other than Travel.
 
 Per-game decline heads behind the remaining fragment gap
-(`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table):
-- **Skyrim** (4 763 declined): the long tail is speechcraft / family APIs
-  (`MoveSpouse`, `Persuade`, `Intimidate`, `Bribe`), training and favor
-  menus, and `If` conditions built on unmodeled reads.
-- **Fallout 4** (4 883 declined): `RegisterForDistanceLessThanEvent`
-  (304), array writes to script variables (204), `GetCount`/`Play` on
-  alias receivers, `ChangeAnimArchetype`, and the workshop / assault
-  API family.
-- **Starfield** (4 598 declined): `PlaceAtMe/8` (the SF arity — Skyrim's
-  declares 4), alias-array natives (`GetActorArray`, `GetArray`,
-  `TryToSetValue`), `ResetHelpMessage`/`Create` statics (the taxonomy
-  these surface as since the engine-class routing fix), and the bounty /
-  temple quest-event family.
+(`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table;
+`VM_REASON_SCRIPTS=<text>` names the fragments behind a reason):
+- **Skyrim** (4 747 declined): `Game.QueryStat` of engine-tracked names (136),
+  `DropObject` (133, inside the `CarryActorScript` carry packages, which also
+  `PlayIdle`), `ModFavorPoints`, `StopCombatAlarm`, `PlayAnimation`,
+  `IsFurnitureInUse`, the crime / bribe / intimidate family, training menus.
+- **Fallout 4** (4 829 declined): `TERM_` terminal fragments (356, no terminal
+  UI), the workshop API (`GetWorkshopResourceObjects`, 101), `PlayAnimation`
+  (91), `ChangeAnimArchetype` (73), `Game.GetCommonProperties` (65),
+  `SetLocRefType` (52), `PRKF_` perk fragments (45).
+- **Starfield** (4 474 declined): `AddToMapScanned` (109), `Game.GetCredits`
+  (108), `TERM_` (108), `IsTrue` (93), `DisableWithGravJump` (78), the bounty /
+  mission guard families, `PlayAnimation` (67). The ones with no CK page are not
+  guessed.
 
 ### The frame budget (M47.2, #5763)
 
