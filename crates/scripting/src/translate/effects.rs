@@ -434,6 +434,9 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
 enum GuardReading {
     StageDone(QuestRef, u16),
     QuestRunning(QuestRef),
+    /// `<quest>.IsStopped()`: "completely stopped" is the opposite of running,
+    /// since a quest here starts and stops in one step (CK *IsStopped - Quest*).
+    QuestStopped(QuestRef),
     Stage(QuestRef),
     ObjectiveDisplayed(QuestRef, i32),
     ObjectiveCompleted(QuestRef, i32),
@@ -628,6 +631,10 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     if let Some((object, args)) = method_call(e, "IsRunning") {
         return args.is_empty().then_some(())
             .and_then(|()| Some(GuardReading::QuestRunning(quest(object)?)));
+    }
+    if let Some((object, args)) = method_call(e, "IsStopped") {
+        return args.is_empty().then_some(())
+            .and_then(|()| Some(GuardReading::QuestStopped(quest(object)?)));
     }
     if let Some((object, args)) = method_call(e, "GetStage") {
         return args.is_empty().then_some(())
@@ -857,6 +864,10 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::QuestRunning(quest) => FragmentGuard::QuestRunning {
             quest,
             running: bool_expectation(comparison, value)?,
+        },
+        GuardReading::QuestStopped(quest) => FragmentGuard::QuestRunning {
+            quest,
+            running: !bool_expectation(comparison, value)?,
         },
         GuardReading::ObjectiveDisplayed(quest, objective) => FragmentGuard::ObjectiveDisplayed {
             quest,
@@ -7232,6 +7243,27 @@ mod tests {
              k.AddItem(SomeItem, 5)\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
+    }
+
+    /// CK *IsStopped - Quest*: "completely stopped" is the opposite of running.
+    #[test]
+    fn is_stopped_is_the_negation_of_running() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_11()\n\
+             If Self.IsStopped()\n\
+               Self.SetStage(20)\n\
+             EndIf\n EndFunction\n",
+        );
+        let effects = lower_fragment(&body).expect("lowers");
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::Conditional { guards, .. }]
+                    if matches!(guards.as_slice(), [FragmentGuard::QuestRunning { running: false, .. }])
+            ),
+            "{effects:?}"
+        );
     }
 
     #[test]

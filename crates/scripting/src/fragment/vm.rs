@@ -77,6 +77,8 @@ use crate::translate::effects::{
 
 /// The player's reference, `PlayerRef`.
 const PLAYER_REF: u32 = 0x14;
+/// Fallout 4's `Caps001` (`Game.GetCaps`), form `0x0F` of `Fallout4.esm`.
+const FO4_CAPS: u32 = 0x0F;
 /// Statements one run may execute before it is stopped (a runaway loop).
 const MAX_STEPS: usize = 100_000;
 /// Script-function nesting.
@@ -2479,6 +2481,20 @@ impl Vm<'_> {
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
+                // CK *GetCaps - Game*: "the MiscObject representing caps".
+                // Fallout 4's is `Caps001`, form `0x0F` of `Fallout4.esm`
+                // (checked against the record); no other game's page or
+                // record is the one asked for.
+                ("game", "getcaps") if args.is_empty() => {
+                    let fallout4 = self
+                        .world
+                        .try_resource::<crate::ScriptGame>()
+                        .is_some_and(|game| game.0 == byroredux_plugin::esm::reader::GameKind::Fallout4);
+                    if !fallout4 {
+                        return stop("Game.GetCaps outside Fallout 4");
+                    }
+                    Some(Value::Form(FO4_CAPS))
+                }
                 // CK *GetForm - Game*: the form of that ID, or None when the
                 // ID names no loaded plugin.
                 ("game", "getform") => {
@@ -2597,6 +2613,7 @@ impl Vm<'_> {
                     | "addform"
                     | "removeaddedform"
                     | "revert"
+                    | "countlinkedrefchain"
             );
         if !reads {
             return Ok(None);
@@ -2901,6 +2918,33 @@ impl Vm<'_> {
                 }
                 let chain = seen.into_iter().skip(1).map(Value::Form).collect();
                 Some(Value::Array(Rc::new(RefCell::new(chain))))
+            }
+            // CK *CountLinkedRefChain*, which the page gives as script: starting
+            // at the reference, each step takes the keyword's link and counts
+            // it (a missing link too: A to B to C counts 3) unless the link is
+            // the reference itself, and stops past the cap (default 100).
+            (Value::Form(form), "countlinkedrefchain") if args.len() <= 2 => {
+                let values = self.eval_args(frame, args)?;
+                let keyword = match values.first() {
+                    Some(Value::Form(keyword)) => *keyword,
+                    _ => 0,
+                };
+                let cap = values.get(1).and_then(Value::number).map_or(100, |max| max as i64);
+                let mut count = 0i64;
+                let mut current = Some(*form);
+                while let Some(here) = current {
+                    if count > cap {
+                        break;
+                    }
+                    let next = self.linked_ref(here, keyword);
+                    if next == Some(*form) {
+                        current = None;
+                    } else {
+                        current = next;
+                        count += 1;
+                    }
+                }
+                Some(Value::Int(count as i32))
             }
             // CK *GetLinkedRefChildren*: the loaded references directly linked
             // to this one under the keyword.
@@ -4450,6 +4494,9 @@ impl<'l> Checker<'l> {
             if class == "game" && name == "getplayer" {
                 return Some(Kind::Player);
             }
+            if class == "game" && name == "getcaps" && arg_kinds.is_empty() {
+                return Some(Kind::Object);
+            }
             if class == "game"
                 && name == "getformfromfile"
                 && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)])
@@ -4600,6 +4647,17 @@ impl<'l> Checker<'l> {
                         .is_none_or(|max| matches!(max, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num))) =>
             {
                 return Some(Kind::Array);
+            }
+            (Kind::Object | Kind::Player, "countlinkedrefchain")
+                if arg_kinds.len() <= 2
+                    && arg_kinds.first().is_none_or(|keyword| {
+                        matches!(keyword, Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object))
+                    })
+                    && arg_kinds
+                        .get(1)
+                        .is_none_or(|max| matches!(max, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num))) =>
+            {
+                return Some(Kind::Num);
             }
             (Kind::Object | Kind::Player, "getlinkedrefchildren")
                 if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object)]) =>

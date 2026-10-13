@@ -738,6 +738,14 @@ runtime:
   is the host's.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
+- **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
+  reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
+  counts 3) unless the link is the reference itself, and stops once the count passes the cap
+  (default 100; the page's code returns up to `max + 1`, the prose says `max`). `Quest.IsStopped()`
+  is the negation of `IsRunning()` (a quest here starts and stops in one step, so `IsStarting` and
+  `IsStopping`, which the CK defines as in-progress states, stay declined). Fallout 4's
+  `Game.GetCaps()` is `Caps001`, form `0x0F` (checked against `Fallout4.esm`); other games stop the
+  run.
 - **Linked reference lists.** `GetLinkedRefChain(keyword, max)` returns the chain after the
   reference ("will stop if it finds a loop", or at `iMaxExpectedLinkedRefs`, default 100), and
   `GetLinkedRefChildren(keyword)` the loaded references directly linked to it (CK pages of the

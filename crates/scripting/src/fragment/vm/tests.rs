@@ -2680,6 +2680,29 @@ fn form_list_edits_are_seen_by_the_run_and_kept() {
     assert_eq!(crate::forms_of(&world, MARKER, &[]), Some(vec![0xA, 0xB, MARKER]));
 }
 
+/// `Game.GetCaps()` is Fallout 4's caps item, and stops the run in other games.
+#[test]
+fn get_caps_is_fallout_4s_caps_item() {
+    use byroredux_plugin::esm::reader::GameKind;
+    for (game, expected_stage) in [(GameKind::Fallout4, 20), (GameKind::Skyrim, 10)] {
+        let script = parsed_source(
+            "ScriptName QF_VmCaps extends Quest\n\
+             Function Fragment_1()\n\
+               Form caps = Game.GetCaps() as Form\n\
+               If caps\n\
+                 Self.SetStage(20)\n\
+               EndIf\n\
+             EndFunction\n",
+        );
+        assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+        let mut world = world_with_fragment(script);
+        world.insert_resource(crate::ScriptGame(game));
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), expected_stage, "{game:?}");
+    }
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.
@@ -2709,6 +2732,60 @@ fn linked_ref_chain_and_children() {
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// `CountLinkedRefChain` follows the CK page's script: a chain A to B to C
+/// counts 3 (the missing last link counts too), a chain that links back to the
+/// start does not count that last link, and the cap stops it.
+#[test]
+fn count_linked_ref_chain_follows_the_pages_script() {
+    const SECOND: u32 = 0x0002_0001;
+    const THIRD: u32 = 0x0002_0002;
+    let script = parsed_source(
+        "ScriptName QF_VmCount extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.CountLinkedRefChain(None, 100) == 3 && Marker.CountLinkedRefChain(None, 0) == 1\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    {
+        let mut links = world.resource_mut::<crate::LinkedRefOverrides>();
+        links.set(MARKER, 0, SECOND);
+        links.set(SECOND, 0, THIRD);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    // Linking the end back to the start leaves the two real links.
+    world.resource_mut::<crate::LinkedRefOverrides>().set(THIRD, 0, MARKER);
+    let looped = parsed_source(
+        "ScriptName QF_VmCountLoop extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.CountLinkedRefChain() == 2\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&looped), "Fragment_1", None).err(), None);
+    {
+        let name = looped.name.node.0.clone();
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vm_script(looped);
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: name, function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 5);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30);
 }
 
 /// `PlaceAtMe` creates the references through the saved `CreatedReferences`
