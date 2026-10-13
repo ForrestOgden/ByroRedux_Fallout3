@@ -271,7 +271,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         return;
     }
 
-    let damage = attack_damage(world, aggressor);
+    let damage = attack_damage_against(world, aggressor, target);
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         record_miss(world, "HitEvent storage is not registered");
         return;
@@ -403,6 +403,16 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
                 .map(|_| collider_entity)
         })
         .filter(|actor| world.get::<ActorVitals>(*actor).is_some())
+}
+
+/// [`attack_damage`] composed with the aggressor's perk entry points
+/// (`Calculate Weapon Damage` / `Mod Attack Damage`, M47.2) for a strike on
+/// `target`. Callers must hold no storage guard: the composition evaluates
+/// perk conditions, which lock arbitrary components.
+pub(crate) fn attack_damage_against(world: &World, aggressor: EntityId, target: EntityId) -> f32 {
+    let base = attack_damage(world, aggressor);
+    byroredux_scripting::perk_entry_points::compose_outgoing_damage(world, aggressor, target, base)
+        .max(0.0)
 }
 
 pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
@@ -825,6 +835,59 @@ mod tests {
             },
         );
         (world, aggressor, target)
+    }
+
+    /// M47.2 — a strike carries the damage the aggressor's perks compose:
+    /// vanilla FalloutNV `BloodyMess` (hook 0, ×1.05) at rank 1 turns an
+    /// 18-damage weapon into 18.9, and an actor without the perk is
+    /// unchanged.
+    #[test]
+    fn attack_damage_against_composes_the_aggressors_perk_entry_points() {
+        use byroredux_core::character::Perks;
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{
+            EsmIndex, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord,
+        };
+
+        const BLOODY_MESS: u32 = 0x94EBA;
+        let mut index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        index.perks.insert(
+            BLOODY_MESS,
+            PerkRecord {
+                form_id: BLOODY_MESS,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: 0,
+                        function: 3,
+                        tab_count: 3,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(1.05),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        let (mut world, aggressor, target) = damage_fixture(50.0, Some(18.0), false);
+        world.register::<Perks>();
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
+
+        // No perk yet: the authored weapon damage.
+        assert_eq!(attack_damage_against(&world, aggressor, target), 18.0);
+        let mut perks = Perks::default();
+        perks.set_rank(BLOODY_MESS, 1);
+        world.insert(aggressor, perks);
+        let composed = attack_damage_against(&world, aggressor, target);
+        assert!((composed - 18.9).abs() < 1e-4, "{composed}");
+        // The unperked target hits for the baseline.
+        assert_eq!(attack_damage_against(&world, target, aggressor), UNARMED_DAMAGE);
     }
 
     #[test]

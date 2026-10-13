@@ -586,6 +586,14 @@ pub(crate) fn populate_scene_runtime(
     if sm_nodes > 0 {
         log::info!("Installed Story Manager tree: {sm_nodes} nodes");
     }
+    // M47.2 — perk entry-point composition table (FO3/FNV, Skyrim): the
+    // value-math entries of every PERK, composed against an actor's ranked
+    // perks whenever a calculation consults a hook.
+    let perk_entry_perks =
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(world, index);
+    if perk_entry_perks > 0 {
+        log::info!("Installed perk entry points: {perk_entry_perks} perks");
+    }
     let mut engine_start_quests = 0usize;
     if index.game == byroredux_plugin::esm::reader::GameKind::Skyrim {
         // Skyrim.exe treats MQ101 (Unbound) as the canonical new-game root

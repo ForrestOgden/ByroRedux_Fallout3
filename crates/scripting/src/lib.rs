@@ -26,6 +26,7 @@ pub mod obscript_quests;
 pub mod obscript_runtime;
 pub mod obscript_vm;
 pub mod package;
+pub mod perk_entry_points;
 pub mod papyrus_demo;
 pub mod papyrus_provider;
 pub mod player_control;

@@ -63,7 +63,8 @@ pub use equipment::{
 pub use imagespace::{parse_imad, ImadColorKey, ImadRecord, ImadScalarKey};
 pub use magic::{
     parse_ench, parse_mgef, parse_mgef_for_game, parse_perk, parse_spel, ActorValueRef, EnchRecord,
-    MagicArchetype, MagicEffectItem, MgefRecord, PerkRecord, SpelRecord, SpellType,
+    MagicArchetype, MagicEffectItem, MgefRecord, PerkConditionTab, PerkEntry, PerkEntryBody,
+    PerkFunctionData, PerkRecord, SpelRecord, SpellType,
     MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER,
 };
 pub use pack::{

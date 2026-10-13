@@ -101,6 +101,7 @@ workspace total is maintained in [ROADMAP.md](../../ROADMAP.md#project-stats).
 | Fragment lowering | [`translate/`](../../crates/scripting/src/translate/) | Conservative `.pex`/AST recognizers and canonical `Effect` lowering |
 | Globals | [`globals.rs`](../../crates/scripting/src/globals.rs) | Mutable GLOB values consumed by conditions and `SetValue` effects |
 | Triggers and packages | [`trigger.rs`](../../crates/scripting/src/trigger.rs), [`package.rs`](../../crates/scripting/src/package.rs) | Trigger-enter detection and runtime package re-evaluation |
+| Perk entry points | [`perk_entry_points.rs`](../../crates/scripting/src/perk_entry_points.rs) | `PerkEntryTable` + `compose_entry_point` — composes an actor's ranked perks into a calculation hook (M47.2) |
 | Scenes | [`scene/`](../../crates/scripting/src/scene/) | SCEN population, phase playback, actor binding and phase fragments |
 | Papyrus demos | [`papyrus_demo/`](../../crates/scripting/src/papyrus_demo/) | Hand-translated R5 scripts (the "go ECS-native" proof) |
 
@@ -230,6 +231,48 @@ tracking. `ConditionContext` resolves the abstract Run-On targets (`Subject` /
 slots fail the predicate (Bethesda's "missing reference → false"). The first
 real consumer is `quest_advance` (the DA10 demo), migrated in M47.1 Phase 4 from
 bespoke `require_done`/`forbid_done` fields to a generic `ConditionList`.
+
+### Perk entry points (M47.2)
+
+A `PERK` entry-point entry modifies a hardcoded calculation (weapon damage,
+experience, carry weight, …). `install_perk_entry_points` folds every PERK's
+value-math entries into the `PerkEntryTable` resource at load-order install
+(FO3/FNV and Skyrim; other games get an empty table), and a calculation asks
+`compose_entry_point(world, owner, hook, base, tab_subjects)` for the value the
+owner's perks make of `base`. The first consumer is `combat::attack_damage_against`
+(FNV hook 0; Skyrim hooks 35 then 0) on both the player and NPC strike paths.
+
+The record layout and the composition rules are pinned to xEdit's
+`wbDefinitionsFNV` / `wbDefinitionsTES5` and checked against the vanilla masters
+(`cargo run --release -p byroredux-plugin --example perk_entry_census -- <ESM>`,
+zero decode mismatches on FalloutNV / Fallout3 / Skyrim):
+
+- **`PRKE`/DATA** is `[entry point, function, condition-tab count]`; **`EPFT`** is
+  the *parameter type* (not the math function) and selects the **`EPFD`** shape
+  (float, two floats, AV + float, leveled item, Skyrim spell / lstring). The
+  actor value inside an AV-scaled `EPFD` is stored as a *float* index
+  (`0x43080000` = 136), rounded by xEdit. The pre-M47.2 decoder let `EPFT`
+  overwrite the function and indexed `EPFD` by the wrong table, so every vanilla
+  `Float` entry decoded to nothing.
+- **Rank.** `PRKE` ranks are zero-based and an entry is authored per rank it
+  applies at: `DemolitionExpert` is ×1.2 / ×1.4 / ×1.6 at ranks 0 / 1 / 2, each a
+  *total*. An actor holding (one-based) rank `N` gets only the `rank == N - 1`
+  entries.
+- **Functions.** 1 Set, 2 Add, 3 Multiply, 4 Add Range, 5 Add AV Mult, 6
+  Absolute, 7 Negative Absolute, and on Skyrim 12 Set to / 13 Multiply / 14
+  Multiply 1 + AV Mult. On FNV hooks 53 / 56 / 58 function 1 reads "Subtract
+  Value" in the GECK and subtracts (`WeaponHandling`, `PiercingStrike`).
+- **Condition tabs** (`PRKC`): tab 0 is the perk owner, the rest are subjects the
+  calculation supplies. A conditioned tab with no supplied subject, or a
+  condition the evaluator does not model, keeps the entry from firing — the
+  engine cannot say the weapon is a one-hander, and guessing would give every
+  weapon the bonus. Equipped weapons are not entities today, so weapon-tab
+  entries (e.g. `DemolitionExpert`) are inert until they are.
+- **Priority** composes ascending (ties: the actor's perk order, then the
+  record's entry order). The two CKs disagree on which number "takes
+  precedence"; no vanilla FO3/FNV entry has a non-zero priority, and on Skyrim
+  the only visible case is a `Set Value` at a high number (`EagleEye30`), which
+  only makes sense applied last.
 
 ### Script registry (M47.0)
 

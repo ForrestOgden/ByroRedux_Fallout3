@@ -176,38 +176,54 @@ impl SubRecordSchema for MagicEffectHeader {
 }
 
 /// Typed representation of EPFD (entry-point function data) bytes.
-/// The shape depends on the `function_type` byte from EPFT.
+///
+/// The shape is selected by the entry's `EPFT` parameter type and, for the
+/// two-float parameter type, by its math function — xEdit's `wbEPFDDecider`
+/// (TES5: `EPFT == 2` with function 5 / 12 / 13 / 14 is Actor-Value + Float;
+/// FNV/FO3: only function 5). Decoded per game by [`parse_perk`]; shapes with
+/// no consumer (strings, embedded scripts) stay [`Self::None`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum PerkFunctionData {
     #[default]
     None,
+    /// `EPFT == 1` — the single float of Set / Add / Multiply Value.
     Float(f32),
+    /// `EPFT == 2` (functions other than the Actor-Value ones) — "Add Range
+    /// To Value": `value += Random(min, max)`.
     Range {
         min: f32,
         max: f32,
     },
+    /// `EPFT == 2` with an Actor-Value function — the actor value (the
+    /// game's own AV index; stored on disk as a rounded float) and the float
+    /// it is scaled by.
+    ActorValueMult {
+        actor_value: u32,
+        mult: f32,
+    },
+    /// A cross-record FormID: the leveled list of `EPFT == 3`, or Skyrim's
+    /// spell of `EPFT == 4 / 5`.
     FormId(u32),
+    /// Skyrim `EPFT == 7` — an lstring-table index.
     LString(u32),
 }
 
 /// One body of a `PRKE`/`PRKF` perk entry block. The block opens with
 /// a `PRKE` header (entry type + rank + priority) and the following
 /// `DATA` carries the per-type payload — three mutually exclusive
-/// shapes per [`perk_entry_points.md`](file:./../../../../../../../memory/perk_entry_points.md):
+/// shapes (layouts per xEdit's `wbDefinitionsFNV` / `wbDefinitionsTES5`
+/// `PERK` definitions, checked against vanilla FalloutNV.esm):
 ///
 /// * **Quest** — start `quest` and advance to `stage` when the
-///   condition list (M47.1 follow-up) passes.
+///   condition list passes.
 /// * **Ability** — add `spell_form_id` to the actor while the perk is
 ///   held. Lifecycle is automatic (added on perk-grant, removed on
 ///   perk-revoke).
-/// * **EntryPoint** — modify a hardcoded game calculation hook. The
-///   `entry_point_index` is the raw u8 from the on-disk schema (~120
-///   defined points across the games; the per-game decoder enum lives
-///   in `byroredux_scripting`). `function_type` is the raw EPFT byte
-///   (Add / Multiply / Set / range / AV-mult etc., 0x00..0x09 on
-///   FO3/FNV, extended on Skyrim+/FO4). `function_data` is the raw
-///   EPFD payload — typed decode of `f32` / `(f32, f32)` / FormID /
-///   lstring per-`function_type` is the follow-up commit.
+/// * **EntryPoint** — modify a hardcoded game calculation hook. The DATA is
+///   `[entry point, function, condition-tab count]`; the following `EPFT`
+///   names the *parameter* type and `EPFD` carries the parameters. The
+///   entry-point index enum is per game (see
+///   `byroredux_scripting::perk_entry_points`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PerkEntryBody {
     Quest {
@@ -222,23 +238,42 @@ pub enum PerkEntryBody {
         spell_form_id: u32,
     },
     EntryPoint {
-        /// Raw entry-point index (0..~120). Per-game enum dispatch
-        /// lives at the consumer side (`byroredux_scripting`).
+        /// Raw entry-point index. The enum is per game (FO3/FNV 0..=73,
+        /// Skyrim 0..=91).
         entry_point_index: u8,
-        /// Raw EPFT byte (Add/Multiply/Set/range/AV-mult/...).
-        function_type: u8,
-        /// Typed EPFD payload: f32 / range / FormID / lstring per
-        /// function_type. Decoded at parse time; consumer reads
-        /// the typed variant directly.
+        /// The math function (DATA byte 1): 1 Set / 2 Add / 3 Multiply /
+        /// 4 Add Range / 5 Add AV Mult / 6 Absolute / 7 Negative Absolute /
+        /// 8 Add Leveled List / 9 Add Activate Choice; Skyrim adds
+        /// 10 Select Spell / 11 Select Text / 12 Set to AV Mult /
+        /// 13 Multiply AV Mult / 14 Multiply 1 + AV Mult / 15 Set Text.
+        /// For three FNV entry points function 1 reads "Subtract Value".
+        function: u8,
+        /// DATA byte 2 — how many condition tabs (`Perk Owner`, `Weapon`,
+        /// `Target`, …) this entry point exposes.
+        tab_count: u8,
+        /// `EPFT` — the parameter type that selects the `EPFD` shape:
+        /// 0 None / 1 Float / 2 two-float or AV+float / 3 leveled item /
+        /// 4 script (FNV) or spell+label+flags (Skyrim) / 5 spell /
+        /// 6 string / 7 lstring.
+        param_type: u8,
+        /// Typed EPFD payload, decoded per game and parameter type.
         function_data: PerkFunctionData,
-        /// EPF2 — FO4+ extended function-data formatter string
-        /// (Activate entry-point uses this for the prompt template).
-        /// Empty when absent. Captured-on-disk only; consumer-side.
+        /// EPF2 — the activate-choice button label (lstring/string bytes).
+        /// Empty when absent. Captured-on-disk only.
         formatter: Vec<u8>,
-        /// EPF3 — FO4+ extended function flags / version byte.
-        /// Captured-on-disk only; consumer-side.
+        /// EPF3 — script flags (+ fragment index on Skyrim). Empty when
+        /// absent. Captured-on-disk only.
         extra_flags: Vec<u8>,
     },
+}
+
+/// The conditions on one `PRKC` tab of an entry-point entry. `tab` is the
+/// subject the conditions run on: tab 0 is always the perk owner; the rest
+/// are named by the entry point (`Weapon`, `Target`, `Attacker`, …).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerkConditionTab {
+    pub tab: i8,
+    pub conditions: ConditionList,
 }
 
 /// One `PRKE`/`PRKF` perk entry — the entry header + body together.
@@ -255,8 +290,9 @@ pub struct PerkEntry {
     pub priority: u8,
     /// The body — Quest / Ability / EntryPoint variant.
     pub body: PerkEntryBody,
-    /// Conditions attached to this entry (CTDA sub-records).
-    pub conditions: ConditionList,
+    /// The entry's conditions, one list per `PRKC` tab, in authoring order.
+    /// A `CTDA` that precedes any `PRKC` lands on tab 0.
+    pub condition_tabs: Vec<PerkConditionTab>,
 }
 
 /// `PERK` perk / trait record. Holds the condition list + entry-point
@@ -308,12 +344,78 @@ enum PerkBlock {
         /// PRKE/PRKF pair with no DATA in between is dropped silently
         /// at PRKF rather than panicking.
         body: Option<PerkEntryBody>,
-        /// Conditions accumulated for this entry (CTDA sub-records).
-        conditions: ConditionList,
+        /// Condition tabs accumulated for this entry (`PRKC` opens a tab,
+        /// the `CTDA` sub-records that follow fill it).
+        tabs: Vec<PerkConditionTab>,
     },
 }
 
-pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> PerkRecord {
+/// Decode one entry's `EPFD` bytes per xEdit's `wbEPFDDecider`, for the games
+/// whose `PERK` layout is established (FO3/FNV and Skyrim). Everything else —
+/// and every shape no consumer reads (strings, embedded scripts) — is
+/// [`PerkFunctionData::None`]; a short payload is too.
+fn decode_perk_epfd(
+    data: &[u8],
+    game: GameKind,
+    function: u8,
+    param_type: u8,
+    remap: &Option<FormIdRemap>,
+) -> PerkFunctionData {
+    let f32_at = |at: usize| {
+        data.get(at..at + 4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let u32_at = |at: usize| {
+        data.get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    // TES5: functions 5, 12, 13, 14 take an actor value; FNV/FO3: only 5.
+    let takes_actor_value = match game {
+        GameKind::Skyrim => matches!(function, 5 | 12 | 13 | 14),
+        GameKind::Fallout3NV => function == 5,
+        _ => return PerkFunctionData::None,
+    };
+    let decoded = match param_type {
+        1 => f32_at(0).map(PerkFunctionData::Float),
+        // The "Actor Value" of an AV-scaled function is stored as the
+        // actor-value index written as a FLOAT, not as an integer — xEdit's
+        // `wbEPFDActorValueToStr` reinterprets the u32 as a single and
+        // rounds it. Vanilla Skyrim's `AlchemySkillBoosts` carries
+        // 0x43080000 there; read as an integer that is an index of 1.1
+        // billion.
+        2 if takes_actor_value => match (f32_at(0), f32_at(4)) {
+            (Some(index), Some(mult)) if index.is_finite() && index >= 0.0 => {
+                Some(PerkFunctionData::ActorValueMult {
+                    actor_value: index.round() as u32,
+                    mult,
+                })
+            }
+            _ => None,
+        },
+        2 => match (f32_at(0), f32_at(4)) {
+            (Some(min), Some(max)) => Some(PerkFunctionData::Range { min, max }),
+            _ => None,
+        },
+        // Leveled item (#4069: a genuine cross-record FormID — remapped).
+        3 => u32_at(0).map(|id| PerkFunctionData::FormId(remap_fid(id, remap))),
+        // Skyrim only: the spell of `Select Spell` / the activate choice.
+        // FNV's type 4 is an embedded script with no EPFD.
+        4 | 5 if game == GameKind::Skyrim => {
+            u32_at(0).map(|id| PerkFunctionData::FormId(remap_fid(id, remap)))
+        }
+        // An lstring-table index, not a FormID: never remapped.
+        7 if game == GameKind::Skyrim => u32_at(0).map(PerkFunctionData::LString),
+        _ => None,
+    };
+    decoded.unwrap_or(PerkFunctionData::None)
+}
+
+pub fn parse_perk(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> PerkRecord {
     let mut out = PerkRecord {
         form_id,
         ..Default::default()
@@ -366,7 +468,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     rank,
                     priority,
                     body: None,
-                    conditions: vec![],
+                    tabs: Vec::new(),
                 };
             }
             // Per-entry DATA inside an Open block. Shape depends on
@@ -397,10 +499,13 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                         }
                         2 if sub.data.len() >= 2 => {
                             let entry_point_index = r.u8_or_default();
-                            let function_type = r.u8_or_default();
+                            let function = r.u8_or_default();
+                            let tab_count = r.u8_or_default();
                             Some(PerkEntryBody::EntryPoint {
                                 entry_point_index,
-                                function_type,
+                                function,
+                                tab_count,
+                                param_type: 0,
                                 function_data: PerkFunctionData::None,
                                 formatter: Vec::new(),
                                 extra_flags: Vec::new(),
@@ -410,56 +515,45 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     };
                 }
             }
-            // EPFT may appear inside an EntryPoint body when the
-            // PRKE-internal DATA carried only the entry-point index
-            // (some versions emit function_type via EPFT instead).
-            // Overwrite the body's function_type when present.
+            // EPFT names the parameter type of the entry's EPFD (xEdit
+            // `wbPERKFunctionParams`). It is NOT the math function — that is
+            // DATA byte 1 and is kept apart in `function` (the earlier decode
+            // let EPFT overwrite it and then indexed EPFD by the wrong
+            // table, which is why every vanilla Float entry came out empty).
             b"EPFT" if !sub.data.is_empty() => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint { function_type, .. }),
+                    body: Some(PerkEntryBody::EntryPoint { param_type, .. }),
                     ..
                 } = &mut block
                 {
-                    *function_type = sub.data[0];
+                    *param_type = sub.data[0];
                 }
             }
-            // EPFD carries the typed function-data bytes. Decode based
-            // on function_type, which was set by either the per-type
-            // DATA (old authoring) or EPFT (new authoring).
+            // EPFD carries the parameters. Its shape is selected by the
+            // parameter type and, for type 2, by the math function.
             b"EPFD" => {
                 if let PerkBlock::Open {
                     body:
                         Some(PerkEntryBody::EntryPoint {
-                            function_type,
+                            function,
+                            param_type,
                             function_data,
                             ..
                         }),
                     ..
                 } = &mut block
                 {
-                    let d = &sub.data;
-                    *function_data = match function_type {
-                        1 => PerkFunctionData::None,
-                        2 if d.len() >= 4 => {
-                            PerkFunctionData::Float(f32::from_le_bytes([d[0], d[1], d[2], d[3]]))
-                        }
-                        3 if d.len() >= 8 => PerkFunctionData::Range {
-                            min: f32::from_le_bytes([d[0], d[1], d[2], d[3]]),
-                            max: f32::from_le_bytes([d[4], d[5], d[6], d[7]]),
-                        },
-                        // #4069 — function_type 4 is a genuine cross-record
-                        // FormID and needs the load-order remap. Type 5
-                        // below is an lstring *index*, not a FormID, and
-                        // must NOT be remapped.
-                        4 if d.len() >= 4 => PerkFunctionData::FormId(remap_fid(
-                            u32::from_le_bytes([d[0], d[1], d[2], d[3]]),
-                            remap,
-                        )),
-                        5 if d.len() >= 4 => {
-                            PerkFunctionData::LString(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
-                        }
-                        _ => PerkFunctionData::None,
-                    };
+                    *function_data = decode_perk_epfd(&sub.data, game, *function, *param_type, remap);
+                }
+            }
+            // PRKC opens a condition tab: the signed index of the subject
+            // the CTDAs that follow run on.
+            b"PRKC" if !sub.data.is_empty() => {
+                if let PerkBlock::Open { tabs, .. } = &mut block {
+                    tabs.push(PerkConditionTab {
+                        tab: sub.data[0] as i8,
+                        conditions: Vec::new(),
+                    });
                 }
             }
             b"EPF2" => {
@@ -481,11 +575,16 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                 }
             }
             b"CTDA" | b"CIS1" | b"CIS2" => {
-                if let PerkBlock::Open {
-                    ref mut conditions, ..
-                } = &mut block
-                {
-                    push_ctda(sub, remap, conditions);
+                if let PerkBlock::Open { tabs, .. } = &mut block {
+                    if tabs.is_empty() {
+                        tabs.push(PerkConditionTab {
+                            tab: 0,
+                            conditions: Vec::new(),
+                        });
+                    }
+                    if let Some(tab) = tabs.last_mut() {
+                        push_ctda(sub, remap, &mut tab.conditions);
+                    }
                 }
             }
             // PRKF closes the entry. Push it onto `entries` only if
@@ -498,7 +597,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                     rank,
                     priority,
                     body: Some(body),
-                    conditions,
+                    tabs,
                     ..
                 } = prev
                 {
@@ -506,7 +605,7 @@ pub fn parse_perk(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
                         rank,
                         priority,
                         body,
-                        conditions,
+                        condition_tabs: tabs,
                     });
                 }
             }
@@ -1132,7 +1231,7 @@ mod tests {
             sub(b"DESC", b"Increase any one S.P.E.C.I.A.L. by 1.\0"),
             sub(b"DATA", [0x01]), // playable
         ];
-        let p = parse_perk(0xE5E5, &subs, &None);
+        let p = parse_perk(0xE5E5, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.editor_id, "IntenseTraining");
         assert!(p.is_trait, "byte 0 = 0x01 → trait set");
     }
@@ -1145,7 +1244,7 @@ mod tests {
             sub(b"EDID", b"Bloody Mess\0"),
             sub(b"DATA", [0x00, 6, 1, 0x01, 0x00]),
         ];
-        let p = parse_perk(0xBADAu32, &subs, &None);
+        let p = parse_perk(0xBADAu32, &subs, GameKind::Fallout3NV, &None);
         assert!(!p.is_trait);
         assert_eq!(p.num_ranks, 1);
         assert!(p.playable);
@@ -1166,7 +1265,7 @@ mod tests {
             sub(b"DATA", &data),
             sub(b"PRKF", []),
         ];
-        let p = parse_perk(0xAAAAu32, &subs, &None);
+        let p = parse_perk(0xAAAAu32, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.entries.len(), 1);
         let entry = &p.entries[0];
         assert_eq!(entry.rank, 1);
@@ -1192,7 +1291,7 @@ mod tests {
             sub(b"DATA", 0x000A_BC01u32.to_le_bytes()),
             sub(b"PRKF", []),
         ];
-        let p = parse_perk(0xBBBBu32, &subs, &None);
+        let p = parse_perk(0xBBBBu32, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.entries.len(), 1);
         match &p.entries[0].body {
             PerkEntryBody::Ability { spell_form_id } => {
@@ -1217,7 +1316,7 @@ mod tests {
             sub(b"DATA", &quest_data),
             sub(b"PRKF", []),
         ];
-        let quest = parse_perk(0xAAAA, &quest_subs, &remap);
+        let quest = parse_perk(0xAAAA, &quest_subs, GameKind::Fallout3NV, &remap);
         match &quest.entries[0].body {
             PerkEntryBody::Quest { quest_form_id, .. } => {
                 assert_eq!(*quest_form_id, 0x0200_7777);
@@ -1230,7 +1329,7 @@ mod tests {
             sub(b"DATA", 0x0100_8888u32.to_le_bytes()), // self-ref
             sub(b"PRKF", []),
         ];
-        let ability = parse_perk(0xBBBB, &ability_subs, &remap);
+        let ability = parse_perk(0xBBBB, &ability_subs, GameKind::Fallout3NV, &remap);
         match &ability.entries[0].body {
             PerkEntryBody::Ability { spell_form_id } => {
                 assert_eq!(*spell_form_id, 0x0200_8888);
@@ -1239,36 +1338,182 @@ mod tests {
         }
     }
 
+    /// The exact bytes of vanilla FalloutNV.esm's `Educated` (0x00031DD8):
+    /// entry point 10 (`Adjust Gained Skill Points`), function 2
+    /// (`Add Value`), 1 condition tab, `EPFT` 1 (Float), `EPFD` 2.0 — "two
+    /// more skill points every level".
     #[test]
-    fn parse_perk_decodes_entry_point_with_epft_epfd() {
-        // EntryPoint entry: type=2. PRKE-internal DATA carries the
-        // entry_point_index byte + function_type byte; EPFT can rewrite
-        // function_type (some game versions emit it via EPFT instead);
-        // EPFD carries typed function-data (f32 for function_type=2).
-        let epfd = 1.5f32.to_le_bytes();
+    fn parse_perk_decodes_the_vanilla_educated_entry() {
         let subs = vec![
-            sub(b"EDID", b"ModAttackDamage\0"),
-            sub(b"PRKE", [2u8, 0, 99]),
-            sub(b"DATA", [0x07, 0x01, 0x00, 0x00]), // entry_point=7 (Mod Attack Dmg), function=1 (Add)
-            sub(b"EPFT", [0x02]),                   // function overwrite to 2 (Multiply = Float)
-            sub(b"EPFD", epfd),
+            sub(b"EDID", b"Educated\0"),
+            sub(b"DATA", [0x00, 0x04, 0x01, 0x01, 0x00]),
+            sub(b"PRKE", [0x02, 0x00, 0x00]),
+            sub(b"DATA", [0x0a, 0x02, 0x01]),
+            sub(b"EPFT", [0x01]),
+            sub(b"EPFD", [0x00, 0x00, 0x00, 0x40]),
             sub(b"PRKF", []),
         ];
-        let p = parse_perk(0xCCCCu32, &subs, &None);
+        let p = parse_perk(0x31DD8, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
+        assert_eq!(
+            p.entries[0].body,
             PerkEntryBody::EntryPoint {
-                entry_point_index,
-                function_type,
-                function_data,
-                ..
-            } => {
-                assert_eq!(*entry_point_index, 0x07);
-                assert_eq!(*function_type, 0x02, "EPFT overrode DATA's function_type");
-                assert_eq!(*function_data, PerkFunctionData::Float(1.5));
+                entry_point_index: 10,
+                function: 2,
+                tab_count: 1,
+                param_type: 1,
+                function_data: PerkFunctionData::Float(2.0),
+                formatter: Vec::new(),
+                extra_flags: Vec::new(),
             }
-            other => panic!("expected EntryPoint, got {other:?}"),
+        );
+        assert!(p.entries[0].condition_tabs.is_empty());
+    }
+
+    /// Vanilla `BloodyMess` (0x00094EBA): an Ability entry, then entry point
+    /// 0 (`Calculate Weapon Damage`), function 3 (`Multiply Value`), three
+    /// condition tabs (Perk Owner / Weapon / Target), `EPFD` 1.05.
+    #[test]
+    fn parse_perk_decodes_the_vanilla_bloody_mess_entries() {
+        let subs = vec![
+            sub(b"DATA", [0x00, 0x06, 0x01, 0x01, 0x00]),
+            sub(b"PRKE", [0x01, 0x00, 0x00]),
+            sub(b"DATA", [0xe3, 0x9a, 0x07, 0x00]),
+            sub(b"PRKF", []),
+            sub(b"PRKE", [0x02, 0x00, 0x00]),
+            sub(b"DATA", [0x00, 0x03, 0x03]),
+            sub(b"EPFT", [0x01]),
+            sub(b"EPFD", [0x66, 0x66, 0x86, 0x3f]),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x94EBA, &subs, GameKind::Fallout3NV, &None);
+        assert!(matches!(
+            p.entries[0].body,
+            PerkEntryBody::Ability { spell_form_id: 0x0007_9AE3 }
+        ));
+        let PerkEntryBody::EntryPoint {
+            entry_point_index,
+            function,
+            tab_count,
+            function_data,
+            ..
+        } = &p.entries[1].body
+        else {
+            panic!("expected EntryPoint");
+        };
+        assert_eq!((*entry_point_index, *function, *tab_count), (0, 3, 3));
+        assert_eq!(*function_data, PerkFunctionData::Float(1.05));
+    }
+
+    /// `PRKC` opens a condition tab: each CTDA lands on the tab it follows,
+    /// and a CTDA before any `PRKC` lands on tab 0.
+    #[test]
+    fn parse_perk_splits_conditions_by_prkc_tab() {
+        let ctda = |function: u32| {
+            let mut c = vec![0u8; 28];
+            c[8..12].copy_from_slice(&function.to_le_bytes());
+            c
+        };
+        let subs = vec![
+            sub(b"PRKE", [2u8, 0, 0]),
+            sub(b"DATA", [0u8, 3, 3]),
+            sub(b"CTDA", ctda(1)),
+            sub(b"PRKC", [1u8]),
+            sub(b"CTDA", ctda(2)),
+            sub(b"CTDA", ctda(3)),
+            sub(b"PRKC", [0xFFu8]),
+            sub(b"CTDA", ctda(4)),
+            sub(b"EPFT", [1u8]),
+            sub(b"EPFD", 1.0f32.to_le_bytes()),
+            sub(b"PRKF", []),
+        ];
+        let p = parse_perk(0x1, &subs, GameKind::Fallout3NV, &None);
+        let tabs = &p.entries[0].condition_tabs;
+        let shape: Vec<(i8, Vec<u32>)> = tabs
+            .iter()
+            .map(|t| (t.tab, t.conditions.iter().map(|c| c.function_index).collect()))
+            .collect();
+        assert_eq!(shape, vec![(0, vec![1]), (1, vec![2, 3]), (-1, vec![4])]);
+    }
+
+    /// `EPFT == 2` is two floats ("Add Range To Value": function 4) or an
+    /// actor value + a float (function 5; Skyrim also 12 / 13 / 14).
+    #[test]
+    fn parse_perk_epfd_two_float_shapes_split_on_the_function() {
+        let two = |function: u8, game, first: f32, second: f32| {
+            let mut epfd = first.to_le_bytes().to_vec();
+            epfd.extend_from_slice(&second.to_le_bytes());
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0, 0]),
+                sub(b"DATA", [9u8, function, 1]),
+                sub(b"EPFT", [2u8]),
+                sub(b"EPFD", &epfd),
+                sub(b"PRKF", []),
+            ];
+            let p = parse_perk(0x2, &subs, game, &None);
+            let PerkEntryBody::EntryPoint { function_data, .. } = &p.entries[0].body else {
+                panic!()
+            };
+            function_data.clone()
+        };
+        assert_eq!(
+            two(4, GameKind::Fallout3NV, 1.0, 5.0),
+            PerkFunctionData::Range { min: 1.0, max: 5.0 }
+        );
+        assert_eq!(
+            two(5, GameKind::Fallout3NV, 7.0, 0.5),
+            PerkFunctionData::ActorValueMult { actor_value: 7, mult: 0.5 }
+        );
+        // The actor value is a rounded float index: vanilla Skyrim's
+        // AlchemySkillBoosts writes 0x43080000 (136.0).
+        assert_eq!(
+            two(14, GameKind::Skyrim, f32::from_bits(0x4308_0000), 0.01),
+            PerkFunctionData::ActorValueMult { actor_value: 136, mult: 0.01 }
+        );
+        // FNV has no functions 12-14: the same bytes are plain floats there.
+        assert!(matches!(
+            two(12, GameKind::Fallout3NV, 7.0, 0.5),
+            PerkFunctionData::Range { .. }
+        ));
+        for function in [5, 12, 13, 14] {
+            assert_eq!(
+                two(function, GameKind::Skyrim, 7.0, 0.5),
+                PerkFunctionData::ActorValueMult { actor_value: 7, mult: 0.5 },
+                "Skyrim function {function}"
+            );
         }
+        assert!(matches!(
+            two(4, GameKind::Skyrim, 1.0, 5.0),
+            PerkFunctionData::Range { .. }
+        ));
+    }
+
+    /// A payload too short for its declared shape, an unmodelled parameter
+    /// type, and a game whose PERK layout is not established all decode to
+    /// `None` rather than a guess.
+    #[test]
+    fn parse_perk_epfd_declines_what_it_cannot_ground() {
+        let decode = |game, param: u8, bytes: &[u8]| {
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0, 0]),
+                sub(b"DATA", [0u8, 2, 1]),
+                sub(b"EPFT", [param]),
+                sub(b"EPFD", bytes),
+                sub(b"PRKF", []),
+            ];
+            let p = parse_perk(0x3, &subs, game, &None);
+            let PerkEntryBody::EntryPoint { function_data, .. } = &p.entries[0].body else {
+                panic!()
+            };
+            function_data.clone()
+        };
+        assert_eq!(decode(GameKind::Fallout3NV, 1, &[0, 0]), PerkFunctionData::None);
+        assert_eq!(decode(GameKind::Fallout3NV, 4, &[1, 2, 3, 4]), PerkFunctionData::None);
+        assert_eq!(decode(GameKind::Fallout3NV, 6, b"text\0"), PerkFunctionData::None);
+        assert_eq!(
+            decode(GameKind::Fallout4, 1, &1.0f32.to_le_bytes()),
+            PerkFunctionData::None
+        );
     }
 
     #[test]
@@ -1285,7 +1530,7 @@ mod tests {
             sub(b"DATA", [0x10, 0x00, 0, 0]),
             sub(b"PRKF", []),
         ];
-        let p = parse_perk(0xDDDDu32, &subs, &None);
+        let p = parse_perk(0xDDDDu32, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.entries.len(), 3);
         assert_eq!(p.entries[0].priority, 1);
         assert_eq!(p.entries[1].priority, 2);
@@ -1307,7 +1552,7 @@ mod tests {
             sub(b"DATA", 0x0000_BEEFu32.to_le_bytes()),
             // No PRKF, no PRKE-after either.
         ];
-        let p = parse_perk(0xEEEEu32, &subs, &None);
+        let p = parse_perk(0xEEEEu32, &subs, GameKind::Fallout3NV, &None);
         assert!(p.entries.is_empty());
     }
 
@@ -1452,121 +1697,55 @@ mod tests {
             sub(b"CTDA", &ctda),
             sub(b"PRKF", []),
         ];
-        let p = parse_perk(0xFFFF, &subs, &None);
+        let p = parse_perk(0xFFFF, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(p.entries.len(), 1);
-        assert_eq!(p.entries[0].conditions.len(), 1);
-        assert_eq!(p.entries[0].conditions[0].function_index, 5);
+        assert_eq!(p.entries[0].condition_tabs.len(), 1);
+        assert_eq!(p.entries[0].condition_tabs[0].tab, 0);
+        assert_eq!(p.entries[0].condition_tabs[0].conditions.len(), 1);
+        assert_eq!(p.entries[0].condition_tabs[0].conditions[0].function_index, 5);
     }
 
+    /// FNV `EPFT == 3` is a leveled list FormID, remapped from the plugin's
+    /// own mod index to its global slot (#4069 / #4131 — a self-reference
+    /// must not keep its plugin-local index).
     #[test]
-    fn parse_perk_epfd_float() {
-        let epfd = 2.5f32.to_le_bytes();
+    fn parse_perk_epfd_leveled_item_is_remapped() {
         let subs = vec![
             sub(b"PRKE", [2u8, 0, 1]),
-            sub(b"DATA", [42u8, 2, 0, 0]), // entry_point=42, function=2 (Float)
-            sub(b"EPFD", epfd),
-            sub(b"PRKF", []),
-        ];
-        let p = parse_perk(0x1111, &subs, &None);
-        assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
-            PerkEntryBody::EntryPoint { function_data, .. } => {
-                assert_eq!(*function_data, PerkFunctionData::Float(2.5));
-            }
-            _ => panic!("expected EntryPoint"),
-        }
-    }
-
-    #[test]
-    fn parse_perk_epfd_range() {
-        let mut epfd = Vec::new();
-        epfd.extend_from_slice(&1.0f32.to_le_bytes());
-        epfd.extend_from_slice(&5.0f32.to_le_bytes());
-        let subs = vec![
-            sub(b"PRKE", [2u8, 0, 1]),
-            sub(b"DATA", [43u8, 3, 0, 0]), // entry_point=43, function=3 (Range)
-            sub(b"EPFD", &epfd),
-            sub(b"PRKF", []),
-        ];
-        let p = parse_perk(0x2222, &subs, &None);
-        assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
-            PerkEntryBody::EntryPoint { function_data, .. } => {
-                assert_eq!(
-                    *function_data,
-                    PerkFunctionData::Range { min: 1.0, max: 5.0 }
-                );
-            }
-            _ => panic!("expected EntryPoint"),
-        }
-    }
-
-    #[test]
-    fn parse_perk_epfd_form_id() {
-        let epfd = 0xBEEF_1234u32.to_le_bytes();
-        let subs = vec![
-            sub(b"PRKE", [2u8, 0, 1]),
-            sub(b"DATA", [44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
-            sub(b"EPFD", epfd),
-            sub(b"PRKF", []),
-        ];
-        let p = parse_perk(0x3333, &subs, &None);
-        assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
-            PerkEntryBody::EntryPoint { function_data, .. } => {
-                assert_eq!(*function_data, PerkFunctionData::FormId(0xBEEF_1234));
-            }
-            _ => panic!("expected EntryPoint"),
-        }
-    }
-
-    /// #4131 — the prior EPFD FormId test only ever exercised `&None`
-    /// (identity) remap, so a future regression that un-wrapped this arm's
-    /// `remap_fid` call would compile clean and pass every existing test.
-    /// Pin the non-identity case the way #4069's sibling fixes do elsewhere.
-    #[test]
-    fn parse_perk_epfd_form_id_is_remapped() {
-        // mod_index 1 == this plugin's own slot (self-reference).
-        let epfd = 0x0100_0ABCu32.to_le_bytes();
-        let subs = vec![
-            sub(b"PRKE", [2u8, 0, 1]),
-            sub(b"DATA", [44u8, 4, 0, 0]), // entry_point=44, function=4 (FormId)
-            sub(b"EPFD", epfd),
+            sub(b"DATA", [21u8, 8, 1]), // Add Leveled List On Death / Add Leveled List
+            sub(b"EPFT", [3u8]),
+            sub(b"EPFD", 0x0100_0ABCu32.to_le_bytes()),
             sub(b"PRKF", []),
         ];
         let remap = FormIdRemap::regular(2, vec![0]);
-        let p = parse_perk(0x0200_0001, &subs, &Some(remap));
-        assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
-            PerkEntryBody::EntryPoint { function_data, .. } => {
-                assert_eq!(
-                    *function_data,
-                    PerkFunctionData::FormId(0x0200_0ABC),
-                    "a self-referencing EPFD FormId must land on the plugin's \
-                     own global slot, not keep its plugin-local mod index"
-                );
-            }
-            _ => panic!("expected EntryPoint"),
-        }
+        let p = parse_perk(0x0200_0001, &subs, GameKind::Fallout3NV, &Some(remap));
+        let PerkEntryBody::EntryPoint { function_data, .. } = &p.entries[0].body else {
+            panic!("expected EntryPoint");
+        };
+        assert_eq!(*function_data, PerkFunctionData::FormId(0x0200_0ABC));
     }
 
+    /// Skyrim: `EPFT == 5` is a spell FormID (remapped), `EPFT == 7` an
+    /// lstring index (never remapped).
     #[test]
-    fn parse_perk_epfd_lstring() {
-        let epfd = 0x0042u32.to_le_bytes();
-        let subs = vec![
-            sub(b"PRKE", [2u8, 0, 1]),
-            sub(b"DATA", [45u8, 5, 0, 0]), // entry_point=45, function=5 (LString)
-            sub(b"EPFD", epfd),
-            sub(b"PRKF", []),
-        ];
-        let p = parse_perk(0x4444, &subs, &None);
-        assert_eq!(p.entries.len(), 1);
-        match &p.entries[0].body {
-            PerkEntryBody::EntryPoint { function_data, .. } => {
-                assert_eq!(*function_data, PerkFunctionData::LString(0x0042));
-            }
-            _ => panic!("expected EntryPoint"),
-        }
+    fn parse_perk_epfd_skyrim_spell_and_lstring() {
+        let decode = |param: u8, raw: u32| {
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0, 1]),
+                sub(b"DATA", [51u8, 10, 1]),
+                sub(b"EPFT", [param]),
+                sub(b"EPFD", raw.to_le_bytes()),
+                sub(b"PRKF", []),
+            ];
+            let remap = FormIdRemap::regular(2, vec![0]);
+            let p = parse_perk(0x0200_0001, &subs, GameKind::Skyrim, &Some(remap));
+            let PerkEntryBody::EntryPoint { function_data, .. } = &p.entries[0].body else {
+                panic!()
+            };
+            function_data.clone()
+        };
+        assert_eq!(decode(5, 0x0100_0ABC), PerkFunctionData::FormId(0x0200_0ABC));
+        assert_eq!(decode(7, 0x0100_0ABC), PerkFunctionData::LString(0x0100_0ABC));
     }
 
     #[test]

@@ -93,7 +93,7 @@ pub use misc::{
     MgefRecord, MinimalEsmRecord, NaviRecord, NavmExternalConnection, NavmRecord, NavmTriangle,
     PackDataInput, PackDataTarget, PackDataTargetKind, PackDataValue, PackLocation,
     PackLocationTarget, PackProcedure, PackRecord, PackSchedule, PackTarget, PackTargetKind,
-    PackTopicData, PerkRecord, ProjRecord, QuestAlias, QuestObjective, QuestObjectiveTarget,
+    PackTopicData, PerkConditionTab, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord, ProjRecord, QuestAlias, QuestObjective, QuestObjectiveTarget,
     QuestObjectiveTargetKind, QuestStage, QuestStageLogEntry, QustRecord, RegionArea,
     RegionDataEntry, RegionDataKind, RegionDataPayload, RegionSound, RegionWeather, RegnRecord,
     RepuRecord, ScenRecord, SceneAction, SceneActionType, SceneActor, ScenePhase, SlgmRecord,

@@ -235,7 +235,7 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             // entities' global FormIdComponents.
             let perk_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"PERK", &mut |fid, subs| {
-                index.perks.insert(fid, parse_perk(fid, subs, &perk_remap));
+                index.perks.insert(fid, parse_perk(fid, subs, game, &perk_remap));
             })?;
         }
         _ => unreachable!("dispatch_misc_gameplay_a_group: unexpected label {label:?}"),

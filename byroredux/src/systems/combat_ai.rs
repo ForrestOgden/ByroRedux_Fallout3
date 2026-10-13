@@ -208,7 +208,7 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                     strike: None,
                 });
             } else if state.attack_cooldown_remaining <= 0.0 {
-                let damage = crate::combat::attack_damage(world, entity);
+                let damage = crate::combat::attack_damage_against(world, entity, state.target);
                 decisions.push(Decision {
                     entity,
                     new_translation: actor_translation,
