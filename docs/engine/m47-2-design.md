@@ -4,14 +4,20 @@
 R5 (`go ECS-native`, 2026-05-16), M30.2 (full `.psc` parse, 2026-05-23),
 M47.0 (event-hooks runtime, 2026-05-23), M47.1 (condition eval, 2026-05-23).
 
-> **Current implementation (2026-08-25).** The compiled-Papyrus vertical slice
-> has shipped: `crates/pex` decompiles 26,640/26,641 installed scripts without
-> panics, VMAD attach resolves archive-backed `.pex`, and QUST/SCEN fragments
-> drive quest, alias, objective, global, reference, package, dialogue,
-> cinematic, and bounded latent-continuation state. The detailed inventory
-> below is the original scoping baseline. Remaining breadth is the recognizer
-> catalog, additional event families, Obscript/SCTX, and general NPC playback;
-> [`ROADMAP.md`](../../ROADMAP.md) is authoritative for that live remainder.
+> **Current implementation (2026-10-13).** The compiled-Papyrus path has grown
+> past the recognizer catalog the original scope froze: `crates/pex` decompiles the
+> script libraries; a lowering table turns what it can into ECS effects; and a
+> **bounded Papyrus interpreter** (`fragment/vm.rs`, a per-frame statement budget,
+> saved continuations) runs what it declines — quest, scene, INFO and package
+> fragments, reference scripts, and quest-alias scripts, with update/timer, distance,
+> custom/remote and hit-event registrations. The statically-checked contract (a script
+> runs only if every handler it has of the delivered events runs whole) keeps the
+> "decline rather than guess" posture of the original design. The original non-goals
+> below ("no Papyrus stack-VM", "no custom-event machinery") are superseded; the live
+> inventory — what runs, what the VM declines and why, the CK pages each native follows
+> — is [`scripting.md`](scripting.md), and [`ROADMAP.md`](../../ROADMAP.md) is
+> authoritative for the remainder. The detailed inventory below is the original scoping
+> baseline.
 
 **Goal**: run Bethesda script behavior on **unmodified game data**, across
 the lineage, by translating each game's compiled scripting format into the
@@ -20,8 +26,7 @@ ECS-native component+system shape R5 validated — *not* by interpreting a VM.
 the thing it does in the shipping game (a quest-door advances a stage, a
 pressure plate shakes the camera, a trigger fires), driven entirely by ECS.
 
-**Original non-goals** (carried from M47.0; the shipped fragment queue later
-added bounded continuations without introducing a general Papyrus VM):
+**Original non-goals** (carried from M47.0; superseded by the bounded interpreter above):
 - No Papyrus stack-VM. No fibre / suspendable script frames / continuations.
 - No general AST→ECS lowering. The transpiler is a **recognizer catalog**
   ("detect the shape, extract the constants, populate the component"), with
