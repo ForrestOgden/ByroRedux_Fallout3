@@ -1187,6 +1187,10 @@ the same store — "returns this value, if any. It otherwise returns 0".
   does; None clears) are saved per-reference flags (`ReferenceFlags`) for the follower-favor
   and trap-damage systems to read; neither has a consumer yet.
 
+`Message.ResetHelpMessage(asEvent)`, `UnshowAsHelpMessage()` and `Message.ClearHelpMessages()` are
+no-op statements: a help message shows once here (no shown-count to reset, nothing standing to
+hide — one still on screen is not dismissed).
+
 ### Input enable layers (M47.2)
 
 Fallout 4 / Starfield replace `Game.Disable/EnablePlayerControls` with

@@ -3006,6 +3006,12 @@ impl Vm<'_> {
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
         }
+        // Help-message housekeeping names the `Message` class or a message: the
+        // receiver is never read.
+        if help_message_housekeeping(&callee.node).is_some() {
+            self.eval_args(frame, args)?;
+            return Ok(Flow::Normal);
+        }
         if self.array_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
         }
@@ -3191,6 +3197,24 @@ fn is_state_event(callee: &Expr) -> bool {
 /// Whether `name` is written like an event (`OnInit`, `OnActivate`).
 fn is_event_name(name: &str) -> bool {
     name.len() > 2 && name[..2].eq_ignore_ascii_case("on") && name[2..3].chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// `Message.ResetHelpMessage(asEvent)`, `<message>.UnshowAsHelpMessage()` and
+/// `Message.ClearHelpMessages()`, with the number of arguments each takes. A help
+/// message is shown once here, with no repeat interval or event to end it, so
+/// there is no shown-count to reset ("allowing a message to be displayed for that
+/// input event") and nothing standing to hide: each is a no-op (an
+/// `UnshowAsHelpMessage` / `ClearHelpMessages` that arrives while the one-shot is
+/// still on screen does not dismiss it).
+fn help_message_housekeeping(callee: &Expr) -> Option<usize> {
+    let Expr::MemberAccess { member, .. } = callee else {
+        return None;
+    };
+    match member.node.0.to_ascii_lowercase().as_str() {
+        "resethelpmessage" => Some(1),
+        "unshowashelpmessage" | "clearhelpmessages" => Some(0),
+        _ => None,
+    }
 }
 
 fn is_trace(callee: &Expr) -> bool {
@@ -4098,6 +4122,15 @@ impl<'l> Checker<'l> {
                 if is_reference {
                     arg_kinds[1] = Arg::Kind(Kind::Player);
                 }
+            }
+        }
+        // Help-message housekeeping (see [`help_message_housekeeping`]).
+        if statement {
+            if let Some(arity) = help_message_housekeeping(callee) {
+                if arg_kinds.len() != arity {
+                    return self.fail(|| format!("{name} as written"));
+                }
+                return Some(Kind::None);
             }
         }
         // A function of an `InputEnableLayer` the receiver is declared as.

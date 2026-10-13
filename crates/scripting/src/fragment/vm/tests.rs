@@ -1491,6 +1491,38 @@ fn input_enable_layers_hold_and_release_controls() {
     assert!(state.fighting_enabled && state.looking_enabled && state.menu_enabled);
 }
 
+/// Help-message housekeeping statements run as no-ops (a help message is shown
+/// once here), and only with the arguments they take.
+#[test]
+fn help_message_housekeeping_is_a_no_op() {
+    let script = parsed_source(
+        "ScriptName QF_VmHelp extends Quest\n\
+         Message Property Help Auto\n\
+         Function Fragment_1()\n\
+           Message.ResetHelpMessage(\"Jump\")\n\
+           Help.UnshowAsHelpMessage()\n\
+           Message.ClearHelpMessages()\n\
+           Self.SetStage(20)\n\
+         EndFunction\n\
+         Function Fragment_2()\n Message.ResetHelpMessage()\n EndFunction\n",
+    );
+    let message = parsed_source("ScriptName Message extends Form\nFunction ResetHelpMessage(String asEvent) Native Global\n");
+    let scripts: HashMap<String, Arc<Script>> = [("message".to_owned(), message)].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_2", Some(&library)).is_err());
+    let world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]
