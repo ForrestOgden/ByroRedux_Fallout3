@@ -1640,6 +1640,7 @@ impl Vm<'_> {
         args: &[CallArg],
     ) -> Run<(Expr, NativeBindings, ScriptInstanceData)> {
         let mut synth = Synth::default();
+        let mut bound_receiver = None;
         let callee = match callee {
             Expr::MemberAccess { object, member } => {
                 let receiver = if static_class(&object.node).is_some() {
@@ -1649,7 +1650,9 @@ impl Vm<'_> {
                     if matches!(value, Value::None) {
                         return stop(format!("{} on None", member.node.0));
                     }
-                    synth.bind(self, &value)?
+                    let receiver = synth.bind(self, &value)?;
+                    bound_receiver = Some(receiver.clone());
+                    receiver
                 };
                 Expr::MemberAccess {
                     object: Box::new(receiver),
@@ -1661,11 +1664,21 @@ impl Vm<'_> {
         };
         let mut bound = Vec::with_capacity(args.len());
         for arg in args {
-            let value = self.eval(frame, &arg.value.node)?;
-            bound.push(CallArg {
-                name: None,
-                value: synth.bind(self, &value)?,
-            });
+            // An engine constant passes as the named member it was written
+            // as (`Self.Motion_Keyframed`): its number differs per game, the
+            // name does not.
+            let constant = constant_name(&arg.value.node).filter(|name| self.engine_constant(name).is_some());
+            let value = match (constant, &bound_receiver) {
+                (Some(name), Some(receiver)) => spanned(Expr::MemberAccess {
+                    object: Box::new(receiver.clone()),
+                    member: spanned(Identifier(name.to_owned())),
+                }),
+                _ => {
+                    let value = self.eval(frame, &arg.value.node)?;
+                    synth.bind(self, &value)?
+                }
+            };
+            bound.push(CallArg { name: None, value });
         }
         let call = Expr::Call {
             callee: Box::new(spanned(callee)),
@@ -2472,10 +2485,15 @@ impl<'l> Checker<'l> {
         let mut arg_kinds = Vec::with_capacity(args.len());
         for arg in args {
             let kind = self.kind(frame, &arg.value.node)?;
-            // A literal argument is checked as written: the run sees it too.
-            arg_kinds.push(match literal_of(&arg.value.node) {
-                Some(literal) => Arg::Literal(literal),
-                None => Arg::Kind(kind),
+            // A literal argument is checked as written: the run sees it too;
+            // so is an engine constant, which the run passes by name.
+            let constant = constant_name(&arg.value.node)
+                .filter(|name| frame.locals.get(&name.to_ascii_lowercase()).is_none())
+                .filter(|name| self.engine_constant_type(name).is_some());
+            arg_kinds.push(match (constant, literal_of(&arg.value.node)) {
+                (Some(name), _) => Arg::Constant(name.to_owned()),
+                (None, Some(literal)) => Arg::Literal(literal),
+                (None, None) => Arg::Kind(kind),
             });
         }
         let (receiver, name) = match callee {
@@ -2690,6 +2708,10 @@ impl<'l> Checker<'l> {
                 value: match arg {
                     Arg::Literal(literal) => spanned(literal.clone()),
                     Arg::Kind(kind) => placeholder(*kind, index + 1, &mut bindings)?,
+                    Arg::Constant(name) => spanned(Expr::MemberAccess {
+                        object: Box::new(receiver.clone()),
+                        member: spanned(Identifier(name.clone())),
+                    }),
                 },
             });
         }
@@ -2719,6 +2741,18 @@ impl<'l> Checker<'l> {
 enum Arg {
     Literal(Expr),
     Kind(Kind),
+    /// An engine constant, passed as the receiver's named member.
+    Constant(String),
+}
+
+/// The name an argument reads an engine constant by, if it is written as
+/// one: `X.Motion_Keyframed` or a bare `Motion_Keyframed`.
+fn constant_name(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::MemberAccess { member, .. } => Some(member.node.0.as_str()),
+        Expr::Ident(name) if !name.0.eq_ignore_ascii_case("self") => Some(name.0.as_str()),
+        _ => None,
+    }
 }
 
 /// `e` as a literal (through casts and negation), if it is one.

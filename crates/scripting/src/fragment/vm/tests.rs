@@ -885,3 +885,119 @@ fn misc_stats_count_and_read() {
     );
     assert!(check_function(days, "Fragment_1", None).is_none());
 }
+
+/// `OnHit` receives the aggressor, the aggressor's equipped weapon as the
+/// source, and the hit's flags.
+#[test]
+fn on_hit_receives_the_aggressor_weapon_and_flags() {
+    const REF: u32 = 0x0001_0F14;
+    const SWORD: u32 = 0x0001_2EB7;
+    let script = parsed_source(
+        "ScriptName VmHitScript extends ObjectReference\n\
+         Weapon Property Sword Auto\n\
+         Event OnHit(ObjectReference akAggressor, Form akSource, Projectile akProjectile, \
+           Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked)\n\
+           If akAggressor == Game.GetPlayer() && akSource == Sword && abPowerAttack && !abHitBlocked\n\
+             Self.Disable()\n\
+           EndIf\n\
+         EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    assert_eq!(events, ["OnHit"]);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    world.register::<byroredux_core::ecs::components::EquippedWeapon>();
+    world.insert(
+        player,
+        byroredux_core::ecs::components::EquippedWeapon {
+            inventory_index: byroredux_core::ecs::components::InventoryIndex(0),
+            base_form_id: SWORD,
+            damage: 7.0,
+            reach: 0.0,
+            speed: 0.0,
+        },
+    );
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let target = world.spawn();
+    world.insert(target, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmHitScript".into(),
+        status: 0,
+        properties: vec![ScriptProperty {
+            name: "Sword".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: SWORD,
+                alias: -1,
+            },
+        }],
+    };
+    crate::attach_reference_script(&mut world, target, &instance, events, scripts);
+    world.insert(
+        target,
+        crate::HitEvent {
+            aggressor: player,
+            source: player,
+            projectile: player,
+            damage: 7.0,
+            power_attack: true,
+            sneak_attack: false,
+            bash_attack: false,
+            blocked: false,
+        },
+    );
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, REF));
+}
+
+/// An engine constant argument passes to a native by name, so a per-game
+/// number (`Motion_Keyframed` is 4 in Skyrim) never reaches the primitives
+/// as a bare literal they cannot place.
+#[test]
+fn engine_constant_arguments_pass_by_name() {
+    let object_reference = parsed_source(
+        "ScriptName ObjectReference extends Form\n\
+         Int Property Motion_Keyframed = 4 AutoReadOnly\n\
+         Function SetMotionType(Int aiMotionType, Bool abAllowActivate = True) Native\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmMotion extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n Marker.SetMotionType(Marker.Motion_Keyframed, True)\n EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("objectreference".to_owned(), object_reference)].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER),
+    });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let request = world
+        .get::<crate::MotionTypeChangeRequest>(marker)
+        .map(|request| request.motion_type);
+    assert_eq!(request, Some(byroredux_core::ecs::components::MotionType::Keyframed));
+}

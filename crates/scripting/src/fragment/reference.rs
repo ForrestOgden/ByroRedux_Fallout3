@@ -15,7 +15,8 @@
 //! ObjectReference*): a reference's cell load delivers `OnInit` the first
 //! time the reference loads, then `OnLoad` and `OnCellLoad` every time;
 //! `ActivateEvent` delivers `OnActivate(akActionRef)`; a trigger crossing
-//! `OnTriggerEnter(akActionRef)`. Each runs as an `Effect::Interpret` owned
+//! `OnTriggerEnter(akActionRef)`; a `HitEvent` `OnHit`; an `OnDeathEvent`
+//! `OnDeath(akKiller)`. Each runs as an `Effect::Interpret` owned
 //! by the reference, through the fragment runtime — so its natives, its
 //! waits and its quest-stage advances behave as a quest fragment's do.
 //!
@@ -32,13 +33,14 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 /// The events reference scripts receive, in the order one cell load
 /// delivers the first four (CK *OnCellAttach*: "reliably called before
 /// OnCellLoad"; attach and load are one moment here).
-pub const DELIVERED_EVENTS: [&str; 7] = [
+pub const DELIVERED_EVENTS: [&str; 8] = [
     "OnInit",
     "OnCellAttach",
     "OnLoad",
     "OnCellLoad",
     "OnActivate",
     "OnTriggerEnter",
+    "OnHit",
     "OnDeath",
 ];
 
@@ -209,6 +211,8 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     let cell_loads = world.query::<crate::OnCellLoadEvent>();
     let activations = world.query::<crate::ActivateEvent>();
     let triggers = world.query::<crate::OnTriggerEnterEvent>();
+    let hits = world.query::<crate::HitEvent>();
+    let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
     let mut deliveries = Vec::new();
     for (entity, scripts) in attached.iter() {
         let loaded = cell_loads.as_ref().is_some_and(|q| q.get(entity).is_some());
@@ -219,7 +223,8 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
             .map(|event| event.triggerers.clone())
             .unwrap_or_default();
         let death = deaths.get(&entity).copied();
-        if !loaded && activator.is_none() && triggerers.is_empty() && death.is_none() {
+        let hit = hits.as_ref().and_then(|q| q.get(entity)).copied();
+        if !loaded && activator.is_none() && triggerers.is_empty() && death.is_none() && hit.is_none() {
             continue;
         }
         let Some(owner) = form_of(entity) else {
@@ -248,6 +253,28 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
             }
             for &triggerer in &triggerers {
                 deliver("OnTriggerEnter", vec![reference(triggerer)]);
+            }
+            // `OnHit(akAggressor, akSource, akProjectile, abPowerAttack,
+            // abSneakAttack, abBashAttack, abHitBlocked)`: the source is the
+            // aggressor's equipped weapon (None unarmed — no weapon form is
+            // invented); projectiles are not modelled.
+            if let Some(hit) = hit {
+                let source = weapons
+                    .as_ref()
+                    .and_then(|q| q.get(hit.aggressor))
+                    .map_or(VmStored::None, |weapon| VmStored::Form(weapon.base_form_id));
+                deliver(
+                    "OnHit",
+                    vec![
+                        reference(hit.aggressor),
+                        source,
+                        VmStored::None,
+                        VmStored::Bool(hit.power_attack),
+                        VmStored::Bool(hit.sneak_attack),
+                        VmStored::Bool(hit.bash_attack),
+                        VmStored::Bool(hit.blocked),
+                    ],
+                );
             }
             if let Some(killer) = death {
                 let killer = killer.map_or(VmStored::None, reference);

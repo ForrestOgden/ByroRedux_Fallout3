@@ -658,7 +658,10 @@ runtime:
 - **Engine constants.** An engine class's `AutoReadOnly` property
   (`ObjectReference.Motion_Keyframed`) reads its literal. The compiled form
   keeps it in a getter that returns it. The value is the same whether it is
-  read on any reference or unqualified in a script that inherits it.
+  read on any reference or unqualified in a script that inherits it. Passed
+  to a native, the constant goes by name rather than as a number, because the
+  number differs per game (Skyrim's Keyframed is 4) and the primitives decline
+  a bare motion-type literal they can't place (#5633).
 - **Linked references.** `GetNthLinkedRef(n)` follows the unkeyworded link n
   times; 0 is the object itself (CK *GetNthLinkedRef*).
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the
@@ -717,6 +720,10 @@ following the CK pages *OnInit*, *OnCellAttach*, *OnLoad - ObjectReference* and
   attach and load are one moment here), `OnLoad` and `OnCellLoad`;
 - `ActivateEvent` delivers `OnActivate(akActionRef)`;
 - a trigger crossing delivers `OnTriggerEnter(akActionRef)`;
+- a `HitEvent` delivers `OnHit(akAggressor, akSource, akProjectile,
+  abPowerAttack, abSneakAttack, abBashAttack, abHitBlocked)`. The source is the
+  aggressor's equipped weapon, or `None` unarmed (no weapon form is invented),
+  and projectiles are not modelled;
 - a death delivers `OnDeath(akKiller)` from `OnDeathEvent`. Every live death
   producer raises that marker beside the Story Manager's `KILL` event, and
   this system drains it (Pattern B), so a Late-stage script kill is delivered
@@ -742,7 +749,7 @@ only those classes define (ObjectReference's empty `OnLoad`) is not one the
 script handles.
 
 Not modelled yet:
-- other events (`OnHit`, `OnTrapHit`, `OnCombatStateChanged`, `OnOpen`, …;
+- other events (`OnTrapHit`, `OnCombatStateChanged`, `OnOpen`, …;
   `OnUpdate` arrives through update registrations);
 - `OnInit` holding back the script's other events while it waits;
 - the variable reset a cell reset brings;
