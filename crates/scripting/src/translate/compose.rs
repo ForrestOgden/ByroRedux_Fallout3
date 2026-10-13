@@ -50,6 +50,14 @@ pub enum QuestRef {
     Property(String),
 }
 
+/// The authored VMAD property name behind a decompiled identifier: an
+/// auto-property is read through its `::Name_var` backing variable.
+pub fn vmad_property_name(name: &str) -> &str {
+    name.strip_prefix("::")
+        .and_then(|name| name.strip_suffix("_var"))
+        .unwrap_or(name)
+}
+
 /// The object-targeting sibling of [`QuestRef`] — how an `AddItem`/
 /// `MoveTo`-family effect names its `ObjectReference`/`Actor` receiver or
 /// argument. Auto-property backing identifiers (`::Name_var`) are normalized
@@ -71,9 +79,7 @@ pub enum ObjectRef {
 impl ObjectRef {
     pub fn property_name(&self) -> &str {
         let ObjectRef::Property(name) = self;
-        name.strip_prefix("::")
-            .and_then(|name| name.strip_suffix("_var"))
-            .unwrap_or(name)
+        vmad_property_name(name)
     }
 }
 

@@ -486,8 +486,14 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             Expr::Ident(_) => explicit_quest_receiver(&object.node, scope)?,
             Expr::Cast { .. } => match quest_expr_ref(&object.node, scope)? {
                 quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => quest,
-                QuestRef::Property(_) => return None,
+                quest @ QuestRef::Property(_) => {
+                    if !cast_to_quest_script(&object.node, scope) {
+                        return None;
+                    }
+                    quest
+                }
             },
+            Expr::MemberAccess { .. } => receiver_quest(&object.node, scope)?,
             _ => return None,
         };
         return Some(GuardReading::QuestVariable(quest, member.node.0.clone()));
@@ -1654,10 +1660,27 @@ fn quest_variable_receiver(object: &Expr, scope: &Scope) -> Option<QuestRef> {
         Expr::Ident(_) => explicit_quest_receiver(object, scope),
         Expr::Cast { .. } => match quest_expr_ref(object, scope)? {
             quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => Some(quest),
-            QuestRef::Property(_) => None,
+            // M47.2 — a property cast to a script that extends Quest, or a
+            // typed quest property of the fragment's own quest.
+            quest @ QuestRef::Property(_) => cast_to_quest_script(object, scope).then_some(quest),
         },
+        Expr::MemberAccess { .. } => receiver_quest(object, scope),
         _ => None,
     }
+}
+
+/// M47.2 — whether `object`, a cast, names a script type that extends Quest
+/// (resolved through the script library; `false` without one).
+fn cast_to_quest_script(object: &Expr, scope: &Scope) -> bool {
+    let Expr::Cast { target_type, .. } = object else {
+        return false;
+    };
+    let byroredux_papyrus::ast::Type::Object(ty) = &target_type.node else {
+        return false;
+    };
+    scope
+        .library
+        .is_some_and(|library| crate::fragment::extends_quest(&ty.0, library))
 }
 
 /// Record a local's binding, or decline the whole fragment.
@@ -3254,6 +3277,9 @@ fn optional_int_arg(
 /// - otherwise classify directly (`Self` / `Self.GetOwningQuest()` / a
 ///   `Quest Property`).
 fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
+    if let Expr::MemberAccess { object: owner, member } = object {
+        return owner_quest_property(&owner.node, &member.node.0, scope);
+    }
     if let Expr::Ident(name) = object {
         let key = name.0.to_ascii_lowercase();
         if let Some(via) = scope.quest_locals.get(&key) {
@@ -3265,6 +3291,59 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
         }
     }
     quest_via(object)
+}
+
+/// M47.2 — `<quest>.Member` where `<quest>` is this fragment's own quest
+/// (`kmyQuest`, `Self`, `GetOwningQuest() as …`) and `Member` is a property
+/// of its script whose type is, or extends, Quest. The quest's own VMAD (the
+/// fragment's, on the quest path) binds the property, so it resolves like a
+/// `Quest Property`. Needs the script library, to read the property's
+/// declared type; the INFO and scene paths carry none and decline.
+fn owner_quest_property(owner: &Expr, member: &str, scope: &Scope) -> Option<QuestRef> {
+    let library = scope.library?;
+    let owner_type = match owner {
+        Expr::Ident(name) => {
+            let key = name.0.to_ascii_lowercase();
+            match scope.quest_locals.get(&key)? {
+                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+                QuestRef::Property(_) => return None,
+            }
+            scope.local_types.get(&key)?.clone()
+        }
+        Expr::Cast { expr, target_type } => {
+            let byroredux_papyrus::ast::Type::Object(ty) = &target_type.node else {
+                return None;
+            };
+            match quest_expr_ref(&expr.node, scope)? {
+                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+                QuestRef::Property(_) => return None,
+            }
+            ty.0.clone()
+        }
+        _ => return None,
+    };
+    // The property's declared type, on the owner's script or an ancestor.
+    let mut script_name = owner_type;
+    for _ in 0..8 {
+        let script = library.script(&script_name)?;
+        let declared = script.body.iter().find_map(|item| match &item.node {
+            byroredux_papyrus::ast::ScriptItem::Property(property)
+                if property.name.node.0.eq_ignore_ascii_case(member) =>
+            {
+                Some(property.ty.node.clone())
+            }
+            _ => None,
+        });
+        if let Some(ty) = declared {
+            let byroredux_papyrus::ast::Type::Object(ty) = ty else {
+                return None;
+            };
+            return crate::fragment::extends_quest(&ty.0, library)
+                .then(|| QuestRef::Property(member.to_owned()));
+        }
+        script_name = script.parent.as_ref()?.node.0.clone();
+    }
+    None
 }
 
 /// Classify the RHS of a `local = <expr>` binding as a quest reference,
@@ -4858,6 +4937,57 @@ mod tests {
             lower_fragment_with_script_metadata(&body, &without, &HashSet::new(), None),
             None
         );
+    }
+
+    /// M47.2 — a quest reached through the fragment quest's own typed
+    /// property (`kmyQuest.CW`), and a property cast to a quest script,
+    /// lower as quest properties on the quest path (the library supplies the
+    /// types); a non-quest property type declines.
+    #[test]
+    fn owner_quest_properties_and_quest_script_casts_lower_with_the_library() {
+        let library = PscLibrary::new(&[
+            "ScriptName CWQuickstartScript extends Quest\n\
+             CWScript Property CW Auto\n\
+             ObjectReference Property Door Auto\n",
+            "ScriptName CWScript extends Quest\nInt Property PlayerGotIntro Auto\n",
+            "ScriptName MS13QuestScript extends Quest\nBool Property CamillaEscort Auto\n",
+        ]);
+        let lowered = |statements: &str| {
+            let body = first_fn_body(&format!(
+                "ScriptName QF_Test extends Quest\n\
+                 Quest Property MS13 Auto\n\
+                 Function Fragment_2()\n\
+                 CWQuickstartScript kmyQuest = Self as CWQuickstartScript\n\
+                 {statements}\n EndFunction\n"
+            ));
+            lower_quest_fragment(
+                &body,
+                &["ms13".to_owned()].into_iter().collect(),
+                &HashSet::new(),
+                None,
+                Some(&library),
+            )
+        };
+        assert_eq!(
+            lowered("kmyQuest.CW.PlayerGotIntro = 1\n kmyQuest.CW.SetStage(2)\n (MS13 as MS13QuestScript).CamillaEscort = True"),
+            Some(vec![
+                Effect::SetQuestVariable {
+                    quest: QuestRef::Property("CW".into()),
+                    variable: "PlayerGotIntro".into(),
+                    value: 1.0,
+                },
+                Effect::SetStage {
+                    quest: QuestRef::Property("CW".into()),
+                    stage: 2,
+                },
+                Effect::SetQuestVariable {
+                    quest: QuestRef::Property("MS13".into()),
+                    variable: "CamillaEscort".into(),
+                    value: 1.0,
+                },
+            ])
+        );
+        assert_eq!(lowered("kmyQuest.Door.SetStage(2)"), None, "not a quest");
     }
 
     const MOTHPRIEST_SCRIPT: &str = "ScriptName DLC1VQ03MothpriestFightScript extends Quest\n\

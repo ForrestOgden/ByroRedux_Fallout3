@@ -4920,6 +4920,32 @@ fn set_cleared_clears_the_location() {
     );
 }
 
+/// M47.2 — a decompiled quest-property receiver (`::Other_var`) resolves
+/// through its authored VMAD name, like an `ObjectRef` does.
+#[test]
+fn a_backing_variable_quest_property_resolves_through_its_authored_name() {
+    use crate::quest_variables::QuestScriptVariables;
+    use crate::translate::compose::QuestRef;
+    const OTHER: QuestFormId = QuestFormId(0x0004_E6C0);
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("pTG04PQS", OTHER.0)]),
+        vec![Effect::SetQuestVariable {
+            quest: QuestRef::Property("::pTG04PQS_var".into()),
+            variable: "pTG04PostChoice".into(),
+            value: 3.0,
+        }],
+    );
+    assert_eq!(
+        world
+            .resource::<QuestScriptVariables>()
+            .get(OTHER, QuestScriptVariables::property_key("pTG04PostChoice")),
+        Some(3.0)
+    );
+}
+
 /// M47.2 — `IsDisabled` / `IsEnabled` guards read a script's override,
 /// including one earlier in the same fragment, else the authored state.
 #[test]

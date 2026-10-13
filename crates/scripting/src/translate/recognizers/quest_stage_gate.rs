@@ -97,7 +97,9 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
             .script_instance?
             .scripts
             .iter()
-            .find_map(|s| s.object_form_id(name))?,
+            .find_map(|s| {
+                s.object_form_id(crate::translate::compose::vmad_property_name(name))
+            })?,
     };
 
     let conditions: Vec<Condition> = gate

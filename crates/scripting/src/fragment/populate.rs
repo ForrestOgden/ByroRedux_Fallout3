@@ -46,7 +46,10 @@ const MAX_EXTENDS_DEPTH: usize = 8;
 
 /// Whether the script type `name` is `Quest` or transitively extends it,
 /// following each script's `extends` through `library`.
-fn extends_quest(name: &str, library: &dyn crate::translate::effects::ScriptLibrary) -> bool {
+pub(crate) fn extends_quest(
+    name: &str,
+    library: &dyn crate::translate::effects::ScriptLibrary,
+) -> bool {
     let mut name = name.to_owned();
     for _ in 0..MAX_EXTENDS_DEPTH {
         if name.eq_ignore_ascii_case("quest") {

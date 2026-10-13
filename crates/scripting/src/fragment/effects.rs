@@ -17,10 +17,13 @@ fn resolve_quest(
 ) -> Option<QuestFormId> {
     match via {
         QuestRef::SelfRef | QuestRef::OwningQuest => Some(context),
+        // M47.2 — through the `::Name_var` normalization `ObjectRef` already
+        // had; a decompiled fragment reads an auto-property through its
+        // backing variable.
         QuestRef::Property(name) => vmad?
             .scripts
             .iter()
-            .find_map(|s| s.object_form_id(name))
+            .find_map(|s| s.object_form_id(crate::translate::compose::vmad_property_name(name)))
             .map(QuestFormId),
     }
 }
