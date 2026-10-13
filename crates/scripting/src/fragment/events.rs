@@ -281,6 +281,42 @@ pub(super) fn enqueue(
     }
 }
 
+/// Drop the registrations of quests that stopped (the CK: "Aliases and quests
+/// will automatically unregister for this event when the quest stops").
+pub(super) fn prune_stopped_quests(world: &World) {
+    let owners: Vec<u32> = match world.try_resource::<EventRegistrations>() {
+        Some(registrations) if !registrations.entries.is_empty() => {
+            let mut owners: Vec<u32> = registrations.entries.iter().map(|e| e.owner).collect();
+            owners.sort_unstable();
+            owners.dedup();
+            owners
+        }
+        _ => return,
+    };
+    let quests = world
+        .try_resource::<crate::QuestScriptInstances>()
+        .map(|instances| Arc::clone(&instances.0))
+        .unwrap_or_default();
+    let fragments = world.resource::<QuestStageFragments>().clone();
+    let stopped: Vec<u32> = {
+        let stages = world.resource::<QuestStageState>();
+        owners
+            .into_iter()
+            .filter(|owner| {
+                let quest = QuestFormId(*owner);
+                let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
+                is_quest && !stages.is_running(quest)
+            })
+            .collect()
+    };
+    if stopped.is_empty() {
+        return;
+    }
+    if let Some(mut registrations) = world.try_resource_mut::<EventRegistrations>() {
+        registrations.entries.retain(|e| !stopped.contains(&e.owner));
+    }
+}
+
 /// Relay an engine event a reference received to the scripts registered for it
 /// remotely: `event` (`OnActivate`) of the reference `sender`, with the
 /// event's own `args`.

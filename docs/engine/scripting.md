@@ -1004,8 +1004,9 @@ registration the frame's interpreter allowance cannot start stays registered.
   one that could never fire. `reference_script_event_system` relays them
   from the engine's markers.
 
-The saved `EventRegistrations` holds them. A quest that stops does not yet drop
-its registrations, so a stopped quest's handler can still run once.
+The saved `EventRegistrations` holds them. A quest that stops drops its
+registrations (checked each frame by `reference_script_event_system`), as the
+CK says quests and aliases do.
 
 ### Explicit-start pin (M47.2)
 

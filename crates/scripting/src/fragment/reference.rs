@@ -208,6 +208,7 @@ struct Delivery {
 
 /// Deliver this frame's events to the reference scripts the VM runs.
 pub fn reference_script_event_system(world: &World, _dt: f32) {
+    super::events::prune_stopped_quests(world);
     relay_engine_events(world);
     let deliveries = collect_deliveries(world);
     if deliveries.is_empty() {
