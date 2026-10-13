@@ -545,7 +545,10 @@ fn main() {
                                 Some(&library),
                             )
                         } else {
-                            Err("not a quest, scene, topic-info or package fragment".to_owned())
+                            // The kind, by the script name's prefix, for the census.
+                            let name = &script.name.node.0;
+                            let prefix: String = name.rsplit(':').next().unwrap_or(name).chars().take_while(|c| *c != '_').collect();
+                            Err(format!("not a wired fragment kind: {prefix}_"))
                         };
                         match checked {
                             Ok(_) => interpretable += 1,

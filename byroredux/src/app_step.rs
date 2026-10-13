@@ -949,6 +949,14 @@ impl App {
         else {
             return;
         };
+        // A launch that named its location holds the player there until they
+        // take control (the Start Game Enabled MQ101 would carry them to Helgen).
+        if crate::components::ExplicitStartPin::active(&self.world) {
+            log::info!(
+                "Scripted player MoveTo → {destination:08X} ignored: the launch named its starting location"
+            );
+            return;
+        }
         let resident =
             byroredux_scripting::condition::resolve_entity_by_global_form_id(&self.world, destination)
                 .and_then(|entity| {

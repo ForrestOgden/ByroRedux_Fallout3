@@ -431,7 +431,15 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v72 -> v73 (M47.2): the `DistanceWatches` resource column (Papyrus
 /// `RegisterFor…DistanceEvent` registrations).
-pub const FORMAT_MAJOR: u16 = 73;
+///
+/// v73 -> v74 (M47.2): `ScriptObject` gained `Int` / `Float` / `Bool` /
+/// `Array` / `Struct` — arrays and structs held in script variables.
+///
+/// v74 -> v75 (M47.2): the `AliasCollections` resource column (script-filled
+/// `RefCollectionAlias` members).
+///
+/// v75 -> v76 (M47.2): `FragmentGuard::HasLocRefType`.
+pub const FORMAT_MAJOR: u16 = 76;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

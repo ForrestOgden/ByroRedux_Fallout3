@@ -336,6 +336,14 @@ struct Vm<'a> {
     /// struct local: a run cannot suspend while either is on the stack.
     value_calls: usize,
     blocked_callers: usize,
+    /// The arrays and structs script variables hold that this run has read
+    /// or written, by (owner, variable). They are reference values: every
+    /// read in the run shares one, so a mutation is seen by the next read, and
+    /// the run writes them back whole when it ends.
+    aggregates: std::cell::RefCell<HashMap<(u32, ConditionStringId), Value>>,
+    /// The members of the script-filled reference collections this run has
+    /// read or changed, written back when it ends.
+    collections: std::cell::RefCell<HashMap<crate::alias_collections::CollectionKey, Vec<u32>>>,
 }
 
 /// Run `script`'s `function` attached to `context` — a quest's fragment, or
@@ -378,6 +386,8 @@ pub(super) fn run_fragment(
         yielded: false,
         value_calls: 0,
         blocked_callers: 0,
+        aggregates: Default::default(),
+        collections: Default::default(),
     };
     let frame = Frame {
         script: Arc::clone(&script),
@@ -434,6 +444,11 @@ pub(super) fn run_fragment(
             None
         }
     };
+    // The arrays and structs the run touched go back to the saved store.
+    vm.flush_aggregates();
+    for (key, members) in std::mem::take(&mut *vm.collections.borrow_mut()) {
+        vm.deferred.alias_collections.push((key, members));
+    }
     // Settle with the frame's budget: what this run spent, and whether it was
     // cut short by it.
     if let Some(mut budget) = world.try_resource_mut::<super::VmFrameBudget>() {
@@ -640,6 +655,78 @@ fn getter_constant(property: &byroredux_papyrus::ast::Property) -> Option<Value>
         _ => None,
     }
 }
+
+/// `value` as a stored object (see [`crate::ScriptObject`]); `None` for what
+/// a script variable cannot hold (a nested array).
+fn to_stored(value: &Value) -> Option<crate::ScriptObject> {
+    Some(match value {
+        Value::None => crate::ScriptObject::None,
+        Value::Bool(b) => crate::ScriptObject::Bool(*b),
+        Value::Int(i) => crate::ScriptObject::Int(*i),
+        Value::Float(f) => crate::ScriptObject::Float(*f),
+        Value::Str(text) => crate::ScriptObject::Str(text.clone()),
+        Value::Form(form) => crate::ScriptObject::Form(*form),
+        Value::Alias { quest, alias } => crate::ScriptObject::Alias {
+            quest: *quest,
+            alias: *alias,
+        },
+        Value::Array(items) => {
+            let mut stored = Vec::new();
+            for item in items.borrow().iter() {
+                if matches!(item, Value::Array(_)) {
+                    return None;
+                }
+                stored.push(to_stored(item)?);
+            }
+            crate::ScriptObject::Array(stored)
+        }
+        Value::Struct(members) => {
+            let mut stored = Vec::new();
+            for (name, member) in members.borrow().iter() {
+                if matches!(member, Value::Array(_)) {
+                    return None;
+                }
+                stored.push((name.clone(), to_stored(member)?));
+            }
+            crate::ScriptObject::Struct(stored)
+        }
+    })
+}
+
+/// A stored object as a value; arrays and structs come back as fresh shared
+/// values.
+fn from_stored(object: &crate::ScriptObject) -> Value {
+    match object {
+        crate::ScriptObject::None => Value::None,
+        crate::ScriptObject::Form(form) => Value::Form(*form),
+        crate::ScriptObject::Alias { quest, alias } => Value::Alias {
+            quest: *quest,
+            alias: *alias,
+        },
+        crate::ScriptObject::Str(text) => Value::Str(text.clone()),
+        crate::ScriptObject::Int(i) => Value::Int(*i),
+        crate::ScriptObject::Float(f) => Value::Float(*f),
+        crate::ScriptObject::Bool(b) => Value::Bool(*b),
+        crate::ScriptObject::Array(items) => {
+            Value::Array(Rc::new(RefCell::new(items.iter().map(from_stored).collect())))
+        }
+        crate::ScriptObject::Struct(members) => Value::Struct(Rc::new(RefCell::new(
+            members.iter().map(|(name, member)| (name.clone(), from_stored(member))).collect(),
+        ))),
+    }
+}
+
+/// The `RefCollectionAlias` natives the VM runs.
+const COLLECTION_NATIVES: [&str; 8] = [
+    "getcount",
+    "getat",
+    "find",
+    "addref",
+    "addarray",
+    "addrefcollection",
+    "removeref",
+    "removeall",
+];
 
 /// The `Math` natives the VM computes itself.
 const MATH_NATIVES: [&str; 8] = ["min", "max", "abs", "floor", "ceiling", "sqrt", "pow", "sin"];
@@ -1375,18 +1462,151 @@ impl Vm<'_> {
 
     /// A non-numeric script variable write under `key`.
     fn write_object(&mut self, owner: QuestFormId, key: ConditionStringId, value: &Value) -> Run<()> {
-        let object = match value {
-            Value::None => crate::ScriptObject::None,
-            Value::Form(form) => crate::ScriptObject::Form(*form),
-            Value::Alias { quest, alias } => crate::ScriptObject::Alias {
-                quest: *quest,
-                alias: *alias,
-            },
-            Value::Str(text) => crate::ScriptObject::Str(text.clone()),
-            other => return stop(format!("a {} write to a script variable", other.text())),
+        // An array or struct is a reference value kept for the run and
+        // written back at its end.
+        if matches!(value, Value::Array(_) | Value::Struct(_)) {
+            if to_stored(value).is_none() {
+                return stop("an array or struct that cannot be stored in a script variable");
+            }
+            self.aggregates.borrow_mut().insert((owner.0, key), value.clone());
+            return Ok(());
+        }
+        let Some(object) = to_stored(value) else {
+            return stop(format!("a {} write to a script variable", value.text()));
         };
+        // A scalar replaces whatever aggregate the run held there.
+        self.aggregates.borrow_mut().remove(&(owner.0, key));
         self.deferred.quest_objects.push((owner, key, object));
         Ok(())
+    }
+
+    /// A `RefCollectionAlias` native on a collection alias: `GetCount`,
+    /// `GetAt`, `Find`, `AddRef`, `AddArray`, `AddRefCollection`, `RemoveRef`,
+    /// `RemoveAll`. `None` when `callee` is not one on an alias. The collection
+    /// must be one the quest leaves to its scripts (see
+    /// [`crate::alias_collections`]).
+    fn collection_call(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
+        let Expr::MemberAccess { object, member } = callee else {
+            return Ok(None);
+        };
+        let name = member.node.0.to_ascii_lowercase();
+        if !COLLECTION_NATIVES.contains(&name.as_str()) || static_class(&object.node).is_some() {
+            return Ok(None);
+        }
+        let Value::Alias { quest, alias } = self.eval(frame, &object.node)? else {
+            return Ok(None);
+        };
+        let key = (quest, alias);
+        self.require_script_filled(key)?;
+        if !self.collections.borrow().contains_key(&key) {
+            let stored: Vec<u32> = self
+                .world
+                .try_resource::<crate::AliasCollections>()
+                .map(|collections| collections.members(key).to_vec())
+                .unwrap_or_default();
+            self.collections.borrow_mut().insert(key, stored);
+        }
+        let values = self.eval_args(frame, args)?;
+        let form_of = |value: Option<&Value>| match value {
+            Some(Value::Form(form)) if *form != 0 => Some(*form),
+            _ => None,
+        };
+        let mut collections = self.collections.borrow_mut();
+        let members = collections.get_mut(&key).expect("loaded above");
+        Ok(Some(match name.as_str() {
+            "getcount" => Value::Int(members.len() as i32),
+            "getat" => {
+                let index = values.first().and_then(Value::int).unwrap_or(-1);
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| members.get(index))
+                    .map_or(Value::None, |form| Value::Form(*form))
+            }
+            "find" => Value::Int(match form_of(values.first()) {
+                Some(form) => members.iter().position(|member| *member == form).map_or(-1, |i| i as i32),
+                None => -1,
+            }),
+            "addref" => {
+                if let Some(form) = form_of(values.first()) {
+                    if !members.contains(&form) {
+                        members.push(form);
+                    }
+                }
+                Value::None
+            }
+            "addarray" => {
+                // CK: "Reference Aliases inside arrays will not be added to a
+                // collection if they are none."
+                if let Some(Value::Array(items)) = values.first() {
+                    for item in items.borrow().iter() {
+                        if let Value::Form(form) = item {
+                            if *form != 0 && !members.contains(form) {
+                                members.push(*form);
+                            }
+                        }
+                    }
+                }
+                Value::None
+            }
+            "addrefcollection" => {
+                let Some(Value::Alias { quest: other_quest, alias: other_alias }) = values.first() else {
+                    return Ok(Some(Value::None));
+                };
+                let other = (*other_quest, *other_alias);
+                drop(collections);
+                self.require_script_filled(other)?;
+                let others: Vec<u32> = self
+                    .collections
+                    .borrow()
+                    .get(&other)
+                    .cloned()
+                    .or_else(|| {
+                        self.world
+                            .try_resource::<crate::AliasCollections>()
+                            .map(|collections| collections.members(other).to_vec())
+                    })
+                    .unwrap_or_default();
+                let mut collections = self.collections.borrow_mut();
+                let members = collections.get_mut(&key).expect("loaded above");
+                for form in others {
+                    if !members.contains(&form) {
+                        members.push(form);
+                    }
+                }
+                Value::None
+            }
+            "removeref" => {
+                if let Some(form) = form_of(values.first()) {
+                    members.retain(|member| *member != form);
+                }
+                Value::None
+            }
+            "removeall" => {
+                members.clear();
+                Value::None
+            }
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Stop unless the collection alias `key` is one the quest leaves to its
+    /// scripts: a collection alias with no fill type and no match conditions.
+    fn require_script_filled(&self, key: crate::alias_collections::CollectionKey) -> Run<()> {
+        match self.deferred.collection_kinds.get(&key) {
+            Some(true) => Ok(()),
+            Some(false) => stop("a reference collection filled by the quest's conditions"),
+            None => stop("a collection native on an alias that is not a known reference collection"),
+        }
+    }
+
+    /// Write every array and struct the run touched back as a stored object.
+    fn flush_aggregates(&mut self) {
+        let aggregates = std::mem::take(&mut *self.aggregates.borrow_mut());
+        for ((owner, key), value) in aggregates {
+            if let Some(object) = to_stored(&value) {
+                self.deferred.quest_objects.push((QuestFormId(owner), key, object));
+            }
+        }
     }
 
     /// An object or string a script wrote to `quest`'s variable `name`, if
@@ -1396,6 +1616,9 @@ impl Vm<'_> {
     }
 
     fn written_object(&self, owner: QuestFormId, key: ConditionStringId) -> Option<Value> {
+        if let Some(held) = self.aggregates.borrow().get(&(owner.0, key)) {
+            return Some(held.clone());
+        }
         let pending = self
             .deferred
             .quest_objects
@@ -1408,12 +1631,12 @@ impl Vm<'_> {
                 .try_resource::<crate::QuestScriptObjects>()
                 .and_then(|objects| objects.get(owner, key))
         });
-        Some(match stored? {
-            crate::ScriptObject::Form(form) => Value::Form(form),
-            crate::ScriptObject::Alias { quest, alias } => Value::Alias { quest, alias },
-            crate::ScriptObject::Str(text) => Value::Str(text),
-            crate::ScriptObject::None => Value::None,
-        })
+        let value = from_stored(&stored?);
+        // A stored array or struct becomes the run's one shared value.
+        if matches!(value, Value::Array(_) | Value::Struct(_)) {
+            self.aggregates.borrow_mut().insert((owner.0, key), value.clone());
+        }
+        Some(value)
     }
 
     fn read_quest_variable(&self, quest: QuestFormId, name: &str) -> Option<f32> {
@@ -1578,7 +1801,12 @@ impl Vm<'_> {
                     });
                 }
             }
-            // An object property a script re-pointed reads the new object.
+            // An object property a script re-pointed reads the new object; an
+            // array or struct property is one shared value across the run,
+            // starting from what a script last wrote or else the VMAD's.
+            if matches!(value, Value::Array(_) | Value::Struct(_)) {
+                return Some(self.aggregate(owner, name, value));
+            }
             return Some(self.written_quest_object(owner, name).unwrap_or(value));
         }
         let declared = || {
@@ -1603,8 +1831,25 @@ impl Vm<'_> {
                 .or_else(declared)
                 .unwrap_or_else(|| Value::Str(String::new())),
             Type::Object(_) | Type::Var => self.written_quest_object(owner, name).unwrap_or(Value::None),
-            Type::Array(_) => return None,
+            // An array nothing has set yet is empty.
+            Type::Array(_) => {
+                let empty = Value::Array(Rc::new(RefCell::new(Vec::new())));
+                self.aggregate(owner, name, empty)
+            }
         })
+    }
+
+    /// The array or struct held by `owner`'s variable `name`: this run's
+    /// shared value, else what a script last wrote, else `default`.
+    fn aggregate(&self, owner: QuestFormId, name: &str, default: Value) -> Value {
+        let key = crate::QuestScriptVariables::property_key(name);
+        if let Some(held) = self.written_object(owner, key) {
+            if matches!(held, Value::Array(_) | Value::Struct(_)) {
+                return held;
+            }
+        }
+        self.aggregates.borrow_mut().insert((owner.0, key), default.clone());
+        default
     }
 
     /// The scripts the VM runs on the reference `form`, with their
@@ -2122,6 +2367,9 @@ impl Vm<'_> {
         if let Some(value) = self.array_call(frame, callee, args)? {
             return Ok(value);
         }
+        if let Some(value) = self.collection_call(frame, callee, args)? {
+            return Ok(value);
+        }
         if let Some(value) = self.object_read(frame, callee, args)? {
             return Ok(value);
         }
@@ -2179,6 +2427,9 @@ impl Vm<'_> {
             }
         }
         if self.array_call(frame, &callee.node, args)?.is_some() {
+            return Ok(Flow::Normal);
+        }
+        if self.collection_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
         }
         if self.object_read(frame, &callee.node, args)?.is_some() {
@@ -2861,12 +3112,7 @@ impl<'l> Checker<'l> {
             Stmt::Assign { target, value, .. } => {
                 let value_kind = self.kind(frame, &value.node)?;
                 match &target.node {
-                    Expr::Ident(name) => {
-                        let key = name.0.to_ascii_lowercase();
-                        if !frame.locals.contains_key(&key) && value_kind == Kind::Array {
-                            return self.fail(|| format!("{value_kind:?} write to a script variable"));
-                        }
-                    }
+                    Expr::Ident(_) => {}
                     Expr::MemberAccess { object, member } => {
                         let owner = self.kind(frame, &object.node)?;
                         if owner == Kind::Struct {
@@ -3226,6 +3472,33 @@ impl<'l> Checker<'l> {
         let receiver_kind = self.kind(frame, receiver)?;
         if receiver_kind == Kind::Array {
             return self.check_array_call(&name, &arg_kinds, statement);
+        }
+        // A script-filled `RefCollectionAlias` (declared as one).
+        if receiver_kind == Kind::Alias && COLLECTION_NATIVES.contains(&name.as_str()) {
+            let collection = self
+                .static_type(frame, receiver)
+                .is_some_and(|ty| matches!(&ty, Type::Object(n) if n.0.eq_ignore_ascii_case("RefCollectionAlias")));
+            if collection {
+                let object = |arg: &Arg| matches!(arg, Arg::Kind(Kind::Object | Kind::Player | Kind::Alias));
+                let ok = match name.as_str() {
+                    "getcount" => arg_kinds.is_empty(),
+                    "getat" => matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]),
+                    "find" => arg_kinds.len() == 1 && object(&arg_kinds[0]),
+                    "addref" | "removeref" => statement && arg_kinds.len() == 1 && object(&arg_kinds[0]),
+                    "addarray" => statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Array)]),
+                    "addrefcollection" => statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Alias)]),
+                    "removeall" => statement && arg_kinds.is_empty(),
+                    _ => false,
+                };
+                if !ok {
+                    return self.fail(|| format!("collection {name} as written"));
+                }
+                return Some(match name.as_str() {
+                    "getcount" | "find" => Kind::Num,
+                    "getat" => Kind::Object,
+                    _ => Kind::None,
+                });
+            }
         }
         match (receiver_kind, name.as_str()) {
             (Kind::Alias, "getref" | "getreference" | "getactorref" | "getactorreference" | "getshipref" | "getshipreference") => {

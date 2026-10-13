@@ -435,6 +435,11 @@ fn load_scene_content(
         let esm_path = Some(esm_path);
         let cell_id = crate::cli_args::parse_string_arg(args, "--cell");
         let grid_str = crate::cli_args::parse_string_arg(args, "--grid");
+        // A launch that names its location keeps the player there until they
+        // take control (see `ExplicitStartPin`).
+        world.insert_resource(crate::components::ExplicitStartPin(
+            cell_id.is_some() || grid_str.is_some(),
+        ));
         // #444 — explicit worldspace EDID override. Used with --grid
         // when the ESM defines multiple exterior worldspaces (e.g.
         // FO3 + DLC masters ship Wasteland, PointLookout, Zeta, Pitt,

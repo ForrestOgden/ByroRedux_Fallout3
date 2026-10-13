@@ -149,7 +149,7 @@ pub fn install_quest_script_variables<'a>(
 }
 
 /// The non-numeric value a script variable holds (M47.2, the Papyrus VM).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScriptObject {
     None,
@@ -158,6 +158,16 @@ pub enum ScriptObject {
     Alias { quest: u32, alias: i16 },
     /// A string — a `String` variable, or a script's state name.
     Str(String),
+    /// An element of a stored array or struct member.
+    Int(i32),
+    Float(f32),
+    Bool(bool),
+    /// An array a script variable holds (CK *Arrays (Papyrus)*): its
+    /// elements, written back whole when a run ends.
+    Array(Vec<ScriptObject>),
+    /// A Fallout 4 struct a script variable holds, or one an array holds:
+    /// its members by name.
+    Struct(Vec<(String, ScriptObject)>),
 }
 
 /// Non-numeric script variables scripts wrote this playthrough

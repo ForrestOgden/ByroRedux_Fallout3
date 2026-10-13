@@ -185,6 +185,24 @@ pub fn install_scene_quest_aliases(
     }
     let records: Vec<QustRecord> = records.into_iter().collect();
     let count = records.len();
+    // The collection aliases and whether the quest leaves each to its scripts
+    // (the Papyrus VM's `RefCollectionAlias` natives refuse the others).
+    {
+        let mut kinds = world
+            .try_resource::<crate::alias_collections::CollectionAliasKinds>()
+            .map(|kinds| (*kinds.0).clone())
+            .unwrap_or_default();
+        for record in &records {
+            kinds.retain(|(quest, _), _| *quest != record.form_id);
+            for alias in record.aliases.iter().filter(|alias| alias.is_collection) {
+                if let Ok(id) = i16::try_from(alias.alias_id) {
+                    let script_filled = alias.fill_type.is_none() && alias.match_conditions.is_empty();
+                    kinds.insert((record.form_id, id), script_filled);
+                }
+            }
+        }
+        world.insert_resource(crate::alias_collections::CollectionAliasKinds(std::sync::Arc::new(kinds)));
+    }
     {
         let mut registry = world.resource_mut::<SceneQuestAliasRegistry>();
         for record in records {

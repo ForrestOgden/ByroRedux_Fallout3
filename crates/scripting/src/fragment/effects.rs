@@ -453,6 +453,12 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — distance registrations a Papyrus VM run asked for: the owner,
     /// the script, the change.
     pub(super) distance_requests: Vec<(u32, String, super::DistanceRequest)>,
+    /// M47.2 — reference-collection members a Papyrus VM run wrote back,
+    /// applied to [`crate::AliasCollections`] after the guards drop.
+    pub(super) alias_collections: Vec<(crate::alias_collections::CollectionKey, Vec<u32>)>,
+    /// Which collection aliases the quests leave to their scripts, taken
+    /// before any quest-state lock (see [`crate::CollectionAliasKinds`]).
+    pub(super) collection_kinds: std::sync::Arc<HashMap<crate::alias_collections::CollectionKey, bool>>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
@@ -563,6 +569,11 @@ impl DeferredFragmentEffects {
             achievements: Vec::new(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
+            alias_collections: Vec::new(),
+            collection_kinds: world
+                .try_resource::<crate::CollectionAliasKinds>()
+                .map(|kinds| std::sync::Arc::clone(&kinds.0))
+                .unwrap_or_default(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
@@ -653,6 +664,14 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.alias_collections.is_empty() {
+            if let Some(mut collections) = world.try_resource_mut::<crate::AliasCollections>() {
+                for (key, members) in self.alias_collections.drain(..) {
+                    collections.set(key, members);
+                }
+            }
+            self.alias_collections.clear();
         }
         if !self.distance_requests.is_empty() {
             if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {
@@ -2001,6 +2020,10 @@ fn apply_placement_effect(
                 log::debug!("fragment MoveTo skipped: moved entity has no Transform");
                 return None;
             };
+            log::debug!(
+                "fragment MoveTo (quest {:08X}): {moved_entity:?} -> {destination_entity:?} at {translation:?}",
+                context.0
+            );
             transform.translation = translation;
             None
         }
@@ -3237,6 +3260,18 @@ pub(super) fn evaluate_guard(
                 world,
             ) == 1.0;
             member == *expected
+        }
+        FragmentGuard::HasLocRefType {
+            actor,
+            ref_type,
+            expected,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let ref_type = resolve_property_form_id(vmad, ref_type.property_name())?;
+            let has = world
+                .get::<crate::scene::SceneAliasCandidate>(actor)
+                .is_some_and(|candidate| candidate.location_ref_types.contains(&ref_type));
+            has == *expected
         }
         FragmentGuard::Loaded3D { object, expected } => {
             // A reference with no live entity is not loaded.

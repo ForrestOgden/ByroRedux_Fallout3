@@ -2069,3 +2069,225 @@ fn distance_events_fire_once_when_the_pair_is_close() {
     );
     let _ = (a, b);
 }
+
+/// An array a script variable holds is one shared value within a run and is
+/// written back whole when the run ends: a later fragment sees the elements
+/// the earlier one added, structs included.
+#[test]
+fn script_variable_arrays_persist_between_runs() {
+    let script = parsed_source(
+        "ScriptName QF_VmHeld extends Quest\n\
+         Struct Entry\n Int Id\n EndStruct\n\
+         ObjectReference Property Marker Auto\n\
+         Entry[] Rows\n\
+         Int[] Counts\n\
+         Function Fragment_1()\n\
+           Counts = new Int[0]\n\
+           Counts.Add(4)\n\
+           Counts.Add(9)\n\
+           Rows = new Entry[0]\n\
+           Entry e = new Entry\n\
+           e.Id = 7\n\
+           Rows.Add(e)\n\
+           Rows[0].Id = 8\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           If Counts.Length == 2 && Counts[1] == 9 && Rows.Length == 1 && Rows[0].Id == 8\n\
+             Counts.Remove(0)\n\
+             Marker.Enable()\n\
+           EndIf\n\
+         EndFunction\n\
+         Function Fragment_3()\n\
+           If Counts.Length == 1 && Counts[0] == 9\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    for function in ["Fragment_1", "Fragment_2", "Fragment_3"] {
+        assert_eq!(check_function_reason(Arc::clone(&script), function, None).err(), None, "{function}");
+    }
+    let world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for (stage, function) in [(20, "Fragment_1"), (21, "Fragment_2"), (22, "Fragment_3")] {
+            fragments.insert(
+                Q,
+                stage,
+                vec![Effect::Interpret {
+                    script: "QF_VmHeld".into(),
+                    function: function.into(),
+                    args: Vec::new(),
+                    resume: None,
+                }],
+            );
+        }
+    }
+    for stage in [20, 21, 22] {
+        world.resource_mut::<QuestStageState>().set_stage(Q, stage);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+    }
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "the second run read the first's arrays");
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "and the third read the second's Remove");
+}
+
+/// A script-filled `RefCollectionAlias`: `AddRef` / `AddArray` / `RemoveRef`
+/// / `RemoveAll` change it, `GetCount` / `GetAt` / `Find` read it, across
+/// runs; a collection the quest fills by conditions is refused.
+#[test]
+fn script_filled_collection_aliases() {
+    use byroredux_plugin::esm::records::{QuestAlias, QustRecord};
+    const FIRST: u32 = 0x0001_0F60;
+    const SECOND: u32 = 0x0001_0F61;
+    let script = parsed_source(
+        "ScriptName QF_VmCollection extends Quest\n\
+         RefCollectionAlias Property Crowd Auto\n\
+         RefCollectionAlias Property Filled Auto\n\
+         ObjectReference Property A Auto\n\
+         ObjectReference Property B Auto\n\
+         Function Fragment_1()\n\
+           Crowd.AddRef(A)\n\
+           Crowd.AddRef(B)\n\
+           Crowd.AddRef(A)\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           If Crowd.GetCount() == 2 && Crowd.Find(B) == 1 && Crowd.GetAt(0) == A\n\
+             Crowd.RemoveRef(A)\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n\
+         Function Fragment_3()\n\
+           If Crowd.GetCount() == 1 && Crowd.GetAt(0) == B\n\
+             Crowd.RemoveAll()\n\
+           EndIf\n\
+           Filled.GetCount()\n\
+         EndFunction\n",
+    );
+    for function in ["Fragment_1", "Fragment_2", "Fragment_3"] {
+        assert_eq!(check_function_reason(Arc::clone(&script), function, None).err(), None, "{function}");
+    }
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    let record = QustRecord {
+        form_id: Q.0,
+        aliases: vec![
+            QuestAlias {
+                alias_id: 3,
+                is_collection: true,
+                ..Default::default()
+            },
+            QuestAlias {
+                alias_id: 4,
+                is_collection: true,
+                match_conditions: {
+                    let mut conditions = byroredux_plugin::esm::records::condition::ConditionList::default();
+                    conditions.push(Default::default());
+                    conditions
+                },
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    crate::scene::install_scene_quest_aliases(&mut world, [record]);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        let alias = |name: &str, id: i16| ScriptProperty {
+            name: name.into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: Q.0,
+                alias: id,
+            },
+        };
+        let object = |name: &str, form: u32| ScriptProperty {
+            name: name.into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: form,
+                alias: -1,
+            },
+        };
+        vmad.scripts[0].properties.extend([alias("Crowd", 3), alias("Filled", 4), object("A", FIRST), object("B", SECOND)]);
+        fragments.insert_vmad(Q, vmad);
+        for (stage, function) in [(20, "Fragment_1"), (21, "Fragment_2"), (22, "Fragment_3")] {
+            fragments.insert(
+                Q,
+                stage,
+                vec![Effect::Interpret {
+                    script: "QF_VmCollection".into(),
+                    function: function.into(),
+                    args: Vec::new(),
+                    resume: None,
+                }],
+            );
+        }
+    }
+    for stage in [20, 21] {
+        world.resource_mut::<QuestStageState>().set_stage(Q, stage);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+    }
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "the count, find and get-at read");
+    assert_eq!(world.resource::<crate::AliasCollections>().members((Q.0, 3)), [SECOND]);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 22);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    // RemoveAll emptied it; the conditions-filled one was refused, not read as
+    // empty (the run stopped there, after RemoveAll).
+    assert!(world.resource::<crate::AliasCollections>().members((Q.0, 3)).is_empty());
+}
+
+/// `HasLocRefType` reads the reference's XLRT tags.
+#[test]
+fn has_loc_ref_type_reads_the_placement_tags() {
+    const TAGGED: u32 = 0x0001_0F70;
+    const BOSS: u32 = 0x0001_0F71;
+    const OTHER: u32 = 0x0001_0F72;
+    let script = parsed_source(
+        "ScriptName QF_VmRefType extends Quest\n\
+         ObjectReference Property Subject Auto\n\
+         Form Property BossType Auto\n\
+         Form Property OtherType Auto\n\
+         Function Fragment_1()\n\
+           If Subject.HasLocRefType(BossType as LocationRefType) && !Subject.HasLocRefType(OtherType as LocationRefType)\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(TAGGED),
+    });
+    world.insert_resource(pool);
+    let subject = world.spawn();
+    world.insert(subject, FormIdComponent(id));
+    world.insert(
+        subject,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: TAGGED,
+            location_ref_types: vec![BOSS],
+            ..Default::default()
+        },
+    );
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        for (name, form) in [("Subject", TAGGED), ("BossType", BOSS), ("OtherType", OTHER)] {
+            vmad.scripts[0].properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: form,
+                    alias: -1,
+                },
+            });
+        }
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}

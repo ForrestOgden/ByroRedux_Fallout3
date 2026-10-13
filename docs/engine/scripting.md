@@ -686,8 +686,23 @@ runtime:
   CK's *Arrays (Papyrus)* methods: `Find` / `RFind`, `FindStruct` /
   `RFindStruct`, `Add` (a struct added several times is the same struct),
   `Insert`, `Remove`, `RemoveLast` and `Clear`. The check follows declared
-  types through elements and members. An array held in a script variable
-  doesn't persist yet: it would need a saved array heap with identity.
+  types through elements and members. An array or struct a script variable
+  holds is one shared value within a run, starting from what a script last
+  wrote or else the VMAD's, and the run writes it back whole when it ends
+  (`ScriptObject::Array` / `Struct` in the saved `QuestScriptObjects`). A later
+  run therefore sees the elements an earlier one added. An array local across
+  a `Utility.Wait` still can't be saved.
+- **Reference collections (Fallout 4).** `RefCollectionAlias` natives
+  `GetCount`, `GetAt`, `Find`, `AddRef`, `AddArray`, `AddRefCollection`,
+  `RemoveRef` and `RemoveAll` work on a collection alias the quest leaves to
+  its scripts. The members are in the saved `AliasCollections`, by FormID. A
+  collection the quest fills by conditions or a fill type has no fill runtime
+  (`m47-3-quest-alias-design.md`), so the VM refuses it rather than read it as
+  empty. A reference is in a collection once: a second `AddRef` of it changes
+  nothing.
+- **Location ref types.** `HasLocRefType(refType)` reads the reference's XLRT
+  tags, and `ReferenceAlias.TryToMoveTo(ref)` is `MoveTo` on whatever the alias
+  holds, a no-op when it holds nothing.
 - **Math and time.** `Math.Min/Max/Abs/Floor/Ceiling/Sqrt/Pow/Sin` compute in
   the VM (`Sin` takes degrees, per the CK page). `Utility.GetCurrentGameTime()`
   is the host's absolute game clock in days, from `ScriptUpdates`, which
@@ -745,7 +760,7 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 73.5%, Starfield
+With the VM, 81.2% of the Skyrim corpus runs (Fallout 4: 75.7%, Starfield
 71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
@@ -969,6 +984,20 @@ checks them every frame, and the distance is the one the `GetDistance` guard
 reads, between world positions. A reference with no placement is infinitely
 far, so it triggers a greater-than event and never a less-than one. A
 registration the frame's interpreter allowance cannot start stays registered.
+
+### Explicit-start pin (M47.2)
+
+A launch with no named location is a new game, and the Start Game Enabled
+quests run as authored. MQ101's start-up fragment (stage 0) moves the player to
+the Helgen cart and the Helgen NPCs to their markers. Once `TryToMoveTo`
+lowered, that fragment ran whole, and it bounced every `--cell` launch to
+Helgen, so Riverwood's NPCs were never found. A launch that names its starting
+location (`--cell` / `--grid`) now holds the player there with
+`ExplicitStartPin`: `step_player_move_request` drops scripted player moves
+until the player first presses a key or mouse button, after which scripted
+moves apply as in any play session. A benchmark or a debug-server session never
+presses a window key, so its pin stays. Only the player's relocation is held;
+the rest of the start-up fragment runs.
 
 ### Misc stats (M47.2)
 

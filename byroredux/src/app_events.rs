@@ -335,6 +335,12 @@ impl ApplicationHandler for App {
             self.loading_screen.focus_lost();
             self.release_world_input_for_ui();
         }
+        // The player taking control ends the explicit-start pin.
+        if matches!(&event, WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed)
+            || matches!(&event, WindowEvent::MouseInput { state: ElementState::Pressed, .. })
+        {
+            crate::components::ExplicitStartPin::release(&self.world);
+        }
         if self.loading_screen.active()
             && matches!(&event, WindowEvent::KeyboardInput { .. }
                 | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }

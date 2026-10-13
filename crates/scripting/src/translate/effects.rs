@@ -210,6 +210,13 @@ pub enum FragmentGuard {
     },
     /// `<reference>.Is3DLoaded()` is `expected`.
     Loaded3D { object: ObjectRef, expected: bool },
+    /// `<reference>.HasLocRefType(refType)` is `expected`: the placement's
+    /// XLRT tags ([`crate::scene::SceneAliasCandidate`]).
+    HasLocRefType {
+        actor: ActorRef,
+        ref_type: ObjectRef,
+        expected: bool,
+    },
     /// `<actor>.GetRelationshipRank(<other>)` compared with `value`.
     RelationshipRank {
         actor: ActorRef,
@@ -424,6 +431,7 @@ enum GuardReading {
     /// `IsEnabled()` reads true when enabled; `IsDisabled()` is the negation.
     ReferenceEnabled(ObjectRef, bool),
     InFaction(ActorRef, ObjectRef),
+    HasLocRefType(ActorRef, ObjectRef),
     Loaded3D(ObjectRef),
     Distance(ActorRef, ActorRef),
     RelationshipRank(ActorRef, ActorRef),
@@ -661,6 +669,12 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             one_object(args)?,
         ));
     }
+    if let Some((object, args)) = method_call(e, "HasLocRefType") {
+        return Some(GuardReading::HasLocRefType(
+            receiver_actor(object, scope)?,
+            one_object(args)?,
+        ));
+    }
     if let Some((object, args)) = method_call(e, "Is3DLoaded") {
         return args
             .is_empty()
@@ -859,6 +873,11 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::ReferenceEnabled(object, enabled) => FragmentGuard::ReferenceEnabled {
             object,
             expected: bool_expectation(comparison, value)? == enabled,
+        },
+        GuardReading::HasLocRefType(actor, ref_type) => FragmentGuard::HasLocRefType {
+            actor,
+            ref_type,
+            expected: bool_expectation(comparison, value)?,
         },
         GuardReading::InFaction(actor, faction) => FragmentGuard::InFaction {
             actor,
@@ -3947,7 +3966,11 @@ fn prim_equip_item(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// non-literal (a variable whose runtime value is unknown), via
 /// [`as_num`]/[`bool_arg`] returning `None`.
 fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "MoveTo")?;
+    // `ReferenceAlias.TryToMoveTo(ref)` is `MoveTo(ref)` on whatever the alias
+    // holds, a no-op when it holds nothing (CK *TryToMoveTo - ReferenceAlias*).
+    // `ReferenceAlias.TryToMoveTo(ref)` is `MoveTo(ref)` on whatever the alias
+    // holds, a no-op when it holds nothing (CK *TryToMoveTo - ReferenceAlias*).
+    let (object, args) = method_call_any(e, &["MoveTo", "TryToMoveTo"])?;
     if args.is_empty() || args.len() > MOVE_TO_MAX_ARGS {
         return None;
     }

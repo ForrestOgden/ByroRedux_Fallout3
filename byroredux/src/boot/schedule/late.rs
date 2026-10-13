@@ -690,7 +690,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::FollowerState>()
             .writes_resource::<byroredux_scripting::FollowerState>()
             // M47.2 — a spoken line's distance registrations.
-            .writes_resource::<byroredux_scripting::DistanceWatches>(),
+            .writes_resource::<byroredux_scripting::DistanceWatches>()
+            // M47.2 — a spoken line's reference-collection natives.
+            .reads_resource::<byroredux_scripting::CollectionAliasKinds>()
+            .reads_resource::<byroredux_scripting::AliasCollections>()
+            .writes_resource::<byroredux_scripting::AliasCollections>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
