@@ -9,7 +9,12 @@ const COC_BASE: u32 = 0x0000_0032;
 const CHAIR_BASE: u32 = 0x0001_0000;
 const DOOR_BASE: u32 = 0x0002_0000;
 
-fn placed(form_id: u32, base_form_id: u32, position: [f32; 3], rotation: [f32; 3]) -> PlacedRef {
+pub(crate) fn placed(
+    form_id: u32,
+    base_form_id: u32,
+    position: [f32; 3],
+    rotation: [f32; 3],
+) -> PlacedRef {
     PlacedRef {
         form_id,
         base_form_id,

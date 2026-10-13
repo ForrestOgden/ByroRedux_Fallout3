@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 43;
+    const BASELINE_MAJOR: u16 = 44;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -835,7 +835,14 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // stopped being blind to them.
     // 2026-10-12 (M47.2) — refreshed WITH a major bump (v42 -> v43): the
     // new `LocationAliasBindings` resource column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5b36_6d43_33e5_b726;
+    // 2026-10-12 (M47.2) — refreshed WITHOUT a bump: `Effect` gained an
+    // appended `MovePlayerTo` variant (enums serialize tagged by name, so no
+    // older save can carry it and every older one still reads), and
+    // `fragment/state.rs` gained the unsaved `PlayerMoveRequest`.
+    // 2026-10-12 (M47.2) — refreshed WITH a major bump (v43 -> v44):
+    // `AddItem` / `RemoveItem` `count` widened `u32` -> `ItemCount`, and the
+    // parked `ReferenceState` gained the actor's `Perks`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x31fd_491b_dde9_7252;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

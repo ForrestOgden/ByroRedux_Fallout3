@@ -102,6 +102,12 @@ pub fn method_call<'a>(e: &'a Expr, method: &str) -> Option<(&'a Expr, &'a [Call
         .then_some((&object.node, args.as_slice()))
 }
 
+/// [`method_call`] for the first of `names` `e` calls — one primitive's
+/// spellings (`Enable` / `EnableNoWait` / `TryToEnable`).
+pub fn method_call_any<'a>(e: &'a Expr, names: &[&str]) -> Option<(&'a Expr, &'a [CallArg])> {
+    names.iter().find_map(|name| method_call(e, name))
+}
+
 /// The integer value of positional argument `idx`.
 pub fn int_arg(args: &[CallArg], idx: usize) -> Option<i64> {
     match &args.get(idx)?.value.node {

@@ -167,7 +167,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 43 as of 2026-10-12 — v31 #5042
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`, 44 as of 2026-10-12 — v31 #5042
   `ActorValue.base_authored`, v32 #5017 `ActorControlState.unconscious` + the parked `ReferenceState` control
   state, v33 #5367 `14cff35ae` new saved resource `DialogueSpokenInfoForms` (Say-Once ledger; the doc still has no
   v32→v33 entry, known-open #5459), v34 #5412 `a614eb273` `ActorValue.set_override`, v35 #5394 `03e51dfad` new
@@ -177,7 +177,8 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   container `ObjectRef`→`ActorRef` + new `Effect::RemoveItem` (queued fragment tails are saved), v40 M47.2 new saved resource
   `QuestScriptVariables` (+ `ActorRef::Speaker`, `Effect::SetQuestVariable`), v41 M47.2 `Effect::Conditional`
   guards `StageDoneGuard` → `FragmentGuard`, v42 M47.2 new saved `ScriptedFactionChanges` + `Effect::ChangeFaction`, v43 M47.2 new saved
-  `LocationAliasBindings` (quest location aliases);
+  `LocationAliasBindings` (quest location aliases), v44 M47.2 `AddItem`/`RemoveItem` `count` `u32`→`ItemCount` + parked
+  `ReferenceState.perks`;
   do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default

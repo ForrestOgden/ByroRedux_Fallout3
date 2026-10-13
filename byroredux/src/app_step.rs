@@ -936,7 +936,56 @@ impl App {
     /// (`asset_provider::material::sf_cdb_cache`, #2705) and the built
     /// material indexes (`sf_cdb_index_cache`, #5291) are module-scope for
     /// the same reason: they survive every rebuild.
+    /// M47.2 — drain a fragment's `Game.GetPlayer().MoveTo(<reference>)`.
+    /// A resident destination moves the player in place (camera, then the
+    /// body grounded under it, as the transition apply does); any other
+    /// queues a transition to the reference's cell at its placement, which
+    /// [`Self::step_cell_transition`] dispatches.
+    pub(crate) fn step_player_move_request(&mut self) {
+        let Some(destination) = self
+            .world
+            .try_resource_mut::<byroredux_scripting::PlayerMoveRequest>()
+            .and_then(|mut request| request.0.take())
+        else {
+            return;
+        };
+        let resident =
+            byroredux_scripting::condition::resolve_entity_by_global_form_id(&self.world, destination)
+                .and_then(|entity| {
+                    self.world
+                        .get::<byroredux_core::ecs::GlobalTransform>(entity)
+                        .map(|transform| (transform.translation, transform.rotation))
+                });
+        if let Some((position, rotation)) = resident {
+            cell_loader::reposition_camera(&mut self.world, position, rotation);
+            crate::systems::ground_character_body_at(&self.world, position);
+            if let Some(ctx) = self.renderer.as_mut() {
+                ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+            }
+            log::info!(
+                "Scripted player MoveTo: → resident reference {destination:08X} at \
+                 ({:.1}, {:.1}, {:.1})",
+                position.x,
+                position.y,
+                position.z,
+            );
+            return;
+        }
+        match cell_loader::queue_transition_to_reference(&self.world, destination, None) {
+            Ok(queued) => log::info!(
+                "Scripted player MoveTo: → reference {destination:08X} in {}",
+                queued.destination_label
+            ),
+            Err(error) => log::warn!(
+                "Scripted player MoveTo to {destination:08X} not applied: {error}"
+            ),
+        }
+    }
+
     pub(crate) fn step_cell_transition(&mut self) {
+        // M47.2 — a fragment's player `MoveTo` becomes an in-place move or
+        // a queued transition this same call dispatches.
+        self.step_player_move_request();
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }

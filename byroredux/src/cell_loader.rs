@@ -89,7 +89,8 @@ mod work_budget;
 pub use index::LoadedCellIndex;
 pub use interior_spawn::SpawnPose;
 pub use transition::{
-    log_transition_header, position_zup_to_yup, queue_door_transition, reposition_camera,
+    log_transition_header, position_zup_to_yup, queue_door_transition,
+    queue_transition_to_reference, reposition_camera,
     rotation_zup_to_yup_quat, take_pending_transition, unload_current_interior, CellTransitionInFlight, CurrentCellContext,
     CurrentCellRoot, CurrentExteriorContext, InteriorCellRequest, LoadedPluginSet,
     PendingCellTransitionSlot, TransitionDestination,

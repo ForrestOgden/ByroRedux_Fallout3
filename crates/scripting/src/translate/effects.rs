@@ -44,7 +44,8 @@ use crate::cinematic::CinematicAnimationEvent;
 use crate::papyrus_provider::{lower_provider_call, PapyrusProviderCatalog};
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
-    as_num, int_arg, is_game_get_player, method_call, quest_via, split_and, ObjectRef, QuestRef,
+    as_num, int_arg, is_game_get_player, method_call, method_call_any, quest_via, split_and,
+    ObjectRef, QuestRef,
 };
 
 /// A comparison operator of a fragment guard, applied as
@@ -440,7 +441,7 @@ pub enum Effect {
     AddItem {
         container: ActorRef,
         item: ObjectRef,
-        count: u32,
+        count: ItemCount,
     },
     /// `<actor>.EquipItem(<item>, false, <silent>)`. The supported shape
     /// deliberately declines `abPreventUnequip=true` until locked equipment
@@ -459,6 +460,20 @@ pub enum Effect {
     MoveTo {
         moved: ObjectRef,
         destination: ObjectRef,
+    },
+    /// `Game.GetPlayer().MoveTo(<destination>)` (M47.2) — the player's
+    /// teleport, with [`Self::MoveTo`]'s default-offsets rule. The player
+    /// may land in another cell, so the runtime records the destination
+    /// reference for the engine ([`crate::fragment::PlayerMoveRequest`]),
+    /// which moves the player in place or transitions to the reference's
+    /// cell.
+    MovePlayerTo { destination: ObjectRef },
+    /// M47.2 — `<global> = <source> + offset`, read when the effect applies:
+    /// `G.Mod(x)` (`source` is `global`) and `G.SetValue(S.GetValue() + c)`.
+    SetGlobalRelative {
+        global: ObjectRef,
+        source: ObjectRef,
+        offset: f32,
     },
     /// `<object>.Disable([fadeOut])` — records the placed reference as
     /// disabled even when its cell/entity is not currently loaded.
@@ -630,7 +645,7 @@ pub enum Effect {
     RemoveItem {
         container: ActorRef,
         item: ObjectRef,
-        count: u32,
+        count: ItemCount,
         destination: Option<ActorRef>,
     },
     /// M47.2 — `<quest>.<Property> = <literal>`: a write to a quest script's
@@ -657,6 +672,14 @@ pub enum Effect {
         actor: ActorRef,
         actor_value: ObjectRef,
         value: f32,
+    },
+    /// M47.2 — `<actor>.AddPerk(akPerk[, abNotify])` / `RemovePerk(akPerk)`:
+    /// the CK's "adds the specified perk to this actor" (rank 1 when not
+    /// owned, else unchanged) and its removal, on the actor's `Perks`.
+    ChangePerk {
+        actor: ActorRef,
+        perk: ObjectRef,
+        add: bool,
     },
     /// A manifest or engine-owned static provider call used as a sequencing
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
@@ -1389,6 +1412,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_remove_item,
     prim_change_faction,
     prim_set_actor_value,
+    prim_change_perk,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -1501,15 +1525,63 @@ const MOVE_TO_MAX_ARGS: usize = 6;
 /// for why this is not the FO4/Starfield count (#3487).
 const SKYRIM_PLAYER_CONTROLS_ARGS: usize = 9;
 
+/// `GlobalVariable.SetValue(afValue)` / `SetValueInt(aiValue)` with a
+/// literal, or — M47.2 — a value relative to a global read
+/// ([`Effect::SetGlobalRelative`]): `G.SetValue(S.GetValue() + 1.0)` (the
+/// radio-ready and counter idioms), and `G.Mod(afHowMuch)`, which the CK
+/// defines as adding to the value.
 fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "SetValue")?;
+    if let Some((object, args)) = method_call(e, "Mod") {
+        if args.len() != 1 {
+            return None;
+        }
+        let global = receiver_object(object, scope)?;
+        return Some(Effect::SetGlobalRelative {
+            source: global.clone(),
+            global,
+            offset: as_num(&args[0].value.node)?,
+        });
+    }
+    let (object, args) = method_call(e, "SetValue").or_else(|| method_call(e, "SetValueInt"))?;
     if args.len() != 1 {
         return None;
     }
-    Some(Effect::SetGlobalValue {
-        global: receiver_object(object, scope)?,
-        value: as_num(&args[0].value.node)?,
+    let global = receiver_object(object, scope)?;
+    let value = &args[0].value.node;
+    if let Some(value) = as_num(value) {
+        return Some(Effect::SetGlobalValue { global, value });
+    }
+    let (source, offset) = relative_global_value(value, scope)?;
+    Some(Effect::SetGlobalRelative {
+        global,
+        source,
+        offset,
     })
+}
+
+/// `<global read> ± <literal>` or `<literal> + <global read>`, under casts:
+/// the read global and the signed offset.
+fn relative_global_value(expr: &Expr, scope: &Scope) -> Option<(ObjectRef, f32)> {
+    let mut node = expr;
+    while let Expr::Cast { expr, .. } = node {
+        node = &expr.node;
+    }
+    let Expr::BinaryOp { op, left, right } = node else {
+        return None;
+    };
+    match op {
+        BinaryOp::Add => {
+            if let (Some(source), Some(offset)) =
+                (global_value_read(&left.node, scope), as_num(&right.node))
+            {
+                return Some((source, offset));
+            }
+            let source = global_value_read(&right.node, scope)?;
+            Some((source, as_num(&left.node)?))
+        }
+        BinaryOp::Sub => Some((global_value_read(&left.node, scope)?, -as_num(&right.node)?)),
+        _ => None,
+    }
 }
 
 /// `Quest.SetStage(int aiStage)` — one parameter in every shipped game.
@@ -1712,11 +1784,65 @@ fn prim_fail_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// How many items an `AddItem` / `RemoveItem` moves (M47.2): a literal, or a
+/// global's value read when the effect applies — `<global>.GetValueInt()`,
+/// `<global>.GetValue() as Int` or `<global>.Value as Int`, the spellings
+/// that carry ~210 vanilla Skyrim / FO4 / Starfield price and ransom counts.
+/// The read truncates toward zero, as Papyrus's `Float` → `Int` cast does; a
+/// negative value skips the effect.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ItemCount {
+    Literal(u32),
+    Global(ObjectRef),
+}
+
+/// Positional count argument `idx` (default `default` when absent). See
+/// [`ItemCount`].
+fn item_count_arg(
+    args: &[byroredux_papyrus::ast::CallArg],
+    idx: usize,
+    default: u32,
+    scope: &Scope,
+) -> Option<ItemCount> {
+    let Some(arg) = args.get(idx) else {
+        return Some(ItemCount::Literal(default));
+    };
+    if let Some(value) = int_arg(args, idx) {
+        // A negative literal declines.
+        return u32::try_from(value).ok().map(ItemCount::Literal);
+    }
+    global_value_read(&arg.value.node, scope).map(ItemCount::Global)
+}
+
+/// The global a value expression reads: `<global>.GetValue()`,
+/// `<global>.GetValueInt()` or `<global>.Value`, under any casts.
+fn global_value_read(expr: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    let mut node = expr;
+    while let Expr::Cast { expr, .. } = node {
+        node = &expr.node;
+    }
+    for name in ["GetValueInt", "GetValue"] {
+        if let Some((object, args)) = method_call(node, name) {
+            return args
+                .is_empty()
+                .then(|| global_receiver(object, scope))
+                .flatten();
+        }
+    }
+    match node {
+        Expr::MemberAccess { object, member } if member.node.0.eq_ignore_ascii_case("value") => {
+            global_receiver(&object.node, scope)
+        }
+        _ => None,
+    }
+}
+
 fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "AddItem")?;
     let container = receiver_actor(object, scope)?;
     let item = receiver_object(&args.first()?.value.node, scope)?;
-    let count = u32::try_from(optional_int_arg(args, 1, 1)?).ok()?;
+    let count = item_count_arg(args, 1, 1, scope)?;
     // Optional 3rd arg (`abSilent`) — accepted only as a literal (parsed,
     // not applied; see the `Effect::AddItem` doc). A present-but-
     // non-literal 3rd arg declines via `bool_arg`'s `None`; a 4th arg
@@ -1742,7 +1868,7 @@ fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     }
     let container = receiver_actor(object, scope)?;
     let item = receiver_object(&args[0].value.node, scope)?;
-    let count = u32::try_from(optional_int_arg(args, 1, 1)?).ok()?;
+    let count = item_count_arg(args, 1, 1, scope)?;
     bool_arg(args, 2)?;
     let destination = match args.get(3).map(|arg| &arg.value.node) {
         None | Some(Expr::NoneLit) => None,
@@ -1789,6 +1915,27 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
 /// value setter (`GlobalVariable.SetValue` takes one argument and is
 /// [`prim_set_global_value`]'s). The value must be a numeric literal.
+/// `AddPerk(akPerk)` (Skyrim) / `AddPerk(akPerk, abNotify = false)` (FO4,
+/// Starfield) and `RemovePerk(akPerk)`. The notify flag is a literal-only UI
+/// hint.
+fn prim_change_perk(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args, add) = if let Some((object, args)) = method_call(e, "AddPerk") {
+        (object, args, true)
+    } else {
+        let (object, args) = method_call(e, "RemovePerk")?;
+        (object, args, false)
+    };
+    if args.is_empty() || args.len() > if add { 2 } else { 1 } {
+        return None;
+    }
+    bool_arg(args, 1)?;
+    Some(Effect::ChangePerk {
+        actor: receiver_actor(object, scope)?,
+        perk: receiver_object(&args[0].value.node, scope)?,
+        add,
+    })
+}
+
 fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetValue")?;
     if args.len() != 2 {
@@ -1858,13 +2005,21 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     if !bool_arg(args, 4)?.unwrap_or(true) || bool_arg(args, 5)?.unwrap_or(false) {
         return None;
     }
-    let moved = receiver_object(object, scope)?;
     let destination = receiver_object(&args[0].value.node, scope)?;
+    if player_expr_ref(object, scope) {
+        return Some(Effect::MovePlayerTo { destination });
+    }
+    let moved = receiver_object(object, scope)?;
     Some(Effect::MoveTo { moved, destination })
 }
 
+/// `Disable([abFadeOut])`, FO4/Starfield's `DisableNoWait([abFadeOut])` (the
+/// same disable, returning before the fade), and — M47.2 —
+/// `ReferenceAlias.TryToDisable()`, the CK's "disable a reference in an alias
+/// without calling GetReference()" (an empty alias is a no-op, which an
+/// unresolved receiver already is at runtime).
 fn prim_disable(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "Disable")?;
+    let (object, args) = method_call_any(e, &["Disable", "DisableNoWait", "TryToDisable"])?;
     if args.len() > 1 {
         return None;
     }
@@ -1876,9 +2031,10 @@ fn prim_disable(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 /// #3489 — mirrors [`prim_disable`]: same receiver treatment (including
 /// alias-bound `ObjectReference` properties via `receiver_object`), same
-/// optional literal `bool` argument shape (`abFadeIn` here vs `abFadeOut`).
+/// optional literal `bool` argument shape (`abFadeIn` here vs `abFadeOut`),
+/// and the same `EnableNoWait` / `TryToEnable` spellings.
 fn prim_enable(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "Enable")?;
+    let (object, args) = method_call_any(e, &["Enable", "EnableNoWait", "TryToEnable"])?;
     if args.len() > 1 {
         return None;
     }
@@ -1959,6 +2115,18 @@ fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// anything non-literal declines the whole call. Papyrus's own default
 /// for `abLock` is `true`.
 fn prim_lock(e: &Expr, scope: &Scope) -> Option<Effect> {
+    // FO4/Starfield `Unlock(abAsOwner = false)` — "Unlocks this object" — is
+    // `Lock(false, abAsOwner)`.
+    if let Some((object, args)) = method_call(e, "Unlock") {
+        if args.len() > 1 {
+            return None;
+        }
+        bool_arg(args, 0)?;
+        return Some(Effect::SetLocked {
+            target: receiver_object(object, scope)?,
+            locked: false,
+        });
+    }
     let (object, args) = method_call(e, "Lock")?;
     if args.len() > 2 {
         return None;
@@ -3121,7 +3289,7 @@ mod tests {
             Some(vec![Effect::AddItem {
                 container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
                 item: ObjectRef::Property("SomeItem".into()),
-                count: 5,
+                count: ItemCount::Literal(5),
             }])
         );
     }
@@ -3138,7 +3306,7 @@ mod tests {
             Some(vec![Effect::AddItem {
                 container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
                 item: ObjectRef::Property("SomeItem".into()),
-                count: 5,
+                count: ItemCount::Literal(5),
             }])
         );
     }
@@ -3159,12 +3327,12 @@ mod tests {
                 Effect::AddItem {
                     container: ActorRef::Player,
                     item: ObjectRef::Property("Reward".into()),
-                    count: 1,
+                    count: ItemCount::Literal(1),
                 },
                 Effect::AddItem {
                     container: ActorRef::Player,
                     item: ObjectRef::Property("Gold001".into()),
-                    count: 1,
+                    count: ItemCount::Literal(1),
                 },
             ])
         );
@@ -3188,19 +3356,19 @@ mod tests {
                 Effect::RemoveItem {
                     container: ActorRef::Player,
                     item: ObjectRef::Property("Gold001".into()),
-                    count: 50,
+                    count: ItemCount::Literal(50),
                     destination: None,
                 },
                 Effect::RemoveItem {
                     container: ActorRef::Object(ObjectRef::Property("SomeChest".into())),
                     item: ObjectRef::Property("SomeItem".into()),
-                    count: 1,
+                    count: ItemCount::Literal(1),
                     destination: None,
                 },
                 Effect::RemoveItem {
                     container: ActorRef::Player,
                     item: ObjectRef::Property("SomeItem".into()),
-                    count: 2,
+                    count: ItemCount::Literal(2),
                     destination: Some(ActorRef::Object(ObjectRef::Property(
                         "SomeChest".into()
                     ))),
@@ -3209,13 +3377,171 @@ mod tests {
         );
     }
 
-    /// A count the lowerer cannot read (a global's live value), a computed
-    /// item (`Game.GetCaps()`), a non-literal silent flag, a negative count or
-    /// a fifth argument all decline rather than guess.
+    /// M47.2 — a count read from a global lowers to [`ItemCount::Global`] in
+    /// each spelling the corpus uses; the read happens when the effect applies.
+    #[test]
+    fn item_counts_read_from_a_global_lower() {
+        for call in [
+            "Game.GetPlayer().RemoveItem(Gold001, Ransom.GetValueInt(), false, None)",
+            "Game.GetPlayer().RemoveItem(Gold001, Ransom.GetValue() as Int, false, None)",
+            "Game.GetPlayer().RemoveItem(Gold001, Ransom.Value as Int, false, None)",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                Some(vec![Effect::RemoveItem {
+                    container: ActorRef::Player,
+                    item: ObjectRef::Property("Gold001".into()),
+                    count: ItemCount::Global(ObjectRef::Property("Ransom".into())),
+                    destination: None,
+                }]),
+                "{call}"
+            );
+        }
+    }
+
+    /// M47.2 — `AddPerk` in both arities and `RemovePerk`.
+    #[test]
+    fn perk_changes_lower() {
+        let perk = || ObjectRef::Property("SomePerk".into());
+        for (call, expected) in [
+            (
+                "Game.GetPlayer().AddPerk(SomePerk)",
+                Effect::ChangePerk {
+                    actor: ActorRef::Player,
+                    perk: perk(),
+                    add: true,
+                },
+            ),
+            (
+                "Companion.AddPerk(SomePerk, false)",
+                Effect::ChangePerk {
+                    actor: ActorRef::Object(ObjectRef::Property("Companion".into())),
+                    perk: perk(),
+                    add: true,
+                },
+            ),
+            (
+                "Game.GetPlayer().RemovePerk(SomePerk)",
+                Effect::ChangePerk {
+                    actor: ActorRef::Player,
+                    perk: perk(),
+                    add: false,
+                },
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
+        }
+    }
+
+    /// M47.2 — the FO4 / Starfield spellings of the enable and lock writes.
+    #[test]
+    fn no_wait_try_to_and_unlock_spellings_lower() {
+        let marker = || ObjectRef::Property("Marker".into());
+        for (call, expected) in [
+            (
+                "Marker.EnableNoWait(false)",
+                Effect::Enable {
+                    object: marker(),
+                    fade_in: false,
+                },
+            ),
+            (
+                "Marker.TryToEnable()",
+                Effect::Enable {
+                    object: marker(),
+                    fade_in: false,
+                },
+            ),
+            (
+                "Marker.DisableNoWait(true)",
+                Effect::Disable {
+                    object: marker(),
+                    fade_out: true,
+                },
+            ),
+            (
+                "Marker.TryToDisable()",
+                Effect::Disable {
+                    object: marker(),
+                    fade_out: false,
+                },
+            ),
+            (
+                "Marker.Unlock(false)",
+                Effect::SetLocked {
+                    target: marker(),
+                    locked: false,
+                },
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
+        }
+    }
+
+    /// M47.2 — relative global writes: `Mod`, a self-increment, a value
+    /// derived from another global, and `SetValueInt` with a literal.
+    #[test]
+    fn relative_global_writes_lower() {
+        let property = |name: &str| ObjectRef::Property(name.into());
+        let relative = |global: &str, source: &str, offset| Effect::SetGlobalRelative {
+            global: property(global),
+            source: property(source),
+            offset,
+        };
+        for (call, expected) in [
+            ("Counter.Mod(1.0)", relative("Counter", "Counter", 1.0)),
+            (
+                "Counter.SetValue(Counter.GetValue() + 1.0)",
+                relative("Counter", "Counter", 1.0),
+            ),
+            (
+                "RadioReady.SetValue(GameDaysPassed.GetValue() + 1.0)",
+                relative("RadioReady", "GameDaysPassed", 1.0),
+            ),
+            (
+                "Counter.SetValue(Counter.GetValueInt() - 2)",
+                relative("Counter", "Counter", -2.0),
+            ),
+            (
+                "GameHour.SetValueInt(9)",
+                Effect::SetGlobalValue {
+                    global: property("GameHour"),
+                    value: 9.0,
+                },
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
+        }
+        for call in [
+            "Counter.SetValue(Counter.GetValue() * 2.0)",
+            "Counter.Mod(Other.GetValue())",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{call}");
+        }
+    }
+
+    /// A computed item (`Game.GetCaps()`), a count from an unknown call, a
+    /// non-literal silent flag, a negative count or a fifth argument all
+    /// decline rather than guess.
     #[test]
     fn remove_item_declines_what_it_cannot_read() {
         for call in [
-            "Game.GetPlayer().RemoveItem(Gold001, Ransom.GetValueInt(), false, None)",
+            "Game.GetPlayer().RemoveItem(Gold001, GetRansom(), false, None)",
             "Game.GetPlayer().RemoveItem(Game.GetCaps(), 50, false, None)",
             "Game.GetPlayer().RemoveItem(Gold001, 5, bQuiet, None)",
             "Game.GetPlayer().RemoveItem(Gold001, -5)",
@@ -3320,12 +3646,12 @@ mod tests {
                 Effect::AddItem {
                     container: ActorRef::Speaker,
                     item: ObjectRef::Property("Gold001".into()),
-                    count: 10,
+                    count: ItemCount::Literal(10),
                 },
                 Effect::RemoveItem {
                     container: ActorRef::Speaker,
                     item: ObjectRef::Property("Ale".into()),
-                    count: 1,
+                    count: ItemCount::Literal(1),
                     destination: None,
                 },
             ])
@@ -3611,6 +3937,29 @@ mod tests {
                 destination: ObjectRef::Property("SomeMarker".into()),
             }])
         );
+    }
+
+    /// M47.2 — the player's `MoveTo` (a teleport) lowers to its own effect;
+    /// the default-offsets rule still applies.
+    #[test]
+    fn lowers_the_players_move_to() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_11()\n\
+             Game.GetPlayer().MoveTo(SomeMarker, 0.0, 0.0, 0.0, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::MovePlayerTo {
+                destination: ObjectRef::Property("SomeMarker".into()),
+            }])
+        );
+        let offset = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_11()\n\
+             Game.GetPlayer().MoveTo(SomeMarker, 0.0, 0.0, 64.0, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&offset), None);
     }
 
     #[test]

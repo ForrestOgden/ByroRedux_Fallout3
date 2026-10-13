@@ -38,6 +38,10 @@ struct ReferenceState {
     /// bonus was permanent) and a second `AddSpell` applied it twice.
     /// Required, like `picked_up` (#4465): pre-v30 saves are rejected.
     spells: Option<Vec<u32>>,
+    /// M47.2 — the actor's ranked `Perks`, so a scripted `AddPerk` /
+    /// `RemovePerk` on an NPC outlives its cell's eviction (the respawn
+    /// re-derives the authored list). Required: pre-v44 saves are rejected.
+    perks: Option<byroredux_core::character::Perks>,
     /// #5017 — the actor's `ActorControlState` (restrained / unconscious),
     /// so a scripted wake-up survives eviction. Without it, the spawn-time
     /// "Starts Unconscious" flag would knock a woken robot out again on every
@@ -149,6 +153,7 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
                         weapon: None,
                         actor_values: None,
                         spells: None,
+                        perks: None,
                         control: None,
                         dead: false,
                         picked_up: false,
@@ -231,6 +236,11 @@ pub(crate) fn capture(world: &mut World, victims: &[EntityId]) {
             state.spells = spells_q.get(*entity).map(|list| list.0.clone());
         }
     }
+    if let Some(perks_q) = world.query::<byroredux_core::character::Perks>() {
+        for (entity, _, state) in &mut rows {
+            state.perks = perks_q.get(*entity).cloned();
+        }
+    }
     if let Some(control_q) = world.query::<byroredux_scripting::ActorControlState>() {
         for (entity, _, state) in &mut rows {
             state.control = control_q.get(*entity).copied();
@@ -289,6 +299,9 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
     // values above, so membership and the value changes it implies agree.
     if let Some(spells) = state.spells {
         world.insert(entity, byroredux_scripting::SpellList(spells));
+    }
+    if let Some(perks) = state.perks {
+        world.insert(entity, perks);
     }
     // #5017 — before the actor job's `apply_starts_unconscious`, which
     // defers to whatever state this brings back.
@@ -680,6 +693,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
     let mut weapons = column::<EquippedWeapon>(snapshot, "EquippedWeapon");
     let mut values = column::<ActorValues>(snapshot, "ActorValues");
     let mut spells = column::<byroredux_scripting::SpellList>(snapshot, "SpellList");
+    let mut perks = column::<byroredux_core::character::Perks>(snapshot, "Perks");
     let mut controls =
         column::<byroredux_scripting::ActorControlState>(snapshot, "ActorControlState");
     let dead = column::<Dead>(snapshot, "Dead");
@@ -740,6 +754,7 @@ pub(crate) fn park_unresolved_snapshot_rows(
                     weapon: weapons.remove(&old),
                     actor_values: values.remove(&old),
                     spells: spells.remove(&old).map(|list| list.0),
+                    perks: perks.remove(&old),
                     control: controls.remove(&old),
                     dead: is_dead,
                     picked_up: false,
@@ -790,6 +805,7 @@ pub(crate) fn mark_picked_up(world: &World, entity: EntityId) {
                     weapon: None,
                     actor_values: None,
                     spells: None,
+                    perks: None,
                     control: None,
                     dead: false,
                     picked_up: true,
@@ -1371,6 +1387,25 @@ mod tests {
         world.insert(actor, SpellList(vec![0x10]));
         assert!(restore(&mut world, actor));
         assert_eq!(world.get::<SpellList>(actor).unwrap().0, vec![0x10, 0xAB]);
+    }
+
+    /// M47.2 — a scripted perk on an NPC survives its cell's eviction.
+    #[test]
+    fn perks_are_parked_and_restored() {
+        use byroredux_core::character::Perks;
+        let mut world = world();
+        let actor = reference(&mut world, "Skyrim.esm", 0x501);
+        world.insert(actor, Inventory::new());
+        let mut perks = Perks::default();
+        perks.set_rank(0xBEEF, 1);
+        world.insert(actor, perks.clone());
+        evict(&mut world, &[actor]);
+
+        let actor = reference(&mut world, "Skyrim.esm", 0x501);
+        world.insert(actor, Inventory::new());
+        world.insert(actor, Perks::default());
+        assert!(restore(&mut world, actor));
+        assert_eq!(world.get::<Perks>(actor).unwrap().rank(0xBEEF), 1);
     }
 
     /// #5017 — a "Starts Unconscious" robot spawns unconscious; a script

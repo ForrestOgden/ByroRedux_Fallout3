@@ -150,6 +150,7 @@ pub fn register(world: &mut World) {
     // terminal GotoState, same lifetime (outlives cell unload).
     world.insert_resource(crate::ReferenceScriptState::default());
     world.insert_resource(QuestObjectiveState::default());
+    world.insert_resource(PlayerMoveRequest::default());
 }
 
 /// Execute the lowered Papyrus fragments emitted by scene playback this

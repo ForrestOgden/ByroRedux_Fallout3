@@ -58,6 +58,33 @@ pub(crate) fn resolve_property_form_id(
     vmad?.scripts.iter().find_map(|s| s.object_form_id(name))
 }
 
+/// The number of items an [`crate::translate::effects::ItemCount`] names: the
+/// literal, or the global's current value truncated toward zero (Papyrus's
+/// `Float` → `Int` cast). `None` — the effect skips — for an unresolved global
+/// or a negative value.
+fn resolve_item_count(
+    count: &crate::translate::effects::ItemCount,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+) -> Option<u32> {
+    use crate::translate::effects::ItemCount;
+    match count {
+        ItemCount::Literal(count) => Some(*count),
+        ItemCount::Global(global) => {
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            let value = world
+                .try_resource::<crate::Globals>()
+                .and_then(|globals| globals.get(form_id))?;
+            let count = value.trunc();
+            if !(0.0..=u32::MAX as f32).contains(&count) {
+                log::debug!("fragment item count skipped: global {form_id:08X} = {value}");
+                return None;
+            }
+            Some(count as u32)
+        }
+    }
+}
+
 /// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
 /// properties go through FormID → loaded entity; alias-bound properties go
 /// through the owning quest's [`crate::scene::SceneActorBindings`] snapshot
@@ -99,16 +126,17 @@ fn resolve_object(
     entity
 }
 
-/// The FormID [`crate::ReferenceLockState`] keys a scripted lock change by
-/// (#4136).
+/// The global FormID an [`ObjectRef`] names — the key of the FormID-keyed
+/// ledgers ([`crate::ReferenceLockState`], #4136) and the player-move
+/// destination.
 ///
 /// Direct VMAD FormID property first, alias-bound receiver second —
 /// the same two-step the `Enable`/`Disable` arm uses, and for the same
 /// reason: the cheap world-free path stays unchanged for the case that
 /// already worked, and the alias arm is strictly additive. Returns `None`
-/// when neither resolves, in which case the live component change still
-/// stands and only its persistence is lost.
-fn lock_ledger_key(
+/// when neither resolves (for a lock change the live component change still
+/// stands and only its persistence is lost).
+fn object_form_id(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
     context: QuestFormId,
@@ -730,7 +758,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `Effect::StartCombat` — MQ101's dragon-attack/keep-escape combat
 ///     gate), `AmbientEngagement` (write, `Effect::StartCombat` taking
 ///     ownership of an ambient fight — #5046; taken after the
-///     `AiCombatState` guard drops)
+///     `AiCombatState` guard drops), `PlayerMoveRequest` (write,
+///     `Effect::MovePlayerTo` — M47.2; taken alone, the engine drains it),
+///     `Perks` (write, `Effect::ChangePerk` — M47.2)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -793,11 +823,16 @@ pub(crate) fn apply_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
-        Effect::SetGlobalValue { .. } => apply_global_effect(effect, vmad, world),
+        Effect::SetGlobalValue { .. } | Effect::SetGlobalRelative { .. } => {
+            apply_global_effect(effect, vmad, world)
+        }
         Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
             apply_inventory_effect(effect, context, vmad, world, deferred)
         }
-        Effect::MoveTo { .. } | Effect::Disable { .. } | Effect::Enable { .. } => {
+        Effect::MoveTo { .. }
+        | Effect::MovePlayerTo { .. }
+        | Effect::Disable { .. }
+        | Effect::Enable { .. } => {
             apply_placement_effect(effect, context, vmad, world, deferred)
         }
         Effect::StartScene { .. }
@@ -855,6 +890,32 @@ pub(crate) fn apply_effect(
                 .get_mut(actor)
                 .expect("present or inserted")
                 .set_base(avif, *value);
+            None
+        }
+        Effect::ChangePerk { actor, perk, add } => {
+            let actor = resolve_actor(
+                vmad,
+                world,
+                context,
+                actor,
+                &deferred.scene_actor_bindings,
+                deferred.speaker,
+            )?;
+            let perk = resolve_property_form_id(vmad, perk.property_name())?;
+            // `Perks` is direct component storage, written in place like
+            // `ActorValues` above.
+            let Some(mut perks) = world.query_mut::<byroredux_core::character::Perks>() else {
+                return None;
+            };
+            if perks.get_mut(actor).is_none() {
+                perks.insert(actor, byroredux_core::character::Perks::default());
+            }
+            let owned = perks.get_mut(actor).expect("present or inserted");
+            if !*add {
+                owned.remove(perk);
+            } else if owned.rank(perk) == 0 {
+                owned.set_rank(perk, 1);
+            }
             None
         }
         Effect::ChangeFaction {
@@ -965,6 +1026,24 @@ fn apply_global_effect(
                     "fragment SetValue skipped: Globals resource is unavailable for {form_id:08X}"
                 );
             }
+            None
+        }
+        Effect::SetGlobalRelative {
+            global,
+            source,
+            offset,
+        } => {
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            let source_id = resolve_property_form_id(vmad, source.property_name())?;
+            let Some(mut globals) = world.try_resource_mut::<crate::Globals>() else {
+                log::debug!("fragment global write skipped: Globals resource is unavailable");
+                return None;
+            };
+            let Some(value) = globals.get(source_id) else {
+                log::debug!("fragment global write skipped: no global {source_id:08X}");
+                return None;
+            };
+            globals.set(form_id, value + offset);
             None
         }
         _ => unreachable!("apply_global_effect received a non-global effect"),
@@ -1110,6 +1189,7 @@ fn apply_inventory_effect(
                 deferred.speaker,
             )?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
+            let count = &resolve_item_count(count, vmad, world)?;
             let Some(mut inventories) = world.query_mut::<Inventory>() else {
                 log::debug!("fragment AddItem skipped: Inventory component never registered");
                 return None;
@@ -1149,6 +1229,7 @@ fn apply_inventory_effect(
             let bindings = &deferred.scene_actor_bindings;
             let source = resolve_actor(vmad, world, context, container, bindings, deferred.speaker)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
+            let count = &resolve_item_count(count, vmad, world)?;
             let destination = match destination {
                 Some(via) => Some(resolve_actor(vmad, world, context, via, bindings, deferred.speaker)?),
                 None => None,
@@ -1274,6 +1355,17 @@ fn apply_placement_effect(
                 return None;
             };
             transform.translation = translation;
+            None
+        }
+        Effect::MovePlayerTo { destination } => {
+            let Some(form_id) = object_form_id(vmad, world, context, destination, deferred)
+            else {
+                log::debug!("fragment MoveTo (player) skipped: destination does not resolve");
+                return None;
+            };
+            if let Some(mut request) = world.try_resource_mut::<super::PlayerMoveRequest>() {
+                request.0 = Some(form_id);
+            }
             None
         }
         Effect::Disable {
@@ -1519,7 +1611,7 @@ fn apply_lock_effect(
                 None => DeferredLockChange::Unlocked,
             };
             drop(locks);
-            if let Some(form_id) = lock_ledger_key(vmad, world, context, target, deferred) {
+            if let Some(form_id) = object_form_id(vmad, world, context, target, deferred) {
                 deferred.reference_lock_changes.push((form_id, recorded));
             }
             None
@@ -1557,7 +1649,7 @@ fn apply_lock_effect(
             // re-lock a door on the next cell load that `SetLockLevel`
             // explicitly declined to lock here.
             if let Some(recorded) = recorded {
-                if let Some(form_id) = lock_ledger_key(vmad, world, context, target, deferred) {
+                if let Some(form_id) = object_form_id(vmad, world, context, target, deferred) {
                     deferred.reference_lock_changes.push((form_id, recorded));
                 }
             }
@@ -2085,6 +2177,8 @@ fn apply_quest_scoped_effect(
         | Effect::RemoveItem { .. }
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
+        | Effect::MovePlayerTo { .. }
+        | Effect::SetGlobalRelative { .. }
         | Effect::Disable { .. }
         | Effect::Enable { .. }
         | Effect::StartScene { .. }
@@ -2103,6 +2197,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetQuestVariable { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
+        | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }

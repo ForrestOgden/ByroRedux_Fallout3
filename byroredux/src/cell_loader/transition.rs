@@ -312,19 +312,35 @@ pub fn queue_door_transition(
         .query::<DoorTeleport>()
         .and_then(|query| query.get(entity).copied())
         .ok_or(QueueDoorTransitionError::MissingDoor(entity))?;
+    queue_transition_to_reference(
+        world,
+        door.destination_form_id,
+        Some((door.position_zup, door.rotation_zup)),
+    )
+}
 
+/// Queue a transition to placed reference `destination_form_id`'s cell,
+/// landing at `pose_zup` (position, rotation; a door's `XTEL`) or, when
+/// `None`, at the reference's own placement — a script's
+/// `Game.GetPlayer().MoveTo(<marker>)` (M47.2).
+pub fn queue_transition_to_reference(
+    world: &byroredux_core::ecs::World,
+    destination_form_id: u32,
+    pose_zup: Option<([f32; 3], [f32; 3])>,
+) -> Result<QueuedDoorTransition, QueueDoorTransitionError> {
     let index = world
         .try_resource::<super::index::LoadedCellIndex>()
         .ok_or(QueueDoorTransitionError::MissingCellIndex)?;
-    let owned_cell = index
+    let (owned_cell, placement_pose) = index
         .0
         .cells
-        .cell_for_refr_form_id(door.destination_form_id)
-        .map(|cell| cell.to_owned())
+        .locate_refr(destination_form_id)
+        .map(|(cell, placed)| (cell.to_owned(), (placed.position, placed.rotation)))
         .ok_or(QueueDoorTransitionError::DestinationNotFound(
-            door.destination_form_id,
+            destination_form_id,
         ))?;
     drop(index);
+    let (position_zup, rotation_zup) = pose_zup.unwrap_or(placement_pose);
 
     let plugin_set = world
         .try_resource::<LoadedPluginSet>()
@@ -366,13 +382,13 @@ pub fn queue_door_transition(
     slot.0 = Some(PendingCellTransition {
         destination,
         source_refr_form_id: 0,
-        destination_position_zup: door.position_zup,
-        destination_rotation_zup: door.rotation_zup,
+        destination_position_zup: position_zup,
+        destination_rotation_zup: rotation_zup,
     });
 
     Ok(QueuedDoorTransition {
         destination_label,
-        destination_form_id: door.destination_form_id,
+        destination_form_id,
     })
 }
 
@@ -796,6 +812,50 @@ mod tests {
             Err(QueueDoorTransitionError::DestinationNotFound(0x1234)),
             "with the cell index installed the prerequisite gate must be \
              satisfied — the empty index then legitimately has no such REFR"
+        );
+    }
+
+    /// M47.2 — a scripted player `MoveTo(<marker>)` to a non-resident
+    /// reference queues a transition to the marker's cell, landing at the
+    /// marker's own placement (there is no `XTEL` to read).
+    #[test]
+    fn a_reference_destination_lands_at_its_placement() {
+        use byroredux_plugin::esm::cell::CellData;
+        let mut world = World::new();
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.cells.cells.insert(
+            "mq101".into(),
+            CellData {
+                form_id: 0x10,
+                editor_id: "MQ101".into(),
+                references: vec![super::super::interior_spawn_tests::placed(
+                    0x55,
+                    0x32,
+                    [1.0, 2.0, 3.0],
+                    [0.0, 0.0, 1.5],
+                )],
+                ..Default::default()
+            },
+        );
+        world.insert_resource(super::super::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.insert_resource(LoadedPluginSet {
+            masters: Vec::new(),
+            esm_path: "Skyrim.esm".into(),
+        });
+        world.insert_resource(PendingCellTransitionSlot::default());
+
+        let queued = queue_transition_to_reference(&world, 0x55, None).unwrap();
+        assert_eq!(queued.destination_form_id, 0x55);
+        let pending = take_pending_transition(&world).unwrap();
+        assert!(matches!(
+            pending.destination,
+            TransitionDestination::Interior { ref editor_id, .. } if editor_id == "MQ101"
+        ));
+        assert_eq!(pending.destination_position_zup, [1.0, 2.0, 3.0]);
+        assert_eq!(pending.destination_rotation_zup, [0.0, 0.0, 1.5]);
+        assert_eq!(
+            queue_transition_to_reference(&world, 0x56, None),
+            Err(QueueDoorTransitionError::DestinationNotFound(0x56))
         );
     }
 

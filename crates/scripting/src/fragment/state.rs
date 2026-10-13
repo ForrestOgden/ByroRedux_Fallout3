@@ -28,6 +28,16 @@ pub struct ReferenceEnableState {
 
 impl Resource for ReferenceEnableState {}
 
+/// A fragment's `Game.GetPlayer().MoveTo(<reference>)` (M47.2): the
+/// destination reference's global FormID. The engine drains it each frame —
+/// moving the player in place when the reference is resident, otherwise
+/// transitioning to the reference's cell at its placement. Not saved: it
+/// lives for at most one frame.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerMoveRequest(pub Option<u32>);
+
+impl Resource for PlayerMoveRequest {}
+
 /// One reference's scripted lock state, as recorded by
 /// [`ReferenceLockState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

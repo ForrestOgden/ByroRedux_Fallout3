@@ -1953,7 +1953,7 @@ fn dispatch_add_item_via_registered_vmad() {
             vec![Effect::AddItem {
                 container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
-                count: 3,
+                count: crate::translate::effects::ItemCount::Literal(3),
             }],
         );
     }
@@ -2026,7 +2026,7 @@ fn dispatch_add_item_pushes_onto_an_existing_inventory() {
             vec![Effect::AddItem {
                 container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
-                count: 3,
+                count: crate::translate::effects::ItemCount::Literal(3),
             }],
         );
     }
@@ -2112,6 +2112,232 @@ fn dispatch_move_to_via_registered_vmad() {
 
     let transform = world.get::<Transform>(moved).expect("still present");
     assert_eq!(transform.translation, Vec3::new(10.0, 20.0, 30.0));
+}
+
+/// M47.2 — an item count read from a global applies the global's value when
+/// the fragment runs, truncated toward zero; a negative value skips the effect.
+#[test]
+fn item_count_from_a_global_reads_it_when_applied() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    use crate::translate::effects::ItemCount;
+    const CHEST_FORM: u32 = 0x0000_6100;
+    const GOLD_FORM: u32 = 0x0000_000F;
+    const PRICE_FORM: u32 = 0x0000_6200;
+    let mut world = fixture();
+    let chest = spawn_with_form_id(&mut world, CHEST_FORM);
+    let mut globals = crate::Globals::default();
+    globals.set(PRICE_FORM, 7.9);
+    world.insert_resource(globals);
+    let object = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![
+                        object("Chest", CHEST_FORM),
+                        object("Gold001", GOLD_FORM),
+                        object("Price", PRICE_FORM),
+                    ],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::AddItem {
+                container: ActorRef::Object(crate::translate::compose::ObjectRef::Property(
+                    "Chest".into(),
+                )),
+                item: crate::translate::compose::ObjectRef::Property("Gold001".into()),
+                count: ItemCount::Global(crate::translate::compose::ObjectRef::Property(
+                    "Price".into(),
+                )),
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    let inventory = world.get::<Inventory>(chest).expect("inventory created");
+    assert_eq!(inventory.items[0].base_form_id, GOLD_FORM);
+    assert_eq!(inventory.items[0].count, 7, "7.9 truncates toward zero");
+}
+
+/// M47.2 — `AddPerk` grants rank 1 (an owned perk keeps its rank) and
+/// `RemovePerk` drops it, creating `Perks` on an actor that has none.
+#[test]
+fn perk_changes_apply_to_the_actors_perks() {
+    use byroredux_core::character::Perks;
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    const ACTOR: u32 = 0x0000_6400;
+    const PERK: u32 = 0x0000_6500;
+    const RANKED: u32 = 0x0000_6501;
+    let mut world = fixture();
+    world.register::<Perks>();
+    let actor = spawn_with_form_id(&mut world, ACTOR);
+    let mut owned = Perks::default();
+    owned.set_rank(RANKED, 3);
+    world.insert(actor, owned);
+    let object = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    let change = |perk: &str, add| Effect::ChangePerk {
+        actor: crate::translate::effects::ActorRef::Object(ObjectRef::Property("Actor".into())),
+        perk: ObjectRef::Property(perk.into()),
+        add,
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![
+                        object("Actor", ACTOR),
+                        object("Perk", PERK),
+                        object("Ranked", RANKED),
+                    ],
+                }],
+            },
+        );
+        frags.insert(Q, 10, vec![change("Perk", true), change("Ranked", true)]);
+        frags.insert(Q, 20, vec![change("Perk", false)]);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    {
+        let perks = world.get::<Perks>(actor).unwrap();
+        assert_eq!(perks.rank(PERK), 1);
+        assert_eq!(perks.rank(RANKED), 3, "an owned perk keeps its rank");
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    emit_advance(&world, Q, 20);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.get::<Perks>(actor).unwrap().rank(PERK), 0);
+}
+
+/// M47.2 — `G = S + offset` reads the source global when it applies.
+#[test]
+fn relative_global_write_reads_its_source_when_applied() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    const READY: u32 = 0x0000_6300;
+    const DAYS: u32 = 0x0000_0039;
+    let mut world = fixture();
+    let mut globals = crate::Globals::default();
+    globals.set(DAYS, 12.5);
+    globals.set(READY, 0.0);
+    world.insert_resource(globals);
+    let object = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![object("Ready", READY), object("Days", DAYS)],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::SetGlobalRelative {
+                    global: ObjectRef::Property("Ready".into()),
+                    source: ObjectRef::Property("Days".into()),
+                    offset: 1.0,
+                },
+                Effect::SetGlobalRelative {
+                    global: ObjectRef::Property("Ready".into()),
+                    source: ObjectRef::Property("Ready".into()),
+                    offset: 0.5,
+                },
+            ],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::Globals>().get(READY), Some(14.0));
+}
+
+/// M47.2 — the player's `MoveTo` records the destination reference (not
+/// loaded here: it may be in another cell) for the engine to drain.
+#[test]
+fn dispatch_player_move_to_requests_the_destination_reference() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    const DEST_FORM: u32 = 0x0000_7001;
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_Test".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "StartMarker".into(),
+                        status: 1,
+                        value: PropertyValue::Object {
+                            form_id: DEST_FORM,
+                            alias: -1,
+                        },
+                    }],
+                }],
+            },
+        );
+        frags.insert(
+            Q,
+            10,
+            vec![Effect::MovePlayerTo {
+                destination: crate::translate::compose::ObjectRef::Property("StartMarker".into()),
+            }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(&world, Q, 10);
+    quest_fragment_dispatch_system(&world);
+
+    assert_eq!(
+        world.resource::<crate::PlayerMoveRequest>().0,
+        Some(DEST_FORM)
+    );
 }
 
 #[test]
@@ -4262,7 +4488,7 @@ fn dispatch_add_item_on_the_player() {
         vec![Effect::AddItem {
             container: ActorRef::Player,
             item: ObjectRef::Property("Gold001".into()),
-            count: 25,
+            count: crate::translate::effects::ItemCount::Literal(25),
         }],
     );
     let inventory = world.get::<Inventory>(player).expect("created on demand");
@@ -4320,20 +4546,20 @@ fn dispatch_remove_item_drains_releases_and_moves() {
             Effect::RemoveItem {
                 container: ActorRef::Player,
                 item: item("Gold001"),
-                count: 120,
+                count: crate::translate::effects::ItemCount::Literal(120),
                 destination: None,
             },
             Effect::RemoveItem {
                 container: ActorRef::Player,
                 item: item("Sword"),
-                count: 1,
+                count: crate::translate::effects::ItemCount::Literal(1),
                 destination: None,
             },
             // More than is left: the remaining 10 move, no more.
             Effect::RemoveItem {
                 container: ActorRef::Player,
                 item: item("Gold001"),
-                count: 50,
+                count: crate::translate::effects::ItemCount::Literal(50),
                 destination: Some(ActorRef::Object(item("Chest"))),
             },
         ],
@@ -4433,7 +4659,7 @@ fn spoken_fragment_resolves_the_speaker() {
     let effects = vec![Effect::AddItem {
         container: ActorRef::Speaker,
         item: ObjectRef::Property("Gold001".into()),
-        count: 10,
+        count: crate::translate::effects::ItemCount::Literal(10),
     }];
     crate::apply_spoken_info_fragment(&world, &effects, Q, Some(&vmad), None);
     assert!(world.get::<Inventory>(npc).is_none(), "no speaker, no effect");

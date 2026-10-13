@@ -318,7 +318,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// locations quest location aliases hold). A pre-v43 save has none, so a
 /// restored quest's randomly picked locations would re-roll; rejected like
 /// the other column additions.
-pub const FORMAT_MAJOR: u16 = 43;
+///
+/// v43 -> v44 (M47.2): `Effect::AddItem` / `Effect::RemoveItem`'s `count`
+/// widened from a `u32` to `ItemCount` (a literal or a global read when the
+/// effect applies). Queued fragment tails carry `Effect`s, so a v43 save
+/// with a queued item transfer cannot be re-read and is rejected. The parked
+/// reference state also gained the actor's `Perks` (scripted `AddPerk` /
+/// `RemovePerk` survive eviction).
+pub const FORMAT_MAJOR: u16 = 44;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
