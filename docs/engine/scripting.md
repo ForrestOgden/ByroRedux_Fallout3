@@ -665,6 +665,13 @@ runtime:
   to a native, the constant goes by name rather than as a number, because the
   number differs per game (Skyrim's Keyframed is 4) and the primitives decline
   a bare motion-type literal they can't place (#5633).
+- **Global functions.** `ScriptName.Fn()` runs another script's global
+  function, which has no `Self`. `Game.GetFormFromFile(aiFormID,
+  asFilename)` resolves a plugin-local id through the load order
+  (`LoadOrderIdentity::form_from_file`), ignoring the id's load-order bits
+  as the CK page says.
+- **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
+  through an `f32`, which can't hold every form id.
 - **Linked references.** `GetNthLinkedRef(n)` follows the unkeyworded link n
   times; 0 is the object itself (CK *GetNthLinkedRef*).
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the

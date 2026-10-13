@@ -120,6 +120,16 @@ impl Value {
         matches!(self, Value::Float(_))
     }
 
+    /// An `Int` (or `Bool`) exactly — `number()` goes through an `f32`,
+    /// which cannot hold every 32-bit integer.
+    fn int(&self) -> Option<i32> {
+        match self {
+            Value::Int(i) => Some(*i),
+            Value::Bool(b) => Some(i32::from(*b)),
+            _ => None,
+        }
+    }
+
     fn text(&self) -> String {
         match self {
             Value::None => "None".into(),
@@ -141,9 +151,12 @@ impl Value {
             (Value::Form(a), Value::Form(b)) => a == b,
             (Value::Alias { quest: a, alias: x }, Value::Alias { quest: b, alias: y }) => a == b && x == y,
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
-            (a, b) => match (a.number(), b.number()) {
+            (a, b) => match (a.int(), b.int()) {
                 (Some(a), Some(b)) => a == b,
-                _ => false,
+                _ => match (a.number(), b.number()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                },
             },
         }
     }
@@ -1484,6 +1497,12 @@ impl Vm<'_> {
         let target = match receiver {
             None => own(self, frame),
             Some(object) if static_class(object).is_some() => None,
+            // `ScriptName.Fn()`: a global function, which has no `Self`.
+            Some(Expr::Ident(script_name)) if self.global_script(frame, &script_name.0).is_some() => {
+                let script = self.global_script(frame, &script_name.0).expect("checked above");
+                resolve_in(&script, "", name, &self.deferred.vm_scripts)
+                    .map(|code| (script, QuestFormId(0), None, code))
+            }
             Some(object) => match self.eval(frame, object)? {
                 Value::Form(form) if form == frame.owner.0 && own(self, frame).is_some() => own(self, frame),
                 Value::Form(form) if self.is_quest(form) => {
@@ -1513,6 +1532,21 @@ impl Vm<'_> {
         }))
     }
 
+    /// The script `name` names, when it is not a value in `frame`: the
+    /// receiver of a global call.
+    fn global_script(&self, frame: &Frame, name: &str) -> Option<Arc<Script>> {
+        let key = name.to_ascii_lowercase();
+        if key == "self" || frame.locals.contains_key(&key) {
+            return None;
+        }
+        if Self::property(frame.vmad.as_ref(), name).is_some()
+            || member_type_in(&frame.script, name, &self.deferred.vm_scripts).is_some()
+        {
+            return None;
+        }
+        self.deferred.vm_scripts.get(&key).cloned()
+    }
+
     /// The object reads no effect models.
     fn object_read(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
         let Expr::MemberAccess { object, member } = callee else {
@@ -1522,6 +1556,24 @@ impl Vm<'_> {
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
+                ("game", "getformfromfile") => {
+                    let values = self.eval_args(frame, args)?;
+                    // The id exactly: an f32 (`Value::number`) cannot hold
+                    // every 32-bit form id.
+                    let form_id = match values.first() {
+                        Some(Value::Int(id)) => *id as u32,
+                        _ => return stop("GetFormFromFile without an Int form id"),
+                    };
+                    let Some(Value::Str(file)) = values.get(1) else {
+                        return stop("GetFormFromFile without a file");
+                    };
+                    let plugin = byroredux_core::form_id::PluginId::from_filename(file);
+                    let form = self
+                        .world
+                        .try_resource::<crate::load_order::LoadOrderIdentity>()
+                        .and_then(|identity| identity.form_from_file(form_id as u32, plugin));
+                    Some(form.map_or(Value::None, Value::Form))
+                }
                 _ => None,
             });
         }
@@ -1908,22 +1960,25 @@ fn arithmetic(op: BinaryOp, l: &Value, r: &Value) -> Run<Value> {
     let (Some(a), Some(b)) = (l.number(), r.number()) else {
         return stop(format!("arithmetic on {} and {}", l.text(), r.text()));
     };
-    let float = l.is_float() || r.is_float();
-    Ok(match (op, float) {
-        (BinaryOp::Add, true) => Value::Float(a + b),
-        (BinaryOp::Sub, true) => Value::Float(a - b),
-        (BinaryOp::Mul, true) => Value::Float(a * b),
-        (BinaryOp::Div, true) => Value::Float(a / b),
-        (BinaryOp::Add, false) => Value::Int((a as i32).wrapping_add(b as i32)),
-        (BinaryOp::Sub, false) => Value::Int((a as i32).wrapping_sub(b as i32)),
-        (BinaryOp::Mul, false) => Value::Int((a as i32).wrapping_mul(b as i32)),
-        (BinaryOp::Div, false) => {
-            if b as i32 == 0 {
-                return stop("integer division by zero");
-            }
-            Value::Int((a as i32) / (b as i32))
-        }
-        (BinaryOp::Mod, _) => {
+    if let (Some(a), Some(b)) = (l.int(), r.int()) {
+        // Papyrus `Int` arithmetic is 32-bit and exact.
+        return Ok(Value::Int(match op {
+            BinaryOp::Add => a.wrapping_add(b),
+            BinaryOp::Sub => a.wrapping_sub(b),
+            BinaryOp::Mul => a.wrapping_mul(b),
+            BinaryOp::Div if b == 0 => return stop("integer division by zero"),
+            BinaryOp::Div => a.wrapping_div(b),
+            BinaryOp::Mod if b == 0 => return stop("modulo by zero"),
+            BinaryOp::Mod => a.wrapping_rem(b),
+            _ => return stop("not an arithmetic operator"),
+        }));
+    }
+    Ok(match op {
+        BinaryOp::Add => Value::Float(a + b),
+        BinaryOp::Sub => Value::Float(a - b),
+        BinaryOp::Mul => Value::Float(a * b),
+        BinaryOp::Div => Value::Float(a / b),
+        BinaryOp::Mod => {
             if b as i32 == 0 {
                 return stop("modulo by zero");
             }
@@ -1940,6 +1995,7 @@ fn binary(op: BinaryOp, l: &Value, r: &Value) -> Run<Value> {
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
             let ordering = match (l, r) {
                 (Value::Str(a), Value::Str(b)) => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
+                _ if l.int().is_some() && r.int().is_some() => l.int().cmp(&r.int()),
                 _ => {
                     let (Some(a), Some(b)) = (l.number(), r.number()) else {
                         return stop(format!("comparing {} and {}", l.text(), r.text()));
@@ -2560,9 +2616,34 @@ impl<'l> Checker<'l> {
         let Some(receiver) = receiver else {
             return self.fail(|| format!("global {name}"));
         };
+        // `ScriptName.Fn()`: a global function of a script the library has.
+        if let Expr::Ident(script_name) = receiver {
+            let key = script_name.0.to_ascii_lowercase();
+            let is_value = key == "self"
+                || frame.locals.contains_key(&key)
+                || static_class(receiver).is_some()
+                || {
+                    let script = Arc::clone(&frame.script);
+                    self.member_type(&script, &script_name.0).is_some()
+                };
+            if !is_value {
+                if let Some(script) = self.library.and_then(|library| library.script(&script_name.0)) {
+                    if !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
+                        self.scripts.insert(key, Arc::clone(&script));
+                        return self.check_call_into(&script, &name, statement, Kind::None);
+                    }
+                }
+            }
+        }
         if let Some(class) = static_class(receiver) {
             if class == "game" && name == "getplayer" {
                 return Some(Kind::Player);
+            }
+            if class == "game"
+                && name == "getformfromfile"
+                && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)])
+            {
+                return Some(Kind::Object);
             }
             if class == "debug" && name.starts_with("trace") {
                 return Some(Kind::None);

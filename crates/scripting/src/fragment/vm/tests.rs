@@ -1112,3 +1112,60 @@ fn another_quests_members_read_by_their_declared_type() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert!(!crate::fragment::reference_enabled(&world, GUARD));
 }
+
+/// `ScriptName.Fn()` calls a global function of another script (no `Self`);
+/// `Game.GetFormFromFile` resolves a plugin-local id through the load order,
+/// its top byte unused.
+#[test]
+fn global_functions_and_forms_from_files() {
+    let util = parsed_source(
+        "ScriptName VmUtil\n\
+         Int Function Twice(Int n) Global\n Return n * 2\n EndFunction\n\
+         Function DisableIt(ObjectReference akRef) Global\n akRef.Disable()\n EndFunction\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmGlobals2 extends Quest\n\
+         Function Fragment_1()\n\
+           If VmUtil.Twice(3) == 6\n\
+             VmUtil.DisableIt(Game.GetFormFromFile(0x41010F01, \"Skyrim.esm\") as ObjectReference)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("vmutil".to_owned(), Arc::clone(&util))].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.insert_resource(crate::load_order::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        PluginId::from_filename("Skyrim.esm"),
+    )]));
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(GUARD),
+    });
+    world.insert_resource(pool);
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(id));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(!crate::fragment::reference_enabled(&world, GUARD));
+}
+
+/// Papyrus `Int` arithmetic and comparison are exact 32-bit — beyond the 24
+/// bits an `f32` holds.
+#[test]
+fn int_arithmetic_is_exact() {
+    let add = arithmetic(BinaryOp::Add, &Value::Int(0x4101_0F00), &Value::Int(1)).unwrap();
+    assert!(matches!(add, Value::Int(0x4101_0F01)));
+    assert!(!Value::Int(0x4101_0F01).equals(&Value::Int(0x4101_0F00)));
+    let lt = binary(BinaryOp::Lt, &Value::Int(0x4101_0F00), &Value::Int(0x4101_0F01)).unwrap();
+    assert!(matches!(lt, Value::Bool(true)));
+}

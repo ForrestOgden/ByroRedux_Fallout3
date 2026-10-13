@@ -59,6 +59,16 @@ impl LoadOrderIdentity {
         let local = form.local();
         (local != 0 && local <= object_id_mask(*slot)).then(|| slot.compose(local))
     }
+
+    /// Papyrus `Game.GetFormFromFile(aiFormID, asFilename)`: the form
+    /// `form_id` names in the plugin `plugin`. The CK page: "the top most
+    /// byte in the given ID is unused" — the load-order bits of whatever slot
+    /// kind the plugin has are ignored. `None` when the plugin is not loaded.
+    pub fn form_from_file(&self, form_id: u32, plugin: PluginId) -> Option<u32> {
+        let (slot, _) = self.owners.iter().find(|(_, owner)| *owner == plugin)?;
+        let local = form_id & object_id_mask(*slot);
+        (local != 0).then(|| slot.compose(local))
+    }
 }
 
 /// The object-id bits a slot kind leaves below its load-order bits.
