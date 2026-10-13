@@ -61,6 +61,7 @@ mod populate;
 mod reference;
 mod state;
 mod systems;
+mod updates;
 pub mod vm;
 
 pub use effects::*;
@@ -68,6 +69,7 @@ pub use populate::*;
 pub use reference::*;
 pub use state::*;
 pub use systems::*;
+pub use updates::*;
 
 /// Concatenated text of every production file in this module, for the
 /// source-shape tests that used to `include_str!("../fragment.rs")` when this
@@ -91,6 +93,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/populate.rs"),
     include_str!("fragment/reference.rs"),
     include_str!("fragment/systems.rs"),
+    include_str!("fragment/updates.rs"),
     include_str!("fragment/vm.rs"),
 );
 

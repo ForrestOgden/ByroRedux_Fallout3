@@ -492,6 +492,9 @@ pub struct DeferredFragmentEffects {
         byroredux_plugin::esm::records::condition::ConditionStringId,
         crate::ScriptObject,
     )>,
+    /// M47.2 — update registrations Papyrus VM runs asked for: the owner,
+    /// the script, the change.
+    pub(super) script_updates: Vec<(u32, String, super::UpdateRequest)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -532,6 +535,7 @@ impl DeferredFragmentEffects {
             faction_relations: Vec::new(),
             quest_variables: Vec::new(),
             quest_objects: Vec::new(),
+            script_updates: Vec::new(),
             faction_changes: Vec::new(),
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
@@ -837,6 +841,19 @@ impl DeferredFragmentEffects {
                 None => {
                     log::debug!("object script-variable writes dropped: QuestScriptObjects not installed");
                     self.quest_objects.clear();
+                }
+            }
+        }
+        if !self.script_updates.is_empty() {
+            match world.try_resource_mut::<super::ScriptUpdates>() {
+                Some(mut updates) => {
+                    for (owner, script, request) in self.script_updates.drain(..) {
+                        updates.request(owner, &script, request);
+                    }
+                }
+                None => {
+                    log::debug!("update registrations dropped: ScriptUpdates not installed");
+                    self.script_updates.clear();
                 }
             }
         }

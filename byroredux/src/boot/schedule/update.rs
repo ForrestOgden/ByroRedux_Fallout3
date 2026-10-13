@@ -118,6 +118,13 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     fn quest_fragment_dispatch(world: &World, _dt: f32) {
         byroredux_scripting::quest_fragment_dispatch_system(world)
     }
+    // M47.2 — Papyrus update registrations count the host's game clock.
+    fn script_update_dispatch(world: &World, dt: f32) {
+        let game_hours = world
+            .try_resource::<crate::components::GameTimeRes>()
+            .map(|time| time.absolute_hours());
+        byroredux_scripting::script_update_system(world, dt, game_hours)
+    }
     fn dlc2_ttr4a_on_init_dispatch(world: &World, _dt: f32) {
         byroredux_scripting::papyrus_demo::dlc2_ttr4a::dlc2_ttr4a_on_init_system(world)
     }
@@ -537,6 +544,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::fragment_continuation_system,
     );
+    // OnUpdate / OnUpdateGameTime for the scripts registered for them,
+    // beside the other latent-script clock.
+    scheduler.add_exclusive(Stage::Update, script_update_dispatch);
     // Translate the resulting Skyrim PlayIdle FormID requests into decoded
     // HKX AnimationPlayers. The parallel animation batch observes a request
     // no later than the following frame, preserving deterministic restarts.

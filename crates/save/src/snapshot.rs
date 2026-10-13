@@ -402,7 +402,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v63 -> v64 (M47.2): `ScriptObject` gained `Str` (string script variables
 /// and script states), `VmFrame` its `owner` / `defined_in` / `state`, and
 /// `Effect::Interpret` its event `args`.
-pub const FORMAT_MAJOR: u16 = 64;
+///
+/// v64 -> v65 (M47.2): a new resource column, `ScriptUpdates` (Papyrus
+/// `RegisterForUpdate` / `RegisterForSingleUpdate` and GameTime
+/// registrations, with the clocks they count).
+pub const FORMAT_MAJOR: u16 = 65;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

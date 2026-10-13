@@ -674,7 +674,7 @@ Not modelled yet:
 - reference- and actor-script functions and members (`ReArmTrigger`,
   `ChangeCarryState`, `akBard.sInstrument = …`), and several actor
   natives (`SetPlayerTeammate`, `AdvanceSkill`, `IncrementStat`);
-- update and timer registration (`RegisterForUpdate`, `StartTimer`);
+- FO4 timers (`StartTimer` / `OnTimer`) and alias update registrations;
 - INFO and scene fragments, which still use the lowering only.
 
 ### Reference scripts on the VM (M47.2)
@@ -712,10 +712,43 @@ the VM declines the rest). Bleak Falls Barrow attaches 35, among them ambush
 draugr, pull bars, levers, traps and ore veins.
 
 Not modelled yet:
-- other events (`OnHit`, `OnUpdate`, `OnCombatStateChanged`, `OnOpen`, …);
+- other events (`OnHit`, `OnCombatStateChanged`, `OnOpen`, …; `OnUpdate`
+  arrives through update registrations);
 - `OnInit` holding back the script's other events while it waits;
 - the variable reset a cell reset brings;
 - calls into another reference's script.
+
+### Update registrations (M47.2)
+
+`crates/scripting/src/fragment/updates.rs` implements the CK's *RegisterForUpdate -
+Form* family for scripts the VM runs. The older `RecurringUpdate` component
+above serves only the hand-written recognizer path.
+- `RegisterForUpdate(s)` is periodic, and `RegisterForSingleUpdate(s)` fires once.
+  Each replaces the script's earlier registration of its own kind; the two kinds
+  don't interfere.
+- `UnregisterForUpdate()` cancels both.
+- The `GameTime` twins count game hours.
+- A quest's registrations end when the quest stops.
+
+A registration on another quest (`kmyQuest.RegisterForUpdate(5.0)`) registers
+every script attached to that quest that handles the update. The saved
+`ScriptUpdates` holds the registrations and both clocks:
+- real time counts each frame's `dt`, so menu mode pauses it;
+- game time reads the host's absolute game clock (`GameTimeRes`, day × 24 +
+  hour), so sleeping and waiting deliver the update they pass. A game-time
+  registration made before the host first reports its clock is armed from that
+  first report.
+
+`script_update_system` delivers `OnUpdate` / `OnUpdateGameTime` to the
+registering script, through the fragment runtime. A reference's update waits
+while the reference is unloaded.
+
+A handler is delivered only when it runs whole on the VM. The check covers it
+when it checks the registering code, which installs the scripts it needs, and
+the delivery checks it again against the installed scripts (cached per
+script). A registration whose handler can't run doesn't fail the registering
+code, so its other effects still run; the handler is skipped entirely, never
+run partway.
 
 ### Messages and text replacement (M47.2)
 

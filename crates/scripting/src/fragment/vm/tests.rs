@@ -542,3 +542,99 @@ fn reference_scripts_run_their_events() {
     crate::reference_script_event_system(&world, 0.0);
     assert!(!crate::fragment::reference_enabled(&world, REF), "OnActivate disabled itself");
 }
+
+/// `RegisterForUpdate` delivers `OnUpdate` every interval until the handler
+/// unregisters; the check accepts the registration because the handler runs.
+#[test]
+fn periodic_updates_run_until_unregistered() {
+    let script = parsed_source(
+        "ScriptName QF_VmUpdates extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Int Ticks\n\
+         Function Fragment_1()\n RegisterForUpdate(1.0)\n EndFunction\n\
+         Event OnUpdate()\n\
+           Ticks += 1\n\
+           If Ticks == 3\n UnregisterForUpdate()\n Marker.Enable()\n EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let ticks = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(Q, crate::QuestScriptVariables::property_key("Ticks"))
+    };
+    crate::script_update_system(&world, 0.5, None);
+    assert_eq!(ticks(&world), None, "not due yet");
+    for expected in [1.0, 2.0, 3.0, 3.0] {
+        crate::script_update_system(&world, 1.0, None);
+        assert_eq!(ticks(&world), Some(expected));
+    }
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
+    assert!(world.resource::<crate::ScriptUpdates>().registrations().is_empty());
+}
+
+/// A registration whose handler the VM cannot run does not fail the code
+/// that registers; the delivery skips the handler whole — it never runs the
+/// statements before the one it cannot.
+#[test]
+fn a_handler_the_vm_cannot_run_is_skipped_whole() {
+    let script = parsed_source(
+        "ScriptName QF_VmBadUpdate extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n RegisterForSingleUpdate(1.0)\n EndFunction\n\
+         Event OnUpdate()\n Marker.Enable()\n Debug.SendAnimationEvent(None, \"x\")\n EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::script_update_system(&world, 2.0, None);
+    assert!(!crate::fragment::reference_enabled(&world, MARKER), "no partial run");
+}
+
+/// A reference's `RegisterForSingleUpdateGameTime` counts game hours from
+/// the first clock the host reports, and delivers once.
+#[test]
+fn game_time_updates_count_game_hours() {
+    const REF: u32 = 0x0001_0F11;
+    let script = parsed_source(
+        "ScriptName VmGameTimeScript extends ObjectReference\n\
+         Event OnLoad()\n RegisterForSingleUpdateGameTime(2.0)\n EndEvent\n\
+         Event OnUpdateGameTime()\n Self.Disable()\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let reference = world.spawn();
+    world.insert(reference, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmGameTimeScript".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, reference, &instance, events, scripts);
+    world.insert(reference, crate::OnCellLoadEvent);
+    crate::reference_script_event_system(&world, 0.0);
+    // The registration predates the first reported clock: it arms at 10 h.
+    crate::script_update_system(&world, 0.1, Some(10.0));
+    crate::script_update_system(&world, 0.1, Some(11.5));
+    assert!(crate::fragment::reference_enabled(&world, REF), "1.5 game hours in");
+    crate::script_update_system(&world, 0.1, Some(12.0));
+    assert!(!crate::fragment::reference_enabled(&world, REF));
+    assert!(world.resource::<crate::ScriptUpdates>().registrations().is_empty(), "a single update");
+}

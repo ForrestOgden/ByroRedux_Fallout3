@@ -62,6 +62,12 @@ impl GameTimeRes {
         true
     }
 
+    /// Game hours since the runtime began: the clock Papyrus game-time
+    /// update registrations count.
+    pub(crate) fn absolute_hours(&self) -> f64 {
+        self.day as f64 * f64::from(HOURS_PER_DAY) + f64::from(self.hour)
+    }
+
     /// Advance from real elapsed seconds using the active time scale.
     pub(crate) fn tick(&mut self, real_seconds: f32) {
         if real_seconds.is_finite() && real_seconds > 0.0 && self.time_scale > 0.0 {

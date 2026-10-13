@@ -662,6 +662,35 @@ impl Vm<'_> {
         resolve_in(script, &state, name, &self.deferred.vm_scripts)
     }
 
+    /// `<quest>.RegisterForUpdate(…)` and the like on another quest: every
+    /// script attached to it that handles the update registers (or all of
+    /// them unregister).
+    fn quest_update(&mut self, frame: &mut Frame, quest: u32, name: &str, args: &[CallArg]) -> Run<()> {
+        let interval = match args.first() {
+            Some(arg) => self.eval(frame, &arg.value.node)?.number(),
+            None => None,
+        };
+        let Some(request) = super::UpdateRequest::of_call(name, interval) else {
+            return stop(format!("{name} without an interval"));
+        };
+        let handler = super::UpdateRequest::handler(name).unwrap_or_default();
+        let owner = QuestFormId(quest);
+        let attached: Vec<String> = self
+            .deferred
+            .quest_scripts
+            .get(&owner)
+            .map(|vmad| vmad.scripts.iter().map(|script| script.name.clone()).collect())
+            .unwrap_or_default();
+        for name in attached {
+            let script = self.deferred.vm_scripts.get(&name.to_ascii_lowercase()).cloned();
+            let handles = script.is_some_and(|script| handler.is_empty() || self.resolve(&script, owner, handler).is_some());
+            if handles {
+                self.deferred.script_updates.push((quest, name, request));
+            }
+        }
+        Ok(())
+    }
+
     /// `GotoState(state)` for a script without the compiler's generated
     /// one: `OnEndState` in the old state, the switch, `OnBeginState` in the
     /// new one (CK *OnBeginState*: also when re-entering the same state).
@@ -1548,6 +1577,25 @@ impl Vm<'_> {
         if is_state_event(&callee.node) {
             return Ok(Flow::Normal);
         }
+        if let Some((object, name)) = quest_update_call(&callee.node) {
+            if let Value::Form(quest) = self.eval(frame, object)? {
+                if self.is_quest(quest) {
+                    return self.quest_update(frame, quest, &name, args).map(|_| Flow::Normal);
+                }
+            }
+        }
+        if let Some(name) = update_call(&callee.node) {
+            let interval = match args.first() {
+                Some(arg) => self.eval(frame, &arg.value.node)?.number(),
+                None => None,
+            };
+            let Some(request) = super::UpdateRequest::of_call(&name, interval) else {
+                return stop(format!("{name} without an interval"));
+            };
+            let script = frame.script.name.node.0.clone();
+            self.deferred.script_updates.push((frame.owner.0, script, request));
+            return Ok(Flow::Normal);
+        }
         if self_call_named(&callee.node, "gotostate") {
             let state = match args.first() {
                 Some(arg) => self.eval(frame, &arg.value.node)?.text(),
@@ -1591,6 +1639,24 @@ fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned
         value: value.clone(),
     }];
     (Box::new(callee), args)
+}
+
+/// An update (un)registration on another object: the receiver and the
+/// lowercase name.
+fn quest_update_call(callee: &Expr) -> Option<(&Expr, String)> {
+    let Expr::MemberAccess { object, member } = callee else {
+        return None;
+    };
+    let name = member.node.0.to_ascii_lowercase();
+    let on_self = matches!(&object.node, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self"));
+    (super::UpdateRequest::handler(&name).is_some() && !on_self && static_class(&object.node).is_none())
+        .then_some((&object.node, name))
+}
+
+/// An update (un)registration on the script itself, by lowercase name.
+fn update_call(callee: &Expr) -> Option<String> {
+    let name = callee_name(callee).to_ascii_lowercase();
+    (super::UpdateRequest::handler(&name).is_some() && self_call_named(callee, &name)).then_some(name)
 }
 
 /// A call of `name` (lowercase) on the script itself.
@@ -1794,6 +1860,27 @@ pub fn check_reference_script(
     Ok((handled, checker.scripts.into_values().collect()))
 }
 
+/// The installed scripts as a [`CheckLibrary`].
+struct Installed<'a>(&'a HashMap<String, Arc<Script>>);
+
+impl crate::translate::effects::ScriptLibrary for Installed<'_> {
+    fn script(&self, name: &str) -> Option<Arc<Script>> {
+        self.0.get(&name.to_ascii_lowercase()).cloned()
+    }
+}
+
+/// Whether `handler` of the installed `script` runs whole on this VM,
+/// against the installed scripts — on a quest (`on_quest`) or a reference.
+pub(super) fn handler_runs(scripts: &HashMap<String, Arc<Script>>, script: &str, handler: &str, on_quest: bool) -> bool {
+    let Some(script) = scripts.get(&script.to_ascii_lowercase()) else {
+        return false;
+    };
+    let kind = if on_quest { Kind::Quest } else { Kind::Object };
+    let library = Installed(scripts);
+    let mut checker = Checker::new(Some(&library), script);
+    checker.versions(script, handler).is_empty() || checker.check_call_into(script, handler, true, kind).is_some()
+}
+
 fn check_reason(
     script: Arc<Script>,
     function: &str,
@@ -1960,6 +2047,26 @@ impl<'l> Checker<'l> {
             self.waiting.insert(key);
         }
         self.call_waits(waits, statement).map(|_| returns)
+    }
+
+    /// Check an event handler a registration delivers to later, installing
+    /// the scripts it needs when it runs. A handler the VM cannot run does
+    /// not fail the registering code — the delivery checks it again and
+    /// skips it — so its failed check is rolled back. It may wait; the
+    /// registering call does not.
+    fn check_handler(&mut self, script: &Arc<Script>, handler: &str, self_kind: Kind) -> Option<()> {
+        let saved = (
+            self.waits,
+            self.reason.clone(),
+            self.visiting.clone(),
+            self.waiting.clone(),
+            self.scripts.clone(),
+        );
+        if self.check_call_into(script, handler, true, self_kind).is_none() {
+            (self.reason, self.visiting, self.waiting, self.scripts) = (saved.1, saved.2, saved.3, saved.4);
+        }
+        self.waits = saved.0;
+        Some(())
     }
 
     /// A call to a function that `waits` makes its caller wait too.
@@ -2189,6 +2296,18 @@ impl<'l> Checker<'l> {
             if name == "getstate" {
                 return Some(Kind::Str);
             }
+            // An update registration: the handler it delivers to must run.
+            if let Some(handler) = super::UpdateRequest::handler(&name) {
+                let interval_ok = handler.is_empty()
+                    || matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]);
+                if !statement || !interval_ok {
+                    return self.fail(|| format!("{name} as written"));
+                }
+                if !handler.is_empty() && !self.versions(&script, handler).is_empty() {
+                    self.check_handler(&script, handler, frame.self_kind)?;
+                }
+                return Some(Kind::None);
+            }
             if name == "gotostate" && statement {
                 // The switch runs the state events, called for no value.
                 for event in ["onendstate", "onbeginstate"] {
@@ -2238,6 +2357,25 @@ impl<'l> Checker<'l> {
             (Kind::Alias, "getlocation") => return Some(Kind::Object),
             _ => {}
         }
+        // Another quest's update registration: its handler must run.
+        if receiver_kind == Kind::Quest {
+            if let Some(handler) = super::UpdateRequest::handler(&name) {
+                let interval_ok = handler.is_empty()
+                    || matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]);
+                if !statement || !interval_ok {
+                    return self.fail(|| format!("{name} as written"));
+                }
+                if !handler.is_empty() {
+                    let Some(script) = self.quest_script_type(frame, receiver) else {
+                        return self.fail(|| format!("{name} on a quest of unknown script"));
+                    };
+                    if !self.versions(&script, handler).is_empty() {
+                        self.check_handler(&script, handler, Kind::Quest)?;
+                    }
+                }
+                return Some(Kind::None);
+            }
+        }
         // A quest script's function, through a cast or a typed property.
         if receiver_kind == Kind::Quest {
             if let Some(script) = self.quest_script_for(frame, receiver, &name) {
@@ -2257,6 +2395,16 @@ impl<'l> Checker<'l> {
     /// The script a quest-typed receiver's `name` lives in: a cast's target
     /// type, or the declared type of a property / local.
     fn quest_script_for(&mut self, frame: &CheckFrame, receiver: &Expr, name: &str) -> Option<Arc<Script>> {
+        let script = self.quest_script_type(frame, receiver)?;
+        if self.versions(&script, name).is_empty() {
+            return None;
+        }
+        Some(script)
+    }
+
+    /// The script a quest-typed receiver is declared as — a cast's target
+    /// type, or a property's / local's type — registered for the run.
+    fn quest_script_type(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<Arc<Script>> {
         let type_name = match receiver {
             Expr::Cast { target_type, .. } => match &target_type.node {
                 Type::Object(ty) => ty.0.clone(),
@@ -2275,9 +2423,6 @@ impl<'l> Checker<'l> {
             _ => return None,
         };
         let script = self.library?.script(&type_name)?;
-        if self.versions(&script, name).is_empty() {
-            return None;
-        }
         self.scripts
             .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
         Some(script)

@@ -8,7 +8,8 @@
 //! A script no recognizer takes counts as covered by the Papyrus VM when
 //! `check_reference_script` accepts it, as the cell loader would attach it;
 //! `VM_REASONS=1` tallies why the VM declines the rest, weighted by the
-//! references carrying each script.
+//! references carrying each script; `VM_REASON_FAMILIES=<text>` lists the
+//! script families whose decline reason contains `text`.
 //!
 //! ```bash
 //! cargo run --release -p byroredux-scripting --example refr_script_coverage -- \
@@ -105,6 +106,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("scripted references: {scripted}; covered by a recognizer: {covered} ({pct:.1}%)");
     let vm_pct = 100.0 * vm_covered as f64 / scripted.max(1) as f64;
     println!("  with the Papyrus VM: {vm_covered} ({vm_pct:.1}%)");
+    // `VM_REASON_FAMILIES=<text>`: the script families whose VM decline
+    // reason contains `text`, by references carrying them.
+    if let Ok(needle) = std::env::var("VM_REASON_FAMILIES") {
+        let mut hits: Vec<(&String, usize)> = families
+            .iter()
+            .filter(|(name, _)| vm_checks.get(*name).is_some_and(|check| check.as_ref().is_err_and(|why| why.contains(&needle))))
+            .map(|(name, (count, _))| (name, *count))
+            .collect();
+        hits.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, count) in hits.into_iter().take(25) {
+            println!("    {needle}: {count:>6}  {name}  ({})", vm_checks[name].as_ref().unwrap_err());
+        }
+    }
     if std::env::var("VM_REASONS").is_ok() {
         let mut reasons: Vec<_> = vm_reasons.iter().collect();
         reasons.sort_by(|a, b| b.1.cmp(a.1));

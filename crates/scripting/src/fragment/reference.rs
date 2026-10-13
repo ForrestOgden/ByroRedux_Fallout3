@@ -33,8 +33,14 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 /// delivers the first three.
 pub const DELIVERED_EVENTS: [&str; 5] = ["OnInit", "OnLoad", "OnCellLoad", "OnActivate", "OnTriggerEnter"];
 
+/// An event the runtime delivers — to a reference, or an update to the
+/// script that registered for it. One the script does not handle in its
+/// current state does nothing.
 pub(super) fn is_delivered_event(name: &str) -> bool {
-    DELIVERED_EVENTS.iter().any(|event| event.eq_ignore_ascii_case(name))
+    DELIVERED_EVENTS
+        .iter()
+        .chain(&["OnUpdate", "OnUpdateGameTime"])
+        .any(|event| event.eq_ignore_ascii_case(name))
 }
 
 pub use super::vm::check_reference_script;

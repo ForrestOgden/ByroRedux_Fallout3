@@ -111,6 +111,7 @@ pub use fragment::{
     ReferenceLockState, ReferenceScriptState, SceneFragments,
     attach_reference_script, check_reference_script, reference_script_event_system,
     PapyrusReferenceScripts, ReferenceScript, DELIVERED_EVENTS,
+    script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
 };
 pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,

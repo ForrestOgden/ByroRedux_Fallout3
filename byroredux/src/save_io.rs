@@ -620,6 +620,9 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::ScriptedRelationships>("ScriptedRelationships")
         // M47.2 — the Papyrus VM's object script variables.
         .register_resource::<byroredux_scripting::QuestScriptObjects>("QuestScriptObjects")
+        // M47.2 — Papyrus RegisterForUpdate / RegisterForSingleUpdate (and
+        // the GameTime pair) registrations and the clocks they count.
+        .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates")
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.
