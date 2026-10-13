@@ -229,6 +229,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetLinkedRef { .. } => "SetLinkedRef",
         Effect::MoveToEditorLocation { .. } => "MoveToEditorLocation",
         Effect::SetLocationKeywordData { .. } => "SetLocationKeywordData",
+        Effect::ForceLocationTo { .. } => "ForceLocationTo",
         Effect::SetPlayerTeammate { .. } => "SetPlayerTeammate",
         Effect::SetDoingFavor { .. } => "SetDoingFavor",
         Effect::PlayerCaps { .. } => "PlayerCaps",

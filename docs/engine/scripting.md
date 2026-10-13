@@ -1191,6 +1191,10 @@ the same store — "returns this value, if any. It otherwise returns 0".
 no-op statements: a help message shows once here (no shown-count to reset, nothing standing to
 hide — one still on screen is not dismissed).
 
+`<location alias>.ForceLocationTo(akLocation)` records `AliasOverride::ForcedLocation`: the alias
+refresh seats the location in the alias's place in the fill order, as `ForceRefTo` does for a
+reference alias, until the quest stops.
+
 ### Input enable layers (M47.2)
 
 Fallout 4 / Starfield replace `Game.Disable/EnablePlayerControls` with

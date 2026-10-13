@@ -909,6 +909,12 @@ pub fn refresh_scene_actor_bindings(world: &World) -> usize {
                 }
                 continue;
             }
+            if let (Some(AliasOverride::ForcedLocation(location)), true) = (scripted, alias.is_location) {
+                if let Some(locations) = locations.as_mut() {
+                    locations.insert((*quest, alias.alias_id), location);
+                }
+                continue;
+            }
             if let (Some(AliasOverride::Forced(reference)), false) = (scripted, alias.is_location) {
                 let entity = if reference == crate::story_manager::PLAYER_REF_FORM_ID {
                     story_player

@@ -1,5 +1,5 @@
-//! Scripted quest-alias overrides (M47.2): `ReferenceAlias.ForceRefTo` and
-//! `Alias.Clear`.
+//! Scripted quest-alias overrides (M47.2): `ReferenceAlias.ForceRefTo`,
+//! `LocationAlias.ForceLocationTo` and `Alias.Clear`.
 //!
 //! The CK's *ReferenceAlias Script*: `ForceRefTo` "forces this alias to use
 //! the specified reference", `Clear` "clears this alias of its reference" —
@@ -23,6 +23,9 @@ pub enum AliasOverride {
     Forced(u32),
     /// `Clear` — the alias holds nothing.
     Cleared,
+    /// `LocationAlias.ForceLocationTo` — the location alias holds this
+    /// location.
+    ForcedLocation(u32),
 }
 
 /// Every scripted alias override of a running quest. Saved.

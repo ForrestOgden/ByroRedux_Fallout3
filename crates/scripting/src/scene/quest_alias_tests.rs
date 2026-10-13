@@ -2192,6 +2192,44 @@ fn scripted_alias_overrides_apply_in_the_refresh() {
     );
 }
 
+/// M47.2 — `ForceLocationTo` makes the location alias hold the location in the
+/// alias's place in the fill order, over whatever its fill would pick.
+#[test]
+fn force_location_to_overrides_a_location_alias_fill() {
+    use crate::location::tests::{whiterun_index, DRAGONSREACH, WHITERUN};
+    use crate::location::{install_location_table, LocationAliasBindings};
+    use crate::{AliasOverride, AliasOverrides};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    install_location_table(&mut world, &whiterun_index());
+    world.insert_resource(QuestStageState::default());
+    install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: QUEST,
+            aliases: vec![QuestAlias {
+                alias_id: 0,
+                is_location: true,
+                fill_type: Some(AliasFillType::ForcedLocation(WHITERUN)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    );
+    world.resource_mut::<QuestStageState>().start_quest(QuestFormId(QUEST), None);
+    let bound = |world: &World| world.resource::<LocationAliasBindings>().resolve(QuestFormId(QUEST), 0);
+    mark_scene_actor_bindings_dirty(&world);
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world), Some(WHITERUN));
+    world
+        .resource_mut::<AliasOverrides>()
+        .set(QuestFormId(QUEST), 0, AliasOverride::ForcedLocation(DRAGONSREACH));
+    mark_scene_actor_bindings_dirty(&world);
+    refresh_scene_actor_bindings(&world);
+    assert_eq!(bound(&world), Some(DRAGONSREACH));
+}
+
 /// M47.2 — CK *Quest Alias Tab*, Allow Cleared: a condition-matched location
 /// alias never takes a cleared location unless flagged, and a flagged one
 /// still prefers an uncleared match.

@@ -5407,6 +5407,43 @@ fn force_ref_to_and_clear_record_alias_overrides() {
     assert_eq!(overrides.get(Q, 4), Some(crate::AliasOverride::Cleared));
 }
 
+/// M47.2 — `ForceLocationTo` records the location against the location alias the
+/// property names.
+#[test]
+fn force_location_to_records_a_location_override() {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    const PLACE: u32 = 0x0001_5555;
+    let world = fixture();
+    let object = |name: &str, form_id: u32, alias: i16| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias },
+    };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_Test".into(),
+            status: 0,
+            properties: vec![object("Alias_Site", 0, 6), object("Hold", PLACE, -1)],
+        }],
+    };
+    run_stage_effects(
+        &world,
+        vmad,
+        vec![Effect::ForceLocationTo {
+            alias: ObjectRef::Property("Alias_Site".into()),
+            location: ObjectRef::Property("Hold".into()),
+        }],
+    );
+    assert_eq!(
+        world.resource::<crate::AliasOverrides>().get(Q, 6),
+        Some(crate::AliasOverride::ForcedLocation(PLACE))
+    );
+}
+
 /// M47.2 — guards over actor state (death, perks, items), scene playback
 /// and the player's current location read the live world.
 #[test]

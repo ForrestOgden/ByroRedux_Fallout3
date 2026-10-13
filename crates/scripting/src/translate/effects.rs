@@ -1496,6 +1496,10 @@ pub enum Effect {
         alias: ObjectRef,
         target: Option<ActorRef>,
     },
+    /// M47.2 — `<location alias>.ForceLocationTo(akLocation)`: the location
+    /// alias holds the location until the quest stops (CK *ForceLocationTo -
+    /// LocationAlias*).
+    ForceLocationTo { alias: ObjectRef, location: ObjectRef },
     /// M47.2 — `<actor>.AddPerk(akPerk[, abNotify])` / `RemovePerk(akPerk)`:
     /// the CK's "adds the specified perk to this actor" (rank 1 when not
     /// owned, else unchanged) and its removal, on the actor's `Perks`.
@@ -2943,6 +2947,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_equip_item,
     prim_move_to,
     prim_move_to_editor_location,
+    prim_force_location_to,
     prim_set_location_keyword_data,
     prim_disable,
     prim_enable,
@@ -3981,6 +3986,18 @@ fn prim_force_alias(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::ForceAlias {
         alias: receiver_object(object, scope)?,
         target,
+    })
+}
+
+/// `<location alias>.ForceLocationTo(akLocation)`.
+fn prim_force_location_to(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "ForceLocationTo")?;
+    if args.len() != 1 || !matches!(object, Expr::Ident(_)) {
+        return None;
+    }
+    Some(Effect::ForceLocationTo {
+        alias: receiver_object(object, scope)?,
+        location: receiver_object(&args[0].value.node, scope)?,
     })
 }
 

@@ -1639,24 +1639,22 @@ pub(crate) fn apply_effect(
             deferred.activation_blocks.push((reference, *blocked));
             None
         }
+        Effect::ForceLocationTo { alias, location } => {
+            let name = alias.property_name();
+            let Some((quest, alias_id)) = alias_property(vmad, context, name) else {
+                log::debug!("fragment ForceLocationTo skipped: '{name}' is not an alias property");
+                return None;
+            };
+            let location = resolve_property_form_id(vmad, location.property_name())?;
+            deferred
+                .alias_overrides
+                .push((quest, alias_id, crate::AliasOverride::ForcedLocation(location)));
+            deferred.scene_actor_bindings_dirty = true;
+            None
+        }
         Effect::ForceAlias { alias, target } => {
             let name = alias.property_name();
-            let Some((quest, alias_id)) = vmad.and_then(|vmad| {
-                vmad.scripts
-                    .iter()
-                    .find_map(|script| script.property(name))
-                    .and_then(|property| match property.value {
-                        PropertyValue::Object { form_id, alias } if alias >= 0 => Some((
-                            if form_id != 0 {
-                                QuestFormId(form_id)
-                            } else {
-                                context
-                            },
-                            i32::from(alias),
-                        )),
-                        _ => None,
-                    })
-            }) else {
+            let Some((quest, alias_id)) = alias_property(vmad, context, name) else {
                 log::debug!("fragment ForceRefTo/Clear skipped: '{name}' is not an alias property");
                 return None;
             };
@@ -3113,6 +3111,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetLinkedRef { .. }
         | Effect::MoveToEditorLocation { .. }
         | Effect::SetLocationKeywordData { .. }
+        | Effect::ForceLocationTo { .. }
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }
@@ -3184,6 +3183,22 @@ fn actor_value_now(world: &World, actor: EntityId, avif: u32) -> f32 {
         actor,
         world,
     )
+}
+
+/// The (quest, alias id) the script property `name` is bound to, a quest-less
+/// binding (form 0) meaning the running quest `context`.
+fn alias_property(vmad: Option<&ScriptInstanceData>, context: QuestFormId, name: &str) -> Option<(QuestFormId, i32)> {
+    vmad?
+        .scripts
+        .iter()
+        .find_map(|script| script.property(name))
+        .and_then(|property| match property.value {
+            PropertyValue::Object { form_id, alias } if alias >= 0 => Some((
+                if form_id != 0 { QuestFormId(form_id) } else { context },
+                i32::from(alias),
+            )),
+            _ => None,
+        })
 }
 
 pub(super) fn evaluate_value(

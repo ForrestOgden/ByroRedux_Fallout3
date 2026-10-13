@@ -473,7 +473,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v87 -> v88 (M47.2): the `InputLayers` resource column
 /// (`InputEnableLayer`).
-pub const FORMAT_MAJOR: u16 = 88;
+///
+/// v88 -> v89 (M47.2): `Effect::ForceLocationTo` and
+/// `AliasOverride::ForcedLocation`.
+pub const FORMAT_MAJOR: u16 = 89;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
