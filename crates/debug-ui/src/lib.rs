@@ -45,8 +45,8 @@ use winit::window::Window;
 
 pub use panels::{
     DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
-    InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, ObjectiveView,
-    PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
+    InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
+    ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
 };
 
 /// Setting IDs and the built-in registrations, re-exported from `core`.
@@ -292,6 +292,16 @@ impl DebugUiState {
 
     pub fn dialogue_menu_visible(&self) -> bool {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::Dialogue
+    }
+
+    /// Open the native menu on the script message-box page.
+    pub fn open_message_box_menu(&mut self) {
+        self.game_menu.visible = true;
+        self.game_menu.page = GameMenuPage::MessageBox;
+    }
+
+    pub fn message_box_menu_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::MessageBox
     }
 
     pub fn close_game_menu(&mut self) {

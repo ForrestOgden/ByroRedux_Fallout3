@@ -1031,6 +1031,16 @@ pub enum Effect {
         variable: String,
         value: f32,
     },
+    /// M47.2 — `<message>.Show([afArg1 … afArg9])` as a statement: the
+    /// message's notification or message box, its `printf` spots filled from
+    /// the literal arguments ([`crate::messages`]).
+    ShowMessage { message: ObjectRef, args: Vec<f32> },
+    /// M47.2 — `<message>.ShowAsHelpMessage(asEvent, …)`: the help text,
+    /// shown once (the repeat interval and the ending event are not
+    /// modelled).
+    ShowHelpMessage { message: ObjectRef },
+    /// M47.2 — `Debug.Notification(asText)` with a literal text.
+    Notification { text: String },
     /// M47.2 — a local assigned a number computed at run time
     /// (`int n = Utility.RandomInt(0, 3)`), read by later [`ValueExpr::Local`]s
     /// in the same run. A fragment holding one never suspends.
@@ -2440,6 +2450,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_base_protection,
     prim_kill,
     prim_set_relationship_rank,
+    prim_show_message,
+    prim_notification,
     prim_reward_player_xp,
     prim_player_caps,
     prim_set_objective_skipped,
@@ -2974,6 +2986,47 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
         marker: receiver_object(object, scope)?,
         fast_travel: bool_arg(args, 0)?.unwrap_or(false),
     })
+}
+
+/// `Message.Show(float afArg1 = 0.0, … afArg9 = 0.0)` (nine literal
+/// numbers at most) and `Message.ShowAsHelpMessage(string asEvent, float
+/// afDuration, float afInterval, int aiMaxTimes)` with literal arguments.
+fn prim_show_message(e: &Expr, scope: &Scope) -> Option<Effect> {
+    if let Some((object, args)) = method_call(e, "ShowAsHelpMessage") {
+        if args.len() != 4 || !matches!(args[0].value.node, Expr::StringLit(_)) {
+            return None;
+        }
+        for index in 1..4 {
+            as_num(&args[index].value.node)?;
+        }
+        return Some(Effect::ShowHelpMessage {
+            message: receiver_object(object, scope)?,
+        });
+    }
+    let (object, args) = method_call(e, "Show")?;
+    if args.len() > 9 {
+        return None;
+    }
+    let args = args
+        .iter()
+        .map(|arg| as_num(&arg.value.node))
+        .collect::<Option<Vec<f32>>>()?;
+    Some(Effect::ShowMessage {
+        message: receiver_object(object, scope)?,
+        args,
+    })
+}
+
+/// `Debug.Notification(string asNotificationText)` with a literal text.
+fn prim_notification(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Debug", "Notification")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let Expr::StringLit(text) = &args[0].value.node else {
+        return None;
+    };
+    Some(Effect::Notification { text: text.clone() })
 }
 
 /// `Game.RewardPlayerXP(int auiXPAmount, bool abDirect = false)` with a

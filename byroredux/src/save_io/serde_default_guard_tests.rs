@@ -895,7 +895,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::SetLocal` and `ValueExpr::Local`.
     // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
     // `Effect::SetReferenceVariable`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6328_d631_34bc_4525;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::ShowMessage`, `Effect::ShowHelpMessage` and
+    // `Effect::Notification`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4fe5_bae0_8d98_8451;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

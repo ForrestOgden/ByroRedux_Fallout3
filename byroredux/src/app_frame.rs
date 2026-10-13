@@ -153,24 +153,7 @@ impl App {
                 ui.set_visible(visible);
             }
         }
-        // P4 blocker 2 — open the native dialogue surface once per applied
-        // selection: the Late selection system bumps the serial; the app
-        // layer owns the open (focus transfer + modal state), watermarking
-        // against `opened_serial` so it re-opens on every fresh selection.
-        let fresh_selection = self
-            .world
-            .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
-            .is_some_and(|surface| surface.serial != surface.opened_serial);
-        if fresh_selection {
-            if let Some(mut surface) = self
-                .world
-                .try_resource_mut::<crate::systems::npc_dialogue::DialogueSurfaceState>()
-            {
-                surface.opened_serial = surface.serial;
-            }
-            self.open_dialogue_menu();
-        }
-        self.close_dialogue_menu_if_goodbye_ended();
+        self.present_modal_pages();
         let mut snapshot = if self
             .debug_ui
             .as_ref()
@@ -850,6 +833,47 @@ impl App {
             output.drop_without_applying_deltas();
         }
         self.shutdown(event_loop);
+    }
+
+    /// The world-raised modal pages, once per frame ahead of the snapshot.
+    fn present_modal_pages(&mut self) {
+        // P4 blocker 2 — open the native dialogue surface once per applied
+        // selection: the Late selection system bumps the serial; the app
+        // layer owns the open (focus transfer + modal state), watermarking
+        // against `opened_serial` so it re-opens on every fresh selection.
+        let fresh_selection = self
+            .world
+            .try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            .is_some_and(|surface| surface.serial != surface.opened_serial);
+        if fresh_selection {
+            if let Some(mut surface) = self
+                .world
+                .try_resource_mut::<crate::systems::npc_dialogue::DialogueSurfaceState>()
+            {
+                surface.opened_serial = surface.serial;
+            }
+            self.open_dialogue_menu();
+        }
+        self.close_dialogue_menu_if_goodbye_ended();
+        self.present_script_messages();
+    }
+
+    /// M47.2 — route this frame's script messages: notifications join the
+    /// frame's player feedback; a message box waits for whatever page is
+    /// open to close, then opens the message-box page until answered.
+    fn present_script_messages(&mut self) {
+        if !crate::notifications::route_script_messages(&self.world) {
+            return;
+        }
+        match self.debug_ui.as_mut() {
+            Some(ui) if !ui.game_menu_visible() => {
+                ui.open_message_box_menu();
+                self.release_world_input_for_ui();
+            }
+            Some(_) => {}
+            // No native UI to answer on: the boxes are dismissed.
+            None => while crate::notifications::answer_message_box(&self.world) {},
+        }
     }
 
     /// #5367 Phase L — a spoken Goodbye line ended its conversation (the

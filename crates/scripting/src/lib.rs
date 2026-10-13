@@ -26,6 +26,7 @@ pub mod fragment;
 pub mod globals;
 pub mod load_order;
 pub mod map_markers;
+pub mod messages;
 pub mod location;
 pub mod magic;
 pub mod obscript;
@@ -162,6 +163,9 @@ pub use papyrus_provider::{
 };
 pub use relationships::{
     install_relationships, relationship_rank, AuthoredRelationships, ScriptedRelationships,
+};
+pub use messages::{
+    install_message_catalog, MessageCatalog, PendingScriptMessages, ScriptMessage,
 };
 pub use bleedout::{
     bleedout_system, install_bleedout_rules, is_bleeding_out, is_essential, is_protected,
@@ -306,6 +310,7 @@ pub fn register(world: &mut World) {
     equipment::register(world);
     player_control::register(world);
     bleedout::register(world);
+    messages::register(world);
     cinematic::register(world);
     vm_state::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so

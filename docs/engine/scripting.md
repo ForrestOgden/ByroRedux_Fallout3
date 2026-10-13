@@ -611,6 +611,44 @@ Not modelled: `SetNoBleedoutRecovery` / `GetNoBleedoutRecovery` (694), and
 attackers keep striking an actor in bleedout (harmlessly) until their own
 combat ends.
 
+### Messages and text replacement (M47.2)
+
+`MESG` records parse their "Message Box" flag (DNAM bit 0) and their `ITXT`
+buttons. Skyrim.esm has 571 messages, and 384 of them are boxes. The
+`MessageCatalog` (`crates/scripting/src/messages.rs`) holds them along with the
+display names and global editor IDs that text replacement reads.
+
+Fragments lower three calls:
+- `Message.Show(n1…n9)`, with literal arguments.
+- `Message.ShowAsHelpMessage`, shown as a plain message.
+- `Debug.Notification("text")`.
+
+*Show - Message* substitutes "the passed-in numbers into the appropriate
+spots", meaning the `printf` conversions `%[.N]f`, `%d`/`%i` and `%%`.
+*Text Replacement* fills these tags from the owning quest:
+- `<Alias=X>` and `<Alias.ShortName=X>`. They read `[...]` when the alias is
+  unfilled, and `<Alias=Player>` resolves without an alias.
+- `<Global=X>`. Float globals show two decimals.
+
+Any other tag stays exactly as authored, which the CK documents as the
+fallback.
+
+The CK *Message* page splits presentation two ways. A message without the box
+flag is a notification, so it joins the frame's player feedback. A box is "a
+dialog box that pauses the game and waits for a response". It goes to
+`MessageBoxQueue`, waits for any open page to close, and then opens the native
+`GameMenuPage::MessageBox` page with one button per `ITXT`, or a single "Ok"
+when there are none. Answering a box pops it, and the page stays open until
+the last box is answered. Escape doesn't dismiss a box: the page reopens the
+next frame.
+
+Not modelled:
+- `Show`'s return value (the chosen button), since fragments that branch on it
+  still decline.
+- Run-time `Show` arguments.
+- The remaining replacement tags: `<BaseName>`, `<Token…>`, `<Alias.PronounObj…>`
+  and similar.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

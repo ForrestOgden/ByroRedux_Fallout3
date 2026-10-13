@@ -64,6 +64,9 @@ pub struct PanelSnapshot {
     /// The activation-selected dialogue topic + owned-topic list, populated
     /// only while the native dialogue page is visible.
     pub dialogue: Option<DialogueTopicSnapshot>,
+    /// The front of the script message-box queue, populated while the native
+    /// message-box page is visible.
+    pub message_box: Option<MessageBoxView>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -71,6 +74,15 @@ pub struct PanelSnapshot {
     pub entities: Option<Vec<(u32, String)>>,
     /// Present when the executable is hosting an SDK Studio document.
     pub studio: Option<StudioSnapshot>,
+}
+
+/// One script message box (`Message.Show` on a `MESG` with its "Message
+/// Box" flag): title, formatted text, and the authored buttons.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MessageBoxView {
+    pub title: String,
+    pub text: String,
+    pub buttons: Vec<String>,
 }
 
 /// Allocation-free native prompt assembled from the active binding and the
@@ -390,6 +402,9 @@ pub struct PanelOutputs {
     /// Dialogue-surface mutations (topic clicks) applied through the same
     /// selection the activation path uses.
     pub dialogue_actions: Vec<DialogueUiAction>,
+    /// The button the player chose on the visible message box (its index;
+    /// 0 for the implicit "Ok" of a box without buttons).
+    pub message_box_choice: Option<usize>,
     /// Renderer-independent Studio mutations for the host to apply.
     pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.
@@ -412,6 +427,7 @@ pub enum GameMenuPage {
     Settings,
     Inventory,
     Dialogue,
+    MessageBox,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -451,6 +467,7 @@ pub fn draw_game_menu(
         GameMenuPage::Settings => "Settings",
         GameMenuPage::Inventory => "Inventory",
         GameMenuPage::Dialogue => "Conversation",
+        GameMenuPage::MessageBox => "Message",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -464,6 +481,7 @@ pub fn draw_game_menu(
             GameMenuPage::Settings => egui::vec2(760.0, 620.0),
             GameMenuPage::Inventory => egui::vec2(900.0, 620.0),
             GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
+            GameMenuPage::MessageBox => egui::vec2(520.0, 320.0),
         })
         .frame(
             Frame::window(&ctx.global_style())
@@ -481,7 +499,60 @@ pub fn draw_game_menu(
             GameMenuPage::Dialogue => {
                 draw_dialogue_page(ui, snapshot.dialogue.as_ref(), state, outputs)
             }
+            GameMenuPage::MessageBox => {
+                draw_message_box_page(ui, snapshot.message_box.as_ref(), state, outputs)
+            }
         });
+}
+
+/// A script message box: the CK *Message* page's "dialog box that pauses the
+/// game and waits for a response". Each authored button emits its index; a
+/// box without buttons gets one "Ok". The binary pops the box on the choice
+/// and reopens the page while more are queued.
+fn draw_message_box_page(
+    ui: &mut egui::Ui,
+    message: Option<&MessageBoxView>,
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    ui.vertical_centered(|ui| {
+        ui.add_space(4.0);
+        let Some(message) = message else {
+            if wide_button(ui, "Ok").clicked() {
+                outputs.resume_game = true;
+                state.visible = false;
+            }
+            return;
+        };
+        if !message.title.is_empty() {
+            ui.heading(message.title.clone());
+            ui.add_space(8.0);
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("native_message_box_text")
+            .max_height(170.0)
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.label(
+                    RichText::new(message.text.clone())
+                        .size(16.0)
+                        .color(Color32::from_rgb(225, 222, 210)),
+                );
+            });
+        ui.add_space(12.0);
+        if message.buttons.is_empty() {
+            if wide_button(ui, "Ok").clicked() {
+                outputs.message_box_choice = Some(0);
+            }
+            return;
+        }
+        for (index, button) in message.buttons.iter().enumerate() {
+            if wide_button(ui, button).clicked() {
+                outputs.message_box_choice = Some(index);
+            }
+            ui.add_space(4.0);
+        }
+    });
 }
 
 /// P4 blocker 2 — the native dialogue response surface: the selected INFO's

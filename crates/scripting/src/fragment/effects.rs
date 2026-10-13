@@ -361,6 +361,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
     /// references' `ScriptVariables` after the guards drop.
     reference_variables: Vec<(EntityId, String, f32)>,
+    /// M47.2 — messages to show, formatted after the guards drop (text
+    /// replacement reads the alias bindings).
+    messages: Vec<PendingMessage>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -438,6 +441,7 @@ impl DeferredFragmentEffects {
             player_xp: Vec::new(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
+            messages: Vec::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -478,6 +482,16 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        for message in std::mem::take(&mut self.messages) {
+            match message {
+                PendingMessage::Show(form_id, args) => {
+                    if !crate::messages::show_message(world, form_id, &args) {
+                        log::debug!("fragment Show skipped: no message {form_id:08X}");
+                    }
+                }
+                PendingMessage::Notify(text) => crate::messages::notify(world, text),
+            }
+        }
         if !self.reference_variables.is_empty() {
             if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
                 for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
@@ -1059,6 +1073,20 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::ShowMessage { message, args } => {
+            let form_id = resolve_property_form_id(vmad, message.property_name())?;
+            deferred.messages.push(PendingMessage::Show(form_id, args.clone()));
+            None
+        }
+        Effect::ShowHelpMessage { message } => {
+            let form_id = resolve_property_form_id(vmad, message.property_name())?;
+            deferred.messages.push(PendingMessage::Show(form_id, Vec::new()));
+            None
+        }
+        Effect::Notification { text } => {
+            deferred.messages.push(PendingMessage::Notify(text.clone()));
             None
         }
         Effect::SetReferenceVariable {
@@ -2589,6 +2617,9 @@ fn apply_quest_scoped_effect(
         | Effect::PlayerCaps { .. }
         | Effect::SetLocal { .. }
         | Effect::SetReferenceVariable { .. }
+        | Effect::ShowMessage { .. }
+        | Effect::ShowHelpMessage { .. }
+        | Effect::Notification { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2624,6 +2655,13 @@ fn apply_quest_scoped_effect(
 /// Papyrus assignments are immediate. `Globals` and the quest-variable
 /// resources are read under the quest-state guards, the same nested reads
 /// `apply_global_effect` already takes.
+/// A message an effect raised, shown once the quest guards drop.
+#[derive(Debug)]
+enum PendingMessage {
+    Show(u32, Vec<f32>),
+    Notify(String),
+}
+
 /// M47.2 — a [`ValueExpr`]'s run-time number; `None` when something it reads
 /// does not resolve (the guard then declines the conditional). Quest-variable
 /// and relationship reads see a write made earlier in the same fragment.

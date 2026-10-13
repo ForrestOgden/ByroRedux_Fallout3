@@ -1514,6 +1514,8 @@ fn build_debug_ui_snapshot(
         dialogue: include_dialogue
             .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
             .flatten(),
+        // Empty outside a script message box: the queue drains as answered.
+        message_box: crate::notifications::front_message_box(world),
         entities,
         studio: studio_host::snapshot(world),
     }
@@ -1575,7 +1577,11 @@ fn apply_debug_ui_outputs(
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
 ) -> (bool, bool) {
     let mut debug_ui = debug_ui;
-    let resume_game = outputs.resume_game;
+    // M47.2 — the answered message box leaves the queue; the page stays up
+    // for the next one, and the last answer closes it back to the world.
+    let resume_game = outputs.resume_game
+        || (outputs.message_box_choice.is_some()
+            && !crate::notifications::answer_message_box(world));
     let quit_game = outputs.quit_game;
     for command in outputs.studio_commands {
         studio_host::apply_command(world, command);

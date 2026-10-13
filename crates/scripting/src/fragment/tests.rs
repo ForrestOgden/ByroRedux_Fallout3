@@ -1579,7 +1579,7 @@ fn populate_from_script_skips_absent_and_declined_fragments() {
     let (script, errs) = parse_script(
         "ScriptName QF_X_0 extends Quest\n\
          Function Fragment_0()\n Self.SetStage(20)\n EndFunction\n\
-         Function Fragment_1()\n Debug.Notification(\"hi\")\n EndFunction\n",
+         Function Fragment_1()\n Game.QuitToMainMenu()\n EndFunction\n",
     )
     .expect("parses");
     assert!(errs.is_empty(), "{errs:?}");

@@ -679,6 +679,9 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_map_markers(world, index);
     // M47.2 — RELA relationship ranks, for GetRelationshipRank.
     byroredux_scripting::install_relationships(world, index);
+    // M47.2 — MESG messages, display names and globals, for Message.Show.
+    let messages = byroredux_scripting::install_message_catalog(world, index);
+    log::info!("Installed message catalog: {messages} messages");
     // M47.2 — every quest's VMAD, for quest-script bodies inlined into
     // INFO and scene fragments.
     byroredux_scripting::install_quest_script_instances(world, index);

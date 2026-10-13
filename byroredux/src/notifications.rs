@@ -25,6 +25,54 @@ pub(crate) fn drain(world: &World) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// M47.2 — script message boxes waiting for the player's answer, shown one
+/// at a time on the native message-box page. `NOT_SAVED_BY_DESIGN`: like a
+/// notification, a box is presentation of a fragment that already ran.
+#[derive(Default)]
+pub(crate) struct MessageBoxQueue(pub(crate) VecDeque<byroredux_scripting::ScriptMessage>);
+impl Resource for MessageBoxQueue {}
+
+/// Route this frame's script messages: boxes queue for the message-box page,
+/// everything else is a notification. Returns whether a box is waiting.
+pub(crate) fn route_script_messages(world: &World) -> bool {
+    let raised = world
+        .try_resource_mut::<byroredux_scripting::PendingScriptMessages>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    for message in raised {
+        if message.message_box {
+            if let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() {
+                boxes.0.push_back(message);
+            }
+        } else {
+            push(world, message.text);
+        }
+    }
+    world
+        .try_resource::<MessageBoxQueue>()
+        .is_some_and(|boxes| !boxes.0.is_empty())
+}
+
+/// The box the message-box page shows.
+pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::MessageBoxView> {
+    let boxes = world.try_resource::<MessageBoxQueue>()?;
+    let message = boxes.0.front()?;
+    Some(byroredux_debug_ui::MessageBoxView {
+        title: message.title.clone(),
+        text: message.text.clone(),
+        buttons: message.buttons.clone(),
+    })
+}
+
+/// The player answered the front box; returns whether another is waiting.
+pub(crate) fn answer_message_box(world: &World) -> bool {
+    let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() else {
+        return false;
+    };
+    boxes.0.pop_front();
+    !boxes.0.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,5 +88,31 @@ mod tests {
             (4..12).map(|i| format!("Message {i}")).collect::<Vec<_>>()
         );
         assert!(drain(&world).is_empty());
+    }
+
+    #[test]
+    fn script_messages_split_into_notifications_and_boxes() {
+        use byroredux_scripting::{PendingScriptMessages, ScriptMessage};
+        let mut world = World::new();
+        world.insert_resource(PlayerNotifications::default());
+        world.insert_resource(MessageBoxQueue::default());
+        let message = |text: &str, message_box: bool| ScriptMessage {
+            title: String::new(),
+            text: text.to_owned(),
+            message_box,
+            buttons: Vec::new(),
+        };
+        world.insert_resource(PendingScriptMessages(vec![
+            message("Current Bounty: 40", false),
+            message("Rest here?", true),
+            message("Leave?", true),
+        ]));
+        assert!(route_script_messages(&world));
+        assert_eq!(drain(&world), vec!["Current Bounty: 40".to_owned()]);
+        assert_eq!(front_message_box(&world).unwrap().text, "Rest here?");
+        assert!(answer_message_box(&world), "a second box waits");
+        assert_eq!(front_message_box(&world).unwrap().text, "Leave?");
+        assert!(!answer_message_box(&world));
+        assert!(!route_script_messages(&world), "raised once");
     }
 }

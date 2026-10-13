@@ -1001,6 +1001,14 @@ pub struct MesgRecord {
     /// Owning quest form ID (optional) — message clears when quest
     /// completes.
     pub owner_quest: u32,
+    /// M47.2 — `DNAM` bit 0 (xEdit, every Creation game): "Message Box".
+    /// The CK *Message* page: "displayed as a dialog box that pauses the
+    /// game and waits for a response. Otherwise the message will be briefly
+    /// displayed at the top left of the screen."
+    pub message_box: bool,
+    /// M47.2 — the `ITXT` menu-button texts, in order (each button's `CTDA`
+    /// conditions follow its `ITXT` and are not kept).
+    pub buttons: Vec<String>,
 }
 
 pub fn parse_mesg(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> MesgRecord {
@@ -1023,6 +1031,10 @@ pub fn parse_mesg(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             b"QNAM" if sub.data.len() >= 4 => {
                 out.owner_quest = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
+            b"DNAM" if sub.data.len() >= 4 => {
+                out.message_box = SubReader::new(&sub.data).u32_or_default() & 0x1 != 0;
+            }
+            b"ITXT" => out.buttons.push(read_lstring_or_zstring(&sub.data)),
             _ => {}
         }
     }
