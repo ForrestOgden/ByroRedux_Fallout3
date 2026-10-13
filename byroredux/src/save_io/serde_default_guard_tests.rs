@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 80;
+    const BASELINE_MAJOR: u16 = 81;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -972,7 +972,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::SetLinkedRef` and the `LinkedRefOverrides` column.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v79 -> v80):
     // `FactionChange::RemoveAll`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc5d6_7e3b_0285_44b7;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v80 -> v81):
+    // `CreatedReferences.scripted` / `scripted_ids` (PlaceAtMe).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfbde_f924_4126_69bf;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

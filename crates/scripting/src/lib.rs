@@ -134,7 +134,7 @@ pub use actor_value_names::{install_actor_value_names, ActorValueNames};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
     CreatedCell, CreatedDeletion, CreatedPlacement, CreatedReference, CreatedReferences,
-    CREATED_FORM_ID_BASE,
+    ScriptedIds, CREATED_FORM_ID_BASE, SCRIPTED_FORM_ID_BASE,
 };
 pub use load_order::LoadOrderIdentity;
 pub use map_markers::{

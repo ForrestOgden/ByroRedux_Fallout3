@@ -450,6 +450,14 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetLinkedRef`s: (source, keyword, target), applied to
     /// [`crate::LinkedRefOverrides`] after the guards drop.
     linked_ref_changes: Vec<(u32, u32, u32)>,
+    /// M47.2 — the handle a run draws `PlaceAtMe` FormIDs through, taken
+    /// before the quest-state guards so the VM never locks
+    /// [`crate::CreatedReferences`].
+    pub(super) scripted_ids: Option<crate::ScriptedIds>,
+    /// M47.2 — `PlaceAtMe` creations: (FormID, base, placed at,
+    /// delete when able), recorded on [`crate::CreatedReferences`] after the
+    /// guards drop.
+    pub(super) created_references: Vec<(u32, u32, u32, bool)>,
     /// M47.2 — follower-flag writes: (actor FormID, teammate (with can-do-
     /// favor) or doing-favor), applied to [`crate::FollowerState`] after the
     /// guards drop.
@@ -576,6 +584,10 @@ impl DeferredFragmentEffects {
             achievements: Vec::new(),
             skill_advances: Vec::new(),
             linked_ref_changes: Vec::new(),
+            scripted_ids: world
+                .try_resource::<crate::CreatedReferences>()
+                .map(|created| created.scripted_ids()),
+            created_references: Vec::new(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             alias_collections: Vec::new(),
@@ -711,6 +723,16 @@ impl DeferredFragmentEffects {
                 }
             }
             self.follower_changes.clear();
+        }
+        if !self.created_references.is_empty() {
+            match world.try_resource_mut::<crate::CreatedReferences>() {
+                Some(mut created) => {
+                    for (form_id, base, at, delete_when_able) in self.created_references.drain(..) {
+                        created.create_scripted(form_id, base, at, delete_when_able);
+                    }
+                }
+                None => log::debug!("PlaceAtMe dropped: CreatedReferences is unavailable"),
+            }
         }
         if !self.linked_ref_changes.is_empty() {
             if let Some(mut links) = world.try_resource_mut::<crate::LinkedRefOverrides>() {

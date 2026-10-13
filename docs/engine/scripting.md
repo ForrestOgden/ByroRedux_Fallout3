@@ -1033,6 +1033,28 @@ lowered yet.
 no faction: the apply step records every faction the actor was in as removed,
 so the spawn re-derivation replays the departure.
 
+### Script-created references (M47.2)
+
+`ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,
+abInitiallyDisabled[, abDeleteWhenAble ...])` ("Makes X new references of the
+passed in form ... places them at our reference's location, returning the last
+one it created"; `abInitiallyDisabled` "is only applied to the last reference
+created") runs in the VM as a value read. Each reference takes a FormID from
+`ScriptedIds`, the upper half (`0xFF80_0000`) of the created-object slot, drawn
+through a shared atomic handle the run snapshots before the quest-state guards,
+so the VM never locks `CreatedReferences`. The records land on
+`CreatedReferences.scripted` after the guards drop, and the existing created-
+reference path places them (`place_created_references`, at the receiver's live
+position when it is loaded, else its authored one) and spawns them whenever
+their cell is loaded. A disabled one is disabled in `ReferenceEnableState`;
+`abDeleteWhenAble` marks `DeleteWhenAble`.
+
+Fallout 4 and Starfield pass the offsets array, the alias to fill and the
+navmesh snap too; the checker lets those through only unset (`None`), so a
+`PlaceAtMe` with an offset or an `akAliasToFill` stays declined. `PlaceActorAtMe`
+(leveled actors) is not wired. `abForcePersist` has no effect: created
+references already outlive their cell (they respawn with it).
+
 ### Scripted links (M47.2)
 
 `ObjectReference.SetLinkedRef(apRef, apKeyword = None)` ("Sets the reference

@@ -27,6 +27,55 @@ use crate::quest_stages::QuestFormId;
 /// The created-object plugin slot's first FormID.
 pub const CREATED_FORM_ID_BASE: u32 = 0xFF00_0000;
 
+/// The first FormID a script-created reference takes (`PlaceAtMe`): the upper
+/// half of the created slot, so script creation and the alias refresh never
+/// draw from the same counter.
+pub const SCRIPTED_FORM_ID_BASE: u32 = 0xFF80_0000;
+
+/// The next script-created FormID's low 23 bits, shared by handle so a
+/// Papyrus run draws an ID while it holds the quest-state guards without
+/// taking the [`CreatedReferences`] lock. Saved as the plain count.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptedIds(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+impl ScriptedIds {
+    /// Draw the next FormID; `None` once the half-slot is exhausted.
+    pub fn next(&self) -> Option<u32> {
+        use std::sync::atomic::Ordering;
+        let index = self.0.fetch_add(1, Ordering::Relaxed);
+        if index > 0x007F_FFFF {
+            self.0.store(0x0080_0000, Ordering::Relaxed);
+            return None;
+        }
+        Some(SCRIPTED_FORM_ID_BASE | index)
+    }
+
+    fn count(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl PartialEq for ScriptedIds {
+    fn eq(&self, other: &Self) -> bool {
+        self.count() == other.count()
+    }
+}
+
+#[cfg(feature = "save")]
+impl serde::Serialize for ScriptedIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.count().serialize(serializer)
+    }
+}
+
+#[cfg(feature = "save")]
+impl<'de> serde::Deserialize<'de> for ScriptedIds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let count = u32::deserialize(deserializer)?;
+        Ok(Self(std::sync::Arc::new(std::sync::atomic::AtomicU32::new(count))))
+    }
+}
+
 /// The cell a created reference stands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
@@ -87,6 +136,9 @@ pub struct CreatedReferences {
     by_alias: HashMap<QuestFormId, HashMap<i32, CreatedReference>>,
     /// The next created FormID's low 24 bits.
     next: u32,
+    /// References scripts created with `PlaceAtMe`, which no quest alias owns.
+    scripted: Vec<CreatedReference>,
+    scripted_ids: ScriptedIds,
 }
 
 impl Resource for CreatedReferences {}
@@ -125,6 +177,28 @@ impl CreatedReferences {
         Some(form_id)
     }
 
+    /// The handle a Papyrus run draws script-created FormIDs through.
+    pub fn scripted_ids(&self) -> ScriptedIds {
+        self.scripted_ids.clone()
+    }
+
+    /// Record a reference a script created with `PlaceAtMe` at
+    /// `at_reference`, under the FormID `scripted_ids` handed out.
+    pub fn create_scripted(&mut self, form_id: u32, base: u32, at_reference: u32, delete_when_able: bool) {
+        self.scripted.push(CreatedReference {
+            form_id,
+            base,
+            level: 0,
+            at_reference,
+            placement: None,
+            deletion: if delete_when_able {
+                CreatedDeletion::WhenAble
+            } else {
+                CreatedDeletion::Kept
+            },
+        });
+    }
+
     /// Drop the records of quests `running` rejects.
     pub fn retain_quests(&mut self, mut running: impl FnMut(QuestFormId) -> bool) {
         self.by_alias.retain(|quest, _| running(*quest));
@@ -132,7 +206,10 @@ impl CreatedReferences {
 
     /// Every record, in no particular order.
     pub fn iter(&self) -> impl Iterator<Item = &CreatedReference> + '_ {
-        self.by_alias.values().flat_map(|aliases| aliases.values())
+        self.by_alias
+            .values()
+            .flat_map(|aliases| aliases.values())
+            .chain(self.scripted.iter())
     }
 
     /// `DeleteWhenAble` on `form_id`; `false` when it is no created
@@ -160,6 +237,7 @@ impl CreatedReferences {
         self.by_alias
             .values_mut()
             .flat_map(|aliases| aliases.values_mut())
+            .chain(self.scripted.iter_mut())
             .find(|record| record.form_id == form_id)
     }
 
@@ -198,5 +276,24 @@ mod tests {
         assert!(created.get(QuestFormId(1), 3).is_none());
         // FormIDs are never reused.
         assert_eq!(created.create(QuestFormId(1), 3, 0xA, 0, 0x55), Some(0xFF00_0002));
+
+        // A script-created reference draws from the upper half of the slot
+        // through the shared handle, belongs to no quest, and can be deleted.
+        let ids = created.scripted_ids();
+        let (first, second) = (ids.next().unwrap(), ids.next().unwrap());
+        assert_eq!((first, second), (0xFF80_0000, 0xFF80_0001));
+        created.create_scripted(first, 0xC, 0x77, true);
+        created.retain_quests(|_| false);
+        assert!(created.iter().any(|record| record.form_id == first));
+        assert_eq!(
+            created.iter().find(|record| record.form_id == first).unwrap().deletion,
+            CreatedDeletion::WhenAble
+        );
+        created.mark_deleted(first);
+        assert_eq!(
+            created.iter().find(|record| record.form_id == first).unwrap().deletion,
+            CreatedDeletion::Deleted
+        );
+        assert_eq!(created.scripted_ids().next(), Some(0xFF80_0002), "the handle is shared");
     }
 }

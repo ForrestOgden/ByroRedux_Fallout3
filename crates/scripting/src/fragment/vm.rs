@@ -731,6 +731,9 @@ fn from_stored(object: &crate::ScriptObject) -> Value {
 }
 
 /// The `RefCollectionAlias` natives the VM runs.
+/// The most references one `PlaceAtMe` call creates.
+const MAX_PLACED_PER_CALL: i32 = 32;
+
 const COLLECTION_NATIVES: [&str; 12] = [
     "getcount",
     "getat",
@@ -2305,6 +2308,7 @@ impl Vm<'_> {
                     | "getlocation"
                     | "getcurrentlocation"
                     | "getdialoguetarget"
+                    | "placeatme"
             );
         if !reads {
             return Ok(None);
@@ -2343,6 +2347,10 @@ impl Vm<'_> {
                 })
             }
             (Value::Form(_), "getowningquest") => Some(Value::Form(frame.owner.0)),
+            (Value::Form(at), "placeatme") => {
+                let values = self.eval_args(frame, args)?;
+                Some(self.place_at_me(*at, &values)?)
+            }
             (Value::Form(form), "getlinkedref") => {
                 let keyword = match args.first() {
                     Some(arg) => match self.eval(frame, &arg.value.node)? {
@@ -2372,6 +2380,44 @@ impl Vm<'_> {
             (Value::None, _) => return stop(format!("{name} on None")),
             _ => None,
         })
+    }
+
+    /// CK *PlaceAtMe - ObjectReference*: "Makes X new references of the passed
+    /// in form ... and places them at our reference's location, returning the
+    /// last one it created. Or None if no references could be created". The
+    /// `abInitiallyDisabled` flag "is only applied to the last reference
+    /// created". The references are recorded after the quest guards drop
+    /// ([`crate::CreatedReferences`]), where the engine places them at `at` and
+    /// spawns them whenever their cell is loaded. Arguments past the FO4
+    /// `abDeleteWhenAble` are Starfield's offsets, alias fill and navmesh snap,
+    /// which the checker only lets through unset.
+    fn place_at_me(&mut self, at: u32, values: &[Value]) -> Run<Value> {
+        let Some(Value::Form(base)) = values.first() else {
+            return Ok(Value::None);
+        };
+        let count = values.get(1).and_then(Value::int).unwrap_or(1).clamp(1, MAX_PLACED_PER_CALL);
+        let disabled = values.get(3).is_some_and(Value::truthy);
+        let delete_when_able = values.get(4).is_some_and(Value::truthy);
+        if !matches!(values.get(5), None | Some(Value::None)) || !matches!(values.get(6), None | Some(Value::None)) {
+            return stop("PlaceAtMe with offsets or an alias to fill");
+        }
+        let Some(ids) = self.deferred.scripted_ids.clone() else {
+            return stop("PlaceAtMe without CreatedReferences");
+        };
+        let mut last = Value::None;
+        for _ in 0..count {
+            let Some(form_id) = ids.next() else {
+                break;
+            };
+            self.deferred.created_references.push((form_id, *base, at, delete_when_able));
+            last = Value::Form(form_id);
+        }
+        if disabled {
+            if let Value::Form(form_id) = last {
+                self.deferred.reference_enable_changes.push((form_id, false));
+            }
+        }
+        Ok(last)
     }
 
     fn entity_form(&self, entity: EntityId) -> Option<u32> {
@@ -3672,6 +3718,9 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Object);
             }
             (Kind::Alias, "getlocation") => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "placeatme") if place_at_me_args_ok(&arg_kinds) => {
+                return Some(Kind::Object);
+            }
             _ => {}
         }
         // Another quest's update registration: its handler must run.
@@ -3857,6 +3906,25 @@ enum Arg {
     Kind(Kind),
     /// An engine constant, passed as the receiver's named member.
     Constant(String),
+}
+
+/// Whether `PlaceAtMe`'s arguments are ones the VM runs: the form, then the
+/// count, persist, initially-disabled and delete-when-able flags (Skyrim sends
+/// the first four, Fallout 4 five), then Starfield's offsets, alias fill and
+/// navmesh snap, where the first two must be `None` and the snap is moot.
+fn place_at_me_args_ok(args: &[Arg]) -> bool {
+    let unset = |arg: &Arg| matches!(arg, Arg::Literal(Expr::NoneLit));
+    let flag = |arg: &Arg| matches!(arg, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool | Kind::Num));
+    let count = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num));
+    let Some(Arg::Kind(Kind::Object)) = args.first() else {
+        return false;
+    };
+    match args.len() {
+        1 => true,
+        2..=5 => count(&args[1]) && args[2..].iter().all(flag),
+        8 => count(&args[1]) && args[2..5].iter().all(flag) && unset(&args[5]) && unset(&args[6]) && flag(&args[7]),
+        _ => false,
+    }
 }
 
 /// The name an argument reads an engine constant by, if it is written as

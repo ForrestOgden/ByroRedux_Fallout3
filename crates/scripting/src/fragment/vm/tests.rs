@@ -1408,6 +1408,42 @@ fn set_linked_ref_writes_the_saved_link() {
     assert_eq!(crate::linked_ref(&world, MARKER, 0), Some(MARKER));
 }
 
+/// `PlaceAtMe` creates the references through the saved `CreatedReferences`
+/// (FormIDs in the scripted half of the created slot), returns the last one,
+/// disables only that one when asked, and flags `DeleteWhenAble`.
+#[test]
+fn place_at_me_creates_scripted_references() {
+    let script = parsed_source(
+        "ScriptName QF_VmPlace extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           ObjectReference made = Marker.PlaceAtMe(Marker, 2, False, True, True)\n\
+           If made\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let created = world.resource::<crate::CreatedReferences>();
+    let mut made: Vec<_> = created.iter().map(|r| (r.form_id, r.base, r.at_reference, r.deletion)).collect();
+    made.sort_unstable_by_key(|r| r.0);
+    assert_eq!(
+        made,
+        vec![
+            (0xFF80_0000, MARKER, MARKER, crate::CreatedDeletion::WhenAble),
+            (0xFF80_0001, MARKER, MARKER, crate::CreatedDeletion::WhenAble),
+        ]
+    );
+    drop(created);
+    let enable = world.resource::<crate::fragment::ReferenceEnableState>();
+    assert_eq!(enable.override_for(0xFF80_0001), Some(false), "only the last is disabled");
+    assert_eq!(enable.override_for(0xFF80_0000), None);
+}
+
 /// `Game.GetForm` answers a loaded plugin's id and None for an unloaded
 /// one; `Delete()` flags a created reference like `DeleteWhenAble`.
 #[test]

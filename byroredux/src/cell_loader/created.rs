@@ -104,9 +104,17 @@ pub(crate) fn place_created_references(world: &World) -> usize {
             .as_ref()
             .and_then(|index| index.cells.locate_refr(at))
         {
+            // A reference that is loaded now stands where it is now, not
+            // where it was authored: a `PlaceAtMe` on a moved actor puts the
+            // new reference beside the actor.
+            let position_zup = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, at)
+                .and_then(|entity| world.get::<GlobalTransform>(entity))
+                .map_or(reference.position, |transform| {
+                    byroredux_core::math::coord::yup_to_zup_pos(transform.translation.to_array())
+                });
             Some(CreatedPlacement {
                 cell: created_cell(cell),
-                position_zup: reference.position,
+                position_zup,
                 rotation_zup: reference.rotation,
             })
         } else {

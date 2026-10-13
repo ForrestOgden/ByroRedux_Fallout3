@@ -450,7 +450,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// resource column (links scripts set).
 ///
 /// v79 -> v80 (M47.2): `FactionChange::RemoveAll` (`RemoveFromAllFactions`).
-pub const FORMAT_MAJOR: u16 = 80;
+///
+/// v80 -> v81 (M47.2): `CreatedReferences` gained the script-created records
+/// and FormID counter (`PlaceAtMe`).
+pub const FORMAT_MAJOR: u16 = 81;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
