@@ -272,6 +272,9 @@ fn oblivion_block_count_parity() {
 
 /// Aggregate parse-block coverage for one sized game.
 struct Coverage {
+    /// NIF files walked — decided by the install alone (a parse that fails
+    /// still counts), unlike `total_blocks`, which is what the parser returned.
+    total_files: usize,
     total_blocks: usize,
     unknown_blocks: usize,
 }
@@ -292,12 +295,15 @@ fn measure_coverage(game: Game) -> Option<Coverage> {
     // corpus or their totals describe different things.
     let archives = open_all_mesh_archives(game)?;
     let mut hist = common::PerBlockHistogram::new();
+    let mut total_files = 0usize;
     for (_name, archive) in &archives {
-        let (_stats, archive_hist) = common::parse_archive_with_histogram(archive, None);
+        let (stats, archive_hist) = common::parse_archive_with_histogram(archive, None);
+        total_files += stats.total;
         hist.merge(&archive_hist);
     }
     let total_blocks: usize = hist.counts.values().map(|c| c.parsed + c.unknown).sum();
     Some(Coverage {
+        total_files,
         total_blocks,
         unknown_blocks: hist.total_unknown(),
     })
@@ -341,6 +347,105 @@ fn read_baseline(text: &str) -> (usize, usize) {
     (total, unknown)
 }
 
+/// The per-block baseline for `stem`: its `total=` header is the NIF file
+/// count the install walked when the baselines were captured (#4628).
+fn per_block_baseline_path(stem: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("per_block_baselines")
+        .join(format!("{stem}.tsv"))
+}
+
+/// Why the corpus total moved, or `None` when it did not (#5260, #5438).
+///
+/// - the NIF file count differs from the per-block baseline's: the **install**
+///   was rewritten after the baselines were captured — regenerate;
+/// - the file count matches but `total_blocks` moved: the install is the same
+///   and the **parser** returned a different number of blocks — a truncation
+///   or hard failure if lower, recovered blocks if higher. Not install drift,
+///   and not a reason to regenerate before the cause is understood;
+/// - no file count on record (`install_files` is `None`): the two cannot be
+///   told apart, and the message says so.
+fn diagnose_corpus(
+    install_files: Option<usize>,
+    files_now: usize,
+    baseline_blocks: usize,
+    blocks_now: usize,
+    label: &str,
+) -> Option<String> {
+    if let Some(recorded) = install_files {
+        if recorded != files_now {
+            return Some(format!(
+                "[{label}] corpus drift: the per-block baseline records {recorded} NIFs but the \
+                 current install walks {files_now} — the game data moved under the baselines, \
+                 so the NiUnknown ceiling describes a different corpus. If the rewrite is \
+                 intentional, regenerate BOTH harnesses with `BYROREDUX_REGEN_BASELINES=1 cargo \
+                 test -p byroredux-nif --test per_block_baselines --test block_coverage_baselines \
+                 -- --ignored` (#5260)."
+            ));
+        }
+    }
+    if baseline_blocks == blocks_now {
+        return None;
+    }
+    let direction = if blocks_now < baseline_blocks {
+        "FEWER — a parser regression that truncates scenes or hard-fails files looks like this"
+    } else {
+        "MORE — the parser now recovers blocks it used to drop"
+    };
+    let install = match install_files {
+        Some(files) => format!("the install is unchanged ({files} NIFs walked, as recorded)"),
+        None => "no file count is on record to compare, so install drift cannot be ruled out".to_string(),
+    };
+    Some(format!(
+        "[{label}] parser delta: total_blocks went {baseline_blocks} -> {blocks_now} ({direction}); \
+         {install}. Investigate before regenerating — regenerating would bake the new total into \
+         the baseline (#5438)."
+    ))
+}
+
+#[cfg(test)]
+mod diagnosis_tests {
+    use super::diagnose_corpus;
+
+    /// #5438 — a parser that returns fewer blocks on the SAME install is a
+    /// parser delta, never "the game data moved". Pre-fix this read as drift
+    /// and prescribed a regenerate.
+    #[test]
+    fn fewer_blocks_on_the_same_install_is_a_parser_delta_not_drift() {
+        let message = diagnose_corpus(Some(17_172), 17_172, 500_000, 480_000, "FO3").expect("flagged");
+        assert!(message.contains("parser delta") && message.contains("FEWER"), "{message}");
+        assert!(!message.contains("corpus drift"), "{message}");
+        assert!(message.contains("Investigate before regenerating"), "{message}");
+    }
+
+    #[test]
+    fn a_different_file_count_is_install_drift() {
+        let message = diagnose_corpus(Some(17_172), 17_900, 500_000, 500_000, "FO3").expect("flagged");
+        assert!(message.contains("corpus drift"), "{message}");
+        assert!(message.contains("17172") && message.contains("17900"), "{message}");
+    }
+
+    #[test]
+    fn install_drift_wins_over_a_block_delta() {
+        let message = diagnose_corpus(Some(100), 120, 10, 99, "X").expect("flagged");
+        assert!(message.contains("corpus drift"), "{message}");
+    }
+
+    #[test]
+    fn a_matching_corpus_is_silent() {
+        assert_eq!(diagnose_corpus(Some(5), 5, 50, 50, "X"), None);
+        assert_eq!(diagnose_corpus(None, 5, 50, 50, "X"), None);
+    }
+
+    #[test]
+    fn without_a_file_count_the_message_says_it_cannot_tell() {
+        let message = diagnose_corpus(None, 5, 50, 60, "X").expect("flagged");
+        assert!(message.contains("MORE") && message.contains("cannot be ruled out"), "{message}");
+    }
+}
+
 /// Shared driver for the sized-game ceiling tests.
 fn run_unknown_ceiling(game: Game, stem: &str) {
     let Some(cov) = measure_coverage(game) else {
@@ -374,24 +479,25 @@ fn run_unknown_ceiling(game: Game, stem: &str) {
     };
     let (baseline_total, baseline_unknown) = read_baseline(&text);
 
-    // #5260 — corpus drift FIRST, ahead of the ceiling comparison,
-    // because it is the explanation the ceiling gate cannot provide
-    // (mirrors #4628's per_block_baselines check): vanilla archives are
-    // fixed content, so a moved total means the install was rewritten
-    // after the baseline was captured and both recorded numbers describe
-    // a different corpus than the one just measured.
-    assert!(
-        cov.total_blocks == baseline_total,
-        "[{}] corpus drift: baseline records total_blocks={} but the current \
-         install measures {} — the game data moved under the baseline, so the \
-         NiUnknown ceiling below describes a different corpus. If the rewrite \
-         is intentional, regenerate with `BYROREDUX_REGEN_BASELINES=1 cargo \
-         test -p byroredux-nif --test block_coverage_baselines -- --ignored` \
-         (#5260).",
-        game.label(),
+    // #5260 — a moved corpus total comes FIRST, ahead of the ceiling
+    // comparison, because it is the explanation the ceiling gate cannot
+    // provide. #5438 — but which total: the install is pinned by the NIF
+    // FILE count (the per-block baseline's `total=`, the same walk), as
+    // #4628 does; `total_blocks` is what the parser returned, so a change in
+    // it on an unchanged install is a parser delta, and telling the operator
+    // to "regenerate" would bake a truncation regression into the baseline.
+    let install_files = std::fs::read_to_string(per_block_baseline_path(stem))
+        .ok()
+        .and_then(|text| common::baseline_corpus_total(&text));
+    if let Some(problem) = diagnose_corpus(
+        install_files,
+        cov.total_files,
         baseline_total,
         cov.total_blocks,
-    );
+        game.label(),
+    ) {
+        panic!("{problem}");
+    }
 
     // Vanilla archives are fixed content, so the counts are deterministic:
     // a parser change can only lower the unknown count (improvement) or
