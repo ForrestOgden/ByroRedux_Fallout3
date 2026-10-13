@@ -1980,6 +1980,7 @@ fn story_event_alias_fill_survives_save_load_as_reference_forms() {
                     reference_2: None,
                     location_1: None,
                     location_2: Some(0x0001_8A56),
+                    ..Default::default()
                 },
                 reference_forms: [Some(0x0005_0001), Some(0x14)],
             },
@@ -2135,6 +2136,7 @@ fn story_manager_node_state_survives_save_load_and_still_gates() {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }

@@ -395,6 +395,32 @@ override at the alias's place in the fill order, so dependent aliases see it.
 `Clear` also empties a location alias, and a stopped quest's overrides
 drop.
 
+### Script-raised story events (M47.2)
+
+`Keyword.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1, aiValue2)` lowers to
+`Effect::SendStoryEvent`. Once the quest-state guards drop, the runtime
+queues an `SCPT` event (`PendingScriptStoryEvents`) carrying the keyword
+(`K1`), the location (a property or a location alias's binding), the two
+references and the two integers (`V1` / `V2`). The Story Manager dispatcher
+drains the queue with the engine markers, so several events raised in one
+frame all dispatch.
+
+`SCPT` nodes route on `GetEventData` (fn 576, 174 Skyrim SM uses), now in the
+condition catalog with xEdit's packing: the event function in `param_1`'s low
+16 bits, the member in the high 16, and the compared form in `param_2`. It
+covers `GetIsID` on `K1` / `L1` / `L2`, `HasKeyword` on a location member
+(through the location runtime) and `GetValue` on `V1` / `V2`; `IsInList` and
+`GetItemValue` read 0.
+
+Selection also honours the CK *Quest Alias Tab* rule that a non-optional
+alias which fails to fill "will cause the quest to fail to start". A
+`FromEvent` alias whose event slot is empty makes its quest ineligible, and
+the walk continues, so the unconditioned `MarriageNode` no longer takes every
+script event. Live in Dragonsreach: the College radiant starter's four boot
+events start `MGR01` / `MGR02` / `MGR11` / `MGR20` through the four teacher
+nodes, and `MQ104` stage 110 starts `MQGreybeardCall` through
+`MQGreybeardCallNode`.
+
 ### Locations and location aliases (M47.2)
 
 `LCTN` records parse into `EsmIndex.locations` (parent `PNAM`, keywords, the
@@ -1171,7 +1197,7 @@ original `.swf` files. See
 | **M30.2** | Papyrus statement + item parser (full `.psc` parse) | **Closed 2026-05-23** (`ab0eee96`). All four R5 scripts round-trip with zero recovered errors. Unblocks M47.2. |
 | **M47.0** | Event-hooks runtime | **Closed 2026-05-23** (6 phases, `6c51af55..03837739`). `ScriptRegistry`, marker catalog, `script.activate` console command, e2e tests. |
 | **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + OR-precedence evaluator; the initial 7-function catalog has since grown to 19 modeled variants and multiple quest/scene/package consumers. |
-| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (57.2% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
+| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (57.4% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
 | **M43** | Quests & dialogue | **Quest/scene core shipped; broader integration open** — lifecycle, stages, objectives, aliases, fragments and scene phases are live. Story Manager search/payloads and full dialogue/UI integration remain open; see ROADMAP. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).

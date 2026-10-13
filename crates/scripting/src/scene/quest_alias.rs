@@ -166,6 +166,13 @@ pub struct SceneQuestAliasRegistry {
 
 impl Resource for SceneQuestAliasRegistry {}
 
+impl SceneQuestAliasRegistry {
+    /// The authored aliases of `quest`, if it has any.
+    pub fn aliases_of(&self, quest: QuestFormId) -> Option<&[QuestAlias]> {
+        self.aliases.get(&quest).map(Vec::as_slice)
+    }
+}
+
 /// Install the parsed QUST alias definitions used by scene actor slots.
 /// Definitions replace prior copies by quest FormID and mark the live binding
 /// table for a refresh after the cell loader attaches alias candidates.

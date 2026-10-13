@@ -563,6 +563,7 @@ pub fn param2_is_form_id(function_index: u32) -> bool {
         function_index,
         605 // LocAliasIsLocation — alias id, LCTN FormID (Skyrim/FO4)
         | 181 // HasSameEditorLocAsRefAlias — alias id, KYWD FormID (Skyrim/FO4)
+        | 576 // GetEventData — function:member, the compared form (Skyrim/FO4)
     )
 }
 

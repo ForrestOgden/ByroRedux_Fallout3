@@ -153,6 +153,7 @@ pub(crate) fn raise_hello_story_event(world: &World, greeter: EntityId, greeted:
             reference_2: Some(greeted),
             location_1,
             location_2: None,
+            scripted: None,
         },
     );
 }
@@ -180,6 +181,7 @@ pub(crate) fn raise_kill_story_event(world: &World, victim: EntityId, killer: Op
             reference_2: killer,
             location_1,
             location_2: None,
+            scripted: None,
         },
     );
 }

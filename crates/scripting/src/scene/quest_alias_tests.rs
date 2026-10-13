@@ -1486,6 +1486,7 @@ fn from_event_alias_fills_from_the_recorded_story_event() {
                     reference_2: Some(killer),
                     location_1: None,
                     location_2: Some(0x18A56),
+                    ..Default::default()
                 },
                 reference_forms: [None, None],
             },
@@ -1695,6 +1696,7 @@ fn from_event_alias_skips_stale_and_dead_slot_entities() {
                     reference_2: Some(dead),
                     location_1: None,
                     location_2: None,
+                    ..Default::default()
                 },
                 reference_forms: [None, None],
             },

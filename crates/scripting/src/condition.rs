@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **34 functions** at their canonical CTDA
+//! lineage. This catalog ships **35 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -63,6 +63,7 @@
 //! | 605   | LocAliasIsLocation     | `LocationAliasBindings`     |
 //! | 563   | LocationHasRefType     | `LocationTable` ref types   |
 //! | 181   | HasSameEditorLocAsRefAlias | `LocationTable` editor refs |
+//! | 576   | GetEventData           | `EventDataSlots`            |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -249,6 +250,15 @@ pub enum ConditionFunction {
     /// keyword) is or contains the alias's editor location. Skyrim / FO4 index
     /// **181**.
     HasSameEditorLocAsRefAlias,
+    /// `GetEventData(function:member, form) → f32` (M47.2) — a Story Manager
+    /// event's data. `param_1` packs an event function (low 16 bits:
+    /// 0 `GetIsID`, 1 `IsInList`, 2 `GetValue`, 3 `HasKeyword`, 4
+    /// `GetItemValue`) and an event member (high 16 bits: `K1` keyword,
+    /// `L1` / `L2` locations, `V1` / `V2` values, `F1` form, `O1` created
+    /// object), per xEdit's `wbEventFunctionAndMember`; `param_2` is the form
+    /// compared. Reads the [`ConditionContext::event_data`] — outside Story
+    /// Manager dispatch it is 0. Skyrim / FO4 index **576**.
+    GetEventData,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -316,13 +326,14 @@ impl ConditionFunction {
             // 181, not its reference twin 180: Oblivion authors 180 as a
             // different function.
             181 => Self::HasSameEditorLocAsRefAlias,
+            576 => Self::GetEventData,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 34] = [
+    pub const CATALOG: [ConditionFunction; 35] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -357,6 +368,7 @@ impl ConditionFunction {
         Self::LocAliasIsLocation,
         Self::LocationHasRefType,
         Self::HasSameEditorLocAsRefAlias,
+        Self::GetEventData,
     ];
 
     /// Whether `param_1` of this function is a FormID — the slice of catalog
@@ -391,8 +403,10 @@ impl ConditionFunction {
             | Self::LocationHasKeyword
             | Self::GetIsEditorLocation
             | Self::LocationHasRefType => true,
-            // Alias ids are quest-local indices, not FormIDs.
-            Self::GetInCurrentLocAlias
+            // Alias ids are quest-local indices, not FormIDs; GetEventData's
+            // first parameter is a function:member pair.
+            Self::GetEventData
+            | Self::GetInCurrentLocAlias
             | Self::HasSameEditorLocAsRefAlias
             | Self::GetIsAliasRef
             | Self::GetIsEditorLocAlias
@@ -444,6 +458,7 @@ impl ConditionFunction {
             Self::LocAliasIsLocation => "LocAliasIsLocation",
             Self::LocationHasRefType => "LocationHasRefType",
             Self::HasSameEditorLocAsRefAlias => "HasSameEditorLocAsRefAlias",
+            Self::GetEventData => "GetEventData",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -493,6 +508,7 @@ impl ConditionFunction {
             | Self::LocationHasRefType
             | Self::HasSameEditorLocAsRefAlias => true,
             Self::LocAliasIsLocation
+            | Self::GetEventData
             | Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetRandomPercent
@@ -553,6 +569,7 @@ impl ConditionFunction {
             | Self::LocAliasIsLocation
             | Self::LocationHasRefType
             | Self::HasSameEditorLocAsRefAlias
+            | Self::GetEventData
             | Self::Unknown(_) => true,
         }
     }
@@ -574,6 +591,7 @@ impl ConditionFunction {
                 | Self::LocAliasIsLocation
                 | Self::LocationHasRefType
                 | Self::HasSameEditorLocAsRefAlias
+                | Self::GetEventData
         )
     }
 
@@ -687,6 +705,10 @@ pub struct EventDataSlots {
     pub reference_2: Option<EntityId>,
     pub location_1: Option<u32>,
     pub location_2: Option<u32>,
+    /// `K1` — a script event's keyword (M47.2, `Keyword.SendStoryEvent`).
+    pub keyword: Option<u32>,
+    /// `V1` / `V2` — a script event's two integers.
+    pub values: [i32; 2],
 }
 
 impl EventDataSlots {
@@ -1110,6 +1132,38 @@ fn evaluate_contextual(
                 (LocationSubject::Reference(_), None) => false,
             })
         }
+        ConditionFunction::GetEventData => {
+            let Some(event) = ctx.event_data else {
+                return 0.0;
+            };
+            let member = (condition.param_1 >> 16) as u16;
+            let member = member.to_le_bytes();
+            let form = match &member {
+                b"K1" => event.keyword,
+                b"L1" => event.location_1,
+                b"L2" => event.location_2,
+                _ => None,
+            };
+            match condition.param_1 & 0xFFFF {
+                // GetIsID — the member is this form.
+                0 => truth(form.is_some_and(|form| form == condition.param_2)),
+                // GetValue — V1 / V2.
+                2 => match &member {
+                    b"V1" => event.values[0] as f32,
+                    b"V2" => event.values[1] as f32,
+                    _ => 0.0,
+                },
+                // HasKeyword — a location member carries the keyword.
+                3 => truth(matches!(&member, b"L1" | b"L2") && form.is_some_and(|location| {
+                    world
+                        .try_resource::<LocationTable>()
+                        .is_some_and(|table| table.has_keyword(location, condition.param_2))
+                })),
+                // IsInList / GetItemValue (form lists, item values) are not
+                // modelled.
+                _ => 0.0,
+            }
+        }
         // Only `reads_context` functions are routed here.
         _ => 0.0,
     }
@@ -1522,7 +1576,8 @@ pub fn evaluate_function(
         | ConditionFunction::GetIsEditorLocAlias
         | ConditionFunction::LocAliasIsLocation
         | ConditionFunction::LocationHasRefType
-        | ConditionFunction::HasSameEditorLocAsRefAlias => 0.0,
+        | ConditionFunction::HasSameEditorLocAsRefAlias
+        | ConditionFunction::GetEventData => 0.0,
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \
@@ -3114,6 +3169,7 @@ mod tests {
             reference_2: Some(r2),
             location_1: Some(0x18A49),
             location_2: Some(0x18A56),
+            ..Default::default()
         };
         let ctx = ConditionContext::for_subject(subject).with_event_data(&slots);
         assert!(

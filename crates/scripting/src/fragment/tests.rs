@@ -4796,6 +4796,37 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("AnyFails"), Some(-1.0));
 }
 
+/// M47.2 — `SendStoryEvent` attaches an `SCPT` marker (after the guards)
+/// carrying the keyword, the location and the integers; with no `akRef1` it
+/// rides the player but reports no R1.
+#[test]
+fn send_story_event_raises_a_script_event() {
+    const KEYWORD: u32 = 0x0004_1E8B;
+    const LOCATION: u32 = 0x0001_8A56;
+    let world = fixture();
+    let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("SomeKeyword", KEYWORD), ("SomeLocation", LOCATION)]),
+        vec![Effect::SendStoryEvent {
+            keyword: ObjectRef::Property("SomeKeyword".into()),
+            location: Some(ObjectRef::Property("SomeLocation".into())),
+            references: [None, None],
+            values: [5, 6],
+        }],
+    );
+    let pending = world.resource::<crate::story_manager::PendingScriptStoryEvents>();
+    assert_eq!(pending.0.len(), 1);
+    let event = pending.0[0];
+    assert_eq!(event.reference_1, player);
+    assert_eq!(&event.mnemonic, b"SCPT");
+    let slots = event.slots();
+    assert_eq!(slots.keyword, Some(KEYWORD));
+    assert_eq!(slots.location_1, Some(LOCATION));
+    assert_eq!(slots.values, [5, 6]);
+    assert_eq!(slots.reference_1, None, "no akRef1");
+}
+
 /// M47.2 — `BlockActivation` records the reference in the activation-block
 /// ledger once the quest-state guards drop, and an unblock clears it.
 #[test]

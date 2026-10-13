@@ -590,7 +590,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's BlockActivation, and the activation
             // gate that reads it.
             .reads_resource::<byroredux_scripting::ReferenceActivationBlocks>()
-            .writes_resource::<byroredux_scripting::ReferenceActivationBlocks>(),
+            .writes_resource::<byroredux_scripting::ReferenceActivationBlocks>()
+            // M47.2 — a spoken line's SendStoryEvent queues a script event.
+            .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -77,17 +77,37 @@ pub struct StoryEvent {
     pub location_1: Option<u32>,
     /// `L2` — second event location (CLOC location entered).
     pub location_2: Option<u32>,
+    /// M47.2 — a script-raised event's payload (`Keyword.SendStoryEvent`);
+    /// `None` for engine-raised events.
+    pub scripted: Option<ScriptedStoryEvent>,
+}
+
+/// The payload of `Keyword.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1,
+/// aiValue2)` (CK *SendStoryEvent - Keyword*) beyond the slots every event
+/// shares: the keyword (`K1`), the two integers (`V1` / `V2`), and whether
+/// `akRef1` was given — the marker rides `reference_1` either way, so an
+/// absent `akRef1` must not read as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptedStoryEvent {
+    pub keyword: u32,
+    pub values: [i32; 2],
+    pub has_reference_1: bool,
 }
 
 impl StoryEvent {
     /// The [`EventDataSlots`] view the condition evaluator and the
     /// `FromEvent` alias fill consume.
     pub fn slots(&self) -> EventDataSlots {
+        let scripted = self.scripted;
         EventDataSlots {
-            reference_1: Some(self.reference_1),
+            reference_1: scripted
+                .is_none_or(|data| data.has_reference_1)
+                .then_some(self.reference_1),
             reference_2: self.reference_2,
             location_1: self.location_1,
             location_2: self.location_2,
+            keyword: scripted.map(|data| data.keyword),
+            values: scripted.map_or([0, 0], |data| data.values),
         }
     }
 }
@@ -101,7 +121,21 @@ impl Component for StoryEvent {
 /// silent no-op on a fresh world.
 pub fn register(world: &mut World) {
     world.register::<StoryEvent>();
+    if world.try_resource::<PendingScriptStoryEvents>().is_none() {
+        world.insert_resource(PendingScriptStoryEvents::default());
+    }
 }
+
+/// Script-raised story events (M47.2, `Keyword.SendStoryEvent`) waiting for
+/// [`story_manager_dispatch_system`]. A queue rather than markers: one
+/// fragment may raise several in a frame (the College's radiant starter sends
+/// one per teacher), and a marker per carrier entity would keep only the
+/// last. Drained at the dispatcher's head with the markers; one frame long,
+/// so `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub struct PendingScriptStoryEvents(pub Vec<StoryEvent>);
+
+impl Resource for PendingScriptStoryEvents {}
 
 /// One node of the folded [`SmTree`] arena.
 pub struct SmTreeNode {
@@ -619,6 +653,7 @@ pub fn emit_change_location_on_key_change(
                 reference_2: None,
                 location_1: previous_location,
                 location_2: location,
+                scripted: None,
             },
         );
         return true;
@@ -646,11 +681,14 @@ pub fn emit_change_location_on_key_change(
 /// Pattern B: the drain at the head is unconditional — no early return
 /// sits between the top of the system and it.
 pub fn story_manager_dispatch_system(world: &World) {
-    let events: Vec<StoryEvent> = world
+    let mut events: Vec<StoryEvent> = world
         .query::<StoryEvent>()
         .map(|query| query.iter().map(|(_, event)| *event).collect())
         .unwrap_or_default();
     crate::scene::playback::drain::<StoryEvent>(world);
+    if let Some(mut pending) = world.try_resource_mut::<PendingScriptStoryEvents>() {
+        events.append(&mut pending.0);
+    }
     if events.is_empty() {
         return;
     }
@@ -662,6 +700,7 @@ pub fn story_manager_dispatch_system(world: &World) {
             return;
         };
         let registry = world.try_resource::<QuestDefinitionRegistry>();
+        let aliases = world.try_resource::<crate::scene::SceneQuestAliasRegistry>();
         let stages = world.try_resource::<QuestStageState>();
         let node_state = world.try_resource::<StoryManagerNodeState>();
         let mut candidates = Vec::new();
@@ -671,6 +710,7 @@ pub fn story_manager_dispatch_system(world: &World) {
                 event,
                 slots: event.slots(),
                 registry: registry.as_deref(),
+                aliases: aliases.as_deref(),
                 stages: stages.as_deref(),
                 candidates: &mut candidates,
                 node_state: node_state.as_deref(),
@@ -831,6 +871,8 @@ struct WalkState<'a> {
     event: &'a StoryEvent,
     slots: EventDataSlots,
     registry: Option<&'a QuestDefinitionRegistry>,
+    /// M47.2 — the quests' aliases, for the required-`FromEvent`-fill gate.
+    aliases: Option<&'a crate::scene::SceneQuestAliasRegistry>,
     stages: Option<&'a QuestStageState>,
     candidates: &'a mut Vec<QuestStartCandidate>,
     /// Phase 3 — node-policy state (do-all marks, reset timestamps),
@@ -1111,7 +1153,7 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
                 node.quests[i].reset_hours,
                 last_fire.get(i).copied(),
                 state.hours,
-            )
+            ) && event_aliases_fill(state, quest)
         })
         .collect();
     if eligible.is_empty() {
@@ -1163,6 +1205,35 @@ fn process_quest_node(world: &World, tree: &SmTree, state: &mut WalkState<'_>, i
         node: node.form_id,
         pool_index: pick,
     });
+}
+
+/// M47.2 — the CK *Quest Alias Tab*: an alias not flagged Optional that
+/// fails to fill "will cause the quest to fail to start". The decidable case
+/// at selection time is a `FromEvent` alias whose event slot is empty — a
+/// marriage quest filling its love interest from `R1` cannot start from a
+/// script event that carries no `R1`, and the Story Manager walks on to the
+/// next node. Slots this runtime does not model never block.
+fn event_aliases_fill(state: &WalkState<'_>, quest: QuestFormId) -> bool {
+    use byroredux_plugin::esm::records::condition::{event_data_slot, EventDataSlot};
+    use byroredux_plugin::esm::records::{AliasFillType, ALIAS_FLAG_OPTIONAL};
+    let Some(aliases) = state.aliases.and_then(|registry| registry.aliases_of(quest)) else {
+        return true;
+    };
+    aliases.iter().all(|alias| {
+        let Some(AliasFillType::FromEvent { data, .. }) = alias.fill_type else {
+            return true;
+        };
+        if alias.flags.has(ALIAS_FLAG_OPTIONAL) || alias.is_collection {
+            return true;
+        }
+        match event_data_slot(data as u32) {
+            Some(EventDataSlot::Reference1) => state.slots.reference_1.is_some(),
+            Some(EventDataSlot::Reference2) => state.slots.reference_2.is_some(),
+            Some(EventDataSlot::Location1) => state.slots.location_1.is_some(),
+            Some(EventDataSlot::Location2) => state.slots.location_2.is_some(),
+            None => true,
+        }
+    })
 }
 
 /// `RNAM` reset gate: open when no window is authored, the entry has
@@ -1418,6 +1489,7 @@ mod tests {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -1618,6 +1690,7 @@ mod tests {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -1655,6 +1728,7 @@ mod tests {
                         reference_2: Some(killer),
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -1696,6 +1770,7 @@ mod tests {
                     reference_2: Some(killer),
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -1748,6 +1823,7 @@ mod tests {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -1804,6 +1880,7 @@ mod tests {
                         reference_2: None,
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -1862,6 +1939,7 @@ mod tests {
                         reference_2: None,
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -1938,6 +2016,7 @@ mod tests {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -1973,6 +2052,212 @@ mod tests {
 #[cfg(test)]
 fn tag(bytes: &[u8; 2]) -> u32 {
     u32::from(bytes[0]) | (u32::from(bytes[1]) << 8)
+}
+
+/// M47.2 — a script event (`Keyword.SendStoryEvent`): an `SCPT` node gated
+/// on `GetEventData GetIsID K1 == keyword` starts only for its keyword, and a
+/// `GetValue V1` gate reads the event's first integer.
+#[test]
+fn script_event_keyword_and_value_gate_the_start() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    const KEYWORD: u32 = 0x0004_1E8B;
+    let event_data = |function: u32, member: &[u8; 2], param_2: u32, value: f32| Condition {
+        function_index: 576,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(value),
+        param_1: function | (tag(member) << 16),
+        param_2,
+        ..Default::default()
+    };
+    let node = SmNodeRecord {
+        form_id: 30,
+        parent: 10,
+        previous_sibling: 0,
+        kind: SmNodeKind::Quest,
+        quests: vec![SmQuestLink { form_id: 0x666, reset_hours: 0.0, ..Default::default() }],
+        conditions: vec![event_data(0, b"K1", KEYWORD, 1.0), event_data(2, b"V1", 0, 7.0)],
+        ..Default::default()
+    };
+    let tree = build_story_manager_tree(&records(vec![event_node(10, b"SCPT"), node]));
+    let mut world = setup_world();
+    world.insert_resource(tree);
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(StoryEventAliasFill::default());
+    let carrier = world.spawn();
+    let raise = |world: &World, keyword: u32, value: i32| {
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                carrier,
+                StoryEvent {
+                    mnemonic: *b"SCPT",
+                    reference_1: carrier,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                    scripted: Some(ScriptedStoryEvent {
+                        keyword,
+                        values: [value, 0],
+                        has_reference_1: false,
+                    }),
+                },
+            );
+        }
+        story_manager_dispatch_system(world);
+    };
+    let started = |world: &World| {
+        world
+            .try_resource::<QuestStageState>()
+            .is_some_and(|stages| stages.is_started(QuestFormId(0x666)))
+    };
+    raise(&world, 0x0004_1E8C, 7);
+    assert!(!started(&world), "another keyword");
+    raise(&world, KEYWORD, 3);
+    assert!(!started(&world), "the right keyword, the wrong value");
+    raise(&world, KEYWORD, 7);
+    assert!(started(&world));
+}
+
+/// M47.2 — several script events raised in one frame all dispatch (the
+/// College's radiant starter sends one per teacher).
+#[test]
+fn queued_script_events_in_one_frame_all_dispatch() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    let keyword_node = |form_id, previous_sibling, keyword, quest| SmNodeRecord {
+        form_id,
+        parent: 10,
+        previous_sibling,
+        kind: SmNodeKind::Quest,
+        quests: vec![SmQuestLink { form_id: quest, reset_hours: 0.0, ..Default::default() }],
+        conditions: vec![Condition {
+            function_index: 576,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(1.0),
+            param_1: tag(b"K1") << 16,
+            param_2: keyword,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let tree = build_story_manager_tree(&records(vec![
+        event_node(10, b"SCPT"),
+        keyword_node(20, 0, 0xA1, 0x901),
+        keyword_node(30, 20, 0xA2, 0x902),
+    ]));
+    let mut world = setup_world();
+    world.insert_resource(tree);
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(StoryEventAliasFill::default());
+    let carrier = world.spawn();
+    let event = |keyword| StoryEvent {
+        mnemonic: *b"SCPT",
+        reference_1: carrier,
+        reference_2: None,
+        location_1: None,
+        location_2: None,
+        scripted: Some(ScriptedStoryEvent {
+            keyword,
+            values: [0, 0],
+            has_reference_1: false,
+        }),
+    };
+    world
+        .resource_mut::<PendingScriptStoryEvents>()
+        .0
+        .extend([event(0xA1), event(0xA2)]);
+    story_manager_dispatch_system(&world);
+    let stages = world.resource::<QuestStageState>();
+    assert!(stages.is_started(QuestFormId(0x901)));
+    assert!(stages.is_started(QuestFormId(0x902)));
+    drop(stages);
+    assert!(world.resource::<PendingScriptStoryEvents>().0.is_empty(), "drained");
+}
+
+/// M47.2 — a quest whose non-optional alias fills From Event R1 cannot start
+/// from an event without R1 (the CK: an unfilled required alias fails the
+/// start), so the Story Manager walks on: the unconditioned node above does
+/// not swallow every script event. An optional alias does not block.
+#[test]
+fn a_required_from_event_alias_without_its_slot_fails_the_start() {
+    use byroredux_plugin::esm::records::{
+        AliasFillType, AliasFlags, QuestAlias, QustRecord, ALIAS_FLAG_OPTIONAL,
+    };
+    let quest_node = |form_id, previous_sibling, quest| SmNodeRecord {
+        form_id,
+        parent: 10,
+        previous_sibling,
+        kind: SmNodeKind::Quest,
+        quests: vec![SmQuestLink { form_id: quest, reset_hours: 0.0, ..Default::default() }],
+        ..Default::default()
+    };
+    // Marriage-shaped node first (no conditions), the intended node second.
+    let tree = build_story_manager_tree(&records(vec![
+        event_node(10, b"SCPT"),
+        quest_node(20, 0, 0x777),
+        quest_node(30, 20, 0x888),
+    ]));
+    let mut world = setup_world();
+    world.insert_resource(tree);
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(StoryEventAliasFill::default());
+    let from_r1 = |flags| QuestAlias {
+        alias_id: 0,
+        fill_type: Some(AliasFillType::FromEvent {
+            event_type: *b"SCPT",
+            data: tag(b"R1") as i32,
+        }),
+        flags: AliasFlags(flags),
+        ..Default::default()
+    };
+    crate::install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: 0x777,
+            aliases: vec![from_r1(0)],
+            ..Default::default()
+        }],
+    );
+    let carrier = world.spawn();
+    let raise = |world: &World| {
+        if let Some(mut events) = world.query_mut::<StoryEvent>() {
+            events.insert(
+                carrier,
+                StoryEvent {
+                    mnemonic: *b"SCPT",
+                    reference_1: carrier,
+                    reference_2: None,
+                    location_1: None,
+                    location_2: None,
+                    scripted: Some(ScriptedStoryEvent {
+                        keyword: 1,
+                        values: [0, 0],
+                        has_reference_1: false,
+                    }),
+                },
+            );
+        }
+        story_manager_dispatch_system(world);
+    };
+    let started = |world: &World, quest| {
+        world
+            .try_resource::<QuestStageState>()
+            .is_some_and(|stages| stages.is_started(QuestFormId(quest)))
+    };
+    raise(&world);
+    assert!(!started(&world, 0x777), "R1 required, the event has none");
+    assert!(started(&world, 0x888), "the walk went on to the next node");
+
+    // Optional: the alias may stay empty, and the first node fires.
+    crate::install_scene_quest_aliases(
+        &mut world,
+        [QustRecord {
+            form_id: 0x777,
+            aliases: vec![from_r1(ALIAS_FLAG_OPTIONAL)],
+            ..Default::default()
+        }],
+    );
+    world.resource_mut::<QuestStageState>().stop(QuestFormId(0x888));
+    raise(&world);
+    assert!(started(&world, 0x777));
 }
 
 /// #5366 Phase 2 gate shape — the tutorial's killer conditions: a KILL
@@ -2051,6 +2336,7 @@ fn event_data_killer_condition_gates_the_start() {
                 reference_2: Some(other_killer),
                 location_1: None,
                 location_2: None,
+                scripted: None,
             },
         );
     }
@@ -2072,6 +2358,7 @@ fn event_data_killer_condition_gates_the_start() {
                 reference_2: Some(player_killer),
                 location_1: None,
                 location_2: None,
+                scripted: None,
             },
         );
     }
@@ -2095,6 +2382,7 @@ fn event_data_killer_condition_gates_the_start() {
             reference_2: Some(player_killer),
             location_1: None,
             location_2: None,
+            ..Default::default()
         }),
         "the raising event's slots are recorded for FromEvent alias fills"
     );
@@ -2186,6 +2474,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                 reference_2: None,
                 location_1: None,
                 location_2: None,
+                scripted: None,
             },
         );
     }
@@ -2211,6 +2500,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                 reference_2: None,
                 location_1: None,
                 location_2: Some(0x18A56),
+                scripted: None,
             },
         );
     }
@@ -2236,6 +2526,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                 reference_2: None,
                 location_1: None,
                 location_2: None,
+                scripted: None,
             },
         );
     }
@@ -2311,6 +2602,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                         reference_2: Some(killer),
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -2388,6 +2680,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -2426,6 +2719,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -2475,6 +2769,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                             reference_2: None,
                             location_1: None,
                             location_2: None,
+                            scripted: None,
                         },
                     );
                 }
@@ -2518,6 +2813,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                     reference_2: None,
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }
@@ -2580,6 +2876,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                         reference_2: None,
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -2677,6 +2974,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                         reference_2: None,
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -2771,6 +3069,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                         reference_2: None,
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -2857,6 +3156,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                         reference_2: Some(actor_b),
                         location_1: None,
                         location_2: None,
+                        scripted: None,
                     },
                 );
             }
@@ -2885,6 +3185,7 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
                     reference_2: Some(outsider_b),
                     location_1: None,
                     location_2: None,
+                    scripted: None,
                 },
             );
         }

@@ -143,6 +143,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::ModQuestVariable { .. } => "ModQuestVariable",
         Effect::SetActorValueNamed { .. } => "SetActorValueNamed",
         Effect::BlockActivation { .. } => "BlockActivation",
+        Effect::SendStoryEvent { .. } => "SendStoryEvent",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

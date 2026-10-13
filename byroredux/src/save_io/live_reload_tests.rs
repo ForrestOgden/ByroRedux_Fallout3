@@ -636,6 +636,7 @@ fn load_discards_story_event_markers_pending_from_the_outgoing_session() {
                 reference_2: None,
                 location_1: None,
                 location_2: None,
+                scripted: None,
             },
         );
     }

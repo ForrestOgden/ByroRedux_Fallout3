@@ -820,6 +820,15 @@ pub enum Effect {
         actor_value: ObjectRef,
         value: f32,
     },
+    /// M47.2 — `<keyword>.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1,
+    /// aiValue2)`: raises a script (`SCPT`) Story Manager event carrying the
+    /// keyword, the location, the two references and the two integers.
+    SendStoryEvent {
+        keyword: ObjectRef,
+        location: Option<ObjectRef>,
+        references: [Option<ActorRef>; 2],
+        values: [i32; 2],
+    },
     /// M47.2 — `<object>.BlockActivation([abBlocked = true][,
     /// abHideActivateText])`: blocks or unblocks the reference's default
     /// activation, recorded in [`crate::ReferenceActivationBlocks`].
@@ -1631,6 +1640,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_change_perk,
     prim_force_alias,
     prim_block_activation,
+    prim_send_story_event,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2152,6 +2162,47 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
 /// value setter (`GlobalVariable.SetValue` takes one argument and is
 /// [`prim_set_global_value`]'s). The value must be a numeric literal.
+/// `Keyword.SendStoryEvent(Location akLoc = None, ObjectReference akRef1 =
+/// None, ObjectReference akRef2 = None, int aiValue1 = 0, int aiValue2 = 0)`
+/// — every parameter materialized by the compiler. A `None` literal leaves a
+/// slot empty; the integers must be literals.
+fn prim_send_story_event(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SendStoryEvent")?;
+    if args.len() > 5 || !matches!(object, Expr::Ident(_)) {
+        return None;
+    }
+    let unwrap = |index: usize| {
+        let mut node = &args.get(index)?.value.node;
+        while let Expr::Cast { expr, .. } = node {
+            node = &expr.node;
+        }
+        Some(node)
+    };
+    let location = match unwrap(0) {
+        None | Some(Expr::NoneLit) => None,
+        Some(node) => Some(receiver_object(node, scope)?),
+    };
+    let mut references = [None, None];
+    for (slot, index) in references.iter_mut().zip([1, 2]) {
+        *slot = match unwrap(index) {
+            None | Some(Expr::NoneLit) => None,
+            Some(node) => Some(receiver_actor(node, scope)?),
+        };
+    }
+    let value = |index: usize| -> Option<i32> {
+        match args.get(index) {
+            None => Some(0),
+            Some(_) => i32::try_from(int_arg(args, index)?).ok(),
+        }
+    };
+    Some(Effect::SendStoryEvent {
+        keyword: receiver_object(object, scope)?,
+        location,
+        references,
+        values: [value(3)?, value(4)?],
+    })
+}
+
 /// `BlockActivation(abBlocked = true)` (Skyrim); FO4 / Starfield add
 /// `abHideActivateText = false`, a prompt flag accepted as a literal. The
 /// receiver is the reference (an alias getter resolves through it).
@@ -3697,6 +3748,35 @@ mod tests {
                 "{call}"
             );
         }
+    }
+
+    /// M47.2 — `SendStoryEvent` with nothing, and with a location, the
+    /// speaker and a value.
+    #[test]
+    fn send_story_event_lowers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             MQGreybeardCallKeyword.SendStoryEvent(None, None, None, 0, 0)\n\
+             SomeKeyword.SendStoryEvent(SomeLocation, Game.GetPlayer() as ObjectReference, None, 3, 0)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SendStoryEvent {
+                    keyword: ObjectRef::Property("MQGreybeardCallKeyword".into()),
+                    location: None,
+                    references: [None, None],
+                    values: [0, 0],
+                },
+                Effect::SendStoryEvent {
+                    keyword: ObjectRef::Property("SomeKeyword".into()),
+                    location: Some(ObjectRef::Property("SomeLocation".into())),
+                    references: [Some(ActorRef::Player), None],
+                    values: [3, 0],
+                },
+            ])
+        );
     }
 
     /// M47.2 — `BlockActivation` with its default, an explicit unblock, and

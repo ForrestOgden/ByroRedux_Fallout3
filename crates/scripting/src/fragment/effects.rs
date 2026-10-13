@@ -344,6 +344,9 @@ pub struct DeferredFragmentEffects {
     /// [`crate::AliasOverrides`] after the quest-state guards drop (the alias
     /// refresh takes `SceneActorBindings` before `QuestStageState`).
     alias_overrides: Vec<(QuestFormId, i32, crate::AliasOverride)>,
+    /// M47.2 — `Effect::SendStoryEvent` events, queued for the Story Manager
+    /// after the guards drop.
+    story_events: Vec<crate::story_manager::StoryEvent>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
@@ -396,6 +399,7 @@ impl DeferredFragmentEffects {
             faction_changes: Vec::new(),
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
+            story_events: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
                 .map(|players| {
@@ -432,6 +436,13 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.story_events.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
+            {
+                pending.0.append(&mut self.story_events);
+            }
+        }
         if !self.activation_blocks.is_empty() {
             if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
                 for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
@@ -900,6 +911,48 @@ pub(crate) fn apply_effect(
         | Effect::SetMotionType { .. }
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::SendStoryEvent {
+            keyword,
+            location,
+            references,
+            values,
+        } => {
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            log::debug!(
+                "fragment SendStoryEvent: quest {:08X} raises SCPT keyword {keyword:08X}",
+                context.0
+            );
+            // A location property, or a location alias's bound location.
+            let location = match location {
+                None => None,
+                Some(location) => resolve_location(vmad, world, context, location),
+            };
+            let [first, second] = references
+                .clone()
+                .map(|actor| actor.and_then(|actor| guard_actor(&actor, context, vmad, world, deferred)));
+            // `R1` holds an entity: the first reference, else the player
+            // (flagged absent).
+            let carrier = first.or_else(|| {
+                world
+                    .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                    .map(|player| player.0)
+            })?;
+            deferred.story_events.push(
+                crate::story_manager::StoryEvent {
+                    mnemonic: *b"SCPT",
+                    reference_1: carrier,
+                    reference_2: second,
+                    location_1: location,
+                    location_2: None,
+                    scripted: Some(crate::story_manager::ScriptedStoryEvent {
+                        keyword,
+                        values: *values,
+                        has_reference_1: first.is_some(),
+                    }),
+                },
+            );
+            None
         }
         Effect::BlockActivation { object, blocked } => {
             let Some(reference) = object_form_id(vmad, world, context, object, deferred) else {
@@ -2305,6 +2358,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }
         | Effect::BlockActivation { .. }
+        | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
@@ -2516,6 +2570,36 @@ fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, value: f32) {
         .get_mut(actor)
         .expect("present or inserted")
         .set_base(avif, value);
+}
+
+/// The `LCTN` a location-typed [`ObjectRef`] names: a direct property's
+/// FormID, or the location bound to the location alias the property points
+/// at.
+fn resolve_location(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    location: &ObjectRef,
+) -> Option<u32> {
+    let value = vmad?
+        .scripts
+        .iter()
+        .find_map(|script| script.property(location.property_name()))
+        .map(|property| &property.value)?;
+    match value {
+        PropertyValue::Object { form_id, alias: -1 } => Some(*form_id),
+        PropertyValue::Object { form_id, alias } if *alias >= 0 => {
+            let quest = if *form_id != 0 {
+                QuestFormId(*form_id)
+            } else {
+                context
+            };
+            world
+                .try_resource::<crate::LocationAliasBindings>()?
+                .resolve(quest, i32::from(*alias))
+        }
+        _ => None,
+    }
 }
 
 /// The actor a guard reads, resolved like an effect's receiver.

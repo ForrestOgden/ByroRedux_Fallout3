@@ -367,7 +367,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 **Phase 3**
 - [x] top-N script families by corpus frequency have generic recognizers — measured by `refr_script_coverage` (Skyrim.esm: 19,412 scripted references, 7.2% covered after `defaultSetStageTrigScript` joined `default2StateActivator` / `defaultSetStageTRIGSpecificActor` / the quest-stage-gate family). The rest of the top 40 are bespoke subsystems — critter spawners, ambushes, ore veins, physics traps, weapon racks — each its own runtime, not a recognizer
 - [x] condition-function catalog expanded to cover recognized scripts' CTDAs (34 functions, incl. `GetVMQuestVariable` and the location family)
-- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 57.2% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
+- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 57.4% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
@@ -427,8 +427,9 @@ that does not exist yet:
   unloaded cells, whose reference aliases do not bind yet.
 - **LCTN aliases and location run-on conditions:** shipped 2026-10-12 — see
   [scripting.md §Locations](scripting.md#locations-and-location-aliases-m472).
-  Still open: script-raised story events (`SCPT`, 223 Skyrim location aliases
-  fill from one) and cleared-location state.
+  Script-raised story events (`SCPT`) and `GetEventData` shipped 2026-10-13
+  ([scripting.md §Script-raised story events](scripting.md#script-raised-story-events-m472)).
+  Still open: cleared-location state.
 
 Always confirm milestone state against [ROADMAP.md](../../ROADMAP.md).
 

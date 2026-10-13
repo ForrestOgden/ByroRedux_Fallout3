@@ -860,7 +860,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::SetActorValueNamed` variant.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v47 -> v48): the new
     // `ReferenceActivationBlocks` resource column and `Effect::BlockActivation`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0d51_e699_1506_23d6;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::SendStoryEvent` variant, and `EventDataSlots` gaining the
+    // script-event keyword / values (serde-skipped inside `StoryEventFill`, so
+    // no on-disk shape moved).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xab3b_a4d9_f4cf_5f55;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -1039,6 +1039,7 @@ impl ConsoleCommand for SmEventCommand {
             reference_2,
             location_1,
             location_2,
+            scripted: None,
         };
         let Some(mut events) = world.query_mut::<byroredux_scripting::story_manager::StoryEvent>()
         else {
