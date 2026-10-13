@@ -710,6 +710,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's follower flags.
             .reads_resource::<byroredux_scripting::FollowerState>()
             .writes_resource::<byroredux_scripting::FollowerState>()
+            // M47.2 — a spoken line's InputEnableLayer calls.
+            .reads_resource::<byroredux_scripting::InputLayers>()
+            .writes_resource::<byroredux_scripting::InputLayers>()
             // M47.2 — a spoken line's SetNoFavorAllowed / SetActorCause.
             .writes_resource::<byroredux_scripting::ReferenceFlags>()
             // M47.2 — a spoken line's Sound.Play.

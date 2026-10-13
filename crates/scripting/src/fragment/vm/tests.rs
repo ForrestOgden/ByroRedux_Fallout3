@@ -1459,6 +1459,38 @@ fn random_float_and_scale() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `InputEnableLayer`: `Create`, per-layer disables with the CK defaults, the
+/// `Is…Enabled` queries, `Reset` and `Delete`; the player's controls are enabled
+/// while no layer disables them.
+#[test]
+fn input_enable_layers_hold_and_release_controls() {
+    let script = parsed_source(
+        "ScriptName QF_VmLayer extends Quest\n\
+         Function Fragment_1()\n\
+           InputEnableLayer a = InputEnableLayer.Create()\n\
+           InputEnableLayer b = InputEnableLayer.Create()\n\
+           a.DisablePlayerControls()\n\
+           b.EnableLooking(False)\n\
+           If !a.IsMovementEnabled() && a.IsLookingEnabled() && !b.IsLookingEnabled() && b.IsMovementEnabled()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+           a.Delete()\n\
+           b.Reset()\n\
+           b.EnableMovement(False)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::player_control::PlayerControlState::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    // Layer a was deleted, b was reset and then disabled movement.
+    let state = *world.resource::<crate::player_control::PlayerControlState>();
+    assert!(!state.movement_enabled);
+    assert!(state.fighting_enabled && state.looking_enabled && state.menu_enabled);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

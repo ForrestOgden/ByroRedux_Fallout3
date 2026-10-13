@@ -740,6 +740,35 @@ fn from_stored(object: &crate::ScriptObject) -> Value {
 }
 
 /// The `RefCollectionAlias` natives the VM runs.
+/// An `InputEnableLayer` member function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayerNative {
+    Disable,
+    Enable,
+    Reset,
+    Delete,
+    /// `Enable<Control>(abEnable = true)`.
+    Set(crate::Control),
+    /// `Is<Control>Enabled()`.
+    Query(crate::Control),
+}
+
+/// The layer function a lowercase name is, if any.
+fn layer_native(name: &str) -> Option<LayerNative> {
+    match name {
+        "disableplayercontrols" => return Some(LayerNative::Disable),
+        "enableplayercontrols" => return Some(LayerNative::Enable),
+        "reset" => return Some(LayerNative::Reset),
+        "delete" => return Some(LayerNative::Delete),
+        _ => {}
+    }
+    if let Some(control) = name.strip_prefix("enable") {
+        return crate::Control::of_name(control).map(LayerNative::Set);
+    }
+    let control = name.strip_prefix("is")?.strip_suffix("enabled")?;
+    crate::Control::of_name(control).map(LayerNative::Query)
+}
+
 /// The most references one `PlaceAtMe` call creates.
 const MAX_PLACED_PER_CALL: i32 = 32;
 
@@ -1658,6 +1687,60 @@ impl Vm<'_> {
         Ok(())
     }
 
+    /// An `InputEnableLayer` native on a layer handle (see [`crate::input_layers`]):
+    /// `Disable` / `EnablePlayerControls`, `Enable<Control>`, `Is<Control>Enabled`,
+    /// `Reset`, `Delete`. `None` when `callee` is not one on a layer.
+    fn layer_call(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
+        let Expr::MemberAccess { object, member } = callee else {
+            return Ok(None);
+        };
+        let name = member.node.0.to_ascii_lowercase();
+        let Some(native) = layer_native(&name) else {
+            return Ok(None);
+        };
+        if static_class(&object.node).is_some() {
+            return Ok(None);
+        }
+        let Value::Int(layer) = self.eval(frame, &object.node)? else {
+            return Ok(None);
+        };
+        let layer = layer as u32;
+        let values = self.eval_args(frame, args)?;
+        let flag = |index: usize, default: bool| values.get(index).map_or(default, Value::truthy);
+        let Some(mut layers) = self.world.try_resource_mut::<crate::InputLayers>() else {
+            return stop("an input layer without the layer store");
+        };
+        let result = match native {
+            LayerNative::Query(control) => return Ok(Some(Value::Bool(layers.layer_enabled(layer, control)))),
+            LayerNative::Disable | LayerNative::Enable => {
+                let enabling = native == LayerNative::Enable;
+                for (index, control) in crate::Control::PARAMETER_ORDER.into_iter().enumerate() {
+                    let default = if enabling { true } else { crate::Control::DISABLE_DEFAULTS[index] };
+                    if flag(index, default) {
+                        layers.set_enabled(layer, control, enabling);
+                    }
+                }
+                Value::None
+            }
+            LayerNative::Set(control) => {
+                layers.set_enabled(layer, control, flag(0, true));
+                Value::None
+            }
+            LayerNative::Reset => {
+                layers.reset(layer);
+                Value::None
+            }
+            LayerNative::Delete => {
+                layers.delete(layer);
+                Value::None
+            }
+        };
+        if let Some(mut state) = self.world.try_resource_mut::<crate::player_control::PlayerControlState>() {
+            layers.sync_state(&mut state);
+        }
+        Ok(Some(result))
+    }
+
     /// A `RefCollectionAlias` native on a collection alias: `GetCount`,
     /// `GetAt`, `Find`, `AddRef`, `AddArray`, `AddRefCollection`, `RemoveRef`,
     /// `RemoveAll`. `None` when `callee` is not one on an alias. The collection
@@ -2356,6 +2439,17 @@ impl Vm<'_> {
             return Ok(None);
         };
         let name = member.node.0.to_ascii_lowercase();
+        // CK *Create - InputEnableLayer*: a new layer, as its handle. The class
+        // is an engine type the script names, not a value.
+        if name == "create"
+            && matches!(&object.node, Expr::Ident(class) if class.0.eq_ignore_ascii_case("inputenablelayer"))
+            && !frame.locals.contains_key("inputenablelayer")
+        {
+            let Some(mut layers) = self.world.try_resource_mut::<crate::InputLayers>() else {
+                return stop("InputEnableLayer.Create without the layer store");
+            };
+            return Ok(Some(Value::Int(layers.create() as i32)));
+        }
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
@@ -2853,6 +2947,9 @@ impl Vm<'_> {
         if let Some(value) = self.collection_call(frame, callee, args)? {
             return Ok(value);
         }
+        if let Some(value) = self.layer_call(frame, callee, args)? {
+            return Ok(value);
+        }
         if let Some(value) = self.object_read(frame, callee, args)? {
             return Ok(value);
         }
@@ -2913,6 +3010,9 @@ impl Vm<'_> {
             return Ok(Flow::Normal);
         }
         if self.collection_call(frame, &callee.node, args)?.is_some() {
+            return Ok(Flow::Normal);
+        }
+        if self.layer_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
         }
         if self.object_read(frame, &callee.node, args)?.is_some() {
@@ -4000,6 +4100,28 @@ impl<'l> Checker<'l> {
                 }
             }
         }
+        // A function of an `InputEnableLayer` the receiver is declared as.
+        if let (Some(native), Some(receiver)) = (layer_native(&name), receiver) {
+            let mut declared = receiver;
+            while let Expr::Cast { expr, .. } = declared {
+                declared = &expr.node;
+            }
+            if matches!(
+                self.static_type(frame, declared),
+                Some(Type::Object(ty)) if ty.0.eq_ignore_ascii_case("inputenablelayer")
+            ) {
+                let flag = |arg: &Arg| matches!(arg, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool | Kind::Num));
+                let shaped = match native {
+                    LayerNative::Disable | LayerNative::Enable => arg_kinds.len() <= 11 && arg_kinds.iter().all(flag),
+                    LayerNative::Set(_) => arg_kinds.len() <= 1 && arg_kinds.iter().all(flag),
+                    LayerNative::Reset | LayerNative::Delete | LayerNative::Query(_) => arg_kinds.is_empty(),
+                };
+                if !shaped {
+                    return self.fail(|| format!("InputEnableLayer.{name} as written"));
+                }
+                return Some(if matches!(native, LayerNative::Query(_)) { Kind::Bool } else { Kind::None });
+            }
+        }
         // `<Sound>.Play(akSource)` as a statement: the receiver must be declared
         // a `Sound` (`VisualEffect.Play` has the same name and a different
         // meaning), and the returned instance id goes unused.
@@ -4174,6 +4296,9 @@ impl<'l> Checker<'l> {
         // gets; the effect table decides, exactly as for `Game.*`.
         if let Expr::Ident(id) = receiver {
             let key = id.0.to_ascii_lowercase();
+            if key == "inputenablelayer" && name == "create" && arg_kinds.is_empty() && !frame.locals.contains_key(&key) {
+                return Some(Kind::Object);
+            }
             let names_a_value = frame.locals.contains_key(&key)
                 || id.0.eq_ignore_ascii_case("self")
                 || is_state_variable(&id.0)

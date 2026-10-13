@@ -1187,6 +1187,19 @@ the same store — "returns this value, if any. It otherwise returns 0".
   does; None clears) are saved per-reference flags (`ReferenceFlags`) for the follower-favor
   and trap-damage systems to read; neither has a consumer yet.
 
+### Input enable layers (M47.2)
+
+Fallout 4 / Starfield replace `Game.Disable/EnablePlayerControls` with
+`InputEnableLayer` (CK *InputEnableLayer Script*): `InputEnableLayer.Create()` makes a
+layer, `DisablePlayerControls(…)` / `EnablePlayerControls(…)` (eleven Bools, the CK's
+defaults) and `Enable<Control>(abEnable = True)` set what it holds disabled,
+`Is<Control>Enabled()` reads it, `Reset()` clears it and `Delete()` removes it ("any
+disables it may have held are cleared"). A control is enabled while no layer disables it.
+The layers are saved (`InputLayers`); the VM holds a layer as its handle (an Int), and a call
+is accepted only on a receiver *declared* an `InputEnableLayer`. After each call the layers
+fold into `PlayerControlState`'s eight domains; VATS, favorites, running, jumping, sprinting,
+the Z key and fast travel are tracked and answer `Is…Enabled` but nothing reads them yet.
+
 ### Sound.Play (M47.2)
 
 CK *Play - Sound*: "Plays the sound from the location of the specified object reference"

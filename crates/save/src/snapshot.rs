@@ -470,7 +470,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v86 -> v87 (M47.2): the `ReferenceFlags` resource column
 /// (`SetNoFavorAllowed`, `SetActorCause`).
-pub const FORMAT_MAJOR: u16 = 87;
+///
+/// v87 -> v88 (M47.2): the `InputLayers` resource column
+/// (`InputEnableLayer`).
+pub const FORMAT_MAJOR: u16 = 88;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
