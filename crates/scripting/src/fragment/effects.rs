@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::condition::entity_global_form_id;
-use crate::translate::effects::FragmentGuard;
+use crate::translate::effects::{FragmentGuard, ValueExpr};
 
 /// Resolve an effect's [`QuestRef`] to a concrete quest FormID.
 /// `Self`/`GetOwningQuest` resolve to the advancing quest; a
@@ -2581,6 +2581,115 @@ fn apply_quest_scoped_effect(
 /// Papyrus assignments are immediate. `Globals` and the quest-variable
 /// resources are read under the quest-state guards, the same nested reads
 /// `apply_global_effect` already takes.
+/// M47.2 — a [`ValueExpr`]'s run-time number; `None` when something it reads
+/// does not resolve (the guard then declines the conditional). Quest-variable
+/// and relationship reads see a write made earlier in the same fragment.
+fn evaluate_value(
+    value: &ValueExpr,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    stages: &QuestStageState,
+    deferred: &DeferredFragmentEffects,
+) -> Option<f32> {
+    Some(match value {
+        ValueExpr::Literal(value) => *value,
+        ValueExpr::Stage(via) => f32::from(stages.get_stage(resolve_quest_logged(via, context, vmad)?)),
+        ValueExpr::Global(global) => {
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            world
+                .try_resource::<crate::Globals>()
+                .and_then(|globals| globals.get(form_id))?
+        }
+        ValueExpr::QuestVariable(via, variable) => {
+            let quest = resolve_quest_logged(via, context, vmad)?;
+            let key = crate::QuestScriptVariables::property_key(variable);
+            let pending = deferred
+                .quest_variables
+                .iter()
+                .rev()
+                .find(|(q, k, _)| *q == quest && *k == key)
+                .map(|(_, _, value)| *value);
+            pending
+                .or_else(|| crate::quest_variable(world, quest, key))
+                .unwrap_or(0.0)
+        }
+        ValueExpr::ItemCount(container, item) => {
+            let container = guard_actor(container, context, vmad, world, deferred)?;
+            let item = resolve_property_form_id(vmad, item.property_name())?;
+            let count: u32 = world
+                .get::<Inventory>(container)
+                .map(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .filter(|stack| stack.base_form_id == item)
+                        .map(|stack| stack.count)
+                        .sum()
+                })
+                .unwrap_or(0);
+            count as f32
+        }
+        ValueExpr::Distance(from, to) => {
+            use byroredux_core::ecs::components::GlobalTransform;
+            let from = guard_actor(from, context, vmad, world, deferred)?;
+            let to = guard_actor(to, context, vmad, world, deferred)?;
+            // Like the GetDistance condition: a reference with no placement
+            // reads as infinitely far.
+            let from = world.get::<GlobalTransform>(from).map(|t| t.translation);
+            let to = world.get::<GlobalTransform>(to).map(|t| t.translation);
+            match (from, to) {
+                (Some(from), Some(to)) => (from - to).length(),
+                _ => f32::MAX,
+            }
+        }
+        ValueExpr::RelationshipRank(actor, other) => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let other = guard_actor(other, context, vmad, world, deferred)?;
+            let pair = crate::relationships::actor_base(world, actor)
+                .zip(crate::relationships::actor_base(world, other))
+                .map(|(a, b)| crate::relationships::pair(a, b));
+            // A `SetRelationshipRank` earlier in the same fragment is visible.
+            let pending = pair.and_then(|pair| {
+                deferred
+                    .relationship_changes
+                    .iter()
+                    .rev()
+                    .find(|(changed, _)| *changed == pair)
+                    .map(|&(_, rank)| rank)
+            });
+            f32::from(
+                pending.unwrap_or_else(|| crate::relationships::relationship_rank(world, actor, other)),
+            )
+        }
+        ValueExpr::Level(actor) => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            crate::condition::evaluate_function(
+                crate::condition::ConditionFunction::GetLevel,
+                &byroredux_plugin::esm::records::condition::Condition::default(),
+                actor,
+                world,
+            )
+        }
+        ValueExpr::RandomInt(min, max) => {
+            // `Utility.RandomInt` draws from the seeded quest RNG the Story
+            // Manager and `GetRandomPercent` share; unresolved without one.
+            if max < min {
+                return Some(*min as f32);
+            }
+            let span = (i64::from(*max) - i64::from(*min) + 1) as usize;
+            let pick = world
+                .try_resource_mut::<crate::story_manager::StoryManagerRng>()
+                .map(|mut rng| rng.pick(span))?;
+            (i64::from(*min) + pick as i64) as f32
+        }
+        ValueExpr::Arith(left, op, right) => op.apply(
+            evaluate_value(left, context, vmad, world, stages, deferred)?,
+            evaluate_value(right, context, vmad, world, stages, deferred)?,
+        )?,
+    })
+}
+
 fn evaluate_guard(
     guard: &FragmentGuard,
     context: QuestFormId,
@@ -2602,7 +2711,10 @@ fn evaluate_guard(
             quest: via,
             comparison,
             value,
-        } => comparison.apply(f32::from(stages.get_stage(quest(via)?)), *value),
+        } => comparison.apply(
+            evaluate_value(&ValueExpr::Stage(via.clone()), context, vmad, world, stages, deferred)?,
+            *value,
+        ),
         FragmentGuard::ObjectiveDisplayed {
             quest: via,
             objective,
@@ -2617,32 +2729,26 @@ fn evaluate_guard(
             global,
             comparison,
             value,
-        } => {
-            let form_id = resolve_property_form_id(vmad, global.property_name())?;
-            let reading = world
-                .try_resource::<crate::Globals>()
-                .and_then(|globals| globals.get(form_id))?;
-            comparison.apply(reading, *value)
-        }
+        } => comparison.apply(
+            evaluate_value(&ValueExpr::Global(global.clone()), context, vmad, world, stages, deferred)?,
+            *value,
+        ),
         FragmentGuard::QuestVariable {
             quest: via,
             variable,
             comparison,
             value,
-        } => {
-            let quest = quest(via)?;
-            let key = crate::QuestScriptVariables::property_key(variable);
-            let pending = deferred
-                .quest_variables
-                .iter()
-                .rev()
-                .find(|(q, k, _)| *q == quest && *k == key)
-                .map(|(_, _, value)| *value);
-            let reading = pending
-                .or_else(|| crate::quest_variable(world, quest, key))
-                .unwrap_or(0.0);
-            comparison.apply(reading, *value)
-        }
+        } => comparison.apply(
+            evaluate_value(
+                &ValueExpr::QuestVariable(via.clone(), variable.clone()),
+                context,
+                vmad,
+                world,
+                stages,
+                deferred,
+            )?,
+            *value,
+        ),
         FragmentGuard::ActorDead { actor, dead } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             world.has::<byroredux_core::ecs::components::Dead>(actor) == *dead
@@ -2707,43 +2813,41 @@ fn evaluate_guard(
             other,
             comparison,
             value,
-        } => {
-            let actor = guard_actor(actor, context, vmad, world, deferred)?;
-            let other = guard_actor(other, context, vmad, world, deferred)?;
-            let pair = crate::relationships::actor_base(world, actor)
-                .zip(crate::relationships::actor_base(world, other))
-                .map(|(a, b)| crate::relationships::pair(a, b));
-            // A `SetRelationshipRank` earlier in the same fragment is visible.
-            let pending = pair.and_then(|pair| {
-                deferred
-                    .relationship_changes
-                    .iter()
-                    .rev()
-                    .find(|(changed, _)| *changed == pair)
-                    .map(|&(_, rank)| rank)
-            });
-            let rank = pending
-                .unwrap_or_else(|| crate::relationships::relationship_rank(world, actor, other));
-            comparison.apply(f32::from(rank), *value)
-        }
+        } => comparison.apply(
+            evaluate_value(
+                &ValueExpr::RelationshipRank(actor.clone(), other.clone()),
+                context,
+                vmad,
+                world,
+                stages,
+                deferred,
+            )?,
+            *value,
+        ),
         FragmentGuard::Distance {
             from,
             to,
             comparison,
             value,
+        } => comparison.apply(
+            evaluate_value(
+                &ValueExpr::Distance(from.clone(), to.clone()),
+                context,
+                vmad,
+                world,
+                stages,
+                deferred,
+            )?,
+            *value,
+        ),
+        FragmentGuard::Compare {
+            left,
+            comparison,
+            right,
         } => {
-            use byroredux_core::ecs::components::GlobalTransform;
-            let from = guard_actor(from, context, vmad, world, deferred)?;
-            let to = guard_actor(to, context, vmad, world, deferred)?;
-            // Like the GetDistance condition: a reference with no placement
-            // reads as infinitely far.
-            let from = world.get::<GlobalTransform>(from).map(|t| t.translation);
-            let to = world.get::<GlobalTransform>(to).map(|t| t.translation);
-            let distance = match (from, to) {
-                (Some(from), Some(to)) => (from - to).length(),
-                _ => f32::MAX,
-            };
-            comparison.apply(distance, *value)
+            let left = evaluate_value(left, context, vmad, world, stages, deferred)?;
+            let right = evaluate_value(right, context, vmad, world, stages, deferred)?;
+            comparison.apply(left, right)
         }
         FragmentGuard::HasPerk {
             actor,
@@ -2762,22 +2866,17 @@ fn evaluate_guard(
             item,
             comparison,
             value,
-        } => {
-            let container = guard_actor(container, context, vmad, world, deferred)?;
-            let item = resolve_property_form_id(vmad, item.property_name())?;
-            let count: u32 = world
-                .get::<Inventory>(container)
-                .map(|inventory| {
-                    inventory
-                        .items
-                        .iter()
-                        .filter(|stack| stack.base_form_id == item)
-                        .map(|stack| stack.count)
-                        .sum()
-                })
-                .unwrap_or(0);
-            comparison.apply(count as f32, *value)
-        }
+        } => comparison.apply(
+            evaluate_value(
+                &ValueExpr::ItemCount(container.clone(), item.clone()),
+                context,
+                vmad,
+                world,
+                stages,
+                deferred,
+            )?,
+            *value,
+        ),
         FragmentGuard::QuestCompleted { quest: via, completed } => {
             stages.is_completed(quest(via)?) == *completed
         }

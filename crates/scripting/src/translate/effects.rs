@@ -159,6 +159,13 @@ pub enum FragmentGuard {
     /// M47.2 — a disjunction: holds when every guard of at least one
     /// alternative holds (`A || (B && C)`).
     Any(Vec<Vec<FragmentGuard>>),
+    /// M47.2 — two run-time numbers compared (`GetLevel() < Global.GetValue()`,
+    /// `Utility.RandomInt(1, 3) == 1`) when no specific guard fits.
+    Compare {
+        left: ValueExpr,
+        comparison: GuardComparison,
+        right: ValueExpr,
+    },
     /// `<actor>.IsDead()` is `dead`.
     ActorDead { actor: ActorRef, dead: bool },
     /// `<actor>.HasPerk(perk)` is `expected`.
@@ -219,6 +226,109 @@ pub enum FragmentGuard {
         keyword: ObjectRef,
         expected: bool,
     },
+}
+
+/// M47.2 — a number a fragment reads at run time, for
+/// [`FragmentGuard::Compare`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ValueExpr {
+    Literal(f32),
+    /// `<quest>.GetStage()`.
+    Stage(QuestRef),
+    /// `<global>.GetValue()` / `.Value`.
+    Global(ObjectRef),
+    /// `<quest>.<Variable>`, a quest script variable.
+    QuestVariable(QuestRef, String),
+    /// `<container>.GetItemCount(item)`.
+    ItemCount(ActorRef, ObjectRef),
+    /// `<from>.GetDistance(<to>)`.
+    Distance(ActorRef, ActorRef),
+    /// `<actor>.GetRelationshipRank(<other>)`.
+    RelationshipRank(ActorRef, ActorRef),
+    /// `<actor>.GetLevel()`.
+    Level(ActorRef),
+    /// `Utility.RandomInt(min, max)`, both inclusive.
+    RandomInt(i32, i32),
+    /// Arithmetic over two values.
+    Arith(Box<ValueExpr>, ArithOp, Box<ValueExpr>),
+}
+
+/// The arithmetic a [`ValueExpr::Arith`] applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl ArithOp {
+    pub fn apply(self, left: f32, right: f32) -> Option<f32> {
+        Some(match self {
+            Self::Add => left + right,
+            Self::Sub => left - right,
+            Self::Mul => left * right,
+            Self::Div if right == 0.0 => return None,
+            Self::Div => left / right,
+        })
+    }
+}
+
+/// M47.2 — a numeric expression as a [`ValueExpr`]: a literal, one of the
+/// numeric guard readings, `GetLevel()`, `Utility.RandomInt` with literal
+/// bounds, or arithmetic over those.
+fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
+    let mut e = e;
+    while let Expr::Cast { expr, .. } = e {
+        e = &expr.node;
+    }
+    if let Some(value) = as_num(e) {
+        return Some(ValueExpr::Literal(value));
+    }
+    if let Expr::BinaryOp { op, left, right } = e {
+        let op = match op {
+            BinaryOp::Add => ArithOp::Add,
+            BinaryOp::Sub => ArithOp::Sub,
+            BinaryOp::Mul => ArithOp::Mul,
+            BinaryOp::Div => ArithOp::Div,
+            _ => return None,
+        };
+        return Some(ValueExpr::Arith(
+            Box::new(classify_value(&left.node, scope)?),
+            op,
+            Box::new(classify_value(&right.node, scope)?),
+        ));
+    }
+    if let Some(args) = static_call(e, "Utility", "RandomInt") {
+        if args.len() > 2 {
+            return None;
+        }
+        // `RandomInt(int aiMin = 0, int aiMax = 100)`.
+        let bound = |index: usize, default: i32| -> Option<i32> {
+            match args.get(index) {
+                None => Some(default),
+                Some(_) => i32::try_from(int_arg(args, index)?).ok(),
+            }
+        };
+        return Some(ValueExpr::RandomInt(bound(0, 0)?, bound(1, 100)?));
+    }
+    if let Some((object, args)) = method_call(e, "GetLevel") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(ValueExpr::Level))
+            .flatten();
+    }
+    Some(match guard_reading(e, scope)? {
+        GuardReading::Stage(quest) => ValueExpr::Stage(quest),
+        GuardReading::Global(global) => ValueExpr::Global(global),
+        GuardReading::QuestVariable(quest, variable) => ValueExpr::QuestVariable(quest, variable),
+        GuardReading::ItemCount(container, item) => ValueExpr::ItemCount(container, item),
+        GuardReading::Distance(from, to) => ValueExpr::Distance(from, to),
+        GuardReading::RelationshipRank(actor, other) => ValueExpr::RelationshipRank(actor, other),
+        _ => return None,
+    })
 }
 
 /// What a guard atom reads, before its comparison is attached.
@@ -292,13 +402,29 @@ fn classify_condition(
             }
         }
         atom => {
-            let (reading, comparison, value) = classify_comparison(atom, scope)?;
-            let comparison = if negated {
-                comparison.negated()
-            } else {
-                comparison
+            let negate = |comparison: GuardComparison| {
+                if negated {
+                    comparison.negated()
+                } else {
+                    comparison
+                }
             };
-            out.push(guard_from(reading, comparison, value)?);
+            if let Some(guard) = classify_comparison(atom, scope)
+                .and_then(|(reading, comparison, value)| guard_from(reading, negate(comparison), value))
+            {
+                out.push(guard);
+                return Some(());
+            }
+            // M47.2 — no specific guard fits: compare two run-time numbers.
+            let Expr::BinaryOp { op, left, right } = atom else {
+                return None;
+            };
+            let comparison = GuardComparison::from_op(*op)?;
+            out.push(FragmentGuard::Compare {
+                left: classify_value(&left.node, scope)?,
+                comparison: negate(comparison),
+                right: classify_value(&right.node, scope)?,
+            });
             Some(())
         }
     }
@@ -7190,15 +7316,15 @@ mod tests {
 
     #[test]
     fn declines_unmodeled_conditional_guard() {
-        // `GetStage() >= 5`, disjunctions and faction tests lower since
-        // M47.2; an unmodelled read (alone or inside a disjunction), a
-        // fragment-script variable (`Self.x`) and a stage compared with a
-        // non-literal still decline.
+        // `GetStage() >= 5`, disjunctions, faction tests and comparisons of
+        // two run-time numbers lower since M47.2; an unmodelled read (alone,
+        // inside a disjunction or inside a comparison) and a fragment-script
+        // variable (`Self.x`) still decline.
         for condition in [
             "Game.GetPlayer().IsInCombat()",
             "Self.GetStageDone(5) || Game.GetPlayer().IsInCombat()",
             "Self.bDone",
-            "Self.GetStage() >= Self.GetStage()",
+            "Self.GetStage() >= Game.GetPlayer().GetAV(\"Health\")",
         ] {
             let body = first_fn_body(&format!(
                 "ScriptName QF extends Quest\n\
@@ -7207,6 +7333,52 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{condition}");
         }
+    }
+
+    /// M47.2 — two run-time numbers compared: a random roll, a level against
+    /// a global, and arithmetic.
+    #[test]
+    fn run_time_number_comparisons_lower_as_compare_guards() {
+        let lowered = |condition: &str| {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_5()\n\
+                 If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
+            ));
+            match lower_fragment(&body)?.as_slice() {
+                [Effect::Conditional { guards, .. }] => Some(guards.clone()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            lowered("Utility.RandomInt(1, 3) == 1"),
+            Some(vec![FragmentGuard::Compare {
+                left: ValueExpr::RandomInt(1, 3),
+                comparison: GuardComparison::Eq,
+                right: ValueExpr::Literal(1.0),
+            }])
+        );
+        assert_eq!(
+            lowered("Game.GetPlayer().GetLevel() < MinLevel.GetValue() + 2"),
+            Some(vec![FragmentGuard::Compare {
+                left: ValueExpr::Level(ActorRef::Player),
+                comparison: GuardComparison::Lt,
+                right: ValueExpr::Arith(
+                    Box::new(ValueExpr::Global(ObjectRef::Property("MinLevel".into()))),
+                    ArithOp::Add,
+                    Box::new(ValueExpr::Literal(2.0)),
+                ),
+            }])
+        );
+        assert_eq!(
+            lowered("!(Self.GetStage() >= Self.GetStage())"),
+            Some(vec![FragmentGuard::Compare {
+                left: ValueExpr::Stage(QuestRef::SelfRef),
+                comparison: GuardComparison::Lt,
+                right: ValueExpr::Stage(QuestRef::SelfRef),
+            }]),
+            "negation flips the comparison"
+        );
     }
 
     /// M47.2 — actor, quest, scene and location guard atoms.
