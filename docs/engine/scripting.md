@@ -763,11 +763,6 @@ runtime:
   as the CK says, adds the actor to the faction if it is not in it; a run sees its own set. An
   actor with neither has no crime faction: the CK does not say how the engine would pick one
   from its other factions.
-- **Crime faction.** `GetCrimeFaction()` ("the faction this actor reports its crimes to") reads a
-  script's `SetCrimeFaction` for the reference, else the base `NPC_`'s `CRIF` (`CrimeFactions`,
-  derived); `SetCrimeFaction(faction | None)` also adds the actor to the faction, as the CK says,
-  and is kept in the saved `CrimeFactionOverrides`. An actor with neither has no crime faction:
-  how the engine would choose one from its other factions is not documented.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap
