@@ -663,6 +663,11 @@ pub(crate) fn populate_scene_runtime(
     // M47.2 — perk entry-point composition table (FO3/FNV, Skyrim): the
     // value-math entries of every PERK, composed against an actor's ranked
     // perks whenever a calculation consults a hook.
+    // M47.2 — New Vegas Damage Threshold (armor DT + the DT actor value,
+    // perk-composed); absent on load orders without it.
+    if crate::combat::install_damage_threshold_rules(world, index) {
+        log::info!("Installed Damage Threshold rules");
+    }
     let perk_entry_perks =
         byroredux_scripting::perk_entry_points::install_perk_entry_points(world, index);
     if perk_entry_perks > 0 {

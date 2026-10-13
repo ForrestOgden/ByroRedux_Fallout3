@@ -293,6 +293,44 @@ pub fn compose_outgoing_damage(
     }
 }
 
+/// The Damage Threshold `target` holds against `attacker`'s strike once both
+/// sides' perks have had their say (FNV, M47.2): `Modify Damage Threshold
+/// (defender)` (56) on the target's perks — the GECK's "run when the player is
+/// hit; modifies the DT of the player" — then `(attacker)` (58) on the
+/// attacker's, "run when an enemy is hit; modifies the DT of the enemy". Both
+/// hooks carry three tabs whose 1 and 2 are weapons (vanilla conditions there
+/// are weapon-skill and weapon-list tests: Stonewall, Hit the Deck, Piercing
+/// Strike), and weapons are not entities, so those tabs go unsupplied.
+/// Games without a table return `base`.
+pub fn compose_damage_threshold(
+    world: &World,
+    attacker: EntityId,
+    target: EntityId,
+    base: f32,
+) -> f32 {
+    let game = world
+        .try_resource::<PerkEntryTable>()
+        .and_then(|table| table.game());
+    if game != Some(GameKind::Fallout3NV) {
+        return base;
+    }
+    let subjects = [None, None];
+    let defended = compose_entry_point(
+        world,
+        target,
+        fnv::MODIFY_DAMAGE_THRESHOLD_DEFENDER,
+        base,
+        &subjects,
+    );
+    compose_entry_point(
+        world,
+        attacker,
+        fnv::MODIFY_DAMAGE_THRESHOLD_ATTACKER,
+        defended,
+        &subjects,
+    )
+}
+
 /// Install the [`PerkEntryTable`] for a load order. Returns the number of
 /// perks that contribute value-math entries.
 pub fn install_perk_entry_points(world: &mut World, index: &EsmIndex) -> usize {

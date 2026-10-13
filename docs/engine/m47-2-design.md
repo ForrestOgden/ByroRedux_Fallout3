@@ -397,9 +397,11 @@ that does not exist yet:
   alias overrides (`ForceRefTo` / `Clear`), and script-filled reference
   collections (FO4's 554 `ALCS` aliases carry no fill data; scripts `AddRef`
   them). The player's `MoveTo` (teleport) shipped 2026-10-12.
-- **Perk hooks beyond strike damage:** XP, skill points, carry weight and
-  damage threshold have no consuming systems; weapon-tab subjects need
-  equipped weapons as entities.
+- **Perk hooks beyond strike damage:** damage threshold shipped 2026-10-12
+  (New Vegas DT, hooks 56 / 58 — [scripting.md §Perk entry points](scripting.md#perk-entry-points-m472)).
+  XP, skill points and carry weight still have no consuming systems
+  (no XP awards, no encumbrance); weapon-tab subjects need equipped weapons
+  as entities.
 - **Created Object "At"** (1,389 Skyrim + FO4 aliases, mostly NPC spawns):
   shipped 2026-10-12 — see [m47-3-quest-alias-design.md](m47-3-quest-alias-design.md)
   §Phase 4+. Still open: applying `ALCL`'s encounter level, and targets in

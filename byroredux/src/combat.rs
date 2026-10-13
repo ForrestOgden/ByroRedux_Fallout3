@@ -14,6 +14,7 @@ use byroredux_core::ecs::components::{
     ActorValues, ActorVitals, CreatureAttack, Dead, EquippedWeapon,
 };
 use byroredux_core::ecs::storage::{Component, EntityId};
+use std::collections::HashMap;
 use byroredux_core::ecs::{Resource, SparseSetStorage, World};
 
 use crate::components::AnimationTarget;
@@ -407,12 +408,119 @@ fn resolve_actor_root(world: &World, collider_entity: EntityId) -> Option<Entity
 
 /// [`attack_damage`] composed with the aggressor's perk entry points
 /// (`Calculate Weapon Damage` / `Mod Attack Damage`, M47.2) for a strike on
-/// `target`. Callers must hold no storage guard: the composition evaluates
-/// perk conditions, which lock arbitrary components.
+/// `target`, then reduced by the target's Damage Threshold where the load
+/// order has one ([`DamageThresholdRules`]). Callers must hold no storage
+/// guard: the composition evaluates perk conditions, which lock arbitrary
+/// components.
 pub(crate) fn attack_damage_against(world: &World, aggressor: EntityId, target: EntityId) -> f32 {
     let base = attack_damage(world, aggressor);
-    byroredux_scripting::perk_entry_points::compose_outgoing_damage(world, aggressor, target, base)
-        .max(0.0)
+    let damage =
+        byroredux_scripting::perk_entry_points::compose_outgoing_damage(world, aggressor, target, base)
+            .max(0.0);
+    apply_damage_threshold(world, aggressor, target, damage)
+}
+
+/// New Vegas Damage Threshold (M47.2): the flat damage an actor's DT absorbs
+/// from each hit. Installed when the load order authors both the
+/// `AVDamageThreshold` actor value (the GECK *Stats List*: "the actor's base
+/// Damage Threshold level") and `fMinDamMultiplier` — New Vegas; Fallout 3
+/// authors neither.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DamageThresholdRules {
+    /// The `AVDamageThreshold` AVIF FormID.
+    pub actor_value: u32,
+    /// `fMinDamMultiplier` — "the proportion of damage an actor takes from a
+    /// shot that would be negated by their Damage Threshold" (GECK, 0.2).
+    pub min_damage_mult: f32,
+    /// Each armor's `DNAM` DT, for the armors that author one.
+    pub armor_dt: HashMap<u32, f32>,
+}
+
+impl Resource for DamageThresholdRules {}
+
+/// Install (or, for a load order without DT, remove) [`DamageThresholdRules`].
+pub(crate) fn install_damage_threshold_rules(
+    world: &mut World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> bool {
+    let actor_value = index
+        .actor_values
+        .values()
+        .find(|av| av.editor_id.eq_ignore_ascii_case("AVDamageThreshold"))
+        .map(|av| av.form_id);
+    let (Some(actor_value), Some(min_damage_mult)) =
+        (actor_value, index.game_setting_float("fMinDamMultiplier"))
+    else {
+        world.remove_resource::<DamageThresholdRules>();
+        return false;
+    };
+    let armor_dt = index
+        .items
+        .iter()
+        .filter_map(|(&form_id, item)| match item.kind {
+            byroredux_plugin::esm::records::ItemKind::Armor { dt, .. } if dt > 0.0 => {
+                Some((form_id, dt))
+            }
+            _ => None,
+        })
+        .collect();
+    world.insert_resource(DamageThresholdRules {
+        actor_value,
+        min_damage_mult,
+        armor_dt,
+    });
+    true
+}
+
+/// `target`'s Damage Threshold: its `DamageThreshold` actor value plus the DT
+/// of every armor it has equipped. Each guard is released before the next is
+/// taken (#3580's order-independence).
+fn damage_threshold(world: &World, rules: &DamageThresholdRules, target: EntityId) -> f32 {
+    use byroredux_core::ecs::components::{ActorValues, EquipmentSlots, Inventory};
+    let base = world
+        .get::<ActorValues>(target)
+        .map_or(0.0, |values| values.current(rules.actor_value));
+    let Some(equipped) = world
+        .get::<EquipmentSlots>(target)
+        .map(|slots| slots.equipped_indices().collect::<Vec<_>>())
+    else {
+        return base;
+    };
+    let worn: Vec<u32> = world
+        .get::<Inventory>(target)
+        .map(|inventory| {
+            equipped
+                .iter()
+                .filter_map(|index| inventory.items.get(index.0 as usize))
+                .map(|stack| stack.base_form_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    base + worn
+        .into_iter()
+        .filter(|form_id| seen.insert(*form_id))
+        .filter_map(|form_id| rules.armor_dt.get(&form_id))
+        .sum::<f32>()
+}
+
+/// `damage` after the target's Damage Threshold, perk-composed
+/// (`compose_damage_threshold`): `max(damage − DT, damage ·
+/// fMinDamMultiplier)`, the GECK's floor on what DT can negate. Unchanged
+/// where the load order has no DT.
+fn apply_damage_threshold(world: &World, aggressor: EntityId, target: EntityId, damage: f32) -> f32 {
+    let Some(rules) = world
+        .try_resource::<DamageThresholdRules>()
+        .map(|rules| (*rules).clone())
+    else {
+        return damage;
+    };
+    let base = damage_threshold(world, &rules, target);
+    let threshold = byroredux_scripting::perk_entry_points::compose_damage_threshold(
+        world, aggressor, target, base,
+    )
+    .max(0.0);
+    (damage - threshold).max(damage * rules.min_damage_mult)
 }
 
 pub(crate) fn attack_damage(world: &World, aggressor: EntityId) -> f32 {
@@ -888,6 +996,102 @@ mod tests {
         assert!((composed - 18.9).abs() < 1e-4, "{composed}");
         // The unperked target hits for the baseline.
         assert_eq!(attack_damage_against(&world, target, aggressor), UNARMED_DAMAGE);
+    }
+
+    /// M47.2 — New Vegas Damage Threshold: the target's armor DT absorbs a
+    /// hit, a `Modify Damage Threshold (defender)` perk (vanilla `Toughness`,
+    /// hook 56, Add 3) raises it, and `fMinDamMultiplier` floors what DT can
+    /// negate.
+    #[test]
+    fn damage_threshold_absorbs_hits_down_to_the_floor() {
+        use byroredux_core::character::Perks;
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{
+            EsmIndex, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord,
+        };
+        const LEGATE_ARMOR: u32 = 0x0010_0001;
+        const TOUGHNESS: u32 = 0x0003_1DB9;
+        let (mut world, aggressor, target) = damage_fixture(50.0, Some(20.0), false);
+        world.register::<Perks>();
+        world.register::<Inventory>();
+        world.register::<EquipmentSlots>();
+        world.insert_resource(DamageThresholdRules {
+            actor_value: 0x5FA,
+            min_damage_mult: 0.2,
+            armor_dt: HashMap::from([(LEGATE_ARMOR, 15.0)]),
+        });
+        assert_eq!(attack_damage_against(&world, aggressor, target), 20.0, "no armor");
+
+        let mut inventory = Inventory::new();
+        inventory.push(ItemStack::new(LEGATE_ARMOR, 1));
+        world.insert(target, inventory);
+        let mut slots = EquipmentSlots::new();
+        slots.equip(0x4, InventoryIndex(0));
+        world.insert(target, slots);
+        assert_eq!(attack_damage_against(&world, aggressor, target), 5.0, "20 − DT 15");
+
+        let mut index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        index.perks.insert(
+            TOUGHNESS,
+            PerkRecord {
+                form_id: TOUGHNESS,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: 56,
+                        function: 2,
+                        tab_count: 3,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(3.0),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
+        let mut perks = Perks::default();
+        perks.set_rank(TOUGHNESS, 1);
+        world.insert(target, perks);
+        // DT 18 would leave 2; the floor keeps 20 × 0.2 = 4.
+        assert_eq!(attack_damage_against(&world, aggressor, target), 4.0);
+    }
+
+    /// The rules install only where the load order authors both the
+    /// `AVDamageThreshold` actor value and `fMinDamMultiplier`.
+    #[test]
+    fn damage_threshold_rules_install_only_with_their_records() {
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex, GameSetting, SettingValue};
+        let mut world = World::new();
+        let mut index = EsmIndex::default();
+        index.actor_values.insert(
+            0x5FA,
+            AvifRecord {
+                form_id: 0x5FA,
+                editor_id: "AVDamageThreshold".into(),
+                ..Default::default()
+            },
+        );
+        assert!(!install_damage_threshold_rules(&mut world, &index), "no GMST");
+        index.game_settings.insert(
+            0x10,
+            GameSetting {
+                form_id: 0x10,
+                editor_id: "fMinDamMultiplier".into(),
+                value: SettingValue::Float(0.2),
+            },
+        );
+        assert!(install_damage_threshold_rules(&mut world, &index));
+        assert_eq!(world.resource::<DamageThresholdRules>().actor_value, 0x5FA);
+        assert!(!install_damage_threshold_rules(&mut world, &EsmIndex::default()));
+        assert!(world.try_resource::<DamageThresholdRules>().is_none());
     }
 
     #[test]

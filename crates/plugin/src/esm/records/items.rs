@@ -655,18 +655,24 @@ pub fn parse_armo(
             b"MOD3" if !is_skyrim_or_later => {
                 female_model_path = crate::esm::records::common::read_zstring(&sub.data);
             }
-            // DNAM exists on FO3/FNV (DT/DR, 8 bytes) and Skyrim+
-            // (armor_rating × 100, 4 bytes). FO4 uses FNAM instead;
-            // Oblivion has no DNAM —
-            // armor rating lives in DATA (handled above).
+            // DNAM exists on FO3/FNV and Skyrim+ (armor_rating × 100, 4
+            // bytes). FO4 uses FNAM instead; Oblivion has no DNAM — armor
+            // rating lives in DATA (handled above). FO3/FNV per xEdit:
+            // `AR: s16 (×100)`, then FO3 `Flags: u16` (4 bytes) or FNV
+            // `unused: 2, DT: f32, Flags: u16, unused: 2` (12 bytes). AR is
+            // the Damage Resistance percentage, a multiple of 100 in every
+            // vanilla record (FNV 389, FO3 237).
             // #3724 — gated per branch on its own measured width, same
             // rationale as the `DATA` arm above.
             b"DNAM" => {
                 let mut r = SubReader::new(&sub.data);
                 match game {
-                    GameKind::Fallout3NV if sub.data.len() >= 8 => {
-                        dt = r.f32_or_default();
-                        dr = r.u32_or_default();
+                    GameKind::Fallout3NV if sub.data.len() >= 2 => {
+                        dr = (r.u16_or_default() as i16).max(0) as u32 / 100;
+                        if sub.data.len() >= 8 {
+                            r.skip_or_eof(2);
+                            dt = r.f32_or_default();
+                        }
                     }
                     GameKind::Fallout3NV => {}
                     GameKind::Skyrim | GameKind::Fallout76 | GameKind::Starfield
@@ -1739,6 +1745,22 @@ mod tests {
         }
     }
 
+    /// FO3's DNAM is 4 bytes — AR then flags, no DT.
+    #[test]
+    fn fo3_armo_dnam_is_damage_resistance_only() {
+        let mut dnam = Vec::new();
+        dnam.extend_from_slice(&4000i16.to_le_bytes());
+        dnam.extend_from_slice(&0u16.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"PowerArmor\0"), sub(b"DNAM", &dnam)];
+        match parse_armo(0x201, &subs, GameKind::Fallout3NV, &None).kind {
+            ItemKind::Armor { dt, dr, .. } => {
+                assert_eq!(dr, 40);
+                assert_eq!(dt, 0.0);
+            }
+            _ => panic!("expected Armor kind"),
+        }
+    }
+
     #[test]
     fn armo_extracts_dt_and_biped_flags() {
         let mut bmdt = Vec::new();
@@ -1748,9 +1770,12 @@ mod tests {
         data.extend_from_slice(&500u32.to_le_bytes()); // value
         data.extend_from_slice(&100u32.to_le_bytes()); // health
         data.extend_from_slice(&5.0f32.to_le_bytes()); // weight
+        // FNV DNAM: AR (DR × 100, s16), 2 unused, DT (f32), flags, 2 unused.
         let mut dnam = Vec::new();
-        dnam.extend_from_slice(&15.5f32.to_le_bytes()); // DT
-        dnam.extend_from_slice(&30u32.to_le_bytes()); // DR
+        dnam.extend_from_slice(&3000i16.to_le_bytes());
+        dnam.extend_from_slice(&[0, 0]);
+        dnam.extend_from_slice(&15.5f32.to_le_bytes());
+        dnam.extend_from_slice(&[0, 0, 0, 0]);
 
         let subs = vec![
             sub(b"EDID", b"ArmorTest\0"),

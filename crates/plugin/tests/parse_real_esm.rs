@@ -5930,3 +5930,34 @@ fn skyrim_location_hierarchy_resolves() {
     assert!(index.cells.cells.values().any(|cell| cell.location_form.is_some()));
 }
 
+
+/// FO3/FNV ARMO `DNAM` against the shipped masters (xEdit layout: AR then,
+/// on FNV, DT): FNV's Legate armor is DT 15 and Reinforced Combat Armor Mk II
+/// DT 20; FO3's Outcast power armor is DR 40.
+#[test]
+#[ignore = "needs FNV + FO3 game data on disk"]
+fn fallout_armor_damage_threshold_and_resistance_decode() {
+    use byroredux_plugin::esm::records::ItemKind;
+    let armor = |index: &byroredux_plugin::esm::records::EsmIndex, editor_id: &str| {
+        index
+            .items
+            .values()
+            .find(|item| item.common.editor_id == editor_id)
+            .map(|item| match &item.kind {
+                ItemKind::Armor { dt, dr, .. } => (*dt, *dr),
+                _ => panic!("{editor_id} is not armor"),
+            })
+            .unwrap_or_else(|| panic!("{editor_id} missing"))
+    };
+    if let Some(data) = data_dir(test_paths::FNV_ENV, test_paths::FNV_DEFAULT) {
+        let index = parse_esm(&std::fs::read(data.join("FalloutNV.esm")).unwrap()).unwrap();
+        assert_eq!(armor(&index, "ArmorLegate"), (15.0, 0));
+        assert_eq!(armor(&index, "ArmorCombatReinforcedMark2"), (20.0, 0));
+        assert_eq!(index.game_setting_float("fMinDamMultiplier"), Some(0.2));
+    }
+    if let Some(data) = data_dir(test_paths::FO3_ENV, test_paths::FO3_DEFAULT) {
+        let index = parse_esm(&std::fs::read(data.join("Fallout3.esm")).unwrap()).unwrap();
+        assert_eq!(armor(&index, "MS10LindensOutcastPowerArmor"), (0.0, 40));
+    }
+}
+

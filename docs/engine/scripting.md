@@ -243,6 +243,21 @@ value-math entries into the `PerkEntryTable` resource at load-order install
 owner's perks make of `base`. The first consumer is `combat::attack_damage_against`
 (FNV hook 0; Skyrim hooks 35 then 0) on both the player and NPC strike paths.
 
+The second is New Vegas **Damage Threshold**. `DamageThresholdRules` installs
+when the load order authors the `AVDamageThreshold` actor value (the GECK
+*Stats List*: "the actor's base Damage Threshold level") and
+`fMinDamMultiplier` — New Vegas; Fallout 3 authors neither. A hit's DT is the
+target's DT actor value plus its equipped armors' `DNAM` DT. The target's
+hook-56 perks compose it ("modifies the DT of the player" when hit), then the
+attacker's hook-58 perks ("modifies the DT of the enemy"). The hit deals
+`max(damage − DT, damage · fMinDamMultiplier)`, the GECK's floor on what DT
+negates. Both hooks' tabs 1 and 2 are weapons, so weapon-conditioned entries
+(Stonewall, Piercing Strike) wait on weapon entities as above. DR is not
+applied: its order against DT is not documented in the references here. The
+FO3/FNV ARMO `DNAM` decode was corrected to xEdit's layout on the way. It had
+read the DR field as DT and the DT float as DR (FNV: `AR ×100, 2 unused, DT,
+flags`; FO3: `AR, flags`).
+
 The record layout and the composition rules are pinned to xEdit's
 `wbDefinitionsFNV` / `wbDefinitionsTES5` and checked against the vanilla masters
 (`cargo run --release -p byroredux-plugin --example perk_entry_census -- <ESM>`,

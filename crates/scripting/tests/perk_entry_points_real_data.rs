@@ -15,7 +15,8 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::EsmIndex;
 use byroredux_plugin::esm::test_paths;
 use byroredux_scripting::perk_entry_points::{
-    compose_entry_point, compose_entry_point_traced, fnv, install_perk_entry_points,
+    compose_damage_threshold, compose_entry_point, compose_entry_point_traced, fnv,
+    install_perk_entry_points,
 };
 
 fn fnv_index() -> Option<EsmIndex> {
@@ -90,6 +91,36 @@ fn vanilla_fnv_perks_compose_as_their_descriptions_say() {
     let (world, actor) = actor_with(&index, &[(weapon_handling, 1)]);
     let trace = compose_entry_point_traced(&world, actor, 53, 7.0, &[None]);
     assert_eq!(trace.value, 5.0, "Weapon Handling: {trace:?}");
+}
+
+/// M47.2 — the Damage Threshold hooks: Toughness (+3 / +6 DT, hook 56 on the
+/// defender) raises the target's DT; Piercing Strike (hook 58 on the attacker,
+/// "ignore 15 DT" for melee and unarmed) is weapon-conditioned, so without a
+/// weapon subject it does not fire.
+#[test]
+#[ignore = "needs FalloutNV.esm on disk"]
+fn vanilla_fnv_damage_threshold_perks_compose() {
+    let Some(index) = fnv_index() else {
+        eprintln!("SKIP: FalloutNV.esm not found");
+        return;
+    };
+    let id = |editor_id: &str| {
+        index
+            .perks
+            .values()
+            .find(|perk| perk.editor_id == editor_id)
+            .unwrap_or_else(|| panic!("{editor_id} is a vanilla FNV perk"))
+            .form_id
+    };
+    for (rank, dt) in [(1u8, 13.0f32), (2, 16.0)] {
+        let (mut world, defender) = actor_with(&index, &[(id("Toughness"), rank)]);
+        let attacker = world.spawn();
+        let composed = compose_damage_threshold(&world, attacker, defender, 10.0);
+        assert_eq!(composed, dt, "Toughness rank {rank}");
+    }
+    let (mut world, attacker) = actor_with(&index, &[(id("PiercingStrike"), 1)]);
+    let defender = world.spawn();
+    assert_eq!(compose_damage_threshold(&world, attacker, defender, 10.0), 10.0);
 }
 
 #[test]
