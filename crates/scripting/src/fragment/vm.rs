@@ -53,7 +53,8 @@ use super::effects::{apply_effects, evaluate_guard, evaluate_value, DeferredFrag
 use crate::quest_stages::{QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageState};
 use crate::translate::compose::vmad_property_name;
 use crate::translate::effects::{
-    classify_native_effect, classify_native_guard, classify_native_value, NativeBindings,
+    classify_native_effect, classify_native_guard, classify_native_value, NativeBindings, VmFrame,
+    VmResume, VmStep, VmStored,
 };
 
 /// The player's reference, `PlayerRef`.
@@ -185,6 +186,76 @@ struct Frame {
 enum Flow {
     Normal,
     Return(Value),
+    /// `Utility.Wait(seconds)`: the path down to it in this frame, and the
+    /// suspended frames of the call it waits in (outermost first).
+    Suspend(f32, Vec<VmStep>, Vec<VmFrame>),
+}
+
+fn suspend_at(step: VmStep, flow: Flow) -> Flow {
+    match flow {
+        Flow::Suspend(seconds, mut path, frames) => {
+            path.insert(0, step);
+            Flow::Suspend(seconds, path, frames)
+        }
+        other => other,
+    }
+}
+
+/// `frame`'s state at `path` for a [`VmResume`].
+fn frame_state(frame: &Frame, function: &str, path: Vec<VmStep>) -> Run<VmFrame> {
+    let mut locals = Vec::with_capacity(frame.locals.len());
+    for (name, value) in &frame.locals {
+        let Some(value) = store(value) else {
+            return stop("an array local across a wait");
+        };
+        locals.push((name.clone(), value));
+    }
+    Ok(VmFrame {
+        script: frame.script.name.node.0.clone(),
+        function: function.to_owned(),
+        quest: frame.quest.0,
+        path,
+        locals,
+    })
+}
+
+fn restore_locals(frame: &VmFrame) -> HashMap<String, Value> {
+    frame
+        .locals
+        .iter()
+        .map(|(name, value)| (name.clone(), restore(value)))
+        .collect()
+}
+
+fn store(value: &Value) -> Option<VmStored> {
+    Some(match value {
+        Value::None => VmStored::None,
+        Value::Bool(b) => VmStored::Bool(*b),
+        Value::Int(i) => VmStored::Int(*i),
+        Value::Float(f) => VmStored::Float(*f),
+        Value::Str(s) => VmStored::Str(s.clone()),
+        Value::Form(form) => VmStored::Form(*form),
+        Value::Alias { quest, alias } => VmStored::Alias {
+            quest: *quest,
+            alias: *alias,
+        },
+        Value::Array(_) => return None,
+    })
+}
+
+fn restore(stored: &VmStored) -> Value {
+    match stored {
+        VmStored::None => Value::None,
+        VmStored::Bool(b) => Value::Bool(*b),
+        VmStored::Int(i) => Value::Int(*i),
+        VmStored::Float(f) => Value::Float(*f),
+        VmStored::Str(s) => Value::Str(s.clone()),
+        VmStored::Form(form) => Value::Form(*form),
+        VmStored::Alias { quest, alias } => Value::Alias {
+            quest: *quest,
+            alias: *alias,
+        },
+    }
 }
 
 /// The run's mutable context: the fragment runtime's own state.
@@ -200,21 +271,24 @@ struct Vm<'a> {
 }
 
 /// Run `script`'s `function` as a fragment of the quest `context`, its
-/// properties bound by `vmad`. Returns the quest-stage advances its natives
-/// produced.
+/// properties bound by `vmad` — from the start, or from where `resume` says a
+/// `Utility.Wait` suspended it. Returns the quest-stage advances its natives
+/// produced, and the wait and resume point when it suspends again.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_fragment(
     script: &str,
     function: &str,
+    resume: Option<&VmResume>,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
     world: &World,
     stages: &mut QuestStageState,
     objectives: &mut QuestObjectiveState,
     deferred: &mut DeferredFragmentEffects,
-) -> Vec<QuestStageAdvanced> {
+) -> (Vec<QuestStageAdvanced>, Option<(f32, VmResume)>) {
     let Some(script) = deferred.vm_scripts.get(&script.to_ascii_lowercase()).cloned() else {
         log::warn!("Papyrus VM: script '{script}' is not installed");
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let mut vm = Vm {
         world,
@@ -226,20 +300,38 @@ pub(super) fn run_fragment(
         depth: 0,
         advances: Vec::new(),
     };
-    let frame = Frame {
+    let (top, inner) = match resume.and_then(|state| state.frames.split_first()) {
+        Some((top, inner)) => (Some(top), inner),
+        None => (None, &[][..]),
+    };
+    let mut frame = Frame {
         script: Arc::clone(&script),
         quest: context,
         vmad: vmad.cloned(),
-        locals: HashMap::new(),
+        locals: top.map(restore_locals).unwrap_or_default(),
     };
-    if let Err(Stop(why)) = vm.call_function(frame, function, Vec::new()) {
-        log::warn!(
-            "Papyrus VM: {}.{function} for quest {:08X} stopped: {why}",
-            script.name.node.0,
-            context.0
-        );
-    }
-    vm.advances
+    let run = vm
+        .run_frame(&mut frame, function, top.map(|top| top.path.as_slice()), inner)
+        .and_then(|flow| match flow {
+            Flow::Suspend(seconds, path, inner) => {
+                let mut frames = vec![frame_state(&frame, function, path)?];
+                frames.extend(inner);
+                Ok(Some((seconds, VmResume { frames })))
+            }
+            _ => Ok(None),
+        });
+    let suspended = match run {
+        Ok(suspended) => suspended,
+        Err(Stop(why)) => {
+            log::warn!(
+                "Papyrus VM: {}.{function} for quest {:08X} stopped: {why}",
+                script.name.node.0,
+                context.0
+            );
+            None
+        }
+    };
+    (vm.advances, suspended)
 }
 
 fn find_function<'s>(script: &'s Script, name: &str) -> Option<&'s Function> {
@@ -386,10 +478,24 @@ impl Vm<'_> {
         Ok(())
     }
 
-    fn call_function(&mut self, mut frame: Frame, name: &str, args: Vec<Value>) -> Run<Value> {
+    /// Run `function` in `frame` — from the start, or along `path`, with
+    /// `inner` the suspended frames of the call the path ends in.
+    fn run_frame(&mut self, frame: &mut Frame, function: &str, path: Option<&[VmStep]>, inner: &[VmFrame]) -> Run<Flow> {
         if self.depth >= MAX_DEPTH {
             return stop("call depth");
         }
+        let script = Arc::clone(&frame.script);
+        let Some(function) = find_function(&script, function) else {
+            return stop(format!("no function {function}"));
+        };
+        self.depth += 1;
+        let flow = self.exec_block(frame, &function.body, path, inner);
+        self.depth -= 1;
+        flow
+    }
+
+    /// `frame` with `name`'s parameters bound to `args`.
+    fn enter(&mut self, mut frame: Frame, name: &str, args: Vec<Value>) -> Run<Frame> {
         let script = Arc::clone(&frame.script);
         let Some(function) = find_function(&script, name) else {
             return stop(format!("no function {name}"));
@@ -407,19 +513,151 @@ impl Vm<'_> {
                 .locals
                 .insert(param.name.node.0.to_ascii_lowercase(), value);
         }
-        self.depth += 1;
-        let flow = self.exec_block(&mut frame, &function.body);
-        self.depth -= 1;
-        Ok(match flow? {
+        Ok(frame)
+    }
+
+    /// A function called for its value; it may not wait.
+    fn call_function(&mut self, frame: Frame, name: &str, args: Vec<Value>) -> Run<Value> {
+        let mut frame = self.enter(frame, name, args)?;
+        Ok(match self.run_frame(&mut frame, name, None, &[])? {
             Flow::Return(value) => value,
             Flow::Normal => Value::None,
+            Flow::Suspend(..) => return stop("a wait in a function called for its value"),
         })
     }
 
-    fn exec_block(&mut self, frame: &mut Frame, body: &[Spanned<Stmt>]) -> Run<Flow> {
-        for statement in body {
-            if let Flow::Return(value) = self.exec(frame, &statement.node)? {
-                return Ok(Flow::Return(value));
+    /// A called function's flow as its call statement's: a suspension adds
+    /// the callee's frame to the chain.
+    fn callee_flow(&mut self, flow: Flow, frame: &Frame, function: &str) -> Run<Flow> {
+        Ok(match flow {
+            Flow::Suspend(seconds, path, deeper) => {
+                let mut frames = vec![frame_state(frame, function, path)?];
+                frames.extend(deeper);
+                Flow::Suspend(seconds, Vec::new(), frames)
+            }
+            _ => Flow::Normal,
+        })
+    }
+
+    /// Continue the suspended callee chain `inner` (outermost first) — none
+    /// when the path ended at the wait itself — called from `caller`.
+    fn resume_callee(&mut self, caller: &Frame, inner: &[VmFrame]) -> Run<Flow> {
+        let Some((callee, deeper)) = inner.split_first() else {
+            return Ok(Flow::Normal);
+        };
+        let Some(script) = self
+            .deferred
+            .vm_scripts
+            .get(&callee.script.to_ascii_lowercase())
+            .cloned()
+        else {
+            return stop(format!("script {} is not installed", callee.script));
+        };
+        let quest = QuestFormId(callee.quest);
+        // The properties the call bound (`script_call_target`): the caller's
+        // own for a call into its own script, else the quest's.
+        let vmad = if quest == caller.quest && Arc::ptr_eq(&script, &caller.script) {
+            caller.vmad.clone()
+        } else {
+            self.deferred.quest_scripts.get(&quest).cloned()
+        };
+        let mut frame = Frame {
+            script,
+            quest,
+            vmad,
+            locals: restore_locals(callee),
+        };
+        let flow = self.run_frame(&mut frame, &callee.function, Some(&callee.path), deeper)?;
+        self.callee_flow(flow, &frame, &callee.function)
+    }
+
+    /// Run `body`, or — `resume` — continue it from the position a wait
+    /// suspended it at.
+    fn exec_block(
+        &mut self,
+        frame: &mut Frame,
+        body: &[Spanned<Stmt>],
+        resume: Option<&[VmStep]>,
+        inner: &[VmFrame],
+    ) -> Run<Flow> {
+        let mut start = 0;
+        if let Some(path) = resume {
+            let Some((VmStep::Statement(index), rest)) = path.split_first() else {
+                return stop("a malformed resume path");
+            };
+            let index = *index as usize;
+            let Some(statement) = body.get(index) else {
+                return stop("a resume path past its block");
+            };
+            // The path ends at the wait itself or at the call it waits in.
+            let flow = if rest.is_empty() {
+                self.resume_callee(frame, inner)?
+            } else {
+                self.resume_statement(frame, &statement.node, rest, inner)?
+            };
+            match flow {
+                Flow::Normal => {}
+                flow => return Ok(suspend_at(VmStep::Statement(index as u32), flow)),
+            }
+            start = index + 1;
+        }
+        for (index, statement) in body.iter().enumerate().skip(start) {
+            match self.exec(frame, &statement.node)? {
+                Flow::Normal => {}
+                flow => return Ok(suspend_at(VmStep::Statement(index as u32), flow)),
+            }
+        }
+        Ok(Flow::Normal)
+    }
+
+    /// Continue inside the `If` branch or `While` body a wait suspended.
+    fn resume_statement(
+        &mut self,
+        frame: &mut Frame,
+        statement: &Stmt,
+        path: &[VmStep],
+        inner: &[VmFrame],
+    ) -> Run<Flow> {
+        let Some((VmStep::Branch(branch), rest)) = path.split_first() else {
+            return stop("a malformed resume path");
+        };
+        match statement {
+            Stmt::If {
+                body,
+                elseif_clauses,
+                else_body,
+                ..
+            } => {
+                let block = match *branch {
+                    0 => body.as_slice(),
+                    u32::MAX => match else_body {
+                        Some(body) => body.as_slice(),
+                        None => return stop("a resume path into a missing Else"),
+                    },
+                    k => match elseif_clauses.get(k as usize - 1) {
+                        Some((_, body)) => body.as_slice(),
+                        None => return stop("a resume path into a missing ElseIf"),
+                    },
+                };
+                let flow = self.exec_block(frame, block, Some(rest), inner)?;
+                Ok(suspend_at(VmStep::Branch(*branch), flow))
+            }
+            Stmt::While { condition, body } => {
+                match self.exec_block(frame, body, Some(rest), inner)? {
+                    Flow::Normal => self.exec_while(frame, &condition.node, body),
+                    flow => Ok(suspend_at(VmStep::Branch(0), flow)),
+                }
+            }
+            _ => stop("a resume path into a statement without a block"),
+        }
+    }
+
+    fn exec_while(&mut self, frame: &mut Frame, condition: &Expr, body: &[Spanned<Stmt>]) -> Run<Flow> {
+        while self.eval(frame, condition)?.truthy() {
+            self.tick()?;
+            match self.exec_block(frame, body, None, &[])? {
+                Flow::Normal => {}
+                flow => return Ok(suspend_at(VmStep::Branch(0), flow)),
             }
         }
         Ok(Flow::Normal)
@@ -470,27 +708,25 @@ impl Vm<'_> {
                 else_body,
             } => {
                 if self.eval(frame, &condition.node)?.truthy() {
-                    return self.exec_block(frame, body);
+                    let flow = self.exec_block(frame, body, None, &[])?;
+                    return Ok(suspend_at(VmStep::Branch(0), flow));
                 }
-                for (condition, body) in elseif_clauses {
+                for (k, (condition, body)) in elseif_clauses.iter().enumerate() {
                     if self.eval(frame, &condition.node)?.truthy() {
-                        return self.exec_block(frame, body);
+                        let flow = self.exec_block(frame, body, None, &[])?;
+                        return Ok(suspend_at(VmStep::Branch(k as u32 + 1), flow));
                     }
                 }
                 if let Some(body) = else_body {
-                    return self.exec_block(frame, body);
+                    let flow = self.exec_block(frame, body, None, &[])?;
+                    return Ok(suspend_at(VmStep::Branch(u32::MAX), flow));
                 }
             }
             Stmt::While { condition, body } => {
-                while self.eval(frame, &condition.node)?.truthy() {
-                    self.tick()?;
-                    if let Flow::Return(value) = self.exec_block(frame, body)? {
-                        return Ok(Flow::Return(value));
-                    }
-                }
+                return self.exec_while(frame, &condition.node, body);
             }
             Stmt::ExprStmt(expression) => {
-                self.call_statement(frame, &expression.node)?;
+                return self.call_statement(frame, &expression.node);
             }
         }
         Ok(Flow::Normal)
@@ -769,6 +1005,16 @@ impl Vm<'_> {
     /// A call to a script function, when `callee` names one: the frame's own
     /// script (`Fn()`, `Self.Fn()`) or a quest's attached script.
     fn script_call(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
+        let Some(callee_frame) = self.script_call_target(frame, callee)? else {
+            return Ok(None);
+        };
+        let values = self.eval_args(frame, args)?;
+        self.call_function(callee_frame, &callee_name(callee), values).map(Some)
+    }
+
+    /// The fresh frame a call to a script function runs in, when `callee`
+    /// names one.
+    fn script_call_target(&mut self, frame: &mut Frame, callee: &Expr) -> Run<Option<Frame>> {
         let (receiver, name) = match callee {
             Expr::Ident(name) => (None, name.0.as_str()),
             Expr::MemberAccess { object, member } => (Some(&object.node), member.node.0.as_str()),
@@ -796,14 +1042,12 @@ impl Vm<'_> {
         if find_function(&script, name).is_none() {
             return Ok(None);
         }
-        let values = self.eval_args(frame, args)?;
-        let callee_frame = Frame {
+        Ok(Some(Frame {
             script,
             quest,
             vmad,
             locals: HashMap::new(),
-        };
-        self.call_function(callee_frame, name, values).map(Some)
+        }))
     }
 
     /// The object reads no effect models.
@@ -994,20 +1238,35 @@ impl Vm<'_> {
         stop(format!("unsupported call {}", callee_name(callee)))
     }
 
-    fn call_statement(&mut self, frame: &mut Frame, expression: &Expr) -> Run<()> {
+    fn call_statement(&mut self, frame: &mut Frame, expression: &Expr) -> Run<Flow> {
         let Expr::Call { callee, args } = expression else {
             // A bare expression statement has no effect.
             self.eval(frame, expression)?;
-            return Ok(());
+            return Ok(Flow::Normal);
         };
-        if self.object_read(frame, &callee.node, args)?.is_some() {
-            return Ok(());
+        // `Utility.Wait(seconds)` suspends the run, every frame of it.
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("wait") {
+                let seconds = match args.first() {
+                    Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
+                    None => 0.0,
+                };
+                return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
+            }
         }
-        if self.script_call(frame, &callee.node, args)?.is_some() {
-            return Ok(());
+        if self.object_read(frame, &callee.node, args)?.is_some() {
+            return Ok(Flow::Normal);
+        }
+        // A script function called as a statement may wait.
+        if let Some(callee_frame) = self.script_call_target(frame, &callee.node)? {
+            let name = callee_name(&callee.node);
+            let values = self.eval_args(frame, args)?;
+            let mut callee_frame = self.enter(callee_frame, &name, values)?;
+            let flow = self.run_frame(&mut callee_frame, &name, None, &[])?;
+            return self.callee_flow(flow, &callee_frame, &name);
         }
         if is_trace(&callee.node) {
-            return Ok(());
+            return Ok(Flow::Normal);
         }
         let (call, bindings, vmad) = self.synthesize(frame, &callee.node, args)?;
         let Some(effect) = classify_native_effect(&call, &bindings) else {
@@ -1026,7 +1285,7 @@ impl Vm<'_> {
             self.deferred,
         );
         self.advances.extend(advances);
-        Ok(())
+        Ok(Flow::Normal)
     }
 }
 
@@ -1142,6 +1401,11 @@ pub use crate::translate::effects::ScriptLibrary as CheckLibrary;
 
 struct Checker<'l> {
     library: Option<&'l dyn CheckLibrary>,
+    /// Whether the function being checked waits (itself or in a function
+    /// it calls as a statement).
+    waits: bool,
+    /// The functions that wait, by lowercased (script, function).
+    waiting: HashSet<(String, String)>,
     /// The first reason the check failed, for diagnostics.
     reason: Option<String>,
     /// Scripts the run will need, by lowercased name.
@@ -1175,13 +1439,15 @@ pub fn check_function_reason(
     let mut checker = Checker {
         library,
         reason: None,
+        waits: false,
+        waiting: HashSet::new(),
         scripts: HashMap::new(),
         visiting: HashSet::new(),
     };
     checker
         .scripts
         .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
-    match checker.check_call_into(&script, function) {
+    match checker.check_call_into(&script, function, true) {
         Some(_) => Ok(checker.scripts.into_values().collect()),
         None => Err(checker.reason.unwrap_or_else(|| "unsupported".into())),
     }
@@ -1252,7 +1518,9 @@ impl Checker<'_> {
         None
     }
 
-    fn check_call_into(&mut self, script: &Arc<Script>, function: &str) -> Option<Kind> {
+    /// `statement`: whether the call is a statement — a function that waits
+    /// may not be called for its value.
+    fn check_call_into(&mut self, script: &Arc<Script>, function: &str, statement: bool) -> Option<Kind> {
         let key = (script.name.node.0.to_ascii_lowercase(), function.to_ascii_lowercase());
         let function_item = find_function(script, function)?;
         let returns = function_item
@@ -1260,8 +1528,8 @@ impl Checker<'_> {
             .as_ref()
             .map_or(Kind::None, |ty| kind_of_type(&ty.node, self.library));
         if !self.visiting.insert(key.clone()) {
-            // Recursion: assume the declared return.
-            return Some(returns);
+            // Checked already, or recursion: assume the declared return.
+            return self.call_waits(self.waiting.contains(&key), statement).map(|_| returns);
         }
         let mut frame = CheckFrame {
             script: Arc::clone(script),
@@ -1273,10 +1541,27 @@ impl Checker<'_> {
             frame.locals.insert(key.clone(), kind_of_type(&param.ty.node, self.library));
             frame.types.insert(key, param.ty.node.clone());
         }
-        for statement in &function_item.body {
-            self.check_stmt(&mut frame, &statement.node)?;
+        let outer = std::mem::replace(&mut self.waits, false);
+        function_item
+            .body
+            .iter()
+            .try_for_each(|statement| self.check_stmt(&mut frame, &statement.node))?;
+        let waits = std::mem::replace(&mut self.waits, outer);
+        if waits {
+            self.waiting.insert(key);
         }
-        Some(returns)
+        self.call_waits(waits, statement).map(|_| returns)
+    }
+
+    /// A call to a function that `waits` makes its caller wait too.
+    fn call_waits(&mut self, waits: bool, statement: bool) -> Option<()> {
+        if waits {
+            if !statement {
+                return self.fail(|| "a wait in a function called for its value".into());
+            }
+            self.waits = true;
+        }
+        Some(())
     }
 
     fn check_block(&mut self, frame: &mut CheckFrame, body: &[Spanned<Stmt>]) -> Option<()> {
@@ -1484,7 +1769,7 @@ impl Checker<'_> {
         {
             if find_function(&frame.script, &name).is_some() {
                 let script = Arc::clone(&frame.script);
-                return self.check_call_into(&script, &name);
+                return self.check_call_into(&script, &name, statement);
             }
         }
         let Some(receiver) = receiver else {
@@ -1497,8 +1782,12 @@ impl Checker<'_> {
             if class == "debug" && name.starts_with("trace") {
                 return Some(Kind::None);
             }
-            if class == "utility" && name.starts_with("wait") {
-                return self.fail(|| "Utility.Wait".into());
+            if class == "utility" && name == "wait" {
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) {
+                    self.waits = true;
+                    return Some(Kind::None);
+                }
+                return self.fail(|| "Utility.Wait called for its value".into());
             }
             let result = self.check_native(receiver.clone(), Kind::None, &name, &arg_kinds, statement);
             if result.is_none() {
@@ -1525,7 +1814,7 @@ impl Checker<'_> {
         // A quest script's function, through a cast or a typed property.
         if receiver_kind == Kind::Quest {
             if let Some(script) = self.quest_script_for(frame, receiver, &name) {
-                return self.check_call_into(&script, &name);
+                return self.check_call_into(&script, &name, statement);
             }
         }
         let Some(placeholder) = spanned_placeholder(receiver_kind) else {

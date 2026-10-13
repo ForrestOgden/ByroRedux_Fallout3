@@ -1152,7 +1152,12 @@ pub enum Effect {
     /// M47.2 — a fragment the lowering declines, run by the Papyrus VM
     /// ([`crate::fragment::vm`]): `script`'s `function`, installed with the
     /// scripts it reaches.
-    Interpret { script: String, function: String },
+    Interpret {
+        script: String,
+        function: String,
+        /// Where a run suspended by `Utility.Wait` resumes; `None` to start.
+        resume: Option<VmResume>,
+    },
     /// M47.2 — `<reference>.DeleteWhenAble()`: a created reference is deleted
     /// once its cell is gone ([`crate::CreatedDeletion`]); an authored one
     /// cannot be deleted.
@@ -2622,6 +2627,54 @@ fn is_side_effect_free(e: &Expr) -> bool {
 }
 
 /// Classify a single effect statement against the primitive table.
+/// M47.2 — where a Papyrus VM run suspended by `Utility.Wait` resumes: per
+/// suspended frame, the path of block positions down to the wait or the call
+/// it waits in (each block's statement index, and for an `If` / `While` the
+/// branch the run was in), and the frame's locals.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct VmResume {
+    /// The suspended frames, outermost (the fragment) first; each caller's
+    /// path ends at the call statement its callee suspended in.
+    pub frames: Vec<VmFrame>,
+}
+
+/// One suspended function activation of a [`VmResume`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct VmFrame {
+    pub script: String,
+    pub function: String,
+    /// The quest the script runs as (`Self`).
+    pub quest: u32,
+    pub path: Vec<VmStep>,
+    pub locals: Vec<(String, VmStored)>,
+}
+
+/// One position on a [`VmResume`] path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum VmStep {
+    /// The statement at this index of the current block.
+    Statement(u32),
+    /// Inside an `If` (0 its body, `k` its `k`-th `ElseIf`, `u32::MAX` its
+    /// `Else`) or a `While` (0, its body).
+    Branch(u32),
+}
+
+/// A local's value across a suspension.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum VmStored {
+    None,
+    Bool(bool),
+    Int(i32),
+    Float(f32),
+    Str(String),
+    Form(u32),
+    Alias { quest: u32, alias: i16 },
+}
+
 /// M47.2 — how the Papyrus VM ([`crate::vm`]) names the values it binds for
 /// one native call or read it hands to this module's primitives. Every value
 /// is a synthetic identifier: a quest or a player through these sets, any

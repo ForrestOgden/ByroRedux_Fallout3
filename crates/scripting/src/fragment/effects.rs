@@ -3403,10 +3403,47 @@ pub fn apply_effects(
                 break;
             }
             // M47.2 — a fragment the lowering declined, run by the Papyrus VM.
-            if let Effect::Interpret { script, function } = effect {
-                advances.extend(super::vm::run_fragment(
-                    script, function, context, vmad, world, stages, objectives, deferred,
-                ));
+            if let Effect::Interpret {
+                script,
+                function,
+                resume,
+            } = effect
+            {
+                let (run, suspended) = super::vm::run_fragment(
+                    script,
+                    function,
+                    resume.as_ref(),
+                    context,
+                    vmad,
+                    world,
+                    stages,
+                    objectives,
+                    deferred,
+                );
+                advances.extend(run);
+                // A `Utility.Wait`: the run resumes there, then the rest of
+                // the program follows.
+                if let Some((seconds, state)) = suspended {
+                    let mut tail = vec![Effect::Interpret {
+                        script: script.clone(),
+                        function: function.clone(),
+                        resume: Some(state),
+                    }];
+                    tail.extend(remaining_program(current, index, &pending));
+                    if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+                        queue.pending.push(PendingFragmentExecution {
+                            context,
+                            vmad: vmad.cloned(),
+                            effects: tail,
+                            remaining_seconds: seconds,
+                            resume_when: FragmentResumeCondition::DelayElapsed,
+                        });
+                    } else {
+                        log::debug!("Papyrus VM continuation dropped: FragmentExecutionQueue is unavailable");
+                    }
+                    halted = true;
+                    break;
+                }
                 continue;
             }
             // M47.2 — a quest-script body inlined into an INFO or scene

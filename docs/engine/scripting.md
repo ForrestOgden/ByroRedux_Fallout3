@@ -636,6 +636,19 @@ runtime:
   and current locations, and `GetDialogueTarget`.
 - **Quest-script calls.** A call into a quest's script runs here against that
   quest's VMAD.
+- **Script variables.** A numeric variable lives in `QuestScriptVariables`; an
+  object variable (a reference, alias, or quest) lives in the saved
+  `QuestScriptObjects`, so it holds from one fragment to the next.
+- **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the
+  fragment and in any function it calls as a statement. The suspended state
+  is an `Effect::Interpret` carrying a `VmResume`. It holds one `VmFrame` per
+  active function (outermost first), and each frame records its script,
+  function, quest, locals, and a path of `VmStep`s (statement indices, plus
+  the `If` branch or `While` body taken) to the wait or the call it waits in.
+  The fragment continuation queue holds that effect for the wait, as it does
+  for a lowered wait. On resume, the innermost callee continues first, and
+  each caller then continues after its call statement. A function called for
+  its value may not wait: the check rejects it, and the run stops if it does.
 
 `check_function` decides at populate time, against typed placeholders, whether
 every statement and call of the fragment and of the functions it reaches runs
@@ -644,15 +657,16 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-With the VM, 69.3% of the corpus runs (lowered + interpreted;
+With the VM, 74.5% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
-Skyrim installs 125 more quest-stage fragments.
 
 Not modelled yet:
-- latent calls (`Utility.Wait`), the largest rejection;
-- object script variables (the next largest);
-- INFO and scene fragments, which still use the lowering only;
-- calls into non-quest scripts.
+- assignment to another script's member (`akRef.Prop = x`), now the largest
+  rejection;
+- reference- and actor-script functions (`ReArmTrigger`) and several actor
+  natives (`SetPlayerTeammate`, `AdvanceSkill`, `IncrementStat`);
+- update and timer registration (`RegisterForUpdate`, `StartTimer`);
+- INFO and scene fragments, which still use the lowering only.
 
 ### Messages and text replacement (M47.2)
 

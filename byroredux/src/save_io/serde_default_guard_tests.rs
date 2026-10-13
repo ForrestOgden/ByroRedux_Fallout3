@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 62;
+    const BASELINE_MAJOR: u16 = 63;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -929,7 +929,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::Interpret` (the Papyrus VM).
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v61 -> v62): the new
     // `QuestScriptObjects` resource column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf756_295c_a8c2_e4f8;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v62 -> v63):
+    // `Effect::Interpret.resume` (`VmResume` / `VmFrame` / `VmStep` /
+    // `VmStored` — the suspended call chain).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xc14f_9934_13bf_1e2c;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
