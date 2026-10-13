@@ -263,6 +263,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetEnemy { .. } => "SetEnemy",
         Effect::StartCombat { .. } => "StartCombat",
         Effect::StopCombat { .. } => "StopCombat",
+        Effect::StopCombatAlarm { .. } => "StopCombatAlarm",
         Effect::AddSpell { .. } => "AddSpell",
         Effect::RemoveSpell { .. } => "RemoveSpell",
         Effect::PlayIdle { .. } => "PlayIdle",

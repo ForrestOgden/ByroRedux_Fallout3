@@ -748,6 +748,14 @@ runtime:
   `SeatReservations` (moved into core for it); the player cannot use furniture here, so nothing
   else occupies it. `Quest.IsStarting()` / `IsStopping()` ("in the process of starting up" / "shutting
   down") are false: a quest starts and stops in one step, so it is never between the two states.
+- **Speechcraft stats and combat stand-down.** `Game.QueryStat` also answers "Persuasions",
+  "Bribes" and "Intimidations": the CK lists them as tracked stats, but Skyrim's own
+  `FavorDialogueScript` is what raises them (`Game.IncrementStat(..., 1)`) and the engine has
+  no speechcraft screen, so the scripts' increments are the whole of them. `StopCombatAlarm()`
+  ("Stop all combat and alarms against this actor") removes the combat state of every actor
+  whose target is the receiver (the player included); the CK's alarms are the crime system's,
+  which the engine does not have, and the ambient hostility system may start a fresh fight if
+  they still see the target.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

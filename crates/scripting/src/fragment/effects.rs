@@ -1880,6 +1880,7 @@ pub(crate) fn apply_effect(
         | Effect::SetAlly { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
+        | Effect::StopCombatAlarm { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
         | Effect::EvaluatePackage { .. } => {
@@ -2957,6 +2958,20 @@ fn apply_ai_combat_effect(
             }
             None
         }
+        Effect::StopCombatAlarm { actor } => {
+            let target = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
+            if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+                let against: Vec<EntityId> = states
+                    .iter()
+                    .filter(|(_, state)| state.target == target)
+                    .map(|(fighter, _)| fighter)
+                    .collect();
+                for fighter in against {
+                    states.remove(fighter);
+                }
+            }
+            None
+        }
         Effect::SetGhost { actor, ghost } => {
             let bindings = &deferred.scene_actor_bindings;
             let actor = resolve_actor(vmad, world, context, actor, bindings, deferred.speaker)?;
@@ -3211,6 +3226,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
+        | Effect::StopCombatAlarm { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
         | Effect::SetAlly { .. }

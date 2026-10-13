@@ -2835,6 +2835,31 @@ fn furniture_in_use_and_quest_transition_states() {
     assert_eq!(run(&world), 30, "an actor sits on it");
 }
 
+/// `StopCombatAlarm` stands down every actor fighting the receiver, and no one else.
+#[test]
+fn stop_combat_alarm_stands_down_those_fighting_the_receiver() {
+    let script = parsed_source(
+        "ScriptName QF_VmAlarm extends Quest\n\
+         Function Fragment_1()\n\
+           Game.GetPlayer().StopCombatAlarm()\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut world = world;
+    let (hunter, bystander, other) = (world.spawn(), world.spawn(), world.spawn());
+    let fight = |target| crate::AiCombatState { target, attack_cooldown_remaining: 0.0 };
+    world.insert(hunter, fight(player));
+    world.insert(bystander, fight(other));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(world.get::<crate::AiCombatState>(hunter).is_none(), "the player's hunter stood down");
+    assert!(world.get::<crate::AiCombatState>(bystander).is_some(), "another fight is untouched");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

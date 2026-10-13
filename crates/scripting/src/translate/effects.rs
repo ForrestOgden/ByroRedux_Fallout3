@@ -1373,6 +1373,10 @@ pub enum Effect {
     /// hostility system may start a fresh one if the actor still sees
     /// someone it attacks, as the original does.
     StopCombat { actor: ActorRef },
+    /// M47.2 — `<actor>.StopCombatAlarm()` (CK: "Stop all combat and alarms
+    /// against this actor"): every actor fighting this one stands down. The CK's
+    /// alarms are the crime system's, which the engine does not have.
+    StopCombatAlarm { actor: ActorRef },
     /// #5017 — `<actor>.SetUnconscious([abUnconscious = true])`. See
     /// [`crate::ActorControlState::unconscious`] for what the state
     /// suppresses. Wakes FO4's dormant "Starts Unconscious" robots and
@@ -3014,6 +3018,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_ally,
     prim_start_combat,
     prim_stop_combat,
+    prim_stop_combat_alarm,
     prim_set_unconscious,
     prim_set_ghost,
     prim_add_spell,
@@ -4618,6 +4623,18 @@ fn prim_stop_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     Some(Effect::StopCombat { actor })
+}
+
+/// `<actor>.StopCombatAlarm()`, the player included (a player target is the
+/// usual one: stand everyone down after a persuasion or an arrest).
+fn prim_stop_combat_alarm(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "StopCombatAlarm")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::StopCombatAlarm {
+        actor: receiver_actor(object, scope)?,
+    })
 }
 
 /// #5017 — `actor.psc` declares `SetUnconscious(bool abUnconscious = true)`.

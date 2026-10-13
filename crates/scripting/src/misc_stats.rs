@@ -14,12 +14,21 @@ use std::collections::BTreeMap;
 
 use byroredux_core::ecs::resource::Resource;
 
-/// The misc stats the CK says only scripts maintain.
-pub const SCRIPT_STATS: [&str; 4] = [
+/// The misc stats scripts maintain: the four the CK says only scripts keep, and
+/// the three speechcraft counts only `FavorDialogueScript` raises here.
+pub const SCRIPT_STATS: [&str; 7] = [
     "Standing Stones Found",
     "Horses Owned",
     "Houses Owned",
     "Stores Invested In",
+    // The CK lists these among the tracked stats, but Skyrim's own
+    // `FavorDialogueScript` is what raises them (`Game.IncrementStat("Persuasions"
+    // | "Bribes" | "Intimidations", 1)`), and the engine has no speechcraft screen
+    // that could raise them another way, so the scripts' increments are the whole
+    // of them here.
+    "Persuasions",
+    "Bribes",
+    "Intimidations",
 ];
 
 /// `name` as one of the [`SCRIPT_STATS`], case-insensitively.
