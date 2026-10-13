@@ -2935,6 +2935,7 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     ("script_instance.rs", "parse_scene_fragments"),
     ("misc/equipment.rs", "parse_slgm"),
     ("soun.rs", "parse_soun"),
+    ("soun.rs", "parse_sndr"),
 ];
 
 /// Parsers that *do* read u32s but still take no remap, each with the

@@ -1174,6 +1174,20 @@ the same store — "returns this value, if any. It otherwise returns 0".
   what let Skyrim's ambient critter spawners (`CritterSpawn`, 3,300 references) run: they
   gate on the game hour, the weather and the player's distance, then `PlaceAtMe` a critter.
 
+### Sound.Play (M47.2)
+
+CK *Play - Sound*: "Plays the sound from the location of the specified object reference"
+(it returns a playback instance id; a source with no 3D plays nothing). The plugin now
+parses Skyrim+ `SNDR` sound descriptors into `index.sounds` beside the `SOUN` records
+(`parse_sndr`: the repeated `ANAM` files, the `LNAM` looping byte; layout checked against
+`Skyrim.esm`). In the VM, `<Sound>.Play(akSource)` as a statement — the check requires the
+receiver to be *declared* a `Sound`, since `VisualEffect.Play` shares the name — records a
+`PendingSoundPlays` request; `scripted_sound_system` (Update, after the hit events)
+resolves the descriptor, takes the next of its files in turn, extracts it from the sound
+archives and plays it one-shot from the source's `GlobalTransform` through the shared
+`SoundCache`. A looping descriptor is not played (a one-shot cannot loop). Not modelled:
+the instance id, `PlayAndWait`, `SetInstanceVolume`/`StopInstance`.
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

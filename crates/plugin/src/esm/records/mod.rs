@@ -54,7 +54,7 @@ pub use outfit::{parse_otft, OtftRecord};
 pub use pathgrid::{parse_pgrd, InterCellConnection, PathGridPoint, PathGridRecord};
 pub use pkin::{parse_pkin, PkinRecord};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
-pub use soun::{parse_soun, SounRecord};
+pub use soun::{parse_sndr, parse_soun, SounRecord};
 
 pub use actor::{
     decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race,

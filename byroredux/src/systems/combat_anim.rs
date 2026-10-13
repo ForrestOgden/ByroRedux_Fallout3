@@ -406,7 +406,7 @@ fn read_skeleton_root(world: &World, actor: EntityId) -> Option<EntityId> {
 /// both collapse to a silent skip — sound is never a hard dependency.
 /// Returns whether a one-shot was actually requested from the audio world
 /// (#5148), so callers can count real requests.
-pub(crate) fn play_oneshot_cached(world: &World, path: &'static str, position: Vec3) -> bool {
+pub(crate) fn play_oneshot_cached(world: &World, path: &str, position: Vec3) -> bool {
     let data = world
         .try_resource_mut::<byroredux_audio::SoundCache>()
         .and_then(|mut cache| {

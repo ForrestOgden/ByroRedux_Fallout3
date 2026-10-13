@@ -1357,6 +1357,47 @@ fn faction_owner_is_the_explicit_owner() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `<Sound>.Play(akSource)` as a statement records the request for the host; a
+/// receiver that is not declared a `Sound` (a `VisualEffect`) is declined.
+#[test]
+fn sound_play_records_a_request() {
+    const SOUND: u32 = 0x0001_0F79;
+    let script = parsed_source(
+        "ScriptName QF_VmSound extends Quest\n\
+         Sound Property Chime Auto\n\
+         VisualEffect Property Glow Auto\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n Chime.Play(Marker)\n EndFunction\n\
+         Function Fragment_2()\n Glow.Play(Marker)\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_2", None).is_err());
+    let world = world_with_fragment(script);
+    let object = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmSound".into(),
+                status: 0,
+                properties: vec![object("Chime", SOUND), object("Marker", MARKER)],
+            }],
+        },
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world.resource::<crate::PendingSoundPlays>().0,
+        vec![crate::SoundPlay { sound: SOUND, source: MARKER }]
+    );
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

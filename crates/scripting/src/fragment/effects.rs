@@ -471,6 +471,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — hit event registration changes, applied to
     /// [`super::HitRegistrations`] after the guards drop.
     pub(super) hit_requests: Vec<(u32, String, super::HitRequest)>,
+    /// M47.2 — `Sound.Play` calls, queued on [`crate::PendingSoundPlays`] after
+    /// the guards drop.
+    pub(super) sound_plays: Vec<crate::SoundPlay>,
     /// M47.2 — `Effect::SetLocationKeywordData`s: (location, keyword, data),
     /// applied to [`crate::LocationKeywordData`] after the guards drop.
     location_keyword_changes: Vec<(u32, u32, f32)>,
@@ -604,6 +607,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
+            sound_plays: Vec::new(),
             location_keyword_changes: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
@@ -725,6 +729,12 @@ impl DeferredFragmentEffects {
                 }
             }
             self.location_keyword_changes.clear();
+        }
+        if !self.sound_plays.is_empty() {
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
+                pending.0.append(&mut self.sound_plays);
+            }
+            self.sound_plays.clear();
         }
         if !self.hit_requests.is_empty() {
             if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {

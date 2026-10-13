@@ -320,6 +320,7 @@ mod tests {
             editor_id: String::new(),
             sound_path: path.to_string(),
             looping: false,
+            variants: Vec::new(),
         }
     }
 

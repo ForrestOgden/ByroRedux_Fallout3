@@ -104,6 +104,11 @@ pub(super) fn dispatch_misc_stub_group(
         b"SOUN" => extract_records(reader, end, b"SOUN", &mut |fid, subs| {
             index.sounds.insert(fid, parse_soun(fid, subs));
         })?,
+        // Skyrim+ SNDR: the sound descriptor `Sound.Play` plays — same map,
+        // same record shape as SOUN, with its `ANAM` files.
+        b"SNDR" => extract_records(reader, end, b"SNDR", &mut |fid, subs| {
+            index.sounds.insert(fid, parse_sndr(fid, subs));
+        })?,
         b"VTYP" => extract_records(reader, end, b"VTYP", &mut |fid, subs| {
             index
                 .voice_types

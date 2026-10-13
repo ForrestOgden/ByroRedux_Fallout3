@@ -2447,6 +2447,7 @@ impl Vm<'_> {
                     | "getrace"
                     | "getfactionowner"
                     | "getactorowner"
+                    | "play"
             );
         if !reads {
             return Ok(None);
@@ -2512,6 +2513,24 @@ impl Vm<'_> {
                         .filter(|race| *race != 0)
                         .map_or(Value::None, Value::Form),
                 )
+            }
+            // CK *Play - Sound*: "Plays the sound from the location of the
+            // specified object reference." The call returns an instance id; the
+            // check lets only the statement form through, which drops it.
+            (Value::Form(sound), "play") if args.len() == 1 => {
+                let source = match self.eval(frame, &args[0].value.node)? {
+                    Value::Form(form) if form != 0 => Some(form),
+                    Value::Alias { quest, alias } => self
+                        .deferred
+                        .scene_actor_bindings
+                        .resolve(QuestFormId(quest), i32::from(alias))
+                        .and_then(|entity| self.entity_form(entity)),
+                    _ => None,
+                };
+                if let Some(source) = source {
+                    self.deferred.sound_plays.push(crate::SoundPlay { sound: *sound, source });
+                }
+                Some(Value::Int(i32::from(source.is_some())))
             }
             // CK *GetFactionOwner* / *GetActorOwner*: the reference's explicit
             // owner only (not its container's or cell's), None when the owner
@@ -3890,6 +3909,23 @@ impl<'l> Checker<'l> {
                 });
                 if is_reference {
                     arg_kinds[1] = Arg::Kind(Kind::Player);
+                }
+            }
+        }
+        // `<Sound>.Play(akSource)` as a statement: the receiver must be declared
+        // a `Sound` (`VisualEffect.Play` has the same name and a different
+        // meaning), and the returned instance id goes unused.
+        if name == "play" && statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Alias)]) {
+            if let Some(receiver) = receiver {
+                let mut declared = receiver;
+                while let Expr::Cast { expr, .. } = declared {
+                    declared = &expr.node;
+                }
+                if matches!(
+                    self.static_type(frame, declared),
+                    Some(Type::Object(ty)) if ty.0.eq_ignore_ascii_case("sound")
+                ) {
+                    return Some(Kind::None);
                 }
             }
         }

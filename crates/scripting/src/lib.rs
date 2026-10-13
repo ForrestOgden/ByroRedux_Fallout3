@@ -33,6 +33,7 @@ pub mod alias_collections;
 pub mod followers;
 pub mod form_lists;
 pub mod linked_refs;
+pub mod sound_requests;
 pub mod ownership;
 pub mod weather_state;
 pub mod location_keyword_data;
@@ -140,6 +141,7 @@ pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{install_form_lists, FormLists};
 pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
+pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
@@ -292,6 +294,10 @@ pub fn register(world: &mut World) {
     // M47.2 — unload events awaiting their frame (transient).
     if world.try_resource::<PendingUnloadDeliveries>().is_none() {
         world.insert_resource(PendingUnloadDeliveries::default());
+    }
+    // M47.2 — Sound.Play requests awaiting the host (transient).
+    if world.try_resource::<PendingSoundPlays>().is_none() {
+        world.insert_resource(PendingSoundPlays::default());
     }
     // M47.2 — reference owners (derived).
     if world.try_resource::<OwnerKinds>().is_none() {

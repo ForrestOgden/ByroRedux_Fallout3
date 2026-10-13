@@ -86,6 +86,11 @@ pub struct SounRecord {
     /// Skyrim content; decoding `SNDR` is tracked separately (#3816-
     /// adjacent scope, not attempted here).
     pub looping: bool,
+    /// Every `ANAM` file of a Skyrim+ `SNDR` sound descriptor, in authored
+    /// order (CK: the descriptor's sounds; the engine plays one of them). Empty
+    /// for a `SOUN`, whose single path is [`Self::sound_path`]. For a `SNDR`,
+    /// `sound_path` is the first of these.
+    pub variants: Vec<String>,
 }
 
 impl SounRecord {
@@ -115,6 +120,42 @@ pub fn parse_soun(form_id: u32, subs: &[SubRecord]) -> SounRecord {
         editor_id: common.editor_id,
         sound_path: read_string_sub(subs, b"FNAM").unwrap_or_default(),
         looping,
+        variants: Vec::new(),
+    }
+}
+
+/// `LNAM.Looping` value for "Loop" in a `SNDR` (xEdit `wbDefinitionsTES5.pas`:
+/// 0 none, 8 loop, 16 envelope fast, 32 envelope slow).
+const SNDR_LOOPING_LOOP: u8 = 8;
+
+/// Parse a Skyrim+ `SNDR` sound descriptor into the same [`SounRecord`] a
+/// `SOUN` yields: its repeated `ANAM` sound files (xEdit's
+/// `wbSoundDescriptorSounds`) and the `LNAM` looping byte. The first file is
+/// the record's `sound_path`; the rest are [`SounRecord::variants`]. Output
+/// model, category, alternate-sound and conditions are not decoded.
+pub fn parse_sndr(form_id: u32, subs: &[SubRecord]) -> SounRecord {
+    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let variants: Vec<String> = subs
+        .iter()
+        .filter(|s| s.sub_type == *b"ANAM")
+        .filter_map(|s| {
+            let end = s.data.iter().position(|&b| b == 0).unwrap_or(s.data.len());
+            let text = String::from_utf8_lossy(&s.data[..end]).into_owned();
+            (!text.is_empty()).then_some(text)
+        })
+        .collect();
+    // `LNAM` (Values): unknown byte, looping byte, unknown, rumble.
+    let looping = subs
+        .iter()
+        .find(|s| s.sub_type == *b"LNAM")
+        .and_then(|s| s.data.get(1))
+        .is_some_and(|&byte| byte == SNDR_LOOPING_LOOP);
+    SounRecord {
+        form_id,
+        editor_id: common.editor_id,
+        sound_path: variants.first().cloned().unwrap_or_default(),
+        looping,
+        variants,
     }
 }
 
@@ -133,6 +174,22 @@ mod tests {
         assert_eq!(s.form_id, 0x0001_2345);
         assert_eq!(s.editor_id, "FXExplosion01");
         assert_eq!(s.sound_path, "fx\\explosion01.wav");
+    }
+
+    #[test]
+    fn parse_sndr_collects_the_anam_files_and_the_lnam_loop() {
+        let subs = vec![
+            edid("UIHammer"),
+            zstring(b"ANAM", "fx\\ui\\hammer_a.wav"),
+            zstring(b"ANAM", "fx\\ui\\hammer_b.wav"),
+            crate::esm::records::test_support::sub(b"LNAM", &[0, 8, 0, 0]),
+        ];
+        let s = parse_sndr(0x0010_0001, &subs);
+        assert_eq!(s.editor_id, "UIHammer");
+        assert_eq!(s.sound_path, "fx\\ui\\hammer_a.wav");
+        assert_eq!(s.variants, ["fx\\ui\\hammer_a.wav", "fx\\ui\\hammer_b.wav"]);
+        assert!(s.looping);
+        assert!(!parse_sndr(1, &[edid("Quiet")]).looping);
     }
 
     #[test]
