@@ -1195,6 +1195,9 @@ hide — one still on screen is not dismissed).
 refresh seats the location in the alias's place in the fill order, as `ForceRefTo` does for a
 reference alias, until the quest stops.
 
+`RefCollectionAlias.EvaluateAll()` (CK: "Calls EvaluatePackage on all the actors in the collection")
+is the collection native that asks every member for a package re-evaluation.
+
 ### Input enable layers (M47.2)
 
 Fallout 4 / Starfield replace `Game.Disable/EnablePlayerControls` with

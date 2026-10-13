@@ -772,7 +772,8 @@ fn layer_native(name: &str) -> Option<LayerNative> {
 /// The most references one `PlaceAtMe` call creates.
 const MAX_PLACED_PER_CALL: i32 = 32;
 
-const COLLECTION_NATIVES: [&str; 12] = [
+const COLLECTION_NATIVES: [&str; 13] = [
+    "evaluateall",
     "getcount",
     "getat",
     "getarray",
@@ -1786,6 +1787,18 @@ impl Vm<'_> {
             "getarray" | "getactorarray" => Value::Array(Rc::new(RefCell::new(
                 members.iter().map(|form| Value::Form(*form)).collect(),
             ))),
+            // CK *EvaluateAll - RefCollectionAlias*: "Calls EvaluatePackage on
+            // all the actors in the collection."
+            "evaluateall" => {
+                if let Some(mut requests) = self.world.query_mut::<crate::EvaluatePackageRequest>() {
+                    for form in members.iter() {
+                        if let Some(entity) = crate::condition::resolve_entity_by_global_form_id(self.world, *form) {
+                            requests.insert(entity, crate::EvaluatePackageRequest);
+                        }
+                    }
+                }
+                Value::None
+            }
             // CK: "Calls EnableNoWait / DisableNoWait on all the references in
             // the collection."
             "enableall" | "disableall" => {
@@ -4366,6 +4379,7 @@ impl<'l> Checker<'l> {
                     "enableall" | "disableall" => {
                         statement && matches!(arg_kinds.as_slice(), [] | [Arg::Literal(Expr::BoolLit(_))])
                     }
+                    "evaluateall" => statement && arg_kinds.is_empty(),
                     "getat" => matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]),
                     "find" => arg_kinds.len() == 1 && object(&arg_kinds[0]),
                     "addref" | "removeref" => statement && arg_kinds.len() == 1 && object(&arg_kinds[0]),

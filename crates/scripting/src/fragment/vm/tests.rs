@@ -3131,6 +3131,7 @@ fn script_filled_collection_aliases() {
            If Crowd.GetCount() == 2 && Crowd.Find(B) == 1 && Crowd.GetAt(0) == A\n\
              ObjectReference[] all = Crowd.GetArray()\n\
              If all.Length == 2\n\
+               Crowd.EvaluateAll()\n\
                Crowd.DisableAll()\n\
                Crowd.RemoveRef(A)\n\
                Self.SetStage(30)\n\
@@ -3149,6 +3150,22 @@ fn script_filled_collection_aliases() {
     }
     let mut world = world_with_fragment(script);
     world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    world.register::<crate::EvaluatePackageRequest>();
+    let mut pool = FormIdPool::default();
+    let member_entities: Vec<_> = [FIRST, SECOND]
+        .into_iter()
+        .map(|form| {
+            let id = pool.intern(FormIdPair {
+                plugin: PluginId::from_filename("Skyrim.esm"),
+                local: LocalFormId(form),
+            });
+            let entity = world.spawn();
+            world.insert(entity, FormIdComponent(id));
+            entity
+        })
+        .collect();
+    world.insert_resource(pool);
     let record = QustRecord {
         form_id: Q.0,
         aliases: vec![
@@ -3212,6 +3229,10 @@ fn script_filled_collection_aliases() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "the count, find and get-at read");
     assert_eq!(world.resource::<crate::AliasCollections>().members((Q.0, 3)), [SECOND]);
     assert!(!crate::fragment::reference_enabled(&world, FIRST) && !crate::fragment::reference_enabled(&world, SECOND), "DisableAll");
+    assert!(
+        member_entities.iter().all(|entity| world.get::<crate::EvaluatePackageRequest>(*entity).is_some()),
+        "EvaluateAll asks every member to re-evaluate its package"
+    );
     world.resource_mut::<QuestStageState>().set_stage(Q, 22);
     crate::fragment::quest_fragment_dispatch_system(&world);
     // RemoveAll emptied it; the conditions-filled one was refused, not read as
