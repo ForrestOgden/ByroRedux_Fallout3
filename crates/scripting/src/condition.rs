@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **43 functions** at their canonical CTDA
+//! lineage. This catalog ships **44 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -69,6 +69,7 @@
 //! | 354   | IsEssential            | `ActorProtection` + aliases |
 //! | 476   | IsProtected            | `ActorProtection` + aliases |
 //! | 580   | IsBleedingOut          | `Bleedout`                  |
+//! | 453   | GetPlayerTeammate      | `FollowerState`             |
 //! | 403   | GetRelationshipRank    | `relationships`             |
 //! | 560   | HasKeyword             | `keywords`                  |
 //! | 237   | GetIsGhost             | `ActorControlState`         |
@@ -282,6 +283,11 @@ pub enum ConditionFunction {
     /// `IsBleedingOut() → f32` (M47.2): the subject is in bleedout. Skyrim /
     /// FO4 index **580**.
     IsBleedingOut,
+    /// `GetPlayerTeammate() → f32` (M47.2): 1.0 when the subject is currently a
+    /// player teammate set by Papyrus `SetPlayerTeammate` (CK *GetPlayerTeammate*,
+    /// marked obsolete by the developers but "does appear to work"; Skyrim / FO4
+    /// index **453**) — [`crate::FollowerState`].
+    GetPlayerTeammate,
     /// `GetRelationshipRank(actor) → f32` (M47.2): the relationship rank
     /// between the subject and the parameter actor, +4 Lover … −4
     /// Archnemesis ([`crate::relationships`]). Skyrim / FO4 index **403**.
@@ -366,6 +372,7 @@ impl ConditionFunction {
             354 => Self::IsEssential,
             476 => Self::IsProtected,
             580 => Self::IsBleedingOut,
+            453 => Self::GetPlayerTeammate,
             403 => Self::GetRelationshipRank,
             560 => Self::HasKeyword,
             237 => Self::GetIsGhost,
@@ -375,7 +382,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 43] = [
+    pub const CATALOG: [ConditionFunction; 44] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -416,6 +423,7 @@ impl ConditionFunction {
         Self::IsEssential,
         Self::IsProtected,
         Self::IsBleedingOut,
+        Self::GetPlayerTeammate,
         Self::GetRelationshipRank,
         Self::HasKeyword,
         Self::GetIsGhost,
@@ -474,6 +482,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetPlayerTeammate
             | Self::GetIsGhost
             | Self::Unknown(_) => false,
         }
@@ -522,6 +531,7 @@ impl ConditionFunction {
             Self::IsEssential => "IsEssential",
             Self::IsProtected => "IsProtected",
             Self::IsBleedingOut => "IsBleedingOut",
+            Self::GetPlayerTeammate => "GetPlayerTeammate",
             Self::GetRelationshipRank => "GetRelationshipRank",
             Self::HasKeyword => "HasKeyword",
             Self::GetIsGhost => "GetIsGhost",
@@ -576,6 +586,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetPlayerTeammate
             | Self::GetIsGhost
             | Self::GetRelationshipRank
             | Self::HasKeyword => true,
@@ -649,6 +660,7 @@ impl ConditionFunction {
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
+            | Self::GetPlayerTeammate
             | Self::GetIsGhost
             | Self::GetRelationshipRank
             | Self::HasKeyword
@@ -1408,6 +1420,21 @@ pub fn evaluate_function(
         ConditionFunction::IsBleedingOut => {
             truth(crate::bleedout::is_bleeding_out(world, entity))
         }
+        ConditionFunction::GetPlayerTeammate => {
+            let form = if world
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                .is_some_and(|player| player.0 == entity)
+            {
+                Some(crate::PLAYER_REFERENCE)
+            } else {
+                entity_global_form_id(world, entity)
+            };
+            truth(form.is_some_and(|form| {
+                world
+                    .try_resource::<crate::FollowerState>()
+                    .is_some_and(|state| state.read(form, crate::FollowerFlag::Teammate))
+            }))
+        }
         ConditionFunction::GetDead => {
             // Death is a sparse lifecycle marker: absence is the overwhelmingly
             // common alive state, while combat/scripts/resurrection can share
@@ -1848,6 +1875,31 @@ mod tests {
         world.insert_resource(HardcoreMode { enabled: true });
         assert!(evaluate_condition(&condition, &world, &ctx(actor)));
         world.resource_mut::<HardcoreMode>().enabled = false;
+        assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+    }
+
+    /// CK *GetPlayerTeammate*: "Returns 1 if an actor is currently set as a player
+    /// teammate via the Papyrus SetPlayerTeammate() function, 0 if not."
+    #[test]
+    fn get_player_teammate_reads_the_follower_flags() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.register::<FormIdComponent>();
+        let mut pool = FormIdPool::default();
+        let id = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x0001_0F90),
+        });
+        world.insert_resource(pool);
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(id));
+        let condition = cond(453, ComparisonOp::Eq, 1.0, false);
+        assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+        world.resource_mut::<crate::FollowerState>().set_teammate(0x0001_0F90, true, false);
+        assert!(evaluate_condition(&condition, &world, &ctx(actor)));
+        world.resource_mut::<crate::FollowerState>().set_teammate(0x0001_0F90, false, false);
         assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
     }
 

@@ -437,6 +437,9 @@ fn unload_cell_inner(
     let phase_started = Instant::now();
     crate::cell_loader::stream_snapshot::capture_actor_snapshots(world, &victims);
     crate::cell_loader::reference_state::capture(world, &victims);
+    // M47.2 — the scripts of the references about to despawn hear
+    // `OnCellDetach` / `OnUnload`.
+    byroredux_scripting::raise_unload_events(world, &victims);
     timings.snapshot_capture = phase_started.elapsed();
 
     let (mesh_drops, freed_meshes, texture_drops) =

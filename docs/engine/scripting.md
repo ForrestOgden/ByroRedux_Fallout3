@@ -1124,6 +1124,28 @@ The delivery systems (updates, distance, custom/remote and hit events) share
 - `KillSilent` is `Kill` "without a kill event" (CK *KillSilent - Actor*): the Story
   Manager's KILL is not raised; the victim's own `OnDeath` still is.
 
+### Actor lifecycle events (M47.2)
+
+Reference and alias scripts receive these beside `OnActivate` / `OnHit` / `OnDeath`:
+- `OnDying(akKiller)` (CK: the actor "is starting to die") with the death, ahead of
+  `OnDeath`;
+- `OnEnterBleedout()` when an actor goes into bleedout (`ActorWatch` diffs the
+  `Bleedout` components between frames);
+- `OnCombatStateChanged(akTarget, aeCombatState)` from the same diff over
+  `AiCombatState`: the new target and 1, or None and 0 on leaving combat; state 2
+  (searching) has no source here;
+- `OnLocationChange(akOldLoc, akNewLoc)` for the player only
+  (`location::PlayerLocation`; the first sight is a baseline);
+- `OnCellDetach()` then `OnUnload()` for the references of a cell about to unload
+  (`raise_unload_events`, called from `unload_cell_inner` before the despawn, queued
+  on `PendingUnloadDeliveries`, delivered with the next frame's events).
+
+`Actor.IsInCombat()` is a guard (`FragmentGuard::ActorInCombat`, `is_in_combat`): the
+actor has a combat target, or, for the player, some actor is fighting it. The condition
+function `GetPlayerTeammate` (index 453; CK: "1 if an actor is currently set as a player
+teammate via SetPlayerTeammate()") reads `FollowerState`, which the vanilla follower
+packages condition on; `GetPlayerTeammateCount` is undocumented and stays unmodelled.
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

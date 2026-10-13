@@ -33,7 +33,7 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 /// The events reference scripts receive, in the order one cell load
 /// delivers the first four (CK *OnCellAttach*: "reliably called before
 /// OnCellLoad"; attach and load are one moment here).
-pub const DELIVERED_EVENTS: [&str; 8] = [
+pub const DELIVERED_EVENTS: [&str; 14] = [
     "OnInit",
     "OnCellAttach",
     "OnLoad",
@@ -41,7 +41,13 @@ pub const DELIVERED_EVENTS: [&str; 8] = [
     "OnActivate",
     "OnTriggerEnter",
     "OnHit",
+    "OnEnterBleedout",
+    "OnCombatStateChanged",
+    "OnLocationChange",
+    "OnDying",
     "OnDeath",
+    "OnCellDetach",
+    "OnUnload",
 ];
 
 /// An event the runtime delivers — to a reference, or an update to the
@@ -213,8 +219,95 @@ struct Delivery {
 pub fn reference_script_event_system(world: &World, _dt: f32) {
     super::events::prune_stopped_quests(world);
     relay_engine_events(world);
-    let deliveries = collect_deliveries(world);
+    let mut deliveries = world
+        .try_resource_mut::<PendingUnloadDeliveries>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    deliveries.extend(collect_deliveries(world));
     run_deliveries(world, deliveries);
+}
+
+/// The unload events raised for references about to be despawned, delivered by
+/// the next [`reference_script_event_system`] run. Transient: never saved.
+#[derive(Default)]
+pub struct PendingUnloadDeliveries(Vec<Delivery>);
+
+impl Resource for PendingUnloadDeliveries {}
+
+/// Raise `OnCellDetach` and `OnUnload` (CK *OnCellDetach*, *OnUnload*) for the
+/// `victims` of a cell unload — references the scripts attached to, and the
+/// ones quest aliases are filled with, before they despawn. Delivered with the
+/// next frame's events.
+pub fn raise_unload_events(world: &World, victims: &[EntityId]) {
+    // The alias standing takes the quest-state guard: before the reference
+    // scripts' query is held (see `collect_deliveries`).
+    let aliases = alias_script_targets(world);
+    let Some(attached) = world.query::<PapyrusReferenceScripts>() else {
+        if aliases.is_empty() {
+            return;
+        }
+        return raise_alias_unloads(world, victims, &aliases);
+    };
+    let mut pending = Vec::new();
+    for &victim in victims {
+        let Some(scripts) = attached.get(victim) else {
+            continue;
+        };
+        let Some(owner) = crate::condition::entity_global_form_id(world, victim) else {
+            continue;
+        };
+        for script in &scripts.0 {
+            for event in UNLOAD_EVENTS {
+                if script.handles(event) {
+                    pending.push(Delivery {
+                        owner,
+                        script: script.script.clone(),
+                        vmad: Arc::clone(&script.vmad),
+                        event,
+                        args: Vec::new(),
+                        init_gated: true,
+                    });
+                }
+            }
+        }
+    }
+    drop(attached);
+    if !pending.is_empty() {
+        if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+            queue.0.append(&mut pending);
+        }
+    }
+    if !aliases.is_empty() {
+        raise_alias_unloads(world, victims, &aliases);
+    }
+}
+
+/// The events a reference receives when its cell unloads, in order.
+const UNLOAD_EVENTS: [&str; 2] = ["OnCellDetach", "OnUnload"];
+
+fn raise_alias_unloads(world: &World, victims: &[EntityId], aliases: &HashMap<EntityId, Vec<(u32, AliasScript)>>) {
+    let mut pending = Vec::new();
+    for victim in victims {
+        for (owner, script) in aliases.get(victim).into_iter().flatten() {
+            for event in UNLOAD_EVENTS {
+                if script.handles(event) {
+                    pending.push(Delivery {
+                        owner: *owner,
+                        script: script.script.clone(),
+                        vmad: Arc::clone(&script.vmad),
+                        event,
+                        args: Vec::new(),
+                        init_gated: false,
+                    });
+                }
+            }
+        }
+    }
+    if !pending.is_empty() {
+        if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+            queue.0.append(&mut pending);
+        }
+    }
 }
 
 /// Run `deliveries` in order, each as an interpreted event of its owner.
@@ -276,6 +369,69 @@ fn run_deliveries(world: &World, deliveries: Vec<Delivery>) {
     crate::quest_stages::push_quest_stage_advances(world, player, advances);
 }
 
+/// What changed about the actors since the reference scripts last looked: the
+/// state `OnEnterBleedout`, `OnCombatStateChanged` and `OnLocationChange` are
+/// delivered for. Compared against [`ActorWatch`].
+#[derive(Debug, Default)]
+struct ActorChanges {
+    /// Actors that went into bleedout.
+    bleedout: HashSet<EntityId>,
+    /// Actors whose combat target changed, with the new target (`None`: they
+    /// left combat).
+    combat: HashMap<EntityId, Option<EntityId>>,
+    /// The player's location, if it changed: (old, new).
+    player_location: Option<(Option<u32>, Option<u32>)>,
+}
+
+fn actor_changes(world: &World) -> ActorChanges {
+    let mut changes = ActorChanges::default();
+    let bleeding: HashSet<EntityId> = world
+        .query::<crate::bleedout::Bleedout>()
+        .map(|bleedouts| bleedouts.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    let combat: HashMap<EntityId, EntityId> = world
+        .query::<crate::AiCombatState>()
+        .map(|states| states.iter().map(|(entity, state)| (entity, state.target)).collect())
+        .unwrap_or_default();
+    let location = world.try_resource::<crate::location::PlayerLocation>().map(|l| l.0);
+    let Some(mut watch) = world.try_resource_mut::<ActorWatch>() else {
+        return changes;
+    };
+    changes.bleedout = bleeding.difference(&watch.bleeding).copied().collect();
+    for (&entity, &target) in &combat {
+        if watch.combat.get(&entity) != Some(&target) {
+            changes.combat.insert(entity, Some(target));
+        }
+    }
+    for &entity in watch.combat.keys() {
+        if !combat.contains_key(&entity) {
+            changes.combat.insert(entity, None);
+        }
+    }
+    if let Some(location) = location {
+        if watch.player_location != Some(location) {
+            // The first sight of the location is a baseline, not a change.
+            if let Some(old) = watch.player_location {
+                changes.player_location = Some((old, location));
+            }
+            watch.player_location = Some(location);
+        }
+    }
+    watch.bleeding = bleeding;
+    watch.combat = combat;
+    changes
+}
+
+/// What the reference scripts last saw of the actors. Transient.
+#[derive(Debug, Default)]
+pub struct ActorWatch {
+    bleeding: HashSet<EntityId>,
+    combat: HashMap<EntityId, EntityId>,
+    player_location: Option<Option<u32>>,
+}
+
+impl Resource for ActorWatch {}
+
 /// The alias scripts of the quests that run, by the entity their alias is
 /// filled with: (owner id, script). Only loaded fills can receive events.
 fn alias_script_targets(world: &World) -> HashMap<EntityId, Vec<(u32, AliasScript)>> {
@@ -333,6 +489,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     // Before `attached` is held: the quest standing read takes the quest-state
     // guard, which a VM run holds when it reaches for a reference's scripts.
     let aliases = alias_script_targets(world);
+    let changes = actor_changes(world);
     let attached = world.query::<PapyrusReferenceScripts>();
     let player = world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
@@ -365,7 +522,18 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
             .unwrap_or_default();
         let death = deaths.get(&entity).copied();
         let hit = hits.as_ref().and_then(|q| q.get(entity)).copied();
-        if !loaded && activator.is_none() && triggerers.is_empty() && death.is_none() && hit.is_none() {
+        let bled = changes.bleedout.contains(&entity);
+        let combat = changes.combat.get(&entity).copied();
+        let relocated = (Some(entity) == player).then_some(changes.player_location).flatten();
+        if !loaded
+            && activator.is_none()
+            && triggerers.is_empty()
+            && death.is_none()
+            && hit.is_none()
+            && !bled
+            && combat.is_none()
+            && relocated.is_none()
+        {
             continue;
         }
         let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
@@ -404,8 +572,30 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
                 ],
             ));
         }
+        if bled {
+            // CK *OnEnterBleedout - Actor*.
+            events.push(("OnEnterBleedout", Vec::new()));
+        }
+        if let Some(target) = combat {
+            // CK *OnCombatStateChanged - Actor*: the target (None leaving
+            // combat) and the state entered — 0 not in combat, 1 in combat; 2
+            // (searching) is not modelled.
+            events.push((
+                "OnCombatStateChanged",
+                vec![target.map_or(VmStored::None, reference), VmStored::Int(i32::from(target.is_some()))],
+            ));
+        }
+        if let Some((old, new)) = relocated {
+            // CK *OnLocationChange - Actor*: the locations left and entered.
+            // Only the player's location is tracked.
+            let location = |location: Option<u32>| location.map_or(VmStored::None, VmStored::Form);
+            events.push(("OnLocationChange", vec![location(old), location(new)]));
+        }
         if let Some(killer) = death {
             let killer = killer.map_or(VmStored::None, reference);
+            // CK *OnDying*: the actor "is starting to die", ahead of `OnDeath`;
+            // both arrive with the death here.
+            events.push(("OnDying", vec![killer.clone()]));
             events.push(("OnDeath", vec![killer]));
         }
         if let Some(scripts) = attached.as_ref().and_then(|attached| attached.get(entity)) {

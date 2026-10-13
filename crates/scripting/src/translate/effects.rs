@@ -193,6 +193,8 @@ pub enum FragmentGuard {
     LocationCleared { location: ObjectRef, expected: bool },
     /// `<actor>.IsBleedingOut()` is `expected`.
     ActorBleedingOut { actor: ActorRef, expected: bool },
+    /// `<actor>.IsInCombat()` is `expected` ([`crate::is_in_combat`]).
+    ActorInCombat { actor: ActorRef, expected: bool },
     /// `<actor>.IsPlayerTeammate()` / `IsDoingFavor()` is `expected`
     /// ([`crate::FollowerState`]).
     ActorFollower {
@@ -426,6 +428,7 @@ enum GuardReading {
     MapMarkerFastTravel(ObjectRef),
     LocationCleared(ObjectRef),
     ActorBleedingOut(ActorRef),
+    ActorInCombat(ActorRef),
     ActorFollower(ActorRef, crate::FollowerFlag),
     ActorEssential(ActorRef),
     /// `IsEnabled()` reads true when enabled; `IsDisabled()` is the negation.
@@ -713,6 +716,12 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_actor(object, scope).map(GuardReading::ActorBleedingOut))
             .flatten();
     }
+    if let Some((object, args)) = method_call(e, "IsInCombat") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(GuardReading::ActorInCombat))
+            .flatten();
+    }
     for (method, flag) in [
         ("IsPlayerTeammate", crate::FollowerFlag::Teammate),
         ("IsDoingFavor", crate::FollowerFlag::DoingFavor),
@@ -858,6 +867,10 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             dead: bool_expectation(comparison, value)?,
         },
         GuardReading::ActorBleedingOut(actor) => FragmentGuard::ActorBleedingOut {
+            actor,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ActorInCombat(actor) => FragmentGuard::ActorInCombat {
             actor,
             expected: bool_expectation(comparison, value)?,
         },
@@ -8757,8 +8770,8 @@ mod tests {
         // inside a disjunction or inside a comparison) and a fragment-script
         // variable (`Self.x`) still decline.
         for condition in [
-            "Game.GetPlayer().IsInCombat()",
-            "Self.GetStageDone(5) || Game.GetPlayer().IsInCombat()",
+            "Game.GetPlayer().IsSneaking()",
+            "Self.GetStageDone(5) || Game.GetPlayer().IsSneaking()",
             "Self.bDone",
             "Self.GetStage() >= Game.GetPlayer().GetEquippedWeapon().GetBaseDamage()",
         ] {
@@ -8769,6 +8782,21 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{condition}");
         }
+    }
+
+    /// M47.2 — `IsInCombat()` is a guard on the actor's combat state.
+    #[test]
+    fn lowers_the_in_combat_guard() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             If Game.GetPlayer().IsInCombat()\n Self.SetStage(10)\n EndIf\n EndFunction\n",
+        );
+        let lowered = lower_fragment(&body).expect("lowers");
+        assert!(
+            format!("{lowered:?}").contains("ActorInCombat"),
+            "{lowered:?}"
+        );
     }
 
     /// M47.2 — two run-time numbers compared: a random roll, a level against

@@ -462,7 +462,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v83 -> v84 (M47.2): `Effect::Kill.silent` (`KillSilent`) and
 /// `Effect::MoveToEditorLocation`.
-pub const FORMAT_MAJOR: u16 = 84;
+///
+/// v84 -> v85 (M47.2): `FragmentGuard::ActorInCombat` (`IsInCombat`).
+pub const FORMAT_MAJOR: u16 = 85;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

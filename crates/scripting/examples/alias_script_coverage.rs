@@ -66,6 +66,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    if std::env::var("EVENTS").is_ok() {
+        // The events the scripts the VM declines for "handles no delivered
+        // event" handle instead, weighted by instances.
+        let mut census: HashMap<String, usize> = HashMap::new();
+        for (name, count) in &instances {
+            if checks.get(name).is_some_and(|c| c.as_ref().err().is_some_and(|r| r.contains("no delivered event"))) {
+                if let Some(script) = library.script(name) {
+                    for item in &script.body {
+                        match &item.node {
+                            byroredux_papyrus::ast::ScriptItem::Event(e) => {
+                                *census.entry(e.name.node.0.clone()).or_default() += count;
+                            }
+                            byroredux_papyrus::ast::ScriptItem::State(state) => {
+                                for item in &state.body {
+                                    if let byroredux_papyrus::ast::StateItem::Event(e) = &item.node {
+                                        *census.entry(e.name.node.0.clone()).or_default() += count;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        let mut ranked: Vec<_> = census.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("events of scripts with no delivered event: {:?}", &ranked[..ranked.len().min(25)]);
+    }
     println!(
         "alias script instances: {total}; distinct scripts: {}; the VM runs {running} ({:.1}%)",
         instances.len(),

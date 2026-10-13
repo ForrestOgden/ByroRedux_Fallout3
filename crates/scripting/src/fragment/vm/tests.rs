@@ -835,6 +835,128 @@ fn hit_events_are_registered_single_shot_and_filtered() {
     assert_eq!(hits(&world), Some(1.0), "re-registration is the script's to do");
 }
 
+/// `OnEnterBleedout` arrives when the actor goes into bleedout, `OnDying` with
+/// the death ahead of `OnDeath`; a cell unload raises `OnCellDetach` then
+/// `OnUnload` for the references about to despawn.
+#[test]
+fn lifecycle_events_reach_reference_scripts() {
+    const REF: u32 = 0x0001_0F14;
+    let script = parsed_source(
+        "ScriptName VmLifecycleScript extends Actor\n\
+         Int Property Trail Auto\n\
+         Event OnEnterBleedout()\n Trail = Trail * 10 + 5\n EndEvent\n\
+         Event OnDying(Actor akKiller)\n Trail = Trail * 10 + 1\n EndEvent\n\
+         Event OnDeath(Actor akKiller)\n Trail = Trail * 10 + 2\n EndEvent\n\
+         Event OnCellDetach()\n Trail = Trail * 10 + 3\n EndEvent\n\
+         Event OnUnload()\n Trail = Trail * 10 + 4\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    assert_eq!(events, ["OnEnterBleedout", "OnDying", "OnDeath", "OnCellDetach", "OnUnload"]);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmLifecycleScript".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, actor, &instance, events, scripts);
+    let trail = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(REF), crate::QuestScriptVariables::property_key("Trail"))
+    };
+    world.insert(actor, crate::bleedout::Bleedout { remaining_secs: 20.0 });
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), Some(5.0), "entering bleedout");
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), Some(5.0), "once");
+    world.insert(actor, crate::OnDeathEvent { killer: Some(player) });
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), Some(512.0), "OnDying then OnDeath");
+    crate::raise_unload_events(&world, &[actor]);
+    assert_eq!(trail(&world), Some(512.0), "delivered with the next frame's events");
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(trail(&world), Some(51234.0), "OnCellDetach then OnUnload");
+}
+
+/// `OnCombatStateChanged(akTarget, aeCombatState)` follows an actor's combat
+/// target (1 in combat, 0 left); the player's `OnLocationChange(akOldLoc,
+/// akNewLoc)` follows `PlayerLocation`, its first sight a baseline.
+#[test]
+fn combat_state_and_location_changes_reach_reference_scripts() {
+    const REF: u32 = 0x0001_0F15;
+    const LOC_A: u32 = 0x0001_0F91;
+    const LOC_B: u32 = 0x0001_0F92;
+    let script = parsed_source(
+        "ScriptName VmWatchScript extends Actor\n\
+         Int Property Combat Auto\n\
+         Int Property Moves Auto\n\
+         Event OnCombatStateChanged(Actor akTarget, Int aeCombatState)\n\
+           If aeCombatState == 1 && akTarget == Game.GetPlayer()\n Combat = 1\n\
+           ElseIf aeCombatState == 0 && !akTarget\n Combat = 2\n EndIf\n\
+         EndEvent\n\
+         Event OnLocationChange(Location akOldLoc, Location akNewLoc)\n Moves += 1\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("runs");
+    assert_eq!(events, ["OnCombatStateChanged", "OnLocationChange"]);
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let instance = ScriptInstance {
+        name: "VmWatchScript".into(),
+        status: 0,
+        properties: Vec::new(),
+    };
+    crate::attach_reference_script(&mut world, actor, &instance, events.clone(), scripts.clone());
+    crate::attach_reference_script(&mut world, player, &instance, events, scripts);
+    world.insert_resource(crate::location::PlayerLocation(Some(LOC_A)));
+    let value = |world: &World, owner: u32, name: &str| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(owner), crate::QuestScriptVariables::property_key(name))
+    };
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, 0x14, "Moves"), None, "the first location is a baseline");
+    world.insert_resource(crate::location::PlayerLocation(Some(LOC_B)));
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, 0x14, "Moves"), Some(1.0));
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, 0x14, "Moves"), Some(1.0), "once per change");
+
+    world.register::<crate::AiCombatState>();
+    world.insert(actor, crate::AiCombatState { target: player, attack_cooldown_remaining: 0.0 });
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, REF, "Combat"), Some(1.0), "entered combat with the player");
+    world.remove::<crate::AiCombatState>(actor);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(value(&world, REF, "Combat"), Some(2.0), "left combat");
+}
+
 /// `RegisterForUpdate` delivers `OnUpdate` every interval until the handler
 /// unregisters; the check accepts the registration because the handler runs.
 #[test]

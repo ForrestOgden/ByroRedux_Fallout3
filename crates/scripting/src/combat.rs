@@ -47,6 +47,21 @@ impl Component for AiCombatState {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// CK *IsInCombat - Actor*: whether the actor is in combat — it has a combat
+/// target ([`AiCombatState`]), or, for the player, some actor is fighting it.
+pub fn is_in_combat(world: &World, actor: EntityId) -> bool {
+    if world.get::<AiCombatState>(actor).is_some() {
+        return true;
+    }
+    let is_player = world
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .is_some_and(|player| player.0 == actor);
+    is_player
+        && world
+            .query::<AiCombatState>()
+            .is_some_and(|states| states.iter().any(|(_, state)| state.target == actor))
+}
+
 /// #4816 — marks an [`AiCombatState`] that the engine's ambient
 /// `faction_hostility_system` started, with the target it started against
 /// and how long that target has been out of contact. Only a combat carrying
@@ -185,6 +200,29 @@ mod tests {
 
     fn form(local: u32) -> FormRef {
         FormRef::new([7; 16], local)
+    }
+
+    /// CK *IsInCombat - Actor*: an actor with a combat target is in combat, and
+    /// so is the player when some actor is fighting it.
+    #[test]
+    fn in_combat_follows_combat_targets() {
+        let mut world = World::new();
+        world.register::<AiCombatState>();
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let guard = world.spawn();
+        let bystander = world.spawn();
+        assert!(!is_in_combat(&world, guard) && !is_in_combat(&world, player));
+        world.insert(
+            guard,
+            AiCombatState {
+                target: player,
+                attack_cooldown_remaining: 0.0,
+            },
+        );
+        assert!(is_in_combat(&world, guard));
+        assert!(is_in_combat(&world, player), "someone is fighting the player");
+        assert!(!is_in_combat(&world, bystander));
     }
 
     #[test]

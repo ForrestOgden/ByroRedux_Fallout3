@@ -29,7 +29,7 @@ pub const ALIAS_OWNER_BASE: u32 = 0xFC00_0000;
 
 /// The events an alias script receives that the engine raises: its own
 /// lifecycle, and the events of the reference the alias is filled with.
-pub const DELIVERED_ALIAS_EVENTS: [&str; 10] = [
+pub const DELIVERED_ALIAS_EVENTS: [&str; 16] = [
     "OnInit",
     "OnAliasInit",
     "OnAliasShutdown",
@@ -39,7 +39,13 @@ pub const DELIVERED_ALIAS_EVENTS: [&str; 10] = [
     "OnActivate",
     "OnTriggerEnter",
     "OnHit",
+    "OnEnterBleedout",
+    "OnCombatStateChanged",
+    "OnLocationChange",
+    "OnDying",
     "OnDeath",
+    "OnCellDetach",
+    "OnUnload",
 ];
 
 pub use super::vm::check_alias_script;

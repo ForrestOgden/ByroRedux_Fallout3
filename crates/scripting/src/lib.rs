@@ -70,7 +70,7 @@ pub use story_manager::{
     story_manager_dispatch_system, SmNodeRuntime, SmTree, SmTreeNode, StoryClock, StoryEvent,
     StoryEventAliasFill, StoryEventFill, StoryLocationCursor, StoryManagerNodeState, StoryManagerRng,
 };
-pub use combat::{AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
+pub use combat::{is_in_combat, AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
     analyze_source_compatibility, classify_method_call, classify_static_call,
@@ -120,6 +120,7 @@ pub use fragment::{
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
+    raise_unload_events, ActorWatch, PendingUnloadDeliveries,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
@@ -275,6 +276,14 @@ pub fn register(world: &mut World) {
     }
     if world.try_resource::<AliasScriptOwners>().is_none() {
         world.insert_resource(AliasScriptOwners::default());
+    }
+    // M47.2 — what the reference scripts last saw of the actors (transient).
+    if world.try_resource::<ActorWatch>().is_none() {
+        world.insert_resource(ActorWatch::default());
+    }
+    // M47.2 — unload events awaiting their frame (transient).
+    if world.try_resource::<PendingUnloadDeliveries>().is_none() {
+        world.insert_resource(PendingUnloadDeliveries::default());
     }
     // M47.2 — Papyrus hit event registrations (saved).
     if world.try_resource::<HitRegistrations>().is_none() {

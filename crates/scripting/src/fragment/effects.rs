@@ -3341,6 +3341,10 @@ pub(super) fn evaluate_guard(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             crate::bleedout::is_bleeding_out(world, actor) == *expected
         }
+        FragmentGuard::ActorInCombat { actor, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            crate::is_in_combat(world, actor) == *expected
+        }
         FragmentGuard::ActorFollower { actor, flag, expected } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             let form = crate::condition::entity_global_form_id(world, actor)?;
