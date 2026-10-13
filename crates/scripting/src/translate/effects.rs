@@ -3574,6 +3574,16 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
 /// `Quest Property`. Needs the script library, to read the property's
 /// declared type; the INFO and scene paths carry none and decline.
 fn owner_quest_property(owner: &Expr, member: &str, scope: &Scope) -> Option<QuestRef> {
+    let ty = owner_property_type(owner, member, scope)?;
+    crate::fragment::extends_quest(&ty, scope.library?)
+        .then(|| QuestRef::Property(member.to_owned()))
+}
+
+/// M47.2 — the declared object type of `member`, a property of the fragment
+/// quest's own script (on that script or an ancestor), when `owner` is the
+/// fragment's quest (`kmyQuest`, `Self`, `GetOwningQuest() as …`) and the
+/// fragment's VMAD is the quest's. Needs the script library.
+fn owner_property_type(owner: &Expr, member: &str, scope: &Scope) -> Option<String> {
     if !scope.vmad_is_quest {
         return None;
     }
@@ -3599,7 +3609,6 @@ fn owner_quest_property(owner: &Expr, member: &str, scope: &Scope) -> Option<Que
         }
         _ => return None,
     };
-    // The property's declared type, on the owner's script or an ancestor.
     let mut script_name = owner_type;
     for _ in 0..8 {
         let script = library.script(&script_name)?;
@@ -3615,8 +3624,7 @@ fn owner_quest_property(owner: &Expr, member: &str, scope: &Scope) -> Option<Que
             let byroredux_papyrus::ast::Type::Object(ty) = ty else {
                 return None;
             };
-            return crate::fragment::extends_quest(&ty.0, library)
-                .then(|| QuestRef::Property(member.to_owned()));
+            return Some(ty.0);
         }
         script_name = script.parent.as_ref()?.node.0.clone();
     }
@@ -3704,6 +3712,14 @@ fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
 fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = object {
         return receiver_object(&expr.node, scope);
+    }
+    // M47.2 — `kmyQuest.Prop`, an object property of the fragment quest's
+    // own script; the quest's VMAD binds it like a fragment property. A
+    // quest-typed property is a quest, never an object receiver (#2538).
+    if let Expr::MemberAccess { object: owner, member } = object {
+        let ty = owner_property_type(&owner.node, &member.node.0, scope)?;
+        return (!crate::fragment::extends_quest(&ty, scope.library?))
+            .then(|| ObjectRef::Property(member.node.0.clone()));
     }
     let alias_getter = alias_reference_getter(object);
     if let Some((alias, args)) = alias_getter {
@@ -5434,6 +5450,16 @@ mod tests {
             ])
         );
         assert_eq!(lowered("kmyQuest.Door.SetStage(2)"), None, "not a quest");
+        // An object property of the quest script is an object receiver; a
+        // quest-typed one is not.
+        assert_eq!(
+            lowered("kmyQuest.Door.Disable()"),
+            Some(vec![Effect::Disable {
+                object: ObjectRef::Property("Door".into()),
+                fade_out: false,
+            }])
+        );
+        assert_eq!(lowered("kmyQuest.CW.Disable()"), None, "a quest is no reference");
     }
 
     const MOTHPRIEST_SCRIPT: &str = "ScriptName DLC1VQ03MothpriestFightScript extends Quest\n\
