@@ -400,18 +400,30 @@ open:
   global and actor-value writes in every spelling, perks, alias
   `ForceRefTo` / `Clear`, and `BlockActivation`.
 
-Fragment lowering went 51.5% → 57.2%. Each piece was verified on the vanilla
-masters and, where a session can show it, live: the Dragonsreach location
-chain, MQ104's created Messenger surviving a quickload, a teleport into
-Hillgrund's Tomb, and FNV melee through DT in `p2-melee-core`.
+Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 59.8% on
+2026-10-13. The 2026-10-13 work added map markers, script story events,
+cleared locations, `Kill`, `SetEssential` / `SetProtected`, the
+enable-state / faction / 3D-loaded / distance guards, and quests reached
+through typed properties. It also fixed `::X_var` quest receivers, which had
+never resolved at run time. Each piece was verified on the vanilla masters
+and, where a session can show it, live:
+- the Dragonsreach location chain;
+- MQ104's created Messenger surviving a quickload;
+- a teleport into Hillgrund's Tomb;
+- FNV melee through DT in `p2-melee-core`;
+- Delphine's bleedout and recovery in `m47-2-bleedout`;
+- FNV encumbrance.
 
 What remains is outside this milestone's shape, each owned by a subsystem
 that does not exist yet:
 
-- **The fragment long tail** (~45% of fragments; `fragment_coverage` now
+- **The fragment long tail** (~40% of fragments; `fragment_coverage` now
   reports a failing `If` by its branch statement, `If>shape`, or as
-  `If(condition)`): bespoke script functions,
-  `If`s over unmodelled reads, barter/UI menus,
+  `If(condition)`). It is led by bespoke script functions:
+  `UpdateRadio` 437, `MoveSpouse` 406, `Startup` 240 and `ReArmTrigger` 231.
+  INFO and scene fragments cannot inline them, since their callee properties
+  live on the owning quest's VMAD. The rest is `If`s over unmodelled reads,
+  barter/UI menus,
   and script-filled reference
   collections (FO4's 554 `ALCS` aliases carry no fill data; scripts `AddRef`
   them). The player's `MoveTo` (teleport) shipped 2026-10-12, alias
