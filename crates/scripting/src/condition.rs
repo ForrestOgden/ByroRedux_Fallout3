@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **44 functions** at their canonical CTDA
+//! lineage. This catalog ships **47 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -66,6 +66,9 @@
 //! | 576   | GetEventData           | `EventDataSlots`            |
 //! | 250   | GetLocationCleared     | `LocationClearState`        |
 //! | 598   | GetLocationAliasCleared | `LocationClearState`       |
+//! | 606   | GetKeywordDataForLocation | `LocationKeywordData`    |
+//! | 608   | GetKeywordDataForAlias | `LocationKeywordData`       |
+//! | 651   | GetKeywordDataForCurrentLocation | `LocationKeywordData` |
 //! | 354   | IsEssential            | `ActorProtection` + aliases |
 //! | 476   | IsProtected            | `ActorProtection` + aliases |
 //! | 580   | IsBleedingOut          | `Bleedout`                  |
@@ -274,6 +277,19 @@ pub enum ConditionFunction {
     /// `GetLocationAliasCleared(alias) → f32` (M47.2): the owning quest's
     /// location alias holds a cleared location. Skyrim / FO4 index **598**.
     GetLocationAliasCleared,
+    /// `GetKeywordDataForLocation(location, keyword) → f32` (M47.2): the data a
+    /// script attached to the keyword on the location, "if any. It otherwise
+    /// returns 0" ([`crate::LocationKeywordData`]). Skyrim / FO4 index **606**.
+    GetKeywordDataForLocation,
+    /// `GetKeywordDataForAlias(alias, keyword) → f32` (M47.2): as
+    /// [`GetKeywordDataForLocation`](Self::GetKeywordDataForLocation), on the
+    /// location the owning quest's location alias holds. Skyrim / FO4 index
+    /// **608**.
+    GetKeywordDataForAlias,
+    /// `GetKeywordDataForCurrentLocation(keyword) → f32` (M47.2): as
+    /// [`GetKeywordDataForLocation`](Self::GetKeywordDataForLocation), on the
+    /// Run-On subject's current location. Skyrim / FO4 index **651**.
+    GetKeywordDataForCurrentLocation,
     /// `IsEssential() → f32` (M47.2): the subject is essential, by its base
     /// record or an Essential alias ([`crate::is_essential`]). Index **354**
     /// in every catalogued game.
@@ -369,6 +385,9 @@ impl ConditionFunction {
             576 => Self::GetEventData,
             250 => Self::GetLocationCleared,
             598 => Self::GetLocationAliasCleared,
+            606 => Self::GetKeywordDataForLocation,
+            608 => Self::GetKeywordDataForAlias,
+            651 => Self::GetKeywordDataForCurrentLocation,
             354 => Self::IsEssential,
             476 => Self::IsProtected,
             580 => Self::IsBleedingOut,
@@ -382,7 +401,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 44] = [
+    pub const CATALOG: [ConditionFunction; 47] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -411,6 +430,7 @@ impl ConditionFunction {
         Self::GetInCurrentLoc,
         Self::GetInCurrentLocAlias,
         Self::LocationHasKeyword,
+        Self::GetKeywordDataForCurrentLocation,
         Self::GetIsEditorLocation,
         Self::GetIsAliasRef,
         Self::GetIsEditorLocAlias,
@@ -419,7 +439,9 @@ impl ConditionFunction {
         Self::HasSameEditorLocAsRefAlias,
         Self::GetEventData,
         Self::GetLocationCleared,
+        Self::GetKeywordDataForLocation,
         Self::GetLocationAliasCleared,
+        Self::GetKeywordDataForAlias,
         Self::IsEssential,
         Self::IsProtected,
         Self::IsBleedingOut,
@@ -459,15 +481,18 @@ impl ConditionFunction {
             | Self::GetVMScriptVariable
             | Self::GetInCurrentLoc
             | Self::LocationHasKeyword
+            | Self::GetKeywordDataForCurrentLocation
             | Self::GetIsEditorLocation
             | Self::LocationHasRefType
             | Self::GetLocationCleared
+            | Self::GetKeywordDataForLocation
             | Self::GetRelationshipRank
             | Self::HasKeyword => true,
             // Alias ids are quest-local indices, not FormIDs; GetEventData's
             // first parameter is a function:member pair.
             Self::GetEventData
             | Self::GetLocationAliasCleared
+            | Self::GetKeywordDataForAlias
             | Self::GetInCurrentLocAlias
             | Self::HasSameEditorLocAsRefAlias
             | Self::GetIsAliasRef
@@ -519,6 +544,7 @@ impl ConditionFunction {
             Self::GetInCurrentLoc => "GetInCurrentLoc",
             Self::GetInCurrentLocAlias => "GetInCurrentLocAlias",
             Self::LocationHasKeyword => "LocationHasKeyword",
+            Self::GetKeywordDataForCurrentLocation => "GetKeywordDataForCurrentLocation",
             Self::GetIsEditorLocation => "GetIsEditorLocation",
             Self::GetIsAliasRef => "GetIsAliasRef",
             Self::GetIsEditorLocAlias => "GetIsEditorLocAlias",
@@ -527,7 +553,9 @@ impl ConditionFunction {
             Self::HasSameEditorLocAsRefAlias => "HasSameEditorLocAsRefAlias",
             Self::GetEventData => "GetEventData",
             Self::GetLocationCleared => "GetLocationCleared",
+            Self::GetKeywordDataForLocation => "GetKeywordDataForLocation",
             Self::GetLocationAliasCleared => "GetLocationAliasCleared",
+            Self::GetKeywordDataForAlias => "GetKeywordDataForAlias",
             Self::IsEssential => "IsEssential",
             Self::IsProtected => "IsProtected",
             Self::IsBleedingOut => "IsBleedingOut",
@@ -578,6 +606,7 @@ impl ConditionFunction {
             | Self::GetInCurrentLoc
             | Self::GetInCurrentLocAlias
             | Self::LocationHasKeyword
+            | Self::GetKeywordDataForCurrentLocation
             | Self::GetIsEditorLocation
             | Self::GetIsAliasRef
             | Self::GetIsEditorLocAlias
@@ -593,7 +622,9 @@ impl ConditionFunction {
             Self::LocAliasIsLocation
             | Self::GetEventData
             | Self::GetLocationCleared
+            | Self::GetKeywordDataForLocation
             | Self::GetLocationAliasCleared
+            | Self::GetKeywordDataForAlias
             | Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetRandomPercent
@@ -648,6 +679,7 @@ impl ConditionFunction {
             | Self::GetInCurrentLoc
             | Self::GetInCurrentLocAlias
             | Self::LocationHasKeyword
+            | Self::GetKeywordDataForCurrentLocation
             | Self::GetIsEditorLocation
             | Self::GetIsAliasRef
             | Self::GetIsEditorLocAlias
@@ -656,7 +688,9 @@ impl ConditionFunction {
             | Self::HasSameEditorLocAsRefAlias
             | Self::GetEventData
             | Self::GetLocationCleared
+            | Self::GetKeywordDataForLocation
             | Self::GetLocationAliasCleared
+            | Self::GetKeywordDataForAlias
             | Self::IsEssential
             | Self::IsProtected
             | Self::IsBleedingOut
@@ -679,6 +713,7 @@ impl ConditionFunction {
             Self::GetInCurrentLoc
                 | Self::GetInCurrentLocAlias
                 | Self::LocationHasKeyword
+                | Self::GetKeywordDataForCurrentLocation
                 | Self::GetIsEditorLocation
                 | Self::GetIsAliasRef
                 | Self::GetIsEditorLocAlias
@@ -687,6 +722,7 @@ impl ConditionFunction {
                 | Self::HasSameEditorLocAsRefAlias
                 | Self::GetEventData
                 | Self::GetLocationAliasCleared
+                | Self::GetKeywordDataForAlias
         )
     }
 
@@ -1231,6 +1267,16 @@ fn evaluate_contextual(
             ctx.alias_location(world, alias_id)
                 .is_some_and(|location| crate::location::location_cleared(world, location)),
         ),
+        ConditionFunction::GetKeywordDataForAlias => ctx
+            .alias_location(world, alias_id)
+            .map_or(0.0, |location| crate::location_keyword_data(world, location, condition.param_2)),
+        ConditionFunction::GetKeywordDataForCurrentLocation => {
+            let location = match subject {
+                LocationSubject::Reference(entity) => current_location(world, entity),
+                LocationSubject::Location(location) => Some(location),
+            };
+            location.map_or(0.0, |location| crate::location_keyword_data(world, location, condition.param_1))
+        }
         ConditionFunction::GetEventData => {
             let Some(event) = ctx.event_data else {
                 return 0.0;
@@ -1700,6 +1746,7 @@ pub fn evaluate_function(
         ConditionFunction::GetInCurrentLoc
         | ConditionFunction::GetInCurrentLocAlias
         | ConditionFunction::LocationHasKeyword
+        | ConditionFunction::GetKeywordDataForCurrentLocation
         | ConditionFunction::GetIsEditorLocation
         | ConditionFunction::GetIsAliasRef
         | ConditionFunction::GetIsEditorLocAlias
@@ -1707,9 +1754,13 @@ pub fn evaluate_function(
         | ConditionFunction::LocationHasRefType
         | ConditionFunction::HasSameEditorLocAsRefAlias
         | ConditionFunction::GetEventData
-        | ConditionFunction::GetLocationAliasCleared => 0.0,
+        | ConditionFunction::GetLocationAliasCleared
+        | ConditionFunction::GetKeywordDataForAlias => 0.0,
         ConditionFunction::GetLocationCleared => {
             truth(crate::location::location_cleared(world, condition.param_1))
+        }
+        ConditionFunction::GetKeywordDataForLocation => {
+            crate::location_keyword_data(world, condition.param_1, condition.param_2)
         }
         ConditionFunction::Unknown(index) => {
             log::trace!(
@@ -1901,6 +1952,31 @@ mod tests {
         assert!(evaluate_condition(&condition, &world, &ctx(actor)));
         world.resource_mut::<crate::FollowerState>().set_teammate(0x0001_0F90, false, false);
         assert!(!evaluate_condition(&condition, &world, &ctx(actor)));
+    }
+
+    /// CK *GetKeywordDataForLocation*: "returns this value, if any. It otherwise
+    /// returns 0."
+    #[test]
+    fn keyword_data_conditions_read_the_stored_float() {
+        const LOCATION: u32 = 0x0001_0F93;
+        const KEYWORD: u32 = 0x0001_0F94;
+        let mut world = World::new();
+        crate::register(&mut world);
+        let subject = world.spawn();
+        let at_location = Condition {
+            function_index: 606,
+            comparator: ComparisonOp::Eq,
+            comparand: ConditionValue::Literal(10.0),
+            param_1: LOCATION,
+            param_2: KEYWORD,
+            ..Default::default()
+        };
+        let mut other_keyword = at_location.clone();
+        other_keyword.param_2 = KEYWORD + 1;
+        assert!(!evaluate_condition(&at_location, &world, &ctx(subject)));
+        world.resource_mut::<crate::LocationKeywordData>().set(LOCATION, KEYWORD, 10.0);
+        assert!(evaluate_condition(&at_location, &world, &ctx(subject)));
+        assert!(!evaluate_condition(&other_keyword, &world, &ctx(subject)), "another keyword reads 0");
     }
 
     fn ctx(subject: EntityId) -> ConditionContext<'static> {

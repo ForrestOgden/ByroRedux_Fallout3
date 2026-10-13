@@ -32,6 +32,7 @@ pub mod menus;
 pub mod alias_collections;
 pub mod followers;
 pub mod linked_refs;
+pub mod location_keyword_data;
 pub mod messages;
 pub mod skills;
 pub mod misc_stats;
@@ -132,6 +133,7 @@ pub use faction_changes::{
 pub use globals::Globals;
 pub use alias_collections::{AliasCollections, CollectionAliasKinds};
 pub use editor_location::EditorLocation;
+pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use linked_refs::{linked_ref, LinkedRefOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
@@ -284,6 +286,10 @@ pub fn register(world: &mut World) {
     // M47.2 — unload events awaiting their frame (transient).
     if world.try_resource::<PendingUnloadDeliveries>().is_none() {
         world.insert_resource(PendingUnloadDeliveries::default());
+    }
+    // M47.2 — keyword data scripts attached to locations (saved).
+    if world.try_resource::<LocationKeywordData>().is_none() {
+        world.insert_resource(LocationKeywordData::default());
     }
     // M47.2 — Papyrus hit event registrations (saved).
     if world.try_resource::<HitRegistrations>().is_none() {

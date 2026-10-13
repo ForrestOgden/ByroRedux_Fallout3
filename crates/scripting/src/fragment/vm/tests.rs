@@ -1121,6 +1121,51 @@ fn parent_calls_run_the_inherited_version() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "Touch(15) -> Parent.Touch(20)");
 }
 
+/// `SetKeywordData` / `GetKeywordData` on a location round-trip through the
+/// saved ledger, and a read sees the write made earlier in the same run.
+#[test]
+fn location_keyword_data_round_trips() {
+    const PLACE: u32 = 0x0001_0F72;
+    const COST: u32 = 0x0001_0F73;
+    let script = parsed_source(
+        "ScriptName QF_VmKeywordData extends Quest\n\
+         Location Property Place Auto\n\
+         Keyword Property Cost Auto\n\
+         Function Fragment_1()\n\
+           Int count = 0\n\
+           While count < 1\n count += 1\n EndWhile\n\
+           Place.SetKeywordData(Cost, Place.GetKeywordData(Cost) + 25.0)\n\
+           If Place.GetKeywordData(Cost) == 125.0\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    let object = |name: &str, form_id: u32| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmKeywordData".into(),
+                status: 0,
+                properties: vec![object("Place", PLACE), object("Cost", COST)],
+            }],
+        },
+    );
+    world.resource_mut::<crate::LocationKeywordData>().set(PLACE, COST, 100.0);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(crate::location_keyword_data(&world, PLACE, COST), 125.0);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

@@ -471,6 +471,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — hit event registration changes, applied to
     /// [`super::HitRegistrations`] after the guards drop.
     pub(super) hit_requests: Vec<(u32, String, super::HitRequest)>,
+    /// M47.2 — `Effect::SetLocationKeywordData`s: (location, keyword, data),
+    /// applied to [`crate::LocationKeywordData`] after the guards drop.
+    location_keyword_changes: Vec<(u32, u32, f32)>,
     /// M47.2 — reference-collection members a Papyrus VM run wrote back,
     /// applied to [`crate::AliasCollections`] after the guards drop.
     pub(super) alias_collections: Vec<(crate::alias_collections::CollectionKey, Vec<u32>)>,
@@ -601,6 +604,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
+            location_keyword_changes: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
             collection_kinds: world
@@ -713,6 +717,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.alias_collections.clear();
+        }
+        if !self.location_keyword_changes.is_empty() {
+            if let Some(mut data) = world.try_resource_mut::<crate::LocationKeywordData>() {
+                for (location, keyword, value) in self.location_keyword_changes.drain(..) {
+                    data.set(location, keyword, value);
+                }
+            }
+            self.location_keyword_changes.clear();
         }
         if !self.hit_requests.is_empty() {
             if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {
@@ -1634,6 +1646,13 @@ pub(crate) fn apply_effect(
             };
             deferred.alias_overrides.push((quest, alias_id, value));
             deferred.scene_actor_bindings_dirty = true;
+            None
+        }
+        Effect::SetLocationKeywordData { location, keyword, value } => {
+            let location = resolve_property_form_id(vmad, location.property_name())?;
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
+            deferred.location_keyword_changes.push((location, keyword, value));
             None
         }
         Effect::SetActorValue {
@@ -3071,6 +3090,7 @@ fn apply_quest_scoped_effect(
         | Effect::AdvanceSkill { .. }
         | Effect::SetLinkedRef { .. }
         | Effect::MoveToEditorLocation { .. }
+        | Effect::SetLocationKeywordData { .. }
         | Effect::SetPlayerTeammate { .. }
         | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }
@@ -3234,6 +3254,18 @@ pub(super) fn evaluate_value(
                 .try_resource::<crate::ActorValueNames>()
                 .and_then(|names| names.resolve(name))?;
             actor_value_now(world, actor, avif)
+        }
+        ValueExpr::LocationKeywordData(location, keyword) => {
+            let location = resolve_property_form_id(vmad, location.property_name())?;
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            // A write earlier in the same run is visible.
+            deferred
+                .location_keyword_changes
+                .iter()
+                .rev()
+                .find(|(changed, key, _)| *changed == location && *key == keyword)
+                .map(|(_, _, value)| *value)
+                .unwrap_or_else(|| crate::location_keyword_data(world, location, keyword))
         }
         // A read sees the increments queued earlier in the same run.
         ValueExpr::MiscStat(stat) => {

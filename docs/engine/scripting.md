@@ -1146,6 +1146,15 @@ function `GetPlayerTeammate` (index 453; CK: "1 if an actor is currently set as 
 teammate via SetPlayerTeammate()") reads `FollowerState`, which the vanilla follower
 packages condition on; `GetPlayerTeammateCount` is undocumented and stays unmodelled.
 
+### Location keyword data (M47.2)
+
+CK *SetKeywordData - Location* / *GetKeywordData - Location*: a script attaches a float
+to a keyword on a location. The saved `LocationKeywordData` keeps it by (location,
+keyword); a read sees a write made earlier in the same run. The condition functions
+*GetKeywordDataForLocation* (606), *GetKeywordDataForAlias* (608, the owning quest's
+location alias) and *GetKeywordDataForCurrentLocation* (651, the subject's location) read
+the same store — "returns this value, if any. It otherwise returns 0".
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

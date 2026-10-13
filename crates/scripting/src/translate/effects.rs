@@ -295,6 +295,9 @@ pub enum ValueExpr {
     /// M47.2 — `Game.QueryStat("Houses Owned")`, a script-kept misc stat
     /// ([`crate::misc_stats::SCRIPT_STATS`]).
     MiscStat(String),
+    /// M47.2 — `<location>.GetKeywordData(keyword)`
+    /// ([`crate::LocationKeywordData`]).
+    LocationKeywordData(ObjectRef, ObjectRef),
 }
 
 /// The arithmetic a [`ValueExpr::Arith`] applies.
@@ -387,6 +390,13 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
             return None;
         };
         return crate::misc_stats::script_stat(stat).map(|stat| ValueExpr::MiscStat(stat.to_owned()));
+    }
+    // M47.2 — CK *GetKeywordData - Location*.
+    if let Some((object, [keyword])) = method_call(e, "GetKeywordData") {
+        return Some(ValueExpr::LocationKeywordData(
+            receiver_object(object, scope)?,
+            receiver_object(&keyword.value.node, scope)?,
+        ));
     }
     // M47.2 — an actor value: `GetValue(av)` (one argument; the bare
     // `GetValue()` is a global's), or `GetAV` / `GetActorValue("Name")`.
@@ -1268,6 +1278,12 @@ pub enum Effect {
     /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
     /// ([`crate::Achievements`]).
     AddAchievement { id: i32 },
+    /// M47.2 — `<location>.SetKeywordData(keyword, value)`.
+    SetLocationKeywordData {
+        location: ObjectRef,
+        keyword: ObjectRef,
+        value: ValueExpr,
+    },
     /// M47.2 — `<reference>.MoveToMyEditorLocation()`: back to where the plugin
     /// placed it ([`crate::EditorLocation`]).
     MoveToEditorLocation { moved: ObjectRef },
@@ -2927,6 +2943,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_equip_item,
     prim_move_to,
     prim_move_to_editor_location,
+    prim_set_location_keyword_data,
     prim_disable,
     prim_enable,
     prim_start_scene,
@@ -4089,6 +4106,19 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     }
     let moved = receiver_object(object, scope)?;
     Some(Effect::MoveTo { moved, destination })
+}
+
+/// `<location>.SetKeywordData(akKeyword, afData)` (CK *SetKeywordData - Location*).
+fn prim_set_location_keyword_data(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetKeywordData")?;
+    if args.len() != 2 {
+        return None;
+    }
+    Some(Effect::SetLocationKeywordData {
+        location: receiver_object(object, scope)?,
+        keyword: receiver_object(&args[0].value.node, scope)?,
+        value: classify_value(&args[1].value.node, scope)?,
+    })
 }
 
 /// `<reference>.MoveToMyEditorLocation()` (CK: "Moves this reference to its

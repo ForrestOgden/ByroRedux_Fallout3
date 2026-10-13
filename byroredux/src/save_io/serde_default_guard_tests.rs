@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 85;
+    const BASELINE_MAJOR: u16 = 86;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -982,7 +982,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::Kill.silent` and `Effect::MoveToEditorLocation`.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v84 -> v85):
     // `FragmentGuard::ActorInCombat`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xdd7f_f840_d12a_2d05;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v85 -> v86): the
+    // `LocationKeywordData` column, `Effect::SetLocationKeywordData`,
+    // `ValueExpr::LocationKeywordData`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7879_fee5_0e58_b036;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -554,6 +554,8 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 250 // GetLocationCleared — LCTN FormID (Skyrim/FO4)
         | 403 // GetRelationshipRank — actor reference FormID (Skyrim/FO4)
         | 560 // HasKeyword — KYWD FormID (Skyrim/FO4)
+        | 606 // GetKeywordDataForLocation — LCTN FormID (param_2 = the keyword)
+        | 651 // GetKeywordDataForCurrentLocation — KYWD FormID (Skyrim/FO4)
     )
 }
 
@@ -567,6 +569,8 @@ pub fn param2_is_form_id(function_index: u32) -> bool {
         605 // LocAliasIsLocation — alias id, LCTN FormID (Skyrim/FO4)
         | 181 // HasSameEditorLocAsRefAlias — alias id, KYWD FormID (Skyrim/FO4)
         | 576 // GetEventData — function:member, the compared form (Skyrim/FO4)
+        | 606 // GetKeywordDataForLocation — LCTN FormID, KYWD FormID (Skyrim/FO4)
+        | 608 // GetKeywordDataForAlias — alias id, KYWD FormID (Skyrim/FO4)
     )
 }
 

@@ -710,6 +710,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's follower flags.
             .reads_resource::<byroredux_scripting::FollowerState>()
             .writes_resource::<byroredux_scripting::FollowerState>()
+            // M47.2 — a spoken line's Location.GetKeywordData / SetKeywordData.
+            .reads_resource::<byroredux_scripting::LocationKeywordData>()
+            .writes_resource::<byroredux_scripting::LocationKeywordData>()
             // M47.2 — a spoken line's hit event registrations.
             .writes_resource::<byroredux_scripting::HitRegistrations>()
             // M47.2 — a spoken line's distance registrations.

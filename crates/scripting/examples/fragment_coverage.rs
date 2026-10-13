@@ -228,6 +228,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::AdvanceSkill { .. } => "AdvanceSkill",
         Effect::SetLinkedRef { .. } => "SetLinkedRef",
         Effect::MoveToEditorLocation { .. } => "MoveToEditorLocation",
+        Effect::SetLocationKeywordData { .. } => "SetLocationKeywordData",
         Effect::SetPlayerTeammate { .. } => "SetPlayerTeammate",
         Effect::SetDoingFavor { .. } => "SetDoingFavor",
         Effect::PlayerCaps { .. } => "PlayerCaps",
