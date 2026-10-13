@@ -368,7 +368,13 @@ quest's VMAD, not the fragment's. Its effects are wrapped in
 guards). A scope never holds a latent effect. Inside an inlined body, writes
 to the script's own variables lower too: a literal, `X = X ± c`, and
 `X = Y` (`Effect::CopyQuestVariable`). FO4's radio rotation
-(`kmyQuest.UpdateRadio()`, 437 INFO fragments) is the main beneficiary.
+(`kmyQuest.UpdateRadio()`, 437 INFO fragments) is the main beneficiary. A single INFO or scene statement that reads the quest script's own
+properties (`akSpeaker.AddToFaction((GetOwningQuest() as X).Faction)`,
+`kmyQuest.CW.SetStage(2)`) is re-lowered against the quest's VMAD and scoped
+the same way. The fragment's own properties are forbidden in that re-lowering,
+so a statement mixing the two VMADs declines. In a quest fragment
+`kmyQuest.Prop` is an ordinary property receiver (the library supplies its
+type, and a quest-typed one never becomes an object).
 
 Relationships (2026-10-13): `RELA` records parse into
 `EsmIndex.relationships`. The wire rank Lover (0) … Archnemesis (8) becomes the

@@ -1153,6 +1153,11 @@ struct Scope<'lib> {
     /// [`Effect::QuestScope`] instead, and a quest script's own property
     /// (`kmyQuest.CW`) declines.
     vmad_is_quest: bool,
+    /// M47.2 — set while an INFO / scene statement is re-lowered against its
+    /// quest's VMAD ([`quest_vmad_statement`]): the fragment's own properties
+    /// (and locals bound from them) would resolve against the wrong VMAD
+    /// there, so they decline.
+    fragment_properties_off: bool,
     /// The declared object type (lowercased script name) of each local
     /// (`MyQuestScript kmyQuest`), for resolving an inlined call's callee.
     local_types: HashMap<String, String>,
@@ -1496,6 +1501,37 @@ fn inline_quest_script_call(
     Some(vec![Effect::QuestScope { quest, effects }])
 }
 
+/// M47.2 — an INFO or scene statement that reads the quest script's own
+/// properties (`akSpeaker.AddToFaction((GetOwningQuest() as X).Faction)`),
+/// lowered against the quest's VMAD and wrapped in [`Effect::QuestScope`].
+/// The re-lowering forbids the fragment's own properties and the locals bound
+/// from them, so everything it names resolves through the quest's VMAD or is
+/// VMAD-free (the player, the speaker, literals).
+fn quest_vmad_statement(
+    e: &Expr,
+    scope: &Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+) -> Option<Effect> {
+    if scope.vmad_is_quest || scope.library.is_none() {
+        return None;
+    }
+    let quest_scope = Scope {
+        vmad_is_quest: true,
+        fragment_properties_off: true,
+        object_locals: HashMap::new(),
+        known_quest_properties: HashSet::new(),
+        ..scope.clone()
+    };
+    let effect = classify_effect_with_providers(e, &quest_scope, providers)?;
+    if has_latent_tail(&effect) {
+        return None;
+    }
+    Some(Effect::QuestScope {
+        quest: QuestRef::OwningQuest,
+        effects: vec![effect],
+    })
+}
+
 /// The parameter through which an INFO (`TIF_…`) fragment receives the
 /// speaking actor — `Function Fragment_N(ObjectReference akSpeakerRef)` in
 /// every Skyrim / Fallout 4 / Starfield topic-info fragment script.
@@ -1636,7 +1672,10 @@ fn lower_statements(
             Stmt::ExprStmt(e) => match classify_effect_with_providers(&e.node, scope, providers) {
                 Some(effect) => effects.push(effect),
                 // M47.2 — a call into the quest's own script, inlined.
-                None => effects.extend(inline_quest_script_call(&e.node, scope, providers)?),
+                None => match inline_quest_script_call(&e.node, scope, providers) {
+                    Some(inlined) => effects.extend(inlined),
+                    None => effects.push(quest_vmad_statement(&e.node, scope, providers)?),
+                },
             },
             Stmt::While { condition, body } => {
                 effects.push(lower_3d_loaded_wait(&condition.node, body, scope)?);
@@ -3564,7 +3603,11 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
             return None;
         }
     }
-    quest_via(object)
+    match quest_via(object)? {
+        // A fragment property, which `quest_vmad_statement` forbids.
+        QuestRef::Property(_) if scope.fragment_properties_off => None,
+        quest => Some(quest),
+    }
 }
 
 /// M47.2 — `<quest>.Member` where `<quest>` is this fragment's own quest
@@ -3756,6 +3799,9 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
             .known_quest_properties
             .contains(&quest_property_key(&name.0))
     {
+        return None;
+    }
+    if scope.fragment_properties_off {
         return None;
     }
     Some(ObjectRef::Property(name.0.clone()))
@@ -5316,9 +5362,9 @@ mod tests {
     }
 
     /// M47.2 — an INFO fragment's call into its quest's script inlines as a
-    /// `QuestScope` (the callee's properties live on the quest's VMAD); a
-    /// latent callee declines, and a quest-script property read straight from
-    /// the INFO (`kmyQuest.CW`) still declines there.
+    /// `QuestScope` (the callee's properties live on the quest's VMAD), and so
+    /// does a statement reading a quest-script property (`kmyQuest.CW`); a
+    /// latent callee declines.
     #[test]
     fn info_fragment_calls_into_the_quest_script_lower_as_quest_scopes() {
         let library = PscLibrary::new(&[
@@ -5374,6 +5420,23 @@ mod tests {
             }])
         );
         assert_eq!(lowered("kmyQuest.SlowUpdate()"), None, "latent callee");
+        // The speaker is VMAD-free; a fragment property beside a quest
+        // property would resolve against the wrong VMAD, so it declines.
+        assert_eq!(
+            lowered("kmyQuest.RadioMarker.Disable()"),
+            Some(vec![Effect::QuestScope {
+                quest: QuestRef::OwningQuest,
+                effects: vec![Effect::Disable {
+                    object: ObjectRef::Property("RadioMarker".into()),
+                    fade_out: false,
+                }],
+            }])
+        );
+        assert_eq!(
+            lowered("FragmentDoor.MoveTo(kmyQuest.RadioMarker)"),
+            None,
+            "a fragment property beside a quest property"
+        );
         // The FO4 radio shape: the quest script's own variables.
         assert_eq!(
             lowered("kmyQuest.Rotate()"),
@@ -5398,7 +5461,18 @@ mod tests {
                 ],
             }])
         );
-        assert_eq!(lowered("kmyQuest.CW.SetStage(2)"), None, "INFO VMAD has no CW");
+        // A quest-script property read from the INFO resolves through the
+        // quest's VMAD: the statement is scoped.
+        assert_eq!(
+            lowered("kmyQuest.CW.SetStage(2)"),
+            Some(vec![Effect::QuestScope {
+                quest: QuestRef::OwningQuest,
+                effects: vec![Effect::SetStage {
+                    quest: QuestRef::Property("CW".into()),
+                    stage: 2,
+                }],
+            }])
+        );
     }
 
     /// M47.2 — a quest reached through the fragment quest's own typed
