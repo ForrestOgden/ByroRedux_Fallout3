@@ -327,6 +327,9 @@ pub struct PerkRecord {
     /// All `PRKE`/`PRKF` entry blocks in authoring order. Each entry
     /// has its own rank/priority and Quest/Ability/EntryPoint body.
     pub entries: Vec<PerkEntry>,
+    /// M47.2 — the `Fragment_Entry_NN` bindings of a Fallout 4 / Starfield
+    /// perk's `VMAD`, keyed by the entry's `EPFB` id.
+    pub script_fragments: Vec<super::super::script_instance::IndexedScriptFragment>,
 }
 
 /// Block-state for the PRKE walker — mirrors the QUST INDX/QOBJ
@@ -429,6 +432,13 @@ pub fn parse_perk(
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
+    // Skyrim's PERK fragment section has another layout (a file name, no script
+    // entry), which the indexed decoder reads as no fragments.
+    if game != GameKind::Skyrim {
+        if let Some(vmad) = subs.iter().find(|sub| sub.sub_type == *b"VMAD") {
+            out.script_fragments = super::super::script_instance::parse_indexed_fragments(&vmad.data);
+        }
+    }
     for sub in subs {
         match &sub.sub_type {
             b"DESC" => out.description = read_lstring_or_zstring(&sub.data),

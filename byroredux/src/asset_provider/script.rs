@@ -759,6 +759,31 @@ fn populate_package_fragments(
     }
 }
 
+/// M47.2 — the perk (`PRKF_`) fragments each Fallout 4 / Starfield perk binds to
+/// its entries, for the perk-entry dispatcher.
+fn populate_perk_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    let records = index
+        .perks
+        .iter()
+        .filter(|(_, perk)| !perk.script_fragments.is_empty())
+        .map(|(&form_id, perk)| {
+            let bindings = perk
+                .script_fragments
+                .iter()
+                .map(|f| (byroredux_scripting::PerkEntryId(f.index), f.script_name.as_str(), f.fragment_name.as_str()))
+                .collect();
+            (form_id, None, bindings)
+        })
+        .collect();
+    let total = populate_record_fragments(world, records);
+    if total > 0 {
+        log::info!("M47.2: installed {total} perk fragments");
+    }
+}
+
 /// M47.2 — the terminal (`TERM_`) fragments each Fallout 4 / Starfield
 /// terminal binds to its menu items, for the terminal-selection dispatcher.
 fn populate_terminal_fragments(
@@ -773,7 +798,7 @@ fn populate_terminal_fragments(
             let bindings = terminal
                 .script_fragments
                 .iter()
-                .map(|f| (f.index, f.script_name.as_str(), f.fragment_name.as_str()))
+                .map(|f| (byroredux_scripting::TerminalItem(f.index), f.script_name.as_str(), f.fragment_name.as_str()))
                 .collect();
             (form_id, terminal.script_instance.as_ref(), bindings)
         })
@@ -899,6 +924,7 @@ pub(crate) fn populate_scene_runtime(
     populate_info_fragments(world, index);
     populate_package_fragments(world, index);
     populate_terminal_fragments(world, index);
+    populate_perk_fragments(world, index);
     crate::inventory::install_catalog(world, index);
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));

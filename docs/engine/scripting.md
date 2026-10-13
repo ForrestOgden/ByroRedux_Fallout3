@@ -1283,6 +1283,21 @@ winner, a re-selection, a combat suspension), and that report now also keeps
 a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
 it as a value; an actor running none reads None.
 
+### Perk fragments (M47.2)
+
+A Fallout 4 / Starfield perk's `VMAD` binds `Fragment_Entry_NN(akTargetRef, akActor)` to its
+entries, in the same layout as a terminal's (`parse_indexed_fragments`; `PerkRecord.script_fragments`).
+The index is the entry's `EPFB` "Perk Entry ID" (`perk_fragment_census` matches all 34 of Fallout 4's
+fragments on 31 perks to an entry; 24 hang off the Activate entry point, with a button label and
+the Run Immediately / Replace Default flags, and 10 off value entry points). CK *Perk Fragments*:
+Activate entries run "every frame conditions are met" when Run Immediately and otherwise "when the
+player picks the appropriate option in the popup menu"; value entries run "whenever conditions are
+met" with `akTargetRef` empty. The engine has neither the activation popup nor a per-frame entry
+evaluation that can run a fragment, so the host reports an entry run (`report_perk_entry`) and
+`perk_fragment_system` runs the fragment; the `perk.run <perk> <entry id> [target]` console command
+is the only source until those exist. Skyrim's PERK fragment layout differs (a file name, no script
+entry) and is not decoded.
+
 ### FormList.AddForm / RemoveAddedForm / Revert (M47.2)
 
 CK *FormList Script*: `AddForm` "adds the given form to the form list", `RemoveAddedForm`
@@ -1301,7 +1316,7 @@ count)` is a different call and stays declined.
 A Fallout 4 / Starfield terminal's `VMAD` binds `Fragment_Terminal_NN(akTerminalRef)` to its
 menu items. The fragment section is xEdit's `wbVMADFragmentedPERK` ("same fragments format as in
 PERK"): an s8 version, the fragment script's own entry, a u16 count, then per fragment a u32
-index, an unknown byte, the script name and the function name (`parse_terminal_fragments`; the
+index, an unknown byte, the script name and the function name (`parse_indexed_fragments`; the
 `terminal_fragment_census` example checks that all 463 of Fallout 4's bindings, on 205
 terminals, carry an index equal to one of the terminal's menu item ids `ITID` and to the function
 suffix). `TermRecord.script_fragments` holds them; the populate walk installs those the VM's check

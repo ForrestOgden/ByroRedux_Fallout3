@@ -852,12 +852,59 @@ impl ConsoleCommand for TerminalSelectCommand {
         };
         let installed = world
             .try_resource::<byroredux_scripting::TerminalFragments>()
-            .and_then(|fragments| fragments.get(base).map(|set| set.fragments.iter().filter(|(on, _, _)| *on == item).count()))
+            .and_then(|fragments| fragments.get(base).map(|set| set.fragments.iter().filter(|(on, _, _)| on.0 == item).count()))
             .unwrap_or(0);
         byroredux_scripting::report_terminal_selection(world, reference, base, item);
         CommandOutput::line(format!(
             "Terminal {reference:08X} (base {base:08X}) item {item}: {installed} fragment(s) queued"
         ))
+    }
+}
+
+/// `perk.run <perk formid> <entry id> [target reference formid]` — run a perk
+/// entry on the player, running the entry's `Fragment_Entry_NN` (M47.2). The
+/// engine has neither the activation popup nor a per-frame entry evaluation that
+/// could run a perk fragment, so this is the entry source until they exist.
+pub(crate) struct PerkRunCommand;
+
+impl ConsoleCommand for PerkRunCommand {
+    fn name(&self) -> &str {
+        "perk.run"
+    }
+
+    fn description(&self) -> &str {
+        "Run a perk entry's fragment on the player: perk.run <perk> <entry id> [target ref]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        const USAGE: &str = "usage: perk.run <perk formid> <entry id> [target reference formid]";
+        let mut tokens = args.split_whitespace();
+        let (Some(raw_perk), Some(raw_entry)) = (tokens.next(), tokens.next()) else {
+            return CommandOutput::error(USAGE);
+        };
+        let raw_target = tokens.next();
+        if tokens.next().is_some() {
+            return CommandOutput::error(USAGE);
+        }
+        let (Some(perk), Some(entry)) = (parse_console_u32(raw_perk), parse_console_u32(raw_entry)) else {
+            return CommandOutput::error(USAGE);
+        };
+        let target = match raw_target {
+            Some(raw) => match parse_console_u32(raw) {
+                Some(target) => Some(target),
+                None => return CommandOutput::error(format!("bad target FormID `{raw}`")),
+            },
+            None => None,
+        };
+        let installed = world
+            .try_resource::<byroredux_scripting::PerkFragments>()
+            .and_then(|fragments| fragments.get(perk).map(|set| set.fragments.iter().filter(|(on, _, _)| on.0 == entry).count()))
+            .unwrap_or(0);
+        byroredux_scripting::report_perk_entry(
+            world,
+            byroredux_scripting::PerkEntryRun { perk, entry, owner: 0x14, target },
+        );
+        CommandOutput::line(format!("Perk {perk:08X} entry {entry}: {installed} fragment(s) queued"))
     }
 }
 

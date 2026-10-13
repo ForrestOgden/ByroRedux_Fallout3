@@ -2503,7 +2503,7 @@ fn terminal_selection_runs_the_items_fragment() {
             TERMINAL,
             None,
             script,
-            &[(1u32, "Fragment_Terminal_01"), (2u32, "Fragment_Terminal_02")],
+            &[(crate::TerminalItem(1), "Fragment_Terminal_01"), (crate::TerminalItem(2), "Fragment_Terminal_02")],
             &library,
             &mut |s| installed.borrow_mut().push(s),
         );
@@ -2734,6 +2734,59 @@ fn is_in_dialogue_with_player_follows_the_open_surface() {
     assert_eq!(run(&world), 10, "someone else is talking");
     world.insert_resource(crate::DialogueSurfaceState { npc: Some(marker), ..Default::default() });
     assert_eq!(run(&world), 20, "the marker is talking to the player");
+}
+
+/// A perk entry run runs the entry's fragment with `akTargetRef` and `akActor`
+/// bound; another entry's fragment does not run.
+#[test]
+fn perk_entry_run_executes_the_entrys_fragment() {
+    const PERK: u32 = 0x0001_0F60;
+    let script = parsed_source(
+        "ScriptName PRKF_VmTest extends Perk\n\
+         Function Fragment_Entry_00(ObjectReference akTargetRef, Actor akActor)\n\
+           akTargetRef.Disable()\n\
+         EndFunction\n\
+         Function Fragment_Entry_01(ObjectReference akTargetRef, Actor akActor)\n\
+           akTargetRef.Enable()\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let installed = std::cell::RefCell::new(Vec::new());
+    let library: HashMap<String, Arc<Script>> = HashMap::new();
+    let library = Installed(&library);
+    {
+        let mut fragments = world.resource_mut::<crate::PerkFragments>();
+        let n = crate::populate_fragments(
+            &mut fragments,
+            PERK,
+            None,
+            script,
+            &[(crate::PerkEntryId(0), "Fragment_Entry_00"), (crate::PerkEntryId(1), "Fragment_Entry_01")],
+            &library,
+            &mut |s| installed.borrow_mut().push(s),
+        );
+        assert_eq!(n, 2);
+    }
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in installed.into_inner() {
+            fragments.insert_vm_script(script);
+        }
+    }
+    let run = |entry| crate::PerkEntryRun { perk: PERK, entry, owner: 0x14, target: Some(MARKER) };
+    crate::report_perk_entry(&world, run(0));
+    crate::perk_fragment_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, MARKER), "entry 0 disabled the target");
+    crate::report_perk_entry(&world, run(1));
+    crate::perk_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "entry 1 enabled it again");
+    crate::report_perk_entry(&world, run(2));
+    crate::perk_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "no fragment for entry 2");
 }
 
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a

@@ -64,6 +64,7 @@ mod events;
 mod hits;
 mod owners;
 mod package;
+mod perk;
 mod populate;
 mod reference;
 mod state;
@@ -79,6 +80,7 @@ pub use distance::*;
 pub use hits::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
+pub use perk::*;
 pub use terminal::*;
 pub use populate::*;
 pub use reference::*;
@@ -112,6 +114,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/hits.rs"),
     include_str!("fragment/owners.rs"),
     include_str!("fragment/package.rs"),
+    include_str!("fragment/perk.rs"),
     include_str!("fragment/populate.rs"),
     include_str!("fragment/reference.rs"),
     include_str!("fragment/systems.rs"),

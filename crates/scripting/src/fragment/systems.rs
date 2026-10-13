@@ -202,6 +202,8 @@ pub fn register(world: &mut World) {
     world.insert_resource(PendingPackageTransitions::default());
     world.insert_resource(PendingPackageEnds::default());
     world.insert_resource(TerminalFragments::default());
+    world.insert_resource(PerkFragments::default());
+    world.insert_resource(PendingPerkEntries::default());
     world.insert_resource(PendingTerminalSelections::default());
     world.insert_resource(ActivePackages::default());
 }

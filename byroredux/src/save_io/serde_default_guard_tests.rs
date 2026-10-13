@@ -999,12 +999,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::SetLocRefType`, the `LocRefTypeOverrides` column.
     // 2026-10-13 (M47.2) — refreshed WITHOUT a major bump: the file-scoped
     // hash (#3332) moved because `script_instance.rs` gained the serde-derived
-    // `TerminalScriptFragment`, a plugin-record type no saved column holds.
+    // `IndexedScriptFragment`, a plugin-record type no saved column holds.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v92 -> v93):
     // `Effect::DamageActorValue`.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v93 -> v94):
     // the `FormListAdditions` column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5144_fdcd_f079_7adf;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a major bump: `script_instance.rs`'s
+    // plugin-record `TerminalScriptFragment` became `IndexedScriptFragment` (TERM and
+    // PERK fragments); no saved column holds it.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5afb_f6d2_9e16_3610;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

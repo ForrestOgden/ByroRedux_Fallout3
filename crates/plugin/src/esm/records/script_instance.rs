@@ -719,12 +719,14 @@ pub fn parse_package_fragments(vmad: &[u8]) -> Vec<PackageScriptFragment> {
     out
 }
 
-/// One terminal (`TERM`) fragment binding: the menu item a `Fragment_Terminal_NN`
-/// runs for, with the script and function that implement it.
+/// One indexed fragment binding of a `TERM` or `PERK` `VMAD`: the menu item a
+/// `Fragment_Terminal_NN` runs for, or the perk entry a `Fragment_Entry_NN` runs
+/// for, with the script and function that implement it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TerminalScriptFragment {
-    /// The xEdit "Fragment Index" (equal to the menu item's `ITID`, which the
-    /// function name `Fragment_Terminal_NN` repeats).
+pub struct IndexedScriptFragment {
+    /// The xEdit "Fragment Index": a terminal menu item's `ITID` (which the
+    /// function name `Fragment_Terminal_NN` repeats), or a perk entry's `EPFB`
+    /// "Perk Entry ID" (`Fragment_Entry_NN`).
     pub index: u32,
     pub script_name: String,
     pub fragment_name: String,
@@ -735,7 +737,7 @@ pub struct TerminalScriptFragment {
 /// PERK"): an `s8` version, the fragment script's own entry (name, status byte,
 /// property table), a `u16` count, then per fragment a `u32` index, an unknown
 /// byte, the script name and the fragment name.
-pub fn parse_terminal_fragments(vmad: &[u8]) -> Vec<TerminalScriptFragment> {
+pub fn parse_indexed_fragments(vmad: &[u8]) -> Vec<IndexedScriptFragment> {
     let (data, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
         return Vec::new();
     };
@@ -760,7 +762,7 @@ pub fn parse_terminal_fragments(vmad: &[u8]) -> Vec<TerminalScriptFragment> {
         else {
             break;
         };
-        out.push(TerminalScriptFragment { index, script_name, fragment_name });
+        out.push(IndexedScriptFragment { index, script_name, fragment_name });
     }
     out
 }
@@ -1557,11 +1559,11 @@ mod tests {
             push_wstring(&mut vmad, "Fragments:Terminals:TERM_Test_00000001");
             push_wstring(&mut vmad, function);
         }
-        let fragments = parse_terminal_fragments(&vmad);
+        let fragments = parse_indexed_fragments(&vmad);
         assert_eq!(fragments.len(), 2);
         assert_eq!((fragments[0].index, fragments[0].fragment_name.as_str()), (1, "Fragment_Terminal_01"));
         assert_eq!((fragments[1].index, fragments[1].fragment_name.as_str()), (7, "Fragment_Terminal_07"));
-        assert!(parse_terminal_fragments(&empty_scripts_prefix()).is_empty(), "object-only VMAD");
+        assert!(parse_indexed_fragments(&empty_scripts_prefix()).is_empty(), "object-only VMAD");
     }
 
     // ---- SCEN fragment section ----------------------------------------

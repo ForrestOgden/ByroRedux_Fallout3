@@ -94,6 +94,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
     registry.register(TerminalSelectCommand);
+    registry.register(PerkRunCommand);
     registry.register(QuestSetStageCommand);
     registry.register(TimeShowCommand);
     registry.register(TimeSetCommand);

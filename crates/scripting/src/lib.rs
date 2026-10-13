@@ -134,7 +134,8 @@ pub use fragment::{
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_fragments, populate_package_fragments, FragmentSet, FragmentTable, report_package_end, report_package_transition, ActivePackages, PackageEnd, PackageFragmentSet,
     PackageFragments, PackageTransition, PendingPackageEnds, PendingPackageTransitions,
-    report_terminal_selection, terminal_fragment_system, PendingTerminalSelections, TerminalFragments, TerminalSelection,
+    report_terminal_selection, terminal_fragment_system, PendingTerminalSelections, TerminalFragments, TerminalItem, TerminalSelection,
+    perk_fragment_system, report_perk_entry, PendingPerkEntries, PerkEntryId, PerkEntryRun, PerkFragments,
 };
 pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,

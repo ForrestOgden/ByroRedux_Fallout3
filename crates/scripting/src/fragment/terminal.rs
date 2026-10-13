@@ -13,9 +13,12 @@
 use super::*;
 use crate::translate::effects::VmStored;
 
-/// Every terminal's installed fragments, by terminal base FormID; the event is
-/// the menu item id.
-pub type TerminalFragments = FragmentTable<u32>;
+/// A terminal menu item (`ITID`): the event a terminal fragment binds to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalItem(pub u32);
+
+/// Every terminal's installed fragments, by terminal base FormID.
+pub type TerminalFragments = FragmentTable<TerminalItem>;
 
 /// A menu item picked on a terminal reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +62,7 @@ pub fn terminal_fragment_system(world: &World, _dt: f32) {
             log::debug!("terminal {:08X}: no fragments", selection.base);
             continue;
         };
-        for (_, script, function) in set.fragments.iter().filter(|(item, _, _)| *item == selection.item) {
+        for (_, script, function) in set.fragments.iter().filter(|(item, _, _)| item.0 == selection.item) {
             log::debug!("terminal {:08X} item {}: {script}.{function}", selection.terminal, selection.item);
             let effect = Effect::Interpret {
                 script: script.clone(),
