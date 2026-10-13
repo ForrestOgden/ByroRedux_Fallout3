@@ -159,6 +159,29 @@ impl LevelingModel {
         level_cap: 0,
     };
 
+    /// What reaching `new_level` grants under the Fallout 3 / New Vegas
+    /// [`LevelReward::SkillPoints`] reward: `base + int_mult·INT` skill
+    /// points (before the Adjust Gained Skill Points perk hook), and whether a
+    /// perk comes with it (every `perk_cadence` levels). `None` for every
+    /// other reward or model.
+    pub fn skill_point_reward(&self, new_level: u16, intelligence: f32) -> Option<(f32, bool)> {
+        match *self {
+            Self::XpCurve {
+                reward:
+                    LevelReward::SkillPoints {
+                        base,
+                        int_mult,
+                        perk_cadence,
+                    },
+                ..
+            } => Some((
+                base + int_mult * intelligence,
+                perk_cadence > 0 && new_level % u16::from(perk_cadence) == 0,
+            )),
+            _ => None,
+        }
+    }
+
     /// XP required to advance from `level` to `level + 1`. Fallout:
     /// `xp_a·L + xp_b`; Skyrim: `xp_mult·L + xp_base`. `0.0` for the
     /// skill-use (classic TES) model, which has no XP-to-next.
@@ -249,6 +272,24 @@ impl LevelingModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M47.2 — Fallout wiki *Skill point*: FO3 `10 + INT` with a perk every
+    /// level, FNV `10 + INT/2` with a perk every other level; the FNV half
+    /// point carries ("with 9 Intelligence, the first level up nets 14
+    /// points. The next level up will net 15 points").
+    #[test]
+    fn skill_point_rewards_follow_each_fallout() {
+        use crate::character::LevelUpPoints;
+        assert_eq!(LevelingModel::FO3.skill_point_reward(2, 7.0), Some((17.0, true)));
+        assert_eq!(LevelingModel::FNV.skill_point_reward(2, 9.0), Some((14.5, true)));
+        assert_eq!(LevelingModel::FNV.skill_point_reward(3, 9.0), Some((14.5, false)));
+        assert_eq!(LevelingModel::SKYRIM.skill_point_reward(2, 9.0), None);
+        let mut banked = LevelUpPoints::default();
+        banked.grant_skill_points(14.5);
+        assert_eq!(banked.skill_points, 14);
+        banked.grant_skill_points(14.5);
+        assert_eq!(banked.skill_points, 29, "14 then 15");
+    }
 
     #[test]
     fn xp_curves_match_wiki_tables() {

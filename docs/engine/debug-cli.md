@@ -330,7 +330,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**101**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**102**) grouped by
 purpose:
 
 ```
@@ -430,6 +430,7 @@ dialogue.status             → show the activation-selected dialogue topics car
 dialogue.forcegreet <entity|.> <pack_formid> → install a force-greet onto an NPC — FO3/FNV Dialogue-procedure PACK or Skyrim ForceGreet-tree PACK (#5367)
 sm.event <MNEMONIC> r1=<formid|player> [r2=…] [l1=…] [l2=…] → raise a Story Manager event through the real dispatcher for live gating (#5366)
 inv.add <form_id> [count]   → append items to the player inventory (same append invariants as loot transfer)
+levelup [skill <Skill> <n> | perk <perk_hex> | xp <n>] → show / spend the banked level-up skill points and perks, or grant XP like `rewardxp` (M47.2; capped at 100, perk requirements unchecked)
 inv.equip <form_id>         → toggle a player row's equipment state through the native menu's canonical action
 settings.status             → report loaded gameplay settings
 setav / modav               → inspect or mutate an actor value

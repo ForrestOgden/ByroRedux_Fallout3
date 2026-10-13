@@ -231,6 +231,13 @@ impl SkillSet {
         self.skills.iter().find(|s| s.editor_id == editor_id)
     }
 
+    /// [`Self::get`], ignoring ASCII case (console input).
+    pub fn get_ignore_case(&self, editor_id: &str) -> Option<&'static SkillDef> {
+        self.skills
+            .iter()
+            .find(|s| s.editor_id.eq_ignore_ascii_case(editor_id))
+    }
+
     /// The attribute governing `editor_id`, if the skill exists and is
     /// governed.
     #[must_use]

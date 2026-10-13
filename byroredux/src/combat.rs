@@ -607,29 +607,94 @@ fn award_kill_experience(world: &World, victim: EntityId, health_avif: u32) {
     )
     .max(0.0)
     .round() as u32;
+    log::info!("Kill experience: +{xp} XP");
+    grant_experience(world, player, xp);
+}
+
+/// Add `xp` to `player`'s progress, rolling levels by the ruleset's
+/// `LevelingModel` up to its cap, and bank what each level grants (M47.2):
+/// FO3 / FNV skill points (`base + int_mult·INT`, composed by the Adjust
+/// Gained Skill Points hook 10 — `Educated`) and a perk on the cadence.
+/// Callers hold no storage guard.
+pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
+    use byroredux_core::character::{CharacterLevel, LevelUpPoints};
     let leveling = world
         .try_resource::<CharacterRuleset>()
         .map(|ruleset| ruleset.leveling);
-    let Some(mut levels) = world.query_mut::<CharacterLevel>() else {
-        return;
-    };
-    let Some(progress) = levels.get_mut(player) else {
-        return;
-    };
-    progress.xp = progress.xp.saturating_add(xp);
-    if let Some(leveling) = leveling {
-        loop {
-            let to_next = leveling.xp_to_next(progress.level);
-            let capped = leveling.level_cap() > 0 && progress.level >= leveling.level_cap();
-            if capped || to_next <= 0.0 || (progress.xp as f32) < to_next {
-                break;
+    let mut reached = Vec::new();
+    {
+        let Some(mut levels) = world.query_mut::<CharacterLevel>() else {
+            return;
+        };
+        let Some(progress) = levels.get_mut(player) else {
+            return;
+        };
+        progress.xp = progress.xp.saturating_add(xp);
+        if let Some(leveling) = leveling {
+            loop {
+                let to_next = leveling.xp_to_next(progress.level);
+                let capped = leveling.level_cap() > 0 && progress.level >= leveling.level_cap();
+                if capped || to_next <= 0.0 || (progress.xp as f32) < to_next {
+                    break;
+                }
+                progress.xp -= to_next as u32;
+                progress.level = progress.level.saturating_add(1);
+                reached.push(progress.level);
+                log::info!("Player reached level {}", progress.level);
             }
-            progress.xp -= to_next as u32;
-            progress.level = progress.level.saturating_add(1);
-            log::info!("Player reached level {}", progress.level);
         }
     }
-    log::info!("Kill experience: +{xp} XP");
+    let Some(leveling) = leveling else {
+        return;
+    };
+    if reached.is_empty() {
+        return;
+    }
+    let intelligence = world
+        .try_resource::<byroredux_scripting::ActorValueNames>()
+        .and_then(|names| names.resolve("Intelligence"))
+        .map_or(0.0, |intelligence| {
+            byroredux_scripting::condition::evaluate_function(
+                byroredux_scripting::condition::ConditionFunction::GetActorValue,
+                &byroredux_plugin::esm::records::condition::Condition {
+                    param_1: intelligence,
+                    ..Default::default()
+                },
+                player,
+                world,
+            )
+        });
+    let mut granted = (0.0f32, 0u32);
+    for level in reached {
+        let Some((points, perk)) = leveling.skill_point_reward(level, intelligence) else {
+            return;
+        };
+        granted.0 += byroredux_scripting::perk_entry_points::compose_entry_point(
+            world,
+            player,
+            byroredux_scripting::perk_entry_points::fnv::ADJUST_GAINED_SKILL_POINTS,
+            points,
+            &[],
+        )
+        .max(0.0);
+        granted.1 += u32::from(perk);
+    }
+    let Some(mut rewards) = world.query_mut::<LevelUpPoints>() else {
+        return;
+    };
+    if rewards.get(player).is_none() {
+        rewards.insert(player, LevelUpPoints::default());
+    }
+    let rewards = rewards.get_mut(player).expect("present or inserted");
+    rewards.grant_skill_points(granted.0);
+    rewards.perk_points = rewards.perk_points.saturating_add(granted.1);
+    log::info!(
+        "Level-up rewards: +{:.1} skill points, +{} perks (unspent {} / {})",
+        granted.0,
+        granted.1,
+        rewards.skill_points,
+        rewards.perk_points
+    );
 }
 
 /// New Vegas Damage Threshold (M47.2): the flat damage an actor's DT absorbs

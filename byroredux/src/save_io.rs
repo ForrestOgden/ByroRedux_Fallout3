@@ -103,6 +103,8 @@ const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // M47.2 — level and XP toward the next (u16 / u32); kill experience
     // accumulates it, so it is progression, not a re-derived spawn stamp.
     "CharacterLevel",
+    // M47.2 — unspent level-up skill points (u32 + an f32 carry) and perks.
+    "LevelUpPoints",
     // Stable source/AV FormIDs and scalar rate/remaining simulation seconds.
     "TimedRestorations",
     // #4415 — spell FormIDs (u32) only.
@@ -432,6 +434,9 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — kill experience accumulates `xp` and rolls levels, so
         // #2947's re-derived exemption (and its `validate_progression_state`
         // guard) ended.
+        .register_replacing_component::<byroredux_core::character::LevelUpPoints>(
+            "LevelUpPoints",
+        )
         .register_replacing_component::<byroredux_core::character::CharacterLevel>(
             "CharacterLevel",
         )

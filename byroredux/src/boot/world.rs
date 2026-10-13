@@ -165,6 +165,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<crate::combat::MeleeState>();
     world.insert_resource(crate::combat::PendingDeathReconciliations::default());
     world.insert_resource(crate::encumbrance::PlayerEncumbrance::default());
+    // M47.2 — level-up skill points and perks, banked by grant_experience.
+    world.register::<byroredux_core::character::LevelUpPoints>();
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every

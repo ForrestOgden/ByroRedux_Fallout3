@@ -27,6 +27,33 @@ impl Component for CharacterLevel {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// M47.2 — what the player's level-ups granted and has not spent yet:
+/// Fallout 3 / New Vegas skill points (`LevelReward::SkillPoints`) and perks.
+/// `skill_point_fraction` holds the half point an odd Intelligence leaves on
+/// New Vegas ("decimal values on odd Intelligence level gains are saved for
+/// the next level" — Fallout wiki *Skill point*).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct LevelUpPoints {
+    pub skill_points: u32,
+    pub skill_point_fraction: f32,
+    pub perk_points: u32,
+}
+
+impl Component for LevelUpPoints {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl LevelUpPoints {
+    /// Bank `points` skill points (fractional), carrying the remainder.
+    pub fn grant_skill_points(&mut self, points: f32) {
+        let total = self.skill_point_fraction + points.max(0.0);
+        let whole = total.floor();
+        self.skill_points = self.skill_points.saturating_add(whole as u32);
+        self.skill_point_fraction = total - whole;
+    }
+}
+
 /// One owned perk and its current rank. 8 bytes (the `u8` rank pads to the
 /// `u32` FormID's alignment — unavoidable without bit-packing, and not worth
 /// it for the handful of perks an actor holds).

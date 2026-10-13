@@ -269,8 +269,20 @@ levels by the ruleset's `LevelingModel`, up to its cap. The masters author no
 `iXPRewardKillNPC*`, so those take the engine defaults 0 / 10 / 20 / 30 / 50
 (the GECK page, confirmed in `Fallout3.exe`'s static setting table).
 `CharacterLevel` is saved since (v46), which retired #2947's
-`validate_progression_state` guard. Skill points (hook 10) and the level-up
-menu remain.
+`validate_progression_state` guard.
+
+Each level the player reaches (`grant_experience`, shared by kill experience
+and the `levelup xp` console command) banks the ruleset's
+`LevelReward::SkillPoints` in the saved `LevelUpPoints`. Fallout 3 grants
+`10 + INT` skill points and a perk every level. New Vegas grants `10 + INT/2`
+with the half point carried, and a perk every other level (Fallout wiki
+*Skill point*; the GMSTs both masters author, `iLevelUpSkillPointsBase` 11 and
+`Interval` 1, give FO3's rule). Points are composed by hook 10 (`Adjust
+Gained Skill Points`: `Educated`, +3 in FO3 and +2 in FNV). With no level-up
+menu yet, the `levelup` console command spends them: a skill rises one per
+point, never past 100, and a perk point adds a perk rank (requirements are
+not checked). Live (FNV, INT 5): 600 XP reached level 3 and banked 25 points
+and one perk.
 
 The fourth is **encumbrance** (`byroredux/src/encumbrance.rs`). The player's
 carried weight is the inventory's item weights times counts (the inventory

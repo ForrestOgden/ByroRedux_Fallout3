@@ -130,6 +130,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(PlayerViewCommand);
     registry.register(PlayerBodyCommand);
     registry.register(InvAddCommand);
+    registry.register(LevelUpCommand);
     registry.register(InvEquipCommand);
     registry.register(InventoryStatusCommand);
     registry.register(HardcoreCommand);

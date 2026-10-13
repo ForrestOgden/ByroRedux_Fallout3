@@ -92,7 +92,8 @@ pub use affliction::{
 };
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
-    Background, CharacterLevel, FactionReputation, FactionStanding, PerkRank, Perks,
+    Background, CharacterLevel, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
+    Perks,
 };
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
 pub use fallout::{

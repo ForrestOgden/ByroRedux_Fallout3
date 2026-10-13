@@ -360,7 +360,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// (script `ActorBase.SetEssential` / `SetProtected`). A pre-v52 save has
 /// none, so a scripted essential flag would revert to the authored one;
 /// rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 52;
+///
+/// v52 -> v53 (M47.2): a new component column, `LevelUpPoints` (unspent
+/// level-up skill points and perks). A pre-v53 save has none, so banked
+/// points would be lost; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 53;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

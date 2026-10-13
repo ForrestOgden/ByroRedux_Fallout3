@@ -331,3 +331,244 @@ mod tests {
         assert!(output.contains("interface.crosshair=true restart_required=false"));
     }
 }
+
+/// M47.2 — `levelup` — the level-up menu's work, until a menu exists: show
+/// the player's banked level-up rewards, spend skill points on a skill of the
+/// game's roster (one point raises it one, never past 100 — the Fallout
+/// level-up menu's cap), or spend a perk point on a perk rank. Perk
+/// requirements are not checked here.
+pub(crate) struct LevelUpCommand;
+
+impl ConsoleCommand for LevelUpCommand {
+    fn name(&self) -> &str {
+        "levelup"
+    }
+
+    fn description(&self) -> &str {
+        "Spend level-up rewards (usage: levelup | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup xp <n>)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use byroredux_core::character::{CharacterLevel, CharacterRuleset, LevelUpPoints, Perks};
+        let Some(player) = world
+            .try_resource::<crate::systems::PlayerEntity>()
+            .and_then(|player| player.0)
+        else {
+            return CommandOutput::error("levelup: no player");
+        };
+        let mut parts = args.split_whitespace();
+        let rewards = world
+            .get::<LevelUpPoints>(player)
+            .map(|rewards| *rewards)
+            .unwrap_or_default();
+        match parts.next() {
+            None | Some("status") => {
+                let level = world
+                    .get::<CharacterLevel>(player)
+                    .map(|level| *level)
+                    .unwrap_or_default();
+                CommandOutput::line(format!(
+                    "levelup: level={} xp={} skill_points={} (+{:.1}) perk_points={}",
+                    level.level,
+                    level.xp,
+                    rewards.skill_points,
+                    rewards.skill_point_fraction,
+                    rewards.perk_points
+                ))
+            }
+            Some("skill") => {
+                let (Some(name), Some(points)) =
+                    (parts.next(), parts.next().and_then(|raw| raw.parse::<u32>().ok()))
+                else {
+                    return CommandOutput::error("usage: levelup skill <Skill> <points>");
+                };
+                let Some(skill) = world
+                    .try_resource::<CharacterRuleset>()
+                    .and_then(|ruleset| ruleset.skills.get_ignore_case(name))
+                else {
+                    return CommandOutput::error(format!("levelup: `{name}` is not a skill here"));
+                };
+                let Some(avif) = world
+                    .try_resource::<byroredux_scripting::ActorValueNames>()
+                    .and_then(|names| names.resolve(skill.editor_id))
+                else {
+                    return CommandOutput::error("levelup: the skill has no actor value");
+                };
+                let current = byroredux_scripting::condition::evaluate_function(
+                    byroredux_scripting::condition::ConditionFunction::GetActorValue,
+                    &byroredux_plugin::esm::records::condition::Condition {
+                        param_1: avif,
+                        ..Default::default()
+                    },
+                    player,
+                    world,
+                );
+                let room = (100.0 - current).max(0.0).floor() as u32;
+                let spend = points.min(rewards.skill_points).min(room);
+                if spend == 0 {
+                    return CommandOutput::error(format!(
+                        "levelup: nothing to spend ({} unspent, {} is at {current})",
+                        rewards.skill_points, skill.editor_id
+                    ));
+                }
+                if let Some(mut values) =
+                    world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+                {
+                    if let Some(values) = values.get_mut(player) {
+                        values.mod_permanent(avif, spend as f32);
+                    }
+                }
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
+                    if let Some(stored) = stored.get_mut(player) {
+                        stored.skill_points -= spend;
+                    }
+                }
+                CommandOutput::line(format!(
+                    "levelup: {} {current} -> {} ({} skill points left)",
+                    skill.editor_id,
+                    current + spend as f32,
+                    rewards.skill_points - spend
+                ))
+            }
+            Some("perk") => {
+                let Some(perk) = parts
+                    .next()
+                    .and_then(|raw| u32::from_str_radix(raw.trim_start_matches("0x"), 16).ok())
+                else {
+                    return CommandOutput::error("usage: levelup perk <perk_hex>");
+                };
+                if rewards.perk_points == 0 {
+                    return CommandOutput::error("levelup: no perk points");
+                }
+                let rank = {
+                    let Some(mut perks) = world.query_mut::<Perks>() else {
+                        return CommandOutput::error("levelup: no perk storage");
+                    };
+                    if perks.get_mut(player).is_none() {
+                        perks.insert(player, Perks::default());
+                    }
+                    let owned = perks.get_mut(player).expect("present or inserted");
+                    let rank = owned.rank(perk).saturating_add(1);
+                    owned.set_rank(perk, rank);
+                    rank
+                };
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
+                    if let Some(stored) = stored.get_mut(player) {
+                        stored.perk_points -= 1;
+                    }
+                }
+                CommandOutput::line(format!("levelup: perk {perk:08X} now rank {rank}"))
+            }
+            // The vanilla console's `rewardxp`: experience through the same
+            // level roll a kill takes.
+            Some("xp") => {
+                let Some(xp) = parts.next().and_then(|raw| raw.parse::<u32>().ok()) else {
+                    return CommandOutput::error("usage: levelup xp <n>");
+                };
+                crate::combat::grant_experience(world, player, xp);
+                CommandOutput::line(format!("levelup: +{xp} XP"))
+            }
+            Some(other) => CommandOutput::error(format!("levelup: unknown `{other}`")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod level_up_tests {
+    use super::*;
+
+    /// M47.2 — level-ups bank FO3/FNV skill points (New Vegas `10 + INT/2`,
+    /// composed by `Educated`'s hook-10 +2) and perks on the cadence, and
+    /// `levelup` spends them on a skill, capped at 100, and on a perk rank.
+    #[test]
+    fn level_ups_bank_skill_points_and_levelup_spends_them() {
+        use byroredux_core::character::{
+            falloutnv_ruleset, CharacterLevel, LevelUpPoints, Perks,
+        };
+        use byroredux_core::ecs::components::ActorValues;
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::{
+            AvifRecord, EsmIndex, PerkEntry, PerkEntryBody, PerkFunctionData, PerkRecord,
+        };
+        const INTELLIGENCE: u32 = 0x2C6;
+        const SCIENCE: u32 = 0x2DB;
+        const EDUCATED: u32 = 0x0003_1DD8;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<ActorValues>();
+        world.register::<CharacterLevel>();
+        world.register::<LevelUpPoints>();
+        world.register::<Perks>();
+        let mut index = EsmIndex {
+            game: GameKind::Fallout3NV,
+            ..Default::default()
+        };
+        for (form_id, editor_id) in [(INTELLIGENCE, "AVIntelligence"), (SCIENCE, "AVScience")] {
+            index.actor_values.insert(
+                form_id,
+                AvifRecord {
+                    form_id,
+                    editor_id: editor_id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        index.perks.insert(
+            EDUCATED,
+            PerkRecord {
+                form_id: EDUCATED,
+                entries: vec![PerkEntry {
+                    rank: 0,
+                    priority: 0,
+                    body: PerkEntryBody::EntryPoint {
+                        entry_point_index: 10,
+                        function: 2,
+                        tab_count: 1,
+                        param_type: 1,
+                        function_data: PerkFunctionData::Float(2.0),
+                        formatter: Vec::new(),
+                        extra_flags: Vec::new(),
+                    },
+                    condition_tabs: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        byroredux_scripting::perk_entry_points::install_perk_entry_points(&mut world, &index);
+        world.insert_resource(falloutnv_ruleset(|name| match name {
+            "Intelligence" => Some(INTELLIGENCE),
+            "Science" => Some(SCIENCE),
+            _ => None,
+        }));
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        world.insert(player, ActorValues::from_pairs([(INTELLIGENCE, 9.0), (SCIENCE, 95.0)]));
+        world.insert(player, CharacterLevel { level: 1, xp: 0 });
+        let mut perks = Perks::default();
+        perks.set_rank(EDUCATED, 1);
+        world.insert(player, perks);
+
+        // 200 XP reaches level 2 (150·1 + 50); 350 more reaches level 3.
+        crate::combat::grant_experience(&world, player, 200);
+        crate::combat::grant_experience(&world, player, 350);
+        assert_eq!(world.get::<CharacterLevel>(player).unwrap().level, 3);
+        let banked = *world.get::<LevelUpPoints>(player).unwrap();
+        assert_eq!(
+            (banked.skill_points, banked.perk_points),
+            (33, 1),
+            "2 × (14.5 + 2), a perk at level 2 only"
+        );
+
+        let _ = LevelUpCommand.execute(&world, "skill science 10");
+        assert_eq!(
+            world.get::<ActorValues>(player).unwrap().current(SCIENCE),
+            100.0,
+            "capped at 100"
+        );
+        assert_eq!(world.get::<LevelUpPoints>(player).unwrap().skill_points, 28);
+        let _ = LevelUpCommand.execute(&world, "perk 31DD8");
+        assert_eq!(world.get::<Perks>(player).unwrap().rank(EDUCATED), 2);
+        assert_eq!(world.get::<LevelUpPoints>(player).unwrap().perk_points, 0);
+    }
+}
