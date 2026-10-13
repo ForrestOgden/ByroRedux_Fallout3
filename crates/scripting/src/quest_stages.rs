@@ -190,6 +190,7 @@ impl QuestStageState {
                 quest,
                 previous_stage,
                 new_stage: data.current_stage,
+                stage_set: start_up_stage.is_some(),
             };
             self.events.push(event);
             return Some(event);
@@ -205,6 +206,7 @@ impl QuestStageState {
             quest,
             previous_stage: 0,
             new_stage: start_up_stage.unwrap_or(0),
+            stage_set: start_up_stage.is_some(),
         };
         self.events.push(event);
         Some(event)
@@ -316,6 +318,7 @@ impl QuestStageState {
             quest,
             previous_stage: prev,
             new_stage: stage,
+            stage_set: true,
         });
         prev
     }
@@ -614,6 +617,11 @@ pub struct QuestStageAdvanced {
     pub quest: QuestFormId,
     pub previous_stage: u16,
     pub new_stage: u16,
+    /// Whether `new_stage` was actually set. A quest started without a Start
+    /// Up Stage reports its start with this `false`: the CK *Quest Stages
+    /// Tab* runs a stage on start only when it is flagged "Start Up Stage",
+    /// so no stage fragment runs for it (M47.2).
+    pub stage_set: bool,
 }
 
 /// Maximum number of quest transitions retained for independently scheduled
@@ -1083,6 +1091,7 @@ pub fn quest_alias_readiness_stage_system(world: &World, _dt: f32) {
                 quest: gate.quest,
                 previous_stage,
                 new_stage: gate.target_stage,
+                stage_set: true,
             });
         }
     }
@@ -1767,6 +1776,7 @@ mod tests {
         world.insert_resource(PapyrusPlayerEntity(player));
 
         let ev = |quest: u32, new_stage: u16| QuestStageAdvanced {
+        stage_set: true,
             quest: QuestFormId(quest),
             previous_stage: 0,
             new_stage,
@@ -1826,6 +1836,7 @@ mod tests {
                 quest: QuestFormId(0xDEAD),
                 previous_stage: 5,
                 new_stage: 10,
+                stage_set: true,
             }]),
         );
 

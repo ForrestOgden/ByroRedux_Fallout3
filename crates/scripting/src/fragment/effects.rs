@@ -1982,6 +1982,7 @@ fn apply_scene_effect(
                                 quest,
                                 previous_stage,
                                 new_stage: stage,
+                                stage_set: true,
                             }
                         })
                     })
@@ -2620,6 +2621,7 @@ fn apply_quest_scoped_effect(
                 quest,
                 previous_stage,
                 new_stage: *stage,
+                stage_set: true,
             })
         }
         Effect::StartQuest { quest } => {
@@ -2649,6 +2651,7 @@ fn apply_quest_scoped_effect(
                             quest,
                             previous_stage,
                             new_stage: stage,
+                            stage_set: true,
                         }
                     })
                 })

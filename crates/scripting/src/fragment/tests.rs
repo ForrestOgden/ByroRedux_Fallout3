@@ -66,6 +66,7 @@ fn emit_advances(world: &World, advances: &[(QuestFormId, u16)]) {
                     quest,
                     previous_stage: 0,
                     new_stage,
+                    stage_set: true,
                 })
                 .collect(),
         ),
@@ -5836,4 +5837,36 @@ fn linked_refs_resolve_through_the_sources_links() {
     );
     assert!(!super::reference_enabled(&world, GATE), "keyworded link");
     assert!(!super::reference_enabled(&world, LEVER), "unkeyworded link");
+}
+
+
+/// M47.2 — the CK *Quest Stages Tab*: a stage runs on start only when it is
+/// flagged "Start Up Stage". A quest started without one (Skyrim's MS12, Start
+/// Game Enabled with no flagged stage) must not run its stage 0 fragment,
+/// which here — as in MS12 — would move the player.
+#[test]
+fn a_quest_started_without_a_start_up_stage_runs_no_stage_fragment() {
+    const STARTED: QuestFormId = QuestFormId(0x0002_C258);
+    const FLAGGED: QuestFormId = QuestFormId(0x0004_B2D9);
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        for quest in [STARTED, FLAGGED] {
+            frags.insert(quest, 0, vec![Effect::PlayerCaps { delta: 1 }]);
+        }
+    }
+    let caps = |world: &World| {
+        let player = world.resource::<PapyrusPlayerEntity>().0;
+        world
+            .get::<byroredux_core::ecs::components::Inventory>(player)
+            .map_or(0, |inventory| {
+                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+            })
+    };
+    world.resource_mut::<QuestStageState>().start_quest(STARTED, None);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(caps(&world), 0, "no Start Up Stage: stage 0 is not set");
+    world.resource_mut::<QuestStageState>().start_quest(FLAGGED, Some(0));
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(caps(&world), 1, "a flagged Start Up Stage 0 runs");
 }

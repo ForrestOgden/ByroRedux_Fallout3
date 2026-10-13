@@ -337,6 +337,7 @@ fn quest_start_event_auto_starts_flagged_scene() {
             quest: QuestFormId(QUEST),
             previous_stage: 0,
             new_stage: 10,
+            stage_set: true,
         }]),
     );
 

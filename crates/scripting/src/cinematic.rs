@@ -366,6 +366,7 @@ pub fn dispatch_player_cinematic_animation_event(
         quest: registration.quest,
         previous_stage,
         new_stage: target_stage,
+        stage_set: true,
     })
 }
 

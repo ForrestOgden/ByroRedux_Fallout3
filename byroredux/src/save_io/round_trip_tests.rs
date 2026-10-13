@@ -948,6 +948,7 @@ fn fragment_execution_queue_survives_save_load_round_trip_and_resumes() {
                     quest: Q,
                     previous_stage: 0,
                     new_stage: 10,
+                    stage_set: true,
                 },
             ]),
         );
@@ -1130,6 +1131,7 @@ fn lock_effects_survive_save_load_round_trip_and_still_apply() {
                 quest: Q,
                 previous_stage: 0,
                 new_stage: 10,
+                stage_set: true,
             }]),
         );
     }

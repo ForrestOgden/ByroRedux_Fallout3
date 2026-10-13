@@ -300,12 +300,16 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                 journal_read.missed_events
             );
         }
+        // M47.2 — a quest started without a Start Up Stage sets no stage, so
+        // no stage fragment runs for its start (`QuestStageAdvanced::stage_set`).
         for sequenced in journal_read.events {
             let event = sequenced.event;
             *journal_mirrors
                 .entry((event.quest, event.previous_stage, event.new_stage))
                 .or_default() += 1;
-            queue.push_back((event.quest, event.new_stage, false));
+            if event.stage_set {
+                queue.push_back((event.quest, event.new_stage, false));
+            }
         }
         for event in legacy_events {
             let key = (event.quest, event.previous_stage, event.new_stage);
@@ -315,7 +319,9 @@ pub fn quest_fragment_dispatch_system(world: &World) {
                     continue;
                 }
             }
-            queue.push_back((event.quest, event.new_stage, false));
+            if event.stage_set {
+                queue.push_back((event.quest, event.new_stage, false));
+            }
         }
     }
 
@@ -338,6 +344,12 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         let Some(effects) = frags.get(quest, stage) else {
             continue;
         };
+        log::debug!(
+            "quest {:08X} stage {stage}: running its fragment ({} effect(s){})",
+            quest.0,
+            effects.len(),
+            if is_cascade { ", cascaded" } else { "" }
+        );
         let direct = apply_fragment_guard_free(world, effects, quest, frags.vmad(quest));
         let advances = poll_fragment_generated_advances(world, direct);
         for adv in advances {

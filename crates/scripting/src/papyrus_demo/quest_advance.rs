@@ -480,6 +480,7 @@ pub fn quest_advance_system(world: &World) {
                 quest: p.quest,
                 previous_stage: prev,
                 new_stage: p.target_stage,
+                stage_set: true,
             });
             if p.disable_after_advance {
                 disable_sources.push((p.source, p.disable_reference_after_advance));
