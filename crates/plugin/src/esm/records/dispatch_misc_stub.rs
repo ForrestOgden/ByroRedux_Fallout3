@@ -128,6 +128,9 @@ pub(super) fn dispatch_misc_stub_group(
                 .imagespace_modifiers
                 .insert(fid, parse_imad(fid, subs, game));
         })?,
+        b"RELA" => extract_records(reader, end, b"RELA", &mut |fid, subs| {
+            index.relationships.insert(fid, parse_rela(fid, subs, &remap));
+        })?,
         b"LCRT" => extract_records(reader, end, b"LCRT", &mut |fid, subs| {
             index
                 .location_ref_types

@@ -298,6 +298,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::Kill { .. } => "Kill",
         Effect::QuestScope { .. } => "QuestScope",
         Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
+        Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

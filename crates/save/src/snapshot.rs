@@ -364,7 +364,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v52 -> v53 (M47.2): a new component column, `LevelUpPoints` (unspent
 /// level-up skill points and perks). A pre-v53 save has none, so banked
 /// points would be lost; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 53;
+///
+/// v53 -> v54 (M47.2): a new resource column, `ScriptedRelationships`
+/// (script `SetRelationshipRank`). A pre-v54 save has none, so changed
+/// relationships would revert; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 54;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -1940,7 +1940,9 @@ fn categories_table_row_count_pinned() {
     //   aliases read).
     // Bumped 105 → 106 in M47.2 (location_ref_types — LCRT, so cleared
     //   locations can find the `Boss` ref type by name).
-    assert_eq!(EsmIndex::categories().len(), 106);
+    // Bumped 106 → 107 in M47.2 (relationships — RELA, for
+    // GetRelationshipRank).
+    assert_eq!(EsmIndex::categories().len(), 107);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

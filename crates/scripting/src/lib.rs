@@ -39,6 +39,7 @@ pub mod papyrus_provider;
 pub mod player_control;
 pub mod quest_stages;
 pub mod quest_variables;
+pub mod relationships;
 pub mod recurring_update;
 pub mod registry;
 pub mod scene;
@@ -159,6 +160,9 @@ pub use papyrus_provider::{
     PapyrusProviderRoute, PapyrusProviderRuntime, PapyrusProviderStatement,
     TypedPapyrusProviderCall,
 };
+pub use relationships::{
+    install_relationships, relationship_rank, AuthoredRelationships, ScriptedRelationships,
+};
 pub use bleedout::{
     bleedout_system, install_bleedout_rules, is_bleeding_out, is_essential, is_protected,
     spare_from_death, ActorBaseProtectionOverrides, ActorProtection, Bleedout, BleedoutRules,
@@ -218,6 +222,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — script relationship ranks (saved).
+    if world.try_resource::<ScriptedRelationships>().is_none() {
+        world.insert_resource(ScriptedRelationships::default());
     }
     // M47.2 — cleared locations (saved).
     if world.try_resource::<LocationClearState>().is_none() {

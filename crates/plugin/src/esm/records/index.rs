@@ -592,6 +592,9 @@ pub struct EsmIndex {
     /// `LCRT` location ref types (`Boss`, `MapMarker`, …) — editor IDs only;
     /// the location runtime finds the `Boss` type by name (M47.2).
     pub location_ref_types: HashMap<u32, MinimalEsmRecord>,
+    /// M47.2 — `RELA` relationships (Skyrim+): the authored rank between two
+    /// NPCs that `GetRelationshipRank` reads.
+    pub relationships: HashMap<u32, super::RelaRecord>,
     /// `LSCR` load screen.
     pub load_screens: HashMap<u32, LoadScreenRecord>,
     /// `TRNS` load-screen stage transform — the record an LSCR's TNAM
@@ -957,6 +960,7 @@ impl EsmIndex {
             map_category!("imagespace_modifiers", imagespace_modifiers),
             map_category!("locations", locations),
             map_category!("location_ref_types", location_ref_types),
+            map_category!("relationships", relationships),
             map_category!("load_screens", load_screens),
             map_category!("load_screen_transforms", load_screen_transforms),
             map_category!("load_screen_types", load_screen_types),

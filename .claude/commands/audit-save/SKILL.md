@@ -184,7 +184,8 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   new saved `LocationClearState` (cleared locations), v51 M47.2 new saved
   `Bleedout` component (essential actors' bleedout), v52 M47.2 new saved
   `ActorBaseProtectionOverrides` (SetEssential / SetProtected), v53 M47.2 new
-  saved `LevelUpPoints` component (unspent skill points / perks);
+  saved `LevelUpPoints` component (unspent skill points / perks), v54 M47.2 new
+  saved `ScriptedRelationships` (SetRelationshipRank);
   do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default

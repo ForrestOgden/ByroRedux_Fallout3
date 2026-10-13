@@ -364,6 +364,16 @@ to the script's own variables lower too: a literal, `X = X ± c`, and
 `X = Y` (`Effect::CopyQuestVariable`). FO4's radio rotation
 (`kmyQuest.UpdateRadio()`, 437 INFO fragments) is the main beneficiary.
 
+Relationships (2026-10-13): `RELA` records parse into
+`EsmIndex.relationships`. The wire rank Lover (0) … Archnemesis (8) becomes the
+CK's +4 … −4, and Skyrim.esm authors 642 of them. `AuthoredRelationships`
+keys them by the unordered pair of NPC bases, since the CK stores
+relationship data on the base, "NOT … for Templated Actors". The saved
+`ScriptedRelationships` holds `SetRelationshipRank` changes. Condition
+`GetRelationshipRank` (403) and a `GetRelationshipRank(other)` fragment guard
+read a script change first, then the record, else 0, the scale's neutral
+middle. The player's base is `0x7`.
+
 Fragment `If`s lower when their condition is built from `FragmentGuard`s
 with `&&`, `||` (`FragmentGuard::Any`) and `!`. Negation is pushed to the
 atoms by De Morgan. The atoms: `GetStageDone` / FO4 `IsStageDone`,

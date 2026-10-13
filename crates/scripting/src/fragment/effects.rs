@@ -363,6 +363,9 @@ pub struct DeferredFragmentEffects {
     /// value)`, recorded in [`crate::ActorBaseProtectionOverrides`] after
     /// the guards drop.
     base_protection: Vec<(u32, bool, bool)>,
+    /// M47.2 — `Effect::SetRelationshipRank` writes by base pair, recorded in
+    /// [`crate::ScriptedRelationships`] after the guards drop.
+    relationship_changes: Vec<((u32, u32), i8)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
@@ -421,6 +424,7 @@ impl DeferredFragmentEffects {
             map_markers: Vec::new(),
             location_clears: Vec::new(),
             base_protection: Vec::new(),
+            relationship_changes: Vec::new(),
             story_events: Vec::new(),
             kills: Vec::new(),
             quest_scripts: world
@@ -481,6 +485,13 @@ impl DeferredFragmentEffects {
             if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
                     markers.add(marker, fast_travel);
+                }
+            }
+        }
+        if !self.relationship_changes.is_empty() {
+            if let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
+                for (pair, rank) in std::mem::take(&mut self.relationship_changes) {
+                    ranks.0.insert(pair, rank);
                 }
             }
         }
@@ -1017,6 +1028,21 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::SetRelationshipRank { actor, other, rank } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let other = guard_actor(other, context, vmad, world, deferred)?;
+            let (Some(actor), Some(other)) = (
+                crate::relationships::actor_base(world, actor),
+                crate::relationships::actor_base(world, other),
+            ) else {
+                log::debug!("fragment SetRelationshipRank skipped: an actor has no base");
+                return None;
+            };
+            deferred
+                .relationship_changes
+                .push((crate::relationships::pair(actor, other), *rank));
             None
         }
         Effect::Kill { actor, killer } => {
@@ -2483,6 +2509,7 @@ fn apply_quest_scoped_effect(
         | Effect::SetLocationCleared { .. }
         | Effect::SetBaseProtection { .. }
         | Effect::Kill { .. }
+        | Effect::SetRelationshipRank { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2638,6 +2665,30 @@ fn evaluate_guard(
                     ) == 1.0
                 });
             loaded == *expected
+        }
+        FragmentGuard::RelationshipRank {
+            actor,
+            other,
+            comparison,
+            value,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let other = guard_actor(other, context, vmad, world, deferred)?;
+            let pair = crate::relationships::actor_base(world, actor)
+                .zip(crate::relationships::actor_base(world, other))
+                .map(|(a, b)| crate::relationships::pair(a, b));
+            // A `SetRelationshipRank` earlier in the same fragment is visible.
+            let pending = pair.and_then(|pair| {
+                deferred
+                    .relationship_changes
+                    .iter()
+                    .rev()
+                    .find(|(changed, _)| *changed == pair)
+                    .map(|&(_, rank)| rank)
+            });
+            let rank = pending
+                .unwrap_or_else(|| crate::relationships::relationship_rank(world, actor, other));
+            comparison.apply(f32::from(rank), *value)
         }
         FragmentGuard::Distance {
             from,

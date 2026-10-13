@@ -196,6 +196,13 @@ pub enum FragmentGuard {
     },
     /// `<reference>.Is3DLoaded()` is `expected`.
     Loaded3D { object: ObjectRef, expected: bool },
+    /// `<actor>.GetRelationshipRank(<other>)` compared with `value`.
+    RelationshipRank {
+        actor: ActorRef,
+        other: ActorRef,
+        comparison: GuardComparison,
+        value: f32,
+    },
     /// `<from>.GetDistance(<to>)` compared with `value`.
     Distance {
         from: ActorRef,
@@ -239,6 +246,7 @@ enum GuardReading {
     InFaction(ActorRef, ObjectRef),
     Loaded3D(ObjectRef),
     Distance(ActorRef, ActorRef),
+    RelationshipRank(ActorRef, ActorRef),
 }
 
 /// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
@@ -410,6 +418,19 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .is_empty()
             .then(|| receiver_object(object, scope).map(GuardReading::Loaded3D))
             .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "GetRelationshipRank") {
+        let [other] = args else {
+            return None;
+        };
+        let mut other = &other.value.node;
+        while let Expr::Cast { expr, .. } = other {
+            other = &expr.node;
+        }
+        return Some(GuardReading::RelationshipRank(
+            receiver_actor(object, scope)?,
+            receiver_actor(other, scope)?,
+        ));
     }
     if let Some((object, args)) = method_call(e, "GetDistance") {
         let [target] = args else {
@@ -583,6 +604,12 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::Loaded3D(object) => FragmentGuard::Loaded3D {
             object,
             expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::RelationshipRank(actor, other) => FragmentGuard::RelationshipRank {
+            actor,
+            other,
+            comparison,
+            value,
         },
         GuardReading::Distance(from, to) => FragmentGuard::Distance {
             from,
@@ -866,6 +893,13 @@ pub enum Effect {
     /// with `quest` as their context and its VMAD for their properties.
     /// Never holds a latent effect.
     QuestScope { quest: QuestRef, effects: Vec<Effect> },
+    /// M47.2 — `<actor>.SetRelationshipRank(akOther, aiRank)` (+4 Lover …
+    /// −4 Archnemesis), on the two actors' bases.
+    SetRelationshipRank {
+        actor: ActorRef,
+        other: ActorRef,
+        rank: i8,
+    },
     /// M47.2 — `<actor>.Kill([akKiller = None])`: the actor dies through the
     /// engine's death path, or goes into bleedout when essential (CK *Kill*).
     Kill {
@@ -1986,6 +2020,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_location_cleared,
     prim_set_base_protection,
     prim_kill,
+    prim_set_relationship_rank,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2516,6 +2551,34 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::AddToMap {
         marker: receiver_object(object, scope)?,
         fast_travel: bool_arg(args, 0)?.unwrap_or(false),
+    })
+}
+
+/// `Actor.SetRelationshipRank(Actor akOther, int aiRank)` with a literal rank
+/// in the CK's −4 … +4.
+fn prim_set_relationship_rank(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetRelationshipRank")?;
+    if args.len() != 2 {
+        return None;
+    }
+    let (other, rank) = (&args[0], &args[1]);
+    let mut other = &other.value.node;
+    while let Expr::Cast { expr, .. } = other {
+        other = &expr.node;
+    }
+    let rank = int_arg(args, 1).or_else(|| {
+        // `-1` reaches the AST as a negated literal.
+        as_num(&rank.value.node)
+            .filter(|n| n.fract() == 0.0)
+            .map(|n| n as i64)
+    })?;
+    if !(-4..=4).contains(&rank) {
+        return None;
+    }
+    Some(Effect::SetRelationshipRank {
+        actor: receiver_actor(object, scope)?,
+        other: receiver_actor(other, scope)?,
+        rank: rank as i8,
     })
 }
 
@@ -4366,6 +4429,45 @@ mod tests {
                     ],
                     then_effects: vec![stage(20)],
                     else_effects: vec![],
+                },
+            ])
+        );
+    }
+
+    /// M47.2 — `SetRelationshipRank` with a literal (negative too) and the
+    /// `GetRelationshipRank` guard.
+    #[test]
+    fn relationship_rank_lowers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             If Alias_Ysolda.GetActorRef().GetRelationshipRank(Game.GetPlayer()) < 1\n\
+             Alias_Ysolda.GetActorRef().SetRelationshipRank(Game.GetPlayer(), 1)\n\
+             EndIf\n\
+             Alias_Nazeem.GetActorRef().SetRelationshipRank(Game.GetPlayer(), -2)\n EndFunction\n",
+        );
+        let alias = |name: &str| ActorRef::Object(ObjectRef::Property(name.into()));
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Conditional {
+                    guards: vec![FragmentGuard::RelationshipRank {
+                        actor: alias("Alias_Ysolda"),
+                        other: ActorRef::Player,
+                        comparison: GuardComparison::Lt,
+                        value: 1.0,
+                    }],
+                    then_effects: vec![Effect::SetRelationshipRank {
+                        actor: alias("Alias_Ysolda"),
+                        other: ActorRef::Player,
+                        rank: 1,
+                    }],
+                    else_effects: vec![],
+                },
+                Effect::SetRelationshipRank {
+                    actor: alias("Alias_Nazeem"),
+                    other: ActorRef::Player,
+                    rank: -2,
                 },
             ])
         );

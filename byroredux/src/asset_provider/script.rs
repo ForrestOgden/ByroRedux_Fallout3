@@ -677,6 +677,8 @@ pub(crate) fn populate_scene_runtime(
     // perks whenever a calculation consults a hook.
     // M47.2 — map markers' authored visibility, for IsMapMarkerVisible.
     byroredux_scripting::install_map_markers(world, index);
+    // M47.2 — RELA relationship ranks, for GetRelationshipRank.
+    byroredux_scripting::install_relationships(world, index);
     // M47.2 — every quest's VMAD, for quest-script bodies inlined into
     // INFO and scene fragments.
     byroredux_scripting::install_quest_script_instances(world, index);

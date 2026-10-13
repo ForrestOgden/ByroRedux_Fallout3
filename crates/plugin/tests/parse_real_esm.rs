@@ -5941,6 +5941,12 @@ fn skyrim_location_hierarchy_resolves() {
     };
     assert_eq!(index.locations.values().filter(|location| bosses_of(location) > 0).count(), 374);
     assert_eq!(bosses_of(&index.locations[&0x0001_8EE9]), 1);
+    // M47.2 — RELA: 642 relationships; Alvor's wife Sigrid is his Lover (+4)
+    // and his nephew Hadvar an Ally (+3).
+    assert_eq!(index.relationships.len(), 642);
+    assert_eq!(index.relationships[&0x0001_42C9].rank, 4);
+    assert_eq!(index.relationships[&0x0002_BFA1].rank, 3);
+    assert!(index.relationships.values().all(|r| (-4..=4).contains(&r.rank)));
     assert!(index.cells.cells.values().any(|cell| cell.location_form.is_some()));
 }
 

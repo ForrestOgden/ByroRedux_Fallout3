@@ -641,7 +641,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — the IsDisabled / IsEnabled guards' authored state.
             .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>()
             // M47.2 — quest VMADs for quest-script bodies inlined into lines.
-            .reads_resource::<byroredux_scripting::QuestScriptInstances>(),
+            .reads_resource::<byroredux_scripting::QuestScriptInstances>()
+            // M47.2 — a spoken line's SetRelationshipRank and its guard.
+            .reads_resource::<byroredux_scripting::AuthoredRelationships>()
+            .reads_resource::<byroredux_scripting::ScriptedRelationships>()
+            .writes_resource::<byroredux_scripting::ScriptedRelationships>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,
