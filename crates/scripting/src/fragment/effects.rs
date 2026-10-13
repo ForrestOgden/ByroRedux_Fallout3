@@ -440,6 +440,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::RewardPlayerXp` grants, queued in
     /// [`crate::story_manager::PendingPlayerXp`] after the guards drop.
     player_xp: Vec<(u32, bool)>,
+    /// M47.2 — `Effect::IncrementStat`s, applied to [`crate::MiscStats`]
+    /// after the guards drop.
+    misc_stats: Vec<(String, i32)>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
@@ -546,6 +549,7 @@ impl DeferredFragmentEffects {
             story_events: Vec::new(),
             kills: Vec::new(),
             player_xp: Vec::new(),
+            misc_stats: Vec::new(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
@@ -636,6 +640,14 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.misc_stats.is_empty() {
+            if let Some(mut stats) = world.try_resource_mut::<crate::MiscStats>() {
+                for (stat, amount) in self.misc_stats.drain(..) {
+                    stats.increment(&stat, amount);
+                }
+            }
+            self.misc_stats.clear();
         }
         if !self.player_xp.is_empty() {
             if let Some(mut pending) =
@@ -1302,6 +1314,10 @@ pub(crate) fn apply_effect(
         Effect::RewardPlayerXp { amount, direct } => {
             let amount = resolve_item_count(amount, context, vmad, world, stages, deferred)?;
             deferred.player_xp.push((amount, *direct));
+            None
+        }
+        Effect::IncrementStat { stat, amount } => {
+            deferred.misc_stats.push((stat.clone(), *amount));
             None
         }
         Effect::PlayerCaps { delta } => {
@@ -2819,6 +2835,7 @@ fn apply_quest_scoped_effect(
         | Effect::Kill { .. }
         | Effect::SetRelationshipRank { .. }
         | Effect::RewardPlayerXp { .. }
+        | Effect::IncrementStat { .. }
         | Effect::PlayerCaps { .. }
         | Effect::SetLocal { .. }
         | Effect::SetReferenceVariable { .. }
@@ -2980,6 +2997,17 @@ pub(super) fn evaluate_value(
                 .try_resource::<crate::ActorValueNames>()
                 .and_then(|names| names.resolve(name))?;
             actor_value_now(world, actor, avif)
+        }
+        // A read sees the increments queued earlier in the same run.
+        ValueExpr::MiscStat(stat) => {
+            let stored = world.try_resource::<crate::MiscStats>().map_or(0, |stats| stats.get(stat));
+            let pending: i32 = deferred
+                .misc_stats
+                .iter()
+                .filter(|(queued, _)| queued.eq_ignore_ascii_case(stat))
+                .map(|(_, amount)| *amount)
+                .sum();
+            stored.saturating_add(pending) as f32
         }
         ValueExpr::Level(actor) => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;

@@ -685,12 +685,12 @@ walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
 line, as the lowering binds it. Package (`PF_`) fragments are not wired on
 either path yet.
 
-With the VM, 78.2% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 78.3% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
-- several actor natives (`SetPlayerTeammate`, `AdvanceSkill`,
-  `IncrementStat`);
+- several actor natives (`SetPlayerTeammate`; `AdvanceSkill`, which needs
+  per-skill usage progression in CHARAL);
 - FO4 timers (`StartTimer` / `OnTimer`) and alias update registrations;
 - package (`PF_`) fragments, which need package begin / end / change events.
 
@@ -780,6 +780,17 @@ the delivery checks it again against the installed scripts (cached per
 script). A registration whose handler can't run doesn't fail the registering
 code, so its other effects still run; the handler is skipped entirely, never
 run partway.
+
+### Misc stats (M47.2)
+
+`Game.IncrementStat(asStatName, aiModAmount = 1)` adds to the saved
+`MiscStats` (`crates/scripting/src/misc_stats.rs`), and `Game.QueryStat` reads
+it. Both lower with literal arguments. The CK's *IncrementStat - Game* names
+four stats only scripts maintain: Standing Stones Found, Horses Owned, Houses
+Owned and Stores Invested In. Every increment is recorded, but a read resolves
+only those four. The engine-tracked stats *QueryStat* lists (Days Passed,
+Locations Discovered, …) aren't counted here, so reading one declines rather
+than answering 0.
 
 ### Messages and text replacement (M47.2)
 

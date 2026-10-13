@@ -276,6 +276,9 @@ pub enum ValueExpr {
     /// M47.2 — `<actor>.GetAV("Name")` / `GetValue(Game.GetHealthAV())`, an
     /// actor value by name ([`crate::ActorValueNames`]).
     ActorValueNamed(ActorRef, String),
+    /// M47.2 — `Game.QueryStat("Houses Owned")`, a script-kept misc stat
+    /// ([`crate::misc_stats::SCRIPT_STATS`]).
+    MiscStat(String),
 }
 
 /// The arithmetic a [`ValueExpr::Arith`] applies.
@@ -359,6 +362,15 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
             .is_empty()
             .then(|| receiver_actor(object, scope).map(ValueExpr::Level))
             .flatten();
+    }
+    if let Some(args) = static_call(e, "Game", "QueryStat") {
+        let [stat] = args else {
+            return None;
+        };
+        let Expr::StringLit(stat) = &stat.value.node else {
+            return None;
+        };
+        return crate::misc_stats::script_stat(stat).map(|stat| ValueExpr::MiscStat(stat.to_owned()));
     }
     // M47.2 — an actor value: `GetValue(av)` (one argument; the bare
     // `GetValue()` is a global's), or `GetAV` / `GetActorValue("Name")`.
@@ -1196,6 +1208,9 @@ pub enum Effect {
     /// Starfield): experience through the engine's level roll; `direct`
     /// bypasses the XP modifiers.
     RewardPlayerXp { amount: ItemCount, direct: bool },
+    /// M47.2 — `Game.IncrementStat(asStatName, aiModAmount = 1)` with
+    /// literal arguments ([`crate::misc_stats`]).
+    IncrementStat { stat: String, amount: i32 },
     /// M47.2 — `Game.GivePlayerCaps(n)` / `RemovePlayerCaps(n)` (FO4): the
     /// script bodies add / remove `n` of `Game.GetCaps()` (form `0xF`) on the
     /// player when `n > 0`. Negative `delta` removes.
@@ -2811,6 +2826,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_delete_when_able,
     prim_change_keyword,
     prim_reward_player_xp,
+    prim_increment_stat,
     prim_player_caps,
     prim_set_objective_skipped,
     prim_equip_item,
@@ -3499,6 +3515,26 @@ fn prim_reward_player_xp(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::RewardPlayerXp {
         amount: item_count_arg(args, 0, 0, scope)?,
         direct: bool_arg(args, 1)?.unwrap_or(false),
+    })
+}
+
+/// `Game.IncrementStat(string asStatName, int aiModAmount = 1)` with literal
+/// arguments.
+fn prim_increment_stat(e: &Expr, _scope: &Scope) -> Option<Effect> {
+    let args = static_call(e, "Game", "IncrementStat")?;
+    if args.is_empty() || args.len() > 2 {
+        return None;
+    }
+    let Expr::StringLit(stat) = &args[0].value.node else {
+        return None;
+    };
+    let amount = match args.get(1) {
+        None => 1,
+        Some(_) => i32::try_from(int_arg(args, 1)?).ok()?,
+    };
+    Some(Effect::IncrementStat {
+        stat: stat.clone(),
+        amount,
     })
 }
 

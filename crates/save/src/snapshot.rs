@@ -406,7 +406,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v64 -> v65 (M47.2): a new resource column, `ScriptUpdates` (Papyrus
 /// `RegisterForUpdate` / `RegisterForSingleUpdate` and GameTime
 /// registrations, with the clocks they count).
-pub const FORMAT_MAJOR: u16 = 65;
+///
+/// v65 -> v66 (M47.2): `Effect::IncrementStat`, `ValueExpr::MiscStat`, and a
+/// new resource column, `MiscStats` (script-kept misc stats).
+pub const FORMAT_MAJOR: u16 = 66;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

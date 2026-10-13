@@ -151,6 +151,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
         Effect::SetRelationshipRank { .. } => "SetRelationshipRank",
         Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
+        Effect::IncrementStat { .. } => "IncrementStat",
         Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::SetLocal { .. } => "SetLocal",
         Effect::SetReferenceVariable { .. } => "SetReferenceVariable",

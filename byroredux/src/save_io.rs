@@ -623,6 +623,8 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — Papyrus RegisterForUpdate / RegisterForSingleUpdate (and
         // the GameTime pair) registrations and the clocks they count.
         .register_resource::<byroredux_scripting::ScriptUpdates>("ScriptUpdates")
+        // M47.2 — Game.IncrementStat misc stats.
+        .register_resource::<byroredux_scripting::MiscStats>("MiscStats")
         // M47.2 — script AddKeyword / RemoveKeyword changes.
         .register_resource::<byroredux_scripting::keywords::ScriptedKeywords>("ScriptedKeywords")
         // M47.2 — script ActorBase.SetEssential / SetProtected.

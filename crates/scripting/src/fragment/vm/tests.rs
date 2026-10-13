@@ -859,3 +859,29 @@ fn calls_and_members_reach_scripts_on_other_references() {
     assert_eq!(variable("Hits"), Some(1.0));
     assert_eq!(variable("Armed"), Some(0.0), "written under the trap");
 }
+
+/// `Game.IncrementStat` counts a misc stat; `Game.QueryStat` reads a
+/// script-kept one, increments queued earlier in the run included.
+#[test]
+fn misc_stats_count_and_read() {
+    let script = parsed_source(
+        "ScriptName QF_VmStats extends Quest\n\
+         Function Fragment_1()\n\
+           Game.IncrementStat(\"Houses Owned\")\n\
+           Game.IncrementStat(\"Houses Owned\", 2)\n\
+           If Game.QueryStat(\"Houses Owned\") == 3\n Self.SetStage(20)\n EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(world.resource::<crate::MiscStats>().get("houses owned"), 3);
+    // An engine-tracked stat is not counted here: the read declines.
+    let days = parsed_source(
+        "ScriptName QF_VmDays extends Quest\n\
+         Function Fragment_1()\n If Game.QueryStat(\"Days Passed\") > 1\n Self.SetStage(20)\n EndIf\n EndFunction\n",
+    );
+    assert!(check_function(days, "Fragment_1", None).is_none());
+}
