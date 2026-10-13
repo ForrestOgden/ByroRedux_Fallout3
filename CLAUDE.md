@@ -107,6 +107,11 @@ gates the M42 Eat/Sleep behavior components live on FNV
 hour, `time.set 23` inside his 22:00–08:00 window must hand him
 `SleepBehavior`, and the walk-then-seat runtime must seat HIM at the
 bed (the seat leg is scoped to the found entity).
+[`m47-2-bleedout.sh`](docs/smoke-tests/m47-2-bleedout.sh) gates
+essential-actor bleedout live on Skyrim (RiverwoodSleepingGiantInn):
+real swings put the essential Delphine into bleedout instead of
+killing her, she gets back up 20 s later at 30 health, and Orgnar,
+who is not essential, dies to the same blows.
 
 ### Shader Compilation
 ```bash

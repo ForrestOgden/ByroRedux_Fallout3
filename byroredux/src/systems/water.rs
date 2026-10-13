@@ -71,7 +71,8 @@ pub(crate) fn water_damage_system(world: &World, dt: f32) {
         values.apply_damage(health, damage);
         let killed = values.current(health) <= 0.0;
         drop(values_q);
-        if killed {
+        // M47.2 — an essential actor goes into bleedout instead.
+        if killed && !byroredux_scripting::spare_from_death(world, entity, None) {
             if let Some(mut dead_q) = world.query_mut::<Dead>() {
                 dead_q.insert(entity, Dead);
             }

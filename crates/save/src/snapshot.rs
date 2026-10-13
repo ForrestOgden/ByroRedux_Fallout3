@@ -350,7 +350,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v49 -> v50 (M47.2): a new resource column, `LocationClearState` (cleared
 /// locations and dead bosses). A pre-v50 save has none, so cleared dungeons
 /// would read as uncleared; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 50;
+///
+/// v50 -> v51 (M47.2): a new component column, `Bleedout` (essential actors
+/// down at zero health). A pre-v51 save has none, so an actor saved
+/// mid-bleedout would stand at zero health; rejected like the other column
+/// additions.
+pub const FORMAT_MAJOR: u16 = 51;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

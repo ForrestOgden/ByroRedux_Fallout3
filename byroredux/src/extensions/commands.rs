@@ -539,6 +539,10 @@ pub(crate) fn commit_actor_value_deaths(world: &World, committed: &[EntityId]) {
             .collect()
     };
     for entity in killed {
+        // M47.2 — an essential actor goes into bleedout instead.
+        if byroredux_scripting::spare_from_death(world, entity, None) {
+            continue;
+        }
         if let Some(mut dead) = world.query_mut::<Dead>() {
             dead.insert(entity, Dead);
         }

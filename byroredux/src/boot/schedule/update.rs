@@ -24,6 +24,17 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::TimedRestorations>(),
     );
+    // M47.2 — essential actors get back up when their bleedout runs out.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        byroredux_scripting::bleedout_system,
+        Access::new()
+            .reads_resource::<byroredux_scripting::BleedoutRules>()
+            .writes::<byroredux_scripting::Bleedout>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
+    );
     // M47.0 Phase 1 — R5 papyrus_demo dispatchers. These are
     // event-driven (early-return when no ActivateEvent /
     // OnUpdateEvent / RecurringUpdate is present), so they
@@ -374,6 +385,16 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .reads::<crate::components::AnimationTarget>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
             .writes::<byroredux_core::ecs::components::Dead>()
+            // M47.2 — spare_from_death: essential / protected actors bleed out.
+            .reads::<byroredux_scripting::ActorProtection>()
+            .writes::<byroredux_scripting::Bleedout>()
+            .reads_resource::<byroredux_scripting::BleedoutRules>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
+            // M47.2 — reconcile_dead_actor's note_actor_death (cleared locations).
+            .reads_resource::<byroredux_scripting::LocationTable>()
+            .writes_resource::<byroredux_scripting::LocationClearState>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_core::animation::AnimationStack>(),
     );

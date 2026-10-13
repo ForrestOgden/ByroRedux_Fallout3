@@ -184,6 +184,10 @@ pub enum FragmentGuard {
     MapMarkerFastTravel { marker: ObjectRef, expected: bool },
     /// `<location>.IsCleared()` is `expected`.
     LocationCleared { location: ObjectRef, expected: bool },
+    /// `<actor>.IsBleedingOut()` is `expected`.
+    ActorBleedingOut { actor: ActorRef, expected: bool },
+    /// `<actor>.IsEssential()` is `expected`.
+    ActorEssential { actor: ActorRef, expected: bool },
     /// `<actor>.GetCurrentLocation().HasKeyword(keyword)` is `expected` — the
     /// actor's current location itself (the M47.2 location runtime).
     LocationKeyword {
@@ -211,6 +215,8 @@ enum GuardReading {
     MapMarkerVisible(ObjectRef),
     MapMarkerFastTravel(ObjectRef),
     LocationCleared(ObjectRef),
+    ActorBleedingOut(ActorRef),
+    ActorEssential(ActorRef),
 }
 
 /// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
@@ -360,6 +366,18 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_actor(object, scope).map(GuardReading::ActorDead))
             .flatten();
     }
+    if let Some((object, args)) = method_call(e, "IsBleedingOut") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(GuardReading::ActorBleedingOut))
+            .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "IsEssential") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(GuardReading::ActorEssential))
+            .flatten();
+    }
     if let Some((object, args)) = method_call(e, "HasPerk") {
         return Some(GuardReading::HasPerk(receiver_actor(object, scope)?, one_object(args)?));
     }
@@ -480,6 +498,14 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::ActorDead(actor) => FragmentGuard::ActorDead {
             actor,
             dead: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ActorBleedingOut(actor) => FragmentGuard::ActorBleedingOut {
+            actor,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ActorEssential(actor) => FragmentGuard::ActorEssential {
+            actor,
+            expected: bool_expectation(comparison, value)?,
         },
         GuardReading::HasPerk(actor, perk) => FragmentGuard::HasPerk {
             actor,

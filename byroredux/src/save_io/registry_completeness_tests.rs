@@ -509,6 +509,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
         ("ExperienceRules", "Fallout kill-experience bands and health share; rebuilt from the load order's GMSTs by install_experience_rules every boot"),
         ("PlayerDamageDealt", "the player's damage on each actor still standing, for the kill-experience share; mid-fight session state"),
+        ("BleedoutRules", "fEssentialDeathTime / fEssentialHealthPercentReGain; rebuilt from the load order (else the engine defaults) by install_bleedout_rules every boot"),
+        ("ActorProtection", "an actor's base Essential / Protected ACBS flags; stamped from the load order at every spawn"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),
         ("CreatedReferenceEntities", "the live entity of each spawned created reference; re-derived by step_created_references spawning into loaded cells"),
         ("ActiveLoadOrder", "the load order of the last cell-load entry point; republished by install_form_resolver on every load"),

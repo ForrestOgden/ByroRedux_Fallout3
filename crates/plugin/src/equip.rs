@@ -390,6 +390,11 @@ pub const TEMPLATE_FLAG_USE_SPELL_LIST: u16 = 0x0008;
 /// Consumed through [`ResolvedNpc::ai_data`].
 pub const TEMPLATE_FLAG_USE_AI_DATA: u16 = 0x0010;
 pub const TEMPLATE_FLAG_USE_INVENTORY: u16 = 0x0100;
+/// M47.2 — "Use Base Data" (xEdit bit 7 on FO3/FNV, Skyrim and FO4's
+/// "Base Data"): the `ACBS` flags that xEdit tags `wbActorTemplateUseBaseData`,
+/// Essential among them, come from the template. Consumed through
+/// [`ResolvedNpc::base_data`].
+pub const TEMPLATE_FLAG_USE_BASE_DATA: u16 = 0x0080;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
 /// public wrappers ([`resolve_inherited_inventory`],
@@ -682,6 +687,9 @@ pub struct ResolvedNpc<'a> {
     pub spells: &'a crate::esm::records::actor::NpcRecord,
     /// #4414 — "Use AI Data" chain terminal: the `AIDT` disposition.
     pub ai_data: &'a crate::esm::records::actor::NpcRecord,
+    /// M47.2 — "Use Base Data" chain terminal: the Essential / Protected
+    /// `ACBS` flags.
+    pub base_data: &'a crate::esm::records::actor::NpcRecord,
     /// The Use-Stats chain shell-first including the terminal, cached so
     /// [`Self::authored_stat_field`] needs no second traversal.
     stats_chain: Vec<&'a crate::esm::records::actor::NpcRecord>,
@@ -746,6 +754,13 @@ impl<'a> ResolvedNpc<'a> {
                 shell_level,
                 index,
                 TEMPLATE_FLAG_USE_AI_DATA,
+                0,
+            ),
+            base_data: resolve_inherited_record(
+                shell,
+                shell_level,
+                index,
+                TEMPLATE_FLAG_USE_BASE_DATA,
                 0,
             ),
             stats_chain,

@@ -482,6 +482,39 @@ aliases bind. The rest of the Find Matching aliases condition on a reference
 alias. The 294 From Event aliases wait for their events (223 are
 script-raised `SCPT` events).
 
+### Essential and Protected actors, bleedout (M47.2)
+
+The FO4 CK *Actor* page: "Essential actors cannot be killed. When they reach 0
+health, they go into a special 'bleedout' state and recover over time.
+Protected actors are treated as essential to all damage except that delivered
+by the player." Essential is `ACBS` bit `0x2` in every game. Protected is bit
+`0x800` from Skyrim on; FO3/FNV use that bit for "No Blood Spray". Both are
+resolved through the template's "Use Base Data" (`0x0080`) and stamped as
+`ActorProtection` at spawn. An alias's Essential / Protected flag applies while
+its quest runs (CK *Quest Alias Tab*). The `essential_census` example counts
+269 essential and 81 protected bases in Skyrim.esm, 139 / 253 in Fallout4.esm,
+102 in Fallout3.esm, 28 in FalloutNV.esm and 259 in Oblivion.esm.
+
+Every live death producer (combat hits, SDK actor-value writes, water
+damage) asks `spare_from_death` before marking an actor `Dead`. A spared
+actor gets a saved `Bleedout` and counts as unconscious for every #5017
+consumer (no AI, no combat, no conversation). It gets back up after
+`fEssentialDeathTime` with `fEssentialHealthPercentReGain` of its health (the
+GECK page: "the time … an NPC marked essential will remain unconscious before
+getting back up"). Skyrim.esm and Fallout4.esm author a 20 s death time. The
+other values are the executables' defaults: 10 s on Oblivion and FO3/FNV, 30 s
+on Skyrim and FO4, and 0.3 everywhere. Starfield has no such setting and
+does not recover. The player is never spared.
+Conditions `IsEssential` (354), `IsProtected` (476) and `IsBleedingOut` (580)
+read the state, and fragments lower `IsEssential()` / `IsBleedingOut()`
+guards. Live (Skyrim, Riverwood's Sleeping Giant Inn): Delphine, essential,
+went down at −4 health instead of dying and got back up 20 s later at 30
+health. Orgnar, not essential, died to the same blows.
+
+Not modelled: `SetNoBleedoutRecovery` / `GetNoBleedoutRecovery` (694), and
+attackers keep striking an actor in bleedout (harmlessly) until their own
+combat ends.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

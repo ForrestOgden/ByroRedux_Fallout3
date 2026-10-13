@@ -2499,6 +2499,14 @@ fn evaluate_guard(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             world.has::<byroredux_core::ecs::components::Dead>(actor) == *dead
         }
+        FragmentGuard::ActorBleedingOut { actor, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            crate::bleedout::is_bleeding_out(world, actor) == *expected
+        }
+        FragmentGuard::ActorEssential { actor, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            crate::bleedout::is_essential(world, actor) == *expected
+        }
         FragmentGuard::HasPerk {
             actor,
             perk,

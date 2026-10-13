@@ -11,6 +11,7 @@
 
 pub mod actor_value_names;
 pub mod alias_overrides;
+pub mod bleedout;
 pub mod cinematic;
 pub mod cleanup;
 pub mod combat;
@@ -156,6 +157,10 @@ pub use papyrus_provider::{
     PapyrusProviderRoute, PapyrusProviderRuntime, PapyrusProviderStatement,
     TypedPapyrusProviderCall,
 };
+pub use bleedout::{
+    bleedout_system, install_bleedout_rules, is_bleeding_out, is_essential, is_protected,
+    spare_from_death, ActorProtection, Bleedout, BleedoutRules,
+};
 pub use player_control::{
     collect_unconscious, is_unconscious, update_actor_control, ActorControlState, PlayerControlSelection,
     PlayerControlState,
@@ -290,6 +295,7 @@ pub fn register(world: &mut World) {
     package::register(world);
     equipment::register(world);
     player_control::register(world);
+    bleedout::register(world);
     cinematic::register(world);
     vm_state::register(world);
     // M47.0 Phase 1 — register the R5 prototype storages so

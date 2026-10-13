@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **37 functions** at their canonical CTDA
+//! lineage. This catalog ships **40 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -66,6 +66,9 @@
 //! | 576   | GetEventData           | `EventDataSlots`            |
 //! | 250   | GetLocationCleared     | `LocationClearState`        |
 //! | 598   | GetLocationAliasCleared | `LocationClearState`       |
+//! | 354   | IsEssential            | `ActorProtection` + aliases |
+//! | 476   | IsProtected            | `ActorProtection` + aliases |
+//! | 580   | IsBleedingOut          | `Bleedout`                  |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -267,6 +270,15 @@ pub enum ConditionFunction {
     /// `GetLocationAliasCleared(alias) → f32` (M47.2): the owning quest's
     /// location alias holds a cleared location. Skyrim / FO4 index **598**.
     GetLocationAliasCleared,
+    /// `IsEssential() → f32` (M47.2): the subject is essential, by its base
+    /// record or an Essential alias ([`crate::is_essential`]). Index **354**
+    /// in every catalogued game.
+    IsEssential,
+    /// `IsProtected() → f32` (M47.2). Skyrim / FO4 index **476**.
+    IsProtected,
+    /// `IsBleedingOut() → f32` (M47.2): the subject is in bleedout. Skyrim /
+    /// FO4 index **580**.
+    IsBleedingOut,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -337,13 +349,16 @@ impl ConditionFunction {
             576 => Self::GetEventData,
             250 => Self::GetLocationCleared,
             598 => Self::GetLocationAliasCleared,
+            354 => Self::IsEssential,
+            476 => Self::IsProtected,
+            580 => Self::IsBleedingOut,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 37] = [
+    pub const CATALOG: [ConditionFunction; 40] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -381,6 +396,9 @@ impl ConditionFunction {
         Self::GetEventData,
         Self::GetLocationCleared,
         Self::GetLocationAliasCleared,
+        Self::IsEssential,
+        Self::IsProtected,
+        Self::IsBleedingOut,
     ];
 
     /// Whether `param_1` of this function is a FormID — the slice of catalog
@@ -431,6 +449,9 @@ impl ConditionFunction {
             | Self::GetXPForNextLevel
             | Self::HasLoaded3D
             | Self::IsHardcore
+            | Self::IsEssential
+            | Self::IsProtected
+            | Self::IsBleedingOut
             | Self::Unknown(_) => false,
         }
     }
@@ -475,6 +496,9 @@ impl ConditionFunction {
             Self::GetEventData => "GetEventData",
             Self::GetLocationCleared => "GetLocationCleared",
             Self::GetLocationAliasCleared => "GetLocationAliasCleared",
+            Self::IsEssential => "IsEssential",
+            Self::IsProtected => "IsProtected",
+            Self::IsBleedingOut => "IsBleedingOut",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -522,7 +546,10 @@ impl ConditionFunction {
             | Self::GetIsAliasRef
             | Self::GetIsEditorLocAlias
             | Self::LocationHasRefType
-            | Self::HasSameEditorLocAsRefAlias => true,
+            | Self::HasSameEditorLocAsRefAlias
+            | Self::IsEssential
+            | Self::IsProtected
+            | Self::IsBleedingOut => true,
             Self::LocAliasIsLocation
             | Self::GetEventData
             | Self::GetLocationCleared
@@ -590,6 +617,9 @@ impl ConditionFunction {
             | Self::GetEventData
             | Self::GetLocationCleared
             | Self::GetLocationAliasCleared
+            | Self::IsEssential
+            | Self::IsProtected
+            | Self::IsBleedingOut
             | Self::Unknown(_) => true,
         }
     }
@@ -1330,6 +1360,11 @@ pub fn evaluate_function(
                 return f32::MAX;
             };
             (subject_pos - target_pos).length()
+        }
+        ConditionFunction::IsEssential => truth(crate::bleedout::is_essential(world, entity)),
+        ConditionFunction::IsProtected => truth(crate::bleedout::is_protected(world, entity)),
+        ConditionFunction::IsBleedingOut => {
+            truth(crate::bleedout::is_bleeding_out(world, entity))
         }
         ConditionFunction::GetDead => {
             // Death is a sparse lifecycle marker: absence is the overwhelmingly

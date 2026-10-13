@@ -168,16 +168,20 @@ impl Component for ActorControlState {
 }
 
 /// Whether `entity` is unconscious (#5017). No `ActorControlState` means
-/// conscious.
+/// conscious. An actor in bleedout counts (M47.2): the CK *Kill* page calls
+/// bleedout an essential actor's "temporary 'bleedout' state" of being
+/// unconscious.
 pub fn is_unconscious(world: &World, entity: EntityId) -> bool {
     world
         .get::<ActorControlState>(entity)
         .is_some_and(|state| state.unconscious)
+        || crate::bleedout::is_bleeding_out(world, entity)
 }
 
-/// Refill `out` with every unconscious entity, under one `ActorControlState`
-/// guard that is dropped before returning (#5017). Per-frame systems collect
-/// this first, so they never take the guard while holding their own queries.
+/// Refill `out` with every unconscious entity (bleedout included), taking
+/// one guard at a time and dropping each before returning (#5017). Per-frame
+/// systems collect this first, so they never take the guards while holding
+/// their own queries.
 pub fn collect_unconscious(world: &World, out: &mut Vec<EntityId>) {
     out.clear();
     if let Some(states) = world.query::<ActorControlState>() {
@@ -186,6 +190,15 @@ pub fn collect_unconscious(world: &World, out: &mut Vec<EntityId>) {
                 .iter()
                 .filter(|(_, state)| state.unconscious)
                 .map(|(entity, _)| entity),
+        );
+    }
+    if let Some(bleedouts) = world.query::<crate::bleedout::Bleedout>() {
+        out.extend(
+            bleedouts
+                .iter()
+                .map(|(entity, _)| entity)
+                .filter(|entity| !out.contains(entity))
+                .collect::<Vec<_>>(),
         );
     }
 }

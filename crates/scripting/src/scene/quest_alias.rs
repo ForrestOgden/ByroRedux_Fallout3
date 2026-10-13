@@ -1424,6 +1424,43 @@ pub fn running_quests_binding_entity(world: &World, entity: EntityId) -> Vec<Que
     quests
 }
 
+/// The union of the `flags_mask` bits on every running quest's alias that
+/// binds `entity` (M47.2: the CK *Quest Alias Tab* Essential / Protected
+/// flags hold "while in the alias"). Guards are each taken and released
+/// alone, like [`running_quests_binding_entity`].
+pub fn running_alias_flags_of_entity(world: &World, entity: EntityId, flags_mask: u32) -> u32 {
+    let flagged: Vec<(QuestFormId, i32, u32)> = match world.try_resource::<SceneQuestAliasRegistry>()
+    {
+        Some(registry) => registry
+            .aliases
+            .iter()
+            .flat_map(|(quest, aliases)| {
+                aliases
+                    .iter()
+                    .filter(|alias| alias.flags.0 & flags_mask != 0)
+                    .map(|alias| (*quest, alias.alias_id, alias.flags.0 & flags_mask))
+            })
+            .collect(),
+        None => return 0,
+    };
+    if flagged.is_empty() {
+        return 0;
+    }
+    let bound: Vec<(QuestFormId, u32)> = match world.try_resource::<SceneActorBindings>() {
+        Some(bindings) => flagged
+            .into_iter()
+            .filter(|(quest, alias_id, _)| bindings.resolve(*quest, *alias_id) == Some(entity))
+            .map(|(quest, _, flags)| (quest, flags))
+            .collect(),
+        None => return 0,
+    };
+    let stages = world.try_resource::<QuestStageState>();
+    bound
+        .into_iter()
+        .filter(|(quest, _)| stages.as_ref().is_none_or(|stages| stages.is_running(*quest)))
+        .fold(0, |union, (_, flags)| union | flags)
+}
+
 /// Alias definitions copied out under the `SceneQuestAliasRegistry` guard
 /// alone — quest FormID → its installed alias ids. Shared by both query
 /// helpers so neither holds the registry across any other acquisition.

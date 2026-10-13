@@ -431,6 +431,8 @@ that does not exist yet:
   ([scripting.md §Script-raised story events](scripting.md#script-raised-story-events-m472)).
   Cleared-location state (dead bosses, `SetCleared`, conditions 250 / 598,
   "Allow Cleared") shipped 2026-10-13.
+- **Essential / Protected actors and bleedout:** shipped 2026-10-13 — see
+  [scripting.md §Essential and Protected actors](scripting.md#essential-and-protected-actors-bleedout-m472).
 
 Always confirm milestone state against [ROADMAP.md](../../ROADMAP.md).
 

@@ -362,8 +362,15 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         else {
             continue;
         };
-        let killed = after <= 0.0;
+        // M47.2 — an essential actor (or a protected one, unless the player
+        // struck) goes into bleedout instead of dying.
+        let spared =
+            after <= 0.0 && byroredux_scripting::spare_from_death(world, target, Some(event.aggressor));
+        let killed = after <= 0.0 && !spared;
         let mut outcome = format!("health {:.1} -> {:.1}", before, after);
+        if spared {
+            outcome.push_str("; bleedout");
+        }
         note_player_damage(world, event.aggressor, target, before - after.max(0.0));
 
         if killed {
@@ -1275,6 +1282,28 @@ mod tests {
         combat_damage_system(&world, 0.0);
         let last = world.resource::<CombatState>().last.clone().unwrap();
         assert_eq!((last.incoming, last.damage), (20.0, 4.0));
+    }
+
+    /// M47.2 — a lethal hit on an essential actor leaves it in bleedout, not
+    /// dead: no `Dead`, no KILL, no kill counted.
+    #[test]
+    fn a_lethal_hit_on_an_essential_actor_starts_bleedout() {
+        let (mut world, _aggressor, target) = damage_fixture(10.0, Some(25.0), false);
+        world.insert(
+            target,
+            byroredux_scripting::ActorProtection {
+                essential: true,
+                protected: false,
+            },
+        );
+        combat_damage_system(&world, 0.0);
+        assert!(world.get::<Dead>(target).is_none());
+        assert!(byroredux_scripting::is_bleeding_out(&world, target));
+        let state = world.resource::<CombatState>();
+        let last = state.last.clone().unwrap();
+        assert!(!last.killed);
+        assert!(last.outcome.ends_with("; bleedout"), "{}", last.outcome);
+        assert_eq!(state.kills, 0);
     }
 
     /// M47.2 — Fallout kill experience: a kill the player made (≥ the health

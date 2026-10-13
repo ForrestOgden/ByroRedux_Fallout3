@@ -211,6 +211,13 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::Dead>()
             .writes_resource::<crate::combat::PendingDeathReconciliations>()
             .writes::<byroredux_core::ecs::components::ActorValues>()
+            // M47.2 — spare_from_death: essential / protected actors bleed out.
+            .reads::<byroredux_scripting::ActorProtection>()
+            .writes::<byroredux_scripting::Bleedout>()
+            .reads_resource::<byroredux_scripting::BleedoutRules>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .writes::<byroredux_core::ecs::components::Dead>(),
     );
     // Water hazards and drowning can mark actors dead from different stages.
@@ -229,6 +236,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // #4574 — reconcile_dead_actor reads the target before the
             // ragdoll activation clears it.
             .reads::<crate::components::AnimationTarget>()
+            // M47.2 — reconcile_dead_actor's note_actor_death (cleared locations).
+            .reads_resource::<byroredux_scripting::LocationTable>()
+            .writes_resource::<byroredux_scripting::LocationClearState>()
             .writes::<byroredux_core::animation::AnimationPlayer>()
             .writes::<byroredux_core::animation::AnimationStack>(),
     );
