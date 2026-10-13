@@ -5685,3 +5685,37 @@ fn keyword_changes_reach_has_keyword() {
     run_stage_effects(&world, vmad(), vec![change(KeywordChange::Remove)]);
     assert!(!crate::keywords::has_keyword(&world, guard, INJURED));
 }
+
+/// M47.2 — `SameReference` compares identities by FormID: a direct reference
+/// equals itself whether or not it is loaded, and the player is the player.
+#[test]
+fn same_reference_guards_compare_form_ids() {
+    const SWORD_REF: u32 = 0x0004_1E3A;
+    // Whether the guard passes: its branch grants one cap.
+    let passes = |left: ActorRef, right: Option<ActorRef>, expected: bool| {
+        let world = fixture();
+        run_stage_effects(
+            &world,
+            object_property_vmad(&[("Thing", SWORD_REF)]),
+            vec![Effect::Conditional {
+                guards: vec![FragmentGuard::SameReference {
+                    left,
+                    right,
+                    expected,
+                }],
+                then_effects: vec![Effect::PlayerCaps { delta: 1 }],
+                else_effects: vec![],
+            }],
+        );
+        let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+        world
+            .get::<byroredux_core::ecs::components::Inventory>(player)
+            .is_some_and(|inventory| inventory.items.iter().any(|s| s.base_form_id == 0xF))
+    };
+    let thing = || ActorRef::Object(ObjectRef::Property("::Thing_var".into()));
+    assert!(passes(thing(), Some(thing()), true), "unloaded, still itself");
+    assert!(passes(thing(), None, false), "a VMAD reference is not None");
+    assert!(!passes(thing(), None, true));
+    assert!(passes(ActorRef::Player, Some(thing()), false));
+    assert!(passes(ActorRef::Player, Some(ActorRef::Player), true));
+}

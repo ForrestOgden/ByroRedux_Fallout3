@@ -156,6 +156,38 @@ fn object_form_id(
     })
 }
 
+/// M47.2 — the reference an [`ActorRef`] names, as the FormID identity a
+/// Papyrus `==` compares (`0x14` for the player); `None` for an unfilled
+/// alias or a missing property — Papyrus's `None`.
+fn reference_identity(
+    via: &ActorRef,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &DeferredFragmentEffects,
+) -> Option<u32> {
+    let player = world
+        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0);
+    let identity = |entity: EntityId| {
+        if Some(entity) == player {
+            Some(0x14)
+        } else {
+            entity_global_form_id(world, entity)
+        }
+    };
+    match via {
+        ActorRef::Player => Some(0x14),
+        ActorRef::Speaker => deferred.speaker.and_then(identity),
+        ActorRef::Object(object) => resolve_property_form_id(vmad, object.property_name())
+            .or_else(|| {
+                let entity =
+                    resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)?;
+                identity(entity)
+            }),
+    }
+}
+
 fn resolve_actor(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
@@ -3002,6 +3034,17 @@ fn evaluate_guard(
         FragmentGuard::ScenePlaying { scene, playing } => {
             let scene = resolve_property_form_id(vmad, scene.property_name())?;
             deferred.running_scenes.contains(&scene) == *playing
+        }
+        FragmentGuard::SameReference {
+            left,
+            right,
+            expected,
+        } => {
+            let left = reference_identity(left, context, vmad, world, deferred);
+            let right = right
+                .as_ref()
+                .and_then(|right| reference_identity(right, context, vmad, world, deferred));
+            (left == right) == *expected
         }
         FragmentGuard::HasKeyword {
             object,

@@ -233,6 +233,15 @@ pub enum FragmentGuard {
         keyword: ObjectRef,
         expected: bool,
     },
+    /// M47.2 — `<reference> == <reference>` (or `== None`, `right: None`) is
+    /// `expected`: the two name the same reference, by FormID, so a direct
+    /// reference compares whether or not it is loaded and an unfilled alias
+    /// is `None`.
+    SameReference {
+        left: ActorRef,
+        right: Option<ActorRef>,
+        expected: bool,
+    },
 }
 
 /// M47.2 — a number a fragment reads at run time, for
@@ -446,6 +455,24 @@ fn classify_condition(
             let Expr::BinaryOp { op, left, right } = atom else {
                 return None;
             };
+            // M47.2 — or two references.
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                if let (Some(l), Some(r)) =
+                    (reference_side(&left.node, scope), reference_side(&right.node, scope))
+                {
+                    let (left, right) = match (l, r) {
+                        (Some(left), right) => (left, right),
+                        (None, Some(right)) => (right, None),
+                        (None, None) => return None,
+                    };
+                    out.push(FragmentGuard::SameReference {
+                        left,
+                        right,
+                        expected: (*op == BinaryOp::Eq) != negated,
+                    });
+                    return Some(());
+                }
+            }
             let comparison = GuardComparison::from_op(*op)?;
             out.push(FragmentGuard::Compare {
                 left: classify_value(&left.node, scope)?,
@@ -454,6 +481,36 @@ fn classify_condition(
             });
             Some(())
         }
+    }
+}
+
+/// M47.2 — one side of a reference comparison: `None` (`Some(None)`), or an
+/// expression that can only be a reference — an alias's
+/// `GetActorRef()` / `GetActorReference()` / `GetReference()` / `GetRef()`,
+/// `Game.GetPlayer()`, or a local bound to a reference. A bare property is
+/// not taken: by name alone it could as well be a number.
+fn reference_side(e: &Expr, scope: &Scope) -> Option<Option<ActorRef>> {
+    let mut e = e;
+    while let Expr::Cast { expr, .. } = e {
+        e = &expr.node;
+    }
+    match e {
+        Expr::NoneLit => Some(None),
+        Expr::Ident(name) => {
+            let key = name.0.to_ascii_lowercase();
+            let reference = scope.object_locals.contains_key(&key)
+                || scope.player_locals.contains(&key)
+                || scope.speaker_locals.contains(&key);
+            reference.then(|| receiver_actor(e, scope)).flatten().map(Some)
+        }
+        Expr::Call { .. } => {
+            let reference_call = ["GetActorRef", "GetActorReference", "GetReference", "GetRef"]
+                .into_iter()
+                .any(|method| method_call(e, method).is_some_and(|(_, args)| args.is_empty()))
+                || player_expr_ref(e, scope);
+            reference_call.then(|| receiver_actor(e, scope)).flatten().map(Some)
+        }
+        _ => None,
     }
 }
 
@@ -7993,6 +8050,50 @@ mod tests {
                 else_effects: vec![],
             }])
         );
+    }
+
+    /// M47.2 — reference identity: two aliases' references, and an alias
+    /// against `None`; a bare property comparison (a number, as far as the
+    /// name says) is not a reference comparison.
+    #[test]
+    fn reference_comparisons_lower_as_same_reference_guards() {
+        let lower = |condition: &str| {
+            lower_fragment(&first_fn_body(&format!(
+                "ScriptName QF extends Quest\nReferenceAlias Property Alias_A Auto\n\
+                 ReferenceAlias Property Alias_B Auto\nFunction Fragment_5()\n\
+                 If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
+            )))
+        };
+        let guard = |condition: &str| match lower(condition).as_deref() {
+            Some([Effect::Conditional { guards, .. }]) => guards.clone(),
+            other => panic!("{condition}: {other:?}"),
+        };
+        let a = || ActorRef::Object(ObjectRef::Property("Alias_A".into()));
+        assert_eq!(
+            guard("Alias_A.GetActorRef() == Alias_B.GetActorRef()"),
+            vec![FragmentGuard::SameReference {
+                left: a(),
+                right: Some(ActorRef::Object(ObjectRef::Property("Alias_B".into()))),
+                expected: true,
+            }]
+        );
+        assert_eq!(
+            guard("!(Alias_A.GetReference() == None)"),
+            vec![FragmentGuard::SameReference {
+                left: a(),
+                right: None,
+                expected: false,
+            }]
+        );
+        assert_eq!(
+            guard("Game.GetPlayer() != Alias_A.GetActorRef()"),
+            vec![FragmentGuard::SameReference {
+                left: ActorRef::Player,
+                right: Some(a()),
+                expected: false,
+            }]
+        );
+        assert_eq!(lower("SomeCount == OtherCount"), None);
     }
 
     /// M47.2 — disjunctions: `||` becomes [`FragmentGuard::Any`], nested ones
