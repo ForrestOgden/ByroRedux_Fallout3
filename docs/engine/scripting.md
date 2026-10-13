@@ -745,8 +745,18 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 72.1%) (lowered + interpreted;
-`fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
+With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 72.3%, Starfield
+71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
+the check rejects the rest). The front-end feeding both paths — `.pex` parse
++ decompile over the vanilla script archives — is at 100.0% on all four
+games (Skyrim 14 026, FO4 7 875, FO76 7 233, Starfield 4 740 scripts; the
+two residual control-flow failures, FO4 `StimBoxScript` and FO76
+`Debug.TraceLog`, closed by the boolean pass's shared-rejoin guard), and
+`pex_corpus_smoke`'s shape gate now counts FO4+ struct items, so it is a
+real per-game shape check rather than a Skyrim-calibrated one (it used to
+report 44/424/115 phantom mismatches on FO4/FO76/Starfield). FO76's client
+archive carries almost no quest fragments (54 behavioral — the quest logic
+is server-side), so its fragment number is not meaningful.
 
 Not modelled yet:
 - `AdvanceSkill`, which needs per-skill usage progression in CHARAL, and
@@ -754,6 +764,21 @@ Not modelled yet:
 - alias update registrations and FO4's distance / custom-event
   registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
 - package End fragments (procedure completion).
+
+Per-game decline heads behind the remaining fragment gap
+(`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table):
+- **Skyrim** (4 763 declined): the long tail is speechcraft / family APIs
+  (`MoveSpouse`, `Persuade`, `Intimidate`, `Bribe`), training and favor
+  menus, and `If` conditions built on unmodeled reads.
+- **Fallout 4** (4 883 declined): `RegisterForDistanceLessThanEvent`
+  (304), array writes to script variables (204), `GetCount`/`Play` on
+  alias receivers, `ChangeAnimArchetype`, and the workshop / assault
+  API family.
+- **Starfield** (4 598 declined): `PlaceAtMe/8` (the SF arity — Skyrim's
+  declares 4), alias-array natives (`GetActorArray`, `GetArray`,
+  `TryToSetValue`), `ResetHelpMessage`/`Create` statics (the taxonomy
+  these surface as since the engine-class routing fix), and the bounty /
+  temple quest-event family.
 
 ### The frame budget (M47.2, #5763)
 

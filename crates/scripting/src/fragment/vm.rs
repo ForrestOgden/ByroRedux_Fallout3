@@ -3132,6 +3132,37 @@ impl<'l> Checker<'l> {
             }
             return result;
         }
+        // A static native on an *engine* class the corpus spells inline —
+        // `InputEnableLayer.GetOrCreate(3)` (the FO4+/SF player-controls
+        // idiom), `Message.Show(…)`. `static_class` above covers only the
+        // four global-function classes; the engine's other builtin types
+        // ride the archive as native-only stubs, so the Ident names the
+        // CLASS, not a value: it has no local/member binding, and `kind`
+        // below would fail the whole check as `unknown name <class>` —
+        // even though the stub being an engine class is exactly what says
+        // "no script body to run; this is a native". Route it through the
+        // same placeholder-native classification any other engine receiver
+        // gets; the effect table decides, exactly as for `Game.*`.
+        if let Expr::Ident(id) = receiver {
+            let key = id.0.to_ascii_lowercase();
+            let names_a_value = frame.locals.contains_key(&key)
+                || id.0.eq_ignore_ascii_case("self")
+                || is_state_variable(&id.0)
+                || self.member_type(&frame.script, &id.0).is_some();
+            if !names_a_value
+                && self
+                    .library
+                    .and_then(|library| library.script(&key))
+                    .is_some_and(|script| is_engine_class(&script))
+            {
+                let result =
+                    self.check_native(receiver.clone(), Kind::None, &name, &arg_kinds, statement);
+                if result.is_none() {
+                    return self.fail(|| format!("static native {name}/{}", arg_kinds.len()));
+                }
+                return result;
+            }
+        }
         let receiver_kind = self.kind(frame, receiver)?;
         if receiver_kind == Kind::Array {
             return self.check_array_call(&name, &arg_kinds, statement);

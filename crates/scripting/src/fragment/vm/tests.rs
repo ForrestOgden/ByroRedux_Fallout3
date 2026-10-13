@@ -1928,3 +1928,60 @@ fn the_index_reads_the_formid_when_it_is_built_not_when_a_script_attaches() {
     world.insert(entity, FormIdComponent(id));
     assert_eq!(crate::ReferenceScriptIndex::lookup(&world, 0x0003_0001), Some(entity));
 }
+
+/// A static native on an engine builtin class — `InputEnableLayer.
+/// GetOrCreate(3)`, the FO4+/SF player-controls idiom — must be *routed*
+/// through native classification, not fail the whole check as `unknown
+/// name inputenablelayer`. The library stub being an engine class (native
+/// functions, no bodies) is exactly what says "this names the class, not
+/// a value". `GetOrCreate` itself has no effect-table entry yet, so the
+/// honest outcome is a decline naming the native — which is what drives
+/// the next primitive — instead of a misleading unknown-identifier error
+/// that reads as a broken script.
+#[test]
+fn static_native_on_an_engine_class_names_the_native_not_an_unknown() {
+    let input_enable_layer = parsed_source(
+        "ScriptName InputEnableLayer extends Form\n\
+         Function GetOrCreate(Int aiLayersToReserve = 1) Native\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmStaticNative extends Quest\n\
+         Function Fragment_1()\n\
+           InputEnableLayer.GetOrCreate(3)\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> =
+        [("inputenablelayer".to_owned(), input_enable_layer)].into();
+    let library = Installed(&scripts);
+    assert_eq!(
+        check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).err(),
+        Some("static native getorcreate/1".to_owned()),
+        "the decline must name the unmodeled native, not report the class \
+         itself as an unknown identifier"
+    );
+}
+
+/// The routing must not capture an identifier that names a VALUE: a
+/// property of the fragment's own script keeps its instance-call
+/// semantics even when a same-named engine class exists in the library.
+#[test]
+fn a_value_named_like_an_engine_class_still_resolves_as_a_value() {
+    let message_stub = parsed_source(
+        "ScriptName Message extends Form\n\
+         Function Show(Float af1 = 0, Float af2 = 0) Native\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmShadowedStatic extends Quest\n\
+         Message Property MyMessage Auto\n\
+         Function Fragment_1()\n\
+           MyMessage.Show(1.0)\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("message".to_owned(), message_stub)].into();
+    let library = Installed(&scripts);
+    assert_eq!(
+        check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).err(),
+        None,
+        "MyMessage is a property — the call lowers through the instance path"
+    );
+}

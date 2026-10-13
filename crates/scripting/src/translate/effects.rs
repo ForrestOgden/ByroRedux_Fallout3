@@ -4072,6 +4072,16 @@ fn prim_set_open(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// discipline: accepted only as a literal, parsed and not applied;
 /// anything non-literal declines the whole call. Papyrus's own default
 /// for `abLock` is `true`.
+///
+/// Starfield's dialect adds a THIRD parameter — `Lock(bool abLock, bool
+/// abAsOwner, bool abTraverseLinkedLockables = true)`, read straight off
+/// the shipped `ObjectReference` engine-class stub (FO4 and FO76 stubs
+/// stop at two). It qualifies whether the lock propagates to *linked*
+/// lockables, which [`Effect::SetLocked`] does not model for the receiver
+/// either way, so it follows the same literal-only-not-applied discipline
+/// as `abAsOwner`. Before this bound, `Lock(bool, false, true)` — the
+/// near-universal compiled spelling, e.g. the whole SF `QF_` lock family —
+/// declined as over-arity.
 fn prim_lock(e: &Expr, scope: &Scope) -> Option<Effect> {
     // FO4/Starfield `Unlock(abAsOwner = false)` — "Unlocks this object" — is
     // `Lock(false, abAsOwner)`.
@@ -4086,12 +4096,14 @@ fn prim_lock(e: &Expr, scope: &Scope) -> Option<Effect> {
         });
     }
     let (object, args) = method_call(e, "Lock")?;
-    if args.len() > 2 {
+    if args.len() > 3 {
         return None;
     }
     let locked = bool_arg(args, 0)?.unwrap_or(true);
-    // 2nd arg `abAsOwner` — literal-only; see the primitive doc.
+    // 2nd arg `abAsOwner`, 3rd arg (Starfield) `abTraverseLinkedLockables` —
+    // literal-only; see the primitive doc.
     bool_arg(args, 1)?;
+    bool_arg(args, 2)?;
     Some(Effect::SetLocked {
         target: receiver_object(object, scope)?,
         locked,
@@ -7299,12 +7311,15 @@ mod tests {
     }
 
     /// #2289 — the decline half. A non-literal lock state, a non-literal
-    /// `abAsOwner`, and an argument past the declared two must all decline
-    /// rather than be guessed at, matching `prim_set_open`'s conservative
-    /// shape. (#5653 narrowed the over-long leg from two arguments to
-    /// three: `Lock` declares two parameters, and the compiler emits the
+    /// `abAsOwner`/`abTraverseLinkedLockables`, and an argument past the
+    /// declared three (Starfield's dialect) must all decline rather than
+    /// be guessed at, matching `prim_set_open`'s conservative shape.
+    /// (#5653 narrowed the over-long leg from two arguments to three:
+    /// `Lock` declares two parameters, and the compiler emits the
     /// declared arity, so the old bound at one never matched a compiled
-    /// call.)
+    /// call. The Starfield dialect then added a third declared parameter —
+    /// see `lock_lowers_at_the_starfield_three_parameter_arity` — moving
+    /// the over-long bound to four.)
     #[test]
     fn lock_declines_on_a_non_literal_or_over_long_argument() {
         let computed = first_fn_body(
@@ -7331,15 +7346,27 @@ mod tests {
             "a variable-driven abAsOwner must decline, not be assumed"
         );
 
+        let computed_traverse = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Bool Property ShouldTraverse Auto\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(true, false, ShouldTraverse)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&computed_traverse),
+            None,
+            "a variable-driven abTraverseLinkedLockables must decline, not be assumed"
+        );
+
         let extra = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_7()\n\
-             MyDoor.Lock(true, false, true)\n EndFunction\n",
+             MyDoor.Lock(true, false, true, true)\n EndFunction\n",
         );
         assert_eq!(
             lower_fragment(&extra),
             None,
-            "an argument past the two Lock declares must decline"
+            "an argument past the three the widest Lock dialect declares must decline"
         );
     }
 
@@ -7373,6 +7400,44 @@ mod tests {
             Some(vec![Effect::SetLocked {
                 target: ObjectRef::Property("MyDoor".into()),
                 locked: true,
+            }])
+        );
+    }
+
+    /// Starfield's `Lock` dialect declares a third parameter — `Lock(bool
+    /// abLock, bool abAsOwner, bool abTraverseLinkedLockables = true)`,
+    /// read off the shipped `ObjectReference` engine-class stub (FO4 and
+    /// FO76 stubs stop at two) — and its compiler materializes all three,
+    /// so the near-universal compiled spelling is `Lock(bool, false,
+    /// true)` (the whole SF `QF_` lock family). The traversal flag
+    /// qualifies linked lockables, which `SetLocked` does not model for
+    /// the receiver either way: literal-only, parsed-not-applied, same
+    /// discipline as `abAsOwner`.
+    #[test]
+    fn lock_lowers_at_the_starfield_three_parameter_arity() {
+        let compiled = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(true, false, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&compiled),
+            Some(vec![Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: true,
+            }])
+        );
+
+        let unlocked = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_7()\n\
+             MyDoor.Lock(false, false, true)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&unlocked),
+            Some(vec![Effect::SetLocked {
+                target: ObjectRef::Property("MyDoor".into()),
+                locked: false,
             }])
         );
     }
