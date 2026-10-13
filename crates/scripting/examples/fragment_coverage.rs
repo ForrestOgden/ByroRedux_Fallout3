@@ -225,6 +225,8 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
         Effect::IncrementStat { .. } => "IncrementStat",
         Effect::AddAchievement { .. } => "AddAchievement",
+        Effect::SetPlayerTeammate { .. } => "SetPlayerTeammate",
+        Effect::SetDoingFavor { .. } => "SetDoingFavor",
         Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::SetLocal { .. } => "SetLocal",
         Effect::SetReferenceVariable { .. } => "SetReferenceVariable",

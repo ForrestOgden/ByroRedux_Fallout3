@@ -193,6 +193,13 @@ pub enum FragmentGuard {
     LocationCleared { location: ObjectRef, expected: bool },
     /// `<actor>.IsBleedingOut()` is `expected`.
     ActorBleedingOut { actor: ActorRef, expected: bool },
+    /// `<actor>.IsPlayerTeammate()` / `IsDoingFavor()` is `expected`
+    /// ([`crate::FollowerState`]).
+    ActorFollower {
+        actor: ActorRef,
+        flag: crate::FollowerFlag,
+        expected: bool,
+    },
     /// `<reference>.IsEnabled()` is `expected` (`IsDisabled()` inverted).
     ReferenceEnabled { object: ObjectRef, expected: bool },
     /// `<actor>.IsInFaction(faction)` is `expected`.
@@ -414,6 +421,7 @@ enum GuardReading {
     MapMarkerFastTravel(ObjectRef),
     LocationCleared(ObjectRef),
     ActorBleedingOut(ActorRef),
+    ActorFollower(ActorRef, crate::FollowerFlag),
     ActorEssential(ActorRef),
     /// `IsEnabled()` reads true when enabled; `IsDisabled()` is the negation.
     ReferenceEnabled(ObjectRef, bool),
@@ -693,6 +701,17 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_actor(object, scope).map(GuardReading::ActorBleedingOut))
             .flatten();
     }
+    for (method, flag) in [
+        ("IsPlayerTeammate", crate::FollowerFlag::Teammate),
+        ("IsDoingFavor", crate::FollowerFlag::DoingFavor),
+    ] {
+        if let Some((object, args)) = method_call(e, method) {
+            return args
+                .is_empty()
+                .then(|| receiver_actor(object, scope).map(|actor| GuardReading::ActorFollower(actor, flag)))
+                .flatten();
+        }
+    }
     if let Some((object, args)) = method_call(e, "IsEssential") {
         return args
             .is_empty()
@@ -828,6 +847,11 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         },
         GuardReading::ActorBleedingOut(actor) => FragmentGuard::ActorBleedingOut {
             actor,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ActorFollower(actor, flag) => FragmentGuard::ActorFollower {
+            actor,
+            flag,
             expected: bool_expectation(comparison, value)?,
         },
         GuardReading::ActorEssential(actor) => FragmentGuard::ActorEssential {
@@ -1214,6 +1238,15 @@ pub enum Effect {
     /// M47.2 — `Game.AddAchievement(aiAchievementID)` with a literal ID
     /// ([`crate::Achievements`]).
     AddAchievement { id: i32 },
+    /// M47.2 — `<actor>.SetPlayerTeammate([abTeammate], [abCanDoFavor])`
+    /// ([`crate::FollowerState`]).
+    SetPlayerTeammate {
+        actor: ActorRef,
+        teammate: bool,
+        can_do_favor: bool,
+    },
+    /// M47.2 — `<actor>.SetDoingFavor([abDoingFavor])`.
+    SetDoingFavor { actor: ActorRef, doing: bool },
     /// M47.2 — `Game.GivePlayerCaps(n)` / `RemovePlayerCaps(n)` (FO4): the
     /// script bodies add / remove `n` of `Game.GetCaps()` (form `0xF`) on the
     /// player when `n > 0`. Negative `delta` removes.
@@ -2832,6 +2865,8 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_reward_player_xp,
     prim_increment_stat,
     prim_add_achievement,
+    prim_set_player_teammate,
+    prim_set_doing_favor,
     prim_player_caps,
     prim_set_objective_skipped,
     prim_equip_item,
@@ -3485,9 +3520,12 @@ fn prim_change_keyword(e: &Expr, scope: &Scope) -> Option<Effect> {
 }
 
 /// `ObjectReference.DeleteWhenAble()` (Skyrim: a script loop over
-/// `GetParentCell().IsAttached()` then `Delete()`; FO4 / Starfield native).
+/// `GetParentCell().IsAttached()` then `Delete()`; FO4 / Starfield native)
+/// and `Delete()`, which the CK says "flags this object reference as wanting
+/// to be deleted" once nothing holds it — a created reference's deletion
+/// either way, an authored one cannot be deleted.
 fn prim_delete_when_able(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "DeleteWhenAble")?;
+    let (object, args) = method_call_any(e, &["DeleteWhenAble", "Delete"])?;
     if !args.is_empty() {
         return None;
     }
@@ -3520,6 +3558,32 @@ fn prim_reward_player_xp(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::RewardPlayerXp {
         amount: item_count_arg(args, 0, 0, scope)?,
         direct: bool_arg(args, 1)?.unwrap_or(false),
+    })
+}
+
+/// `Actor.SetPlayerTeammate(bool abTeammate = true, bool abCanDoFavor =
+/// true)` with literal arguments.
+fn prim_set_player_teammate(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetPlayerTeammate")?;
+    if args.len() > 2 {
+        return None;
+    }
+    Some(Effect::SetPlayerTeammate {
+        actor: receiver_actor(object, scope)?,
+        teammate: bool_arg(args, 0)?.unwrap_or(true),
+        can_do_favor: bool_arg(args, 1)?.unwrap_or(true),
+    })
+}
+
+/// `Actor.SetDoingFavor(bool abDoingFavor = true)` with a literal argument.
+fn prim_set_doing_favor(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetDoingFavor")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetDoingFavor {
+        actor: receiver_actor(object, scope)?,
+        doing: bool_arg(args, 0)?.unwrap_or(true),
     })
 }
 

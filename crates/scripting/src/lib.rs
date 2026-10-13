@@ -28,6 +28,7 @@ pub mod load_order;
 pub mod map_markers;
 pub mod keywords;
 pub mod menus;
+pub mod followers;
 pub mod messages;
 pub mod misc_stats;
 pub mod location;
@@ -120,6 +121,7 @@ pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
+pub use followers::{FollowerFlag, FollowerFlags, FollowerState};
 pub use misc_stats::{Achievements, MiscStats};
 pub use actor_value_names::{install_actor_value_names, ActorValueNames};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
@@ -253,6 +255,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted IncrementStat misc stats (saved).
     if world.try_resource::<MiscStats>().is_none() {
         world.insert_resource(MiscStats::default());
+    }
+    // M47.2 — scripted SetPlayerTeammate / SetDoingFavor flags (saved).
+    if world.try_resource::<FollowerState>().is_none() {
+        world.insert_resource(FollowerState::default());
     }
     // M47.2 — scripted AddAchievement awards (saved).
     if world.try_resource::<Achievements>().is_none() {

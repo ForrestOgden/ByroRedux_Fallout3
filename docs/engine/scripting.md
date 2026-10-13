@@ -684,6 +684,16 @@ runtime:
   the VM (`Sin` takes degrees, per the CK page). `Utility.GetCurrentGameTime()`
   is the host's absolute game clock in days, from `ScriptUpdates`, which
   `script_update_system` refreshes each frame.
+- **Followers.** `Actor.SetPlayerTeammate(abTeammate, abCanDoFavor)`,
+  `SetDoingFavor`, and the `IsPlayerTeammate()` / `IsDoingFavor()` reads use
+  the saved `FollowerState`, keyed by the actor's FormID. Effects: what the CK
+  says a teammate does (sneaks and draws with the player, wears its best
+  armor, its crimes count as the player's, takes commands) belongs to the
+  sneak, equipment and crime systems that will read this state. None of them
+  reads it yet.
+- **Forms and deletion.** `Game.GetForm(id)` is the form of that ID, or None
+  when the ID's plugin isn't loaded. `Delete()` flags a created reference
+  for deletion like `DeleteWhenAble()`; an authored one can't be deleted.
 - **Achievements.** `Game.AddAchievement(id)` records the award in the saved
   `Achievements` set (a second award changes nothing). The platform profile
   is the host's.
@@ -727,12 +737,12 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 80.0% of the Skyrim corpus runs (Fallout 4: 72.1%) (lowered + interpreted;
+With the VM, 81.1% of the Skyrim corpus runs (Fallout 4: 72.1%) (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
-- several actor natives (`SetPlayerTeammate`; `AdvanceSkill`, which needs
-  per-skill usage progression in CHARAL);
+- `AdvanceSkill`, which needs per-skill usage progression in CHARAL, and
+  other actor natives;
 - alias update registrations and FO4's distance / custom-event
   registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
 - package End fragments (procedure completion).

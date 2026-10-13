@@ -685,7 +685,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::MiscStats>()
             // M47.2 — a spoken line's AddAchievement.
             .reads_resource::<byroredux_scripting::Achievements>()
-            .writes_resource::<byroredux_scripting::Achievements>(),
+            .writes_resource::<byroredux_scripting::Achievements>()
+            // M47.2 — a spoken line's follower flags.
+            .reads_resource::<byroredux_scripting::FollowerState>()
+            .writes_resource::<byroredux_scripting::FollowerState>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

@@ -1312,3 +1312,82 @@ fn math_game_time_and_achievements() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
     assert!(world.resource::<crate::Achievements>().has(9));
 }
+
+/// `Game.GetForm` answers a loaded plugin's id and None for an unloaded
+/// one; `Delete()` flags a created reference like `DeleteWhenAble`.
+#[test]
+fn get_form_validates_the_plugin_and_delete_flags_created_references() {
+    let script = parsed_source(
+        "ScriptName QF_VmGetForm extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Game.GetForm(0x00010F02) as Bool && !(Game.GetForm(0x7A010F02) as Bool)\n\
+             Marker.Enable()\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::load_order::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        PluginId::from_filename("Skyrim.esm"),
+    )]));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
+    let delete = parsed_source(
+        "ScriptName QF_VmDelete extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n Marker.Delete()\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(delete, "Fragment_1", None).err(), None);
+}
+
+/// `SetPlayerTeammate` / `SetDoingFavor` set the saved follower flags,
+/// `IsPlayerTeammate` / `IsDoingFavor` read them.
+#[test]
+fn follower_flags_set_and_read() {
+    const BUDDY: u32 = 0x0001_0F40;
+    let script = parsed_source(
+        "ScriptName QF_VmFollower extends Quest\n\
+         Actor Property Buddy Auto\n\
+         Function Fragment_1()\n\
+           If !Buddy.IsPlayerTeammate()\n\
+             Buddy.SetPlayerTeammate(True, False)\n\
+             Buddy.SetDoingFavor()\n\
+           EndIf\n\
+           If Buddy.IsPlayerTeammate() && Buddy.IsDoingFavor()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(BUDDY),
+    });
+    world.insert_resource(pool);
+    let buddy = world.spawn();
+    world.insert(buddy, FormIdComponent(id));
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "Buddy".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: BUDDY,
+                alias: -1,
+            },
+        });
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let flags = world.resource::<crate::FollowerState>().flags(BUDDY);
+    assert!(flags.teammate && !flags.can_do_favor && flags.doing_favor);
+}

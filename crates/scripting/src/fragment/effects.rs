@@ -446,6 +446,10 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AddAchievement` IDs, applied to
     /// [`crate::Achievements`] after the guards drop.
     achievements: Vec<i32>,
+    /// M47.2 — follower-flag writes: (actor FormID, teammate (with can-do-
+    /// favor) or doing-favor), applied to [`crate::FollowerState`] after the
+    /// guards drop.
+    follower_changes: Vec<(u32, FollowerChange)>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
     /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
@@ -554,6 +558,7 @@ impl DeferredFragmentEffects {
             player_xp: Vec::new(),
             misc_stats: Vec::new(),
             achievements: Vec::new(),
+            follower_changes: Vec::new(),
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
@@ -644,6 +649,19 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
+        }
+        if !self.follower_changes.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::FollowerState>() {
+                for (actor, change) in self.follower_changes.drain(..) {
+                    match change {
+                        FollowerChange::Teammate { teammate, can_do_favor } => {
+                            state.set_teammate(actor, teammate, can_do_favor)
+                        }
+                        FollowerChange::DoingFavor(doing) => state.set_doing_favor(actor, doing),
+                    }
+                }
+            }
+            self.follower_changes.clear();
         }
         if !self.achievements.is_empty() {
             if let Some(mut awarded) = world.try_resource_mut::<crate::Achievements>() {
@@ -979,6 +997,13 @@ impl DeferredFragmentEffects {
         }
         advances
     }
+}
+
+/// A follower-flag write a fragment queued.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum FollowerChange {
+    Teammate { teammate: bool, can_do_favor: bool },
+    DoingFavor(bool),
 }
 
 /// Execute one fragment as an ordered unit. Any provider barrier is flushed
@@ -1328,6 +1353,28 @@ pub(crate) fn apply_effect(
         Effect::RewardPlayerXp { amount, direct } => {
             let amount = resolve_item_count(amount, context, vmad, world, stages, deferred)?;
             deferred.player_xp.push((amount, *direct));
+            None
+        }
+        Effect::SetPlayerTeammate {
+            actor,
+            teammate,
+            can_do_favor,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let form = crate::condition::entity_global_form_id(world, actor)?;
+            deferred.follower_changes.push((
+                form,
+                FollowerChange::Teammate {
+                    teammate: *teammate,
+                    can_do_favor: *can_do_favor,
+                },
+            ));
+            None
+        }
+        Effect::SetDoingFavor { actor, doing } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let form = crate::condition::entity_global_form_id(world, actor)?;
+            deferred.follower_changes.push((form, FollowerChange::DoingFavor(*doing)));
             None
         }
         Effect::AddAchievement { id } => {
@@ -2855,6 +2902,8 @@ fn apply_quest_scoped_effect(
         | Effect::RewardPlayerXp { .. }
         | Effect::IncrementStat { .. }
         | Effect::AddAchievement { .. }
+        | Effect::SetPlayerTeammate { .. }
+        | Effect::SetDoingFavor { .. }
         | Effect::PlayerCaps { .. }
         | Effect::SetLocal { .. }
         | Effect::SetReferenceVariable { .. }
@@ -3122,6 +3171,25 @@ pub(super) fn evaluate_guard(
         FragmentGuard::ActorBleedingOut { actor, expected } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             crate::bleedout::is_bleeding_out(world, actor) == *expected
+        }
+        FragmentGuard::ActorFollower { actor, flag, expected } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let form = crate::condition::entity_global_form_id(world, actor)?;
+            // A write earlier in the same run is visible.
+            let mut value = world
+                .try_resource::<crate::FollowerState>()
+                .is_some_and(|state| state.read(form, *flag));
+            for (changed, change) in &deferred.follower_changes {
+                if *changed != form {
+                    continue;
+                }
+                match (change, flag) {
+                    (FollowerChange::Teammate { teammate, .. }, crate::FollowerFlag::Teammate) => value = *teammate,
+                    (FollowerChange::DoingFavor(doing), crate::FollowerFlag::DoingFavor) => value = *doing,
+                    _ => {}
+                }
+            }
+            value == *expected
         }
         FragmentGuard::ActorEssential { actor, expected } => {
             let actor = guard_actor(actor, context, vmad, world, deferred)?;

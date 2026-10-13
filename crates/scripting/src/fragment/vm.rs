@@ -1775,6 +1775,21 @@ impl Vm<'_> {
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
+                // CK *GetForm - Game*: the form of that ID, or None when the
+                // ID names no loaded plugin.
+                ("game", "getform") => {
+                    let values = self.eval_args(frame, args)?;
+                    let Some(Value::Int(id)) = values.first() else {
+                        return stop("GetForm without an Int form id");
+                    };
+                    let id = *id as u32;
+                    let valid = id != 0
+                        && self
+                            .world
+                            .try_resource::<crate::load_order::LoadOrderIdentity>()
+                            .is_some_and(|identity| identity.pair(id).is_some());
+                    Some(if valid { Value::Form(id) } else { Value::None })
+                }
                 ("math", function) if MATH_NATIVES.contains(&function) => {
                     let values = self.eval_args(frame, args)?;
                     math_native(function, &values)?
@@ -3004,6 +3019,12 @@ impl<'l> Checker<'l> {
             }
             if class == "debug" && name.starts_with("trace") {
                 return Some(Kind::None);
+            }
+            if class == "game"
+                && name == "getform"
+                && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)])
+            {
+                return Some(Kind::Object);
             }
             if class == "math" && MATH_NATIVES.contains(&name.as_str()) {
                 let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
