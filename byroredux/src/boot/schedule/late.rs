@@ -639,7 +639,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             .writes_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             // M47.2 — the IsDisabled / IsEnabled guards' authored state.
-            .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>(),
+            .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>()
+            // M47.2 — quest VMADs for quest-script bodies inlined into lines.
+            .reads_resource::<byroredux_scripting::QuestScriptInstances>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

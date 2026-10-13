@@ -370,6 +370,9 @@ pub struct DeferredFragmentEffects {
     /// `FragmentGuard::ScenePlaying`: snapshotted before the quest-state
     /// guards (scene playback takes `ScenePlayer` before `QuestStageState`).
     running_scenes: std::collections::HashSet<u32>,
+    /// M47.2 — every quest's VMAD, for `Effect::QuestScope`: snapshotted (an
+    /// `Arc` clone) before the quest-state guards.
+    quest_scripts: std::sync::Arc<HashMap<QuestFormId, ScriptInstanceData>>,
     /// M47.2 — `Effect::SetQuestVariable` writes, applied to
     /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
     quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
@@ -420,6 +423,10 @@ impl DeferredFragmentEffects {
             base_protection: Vec::new(),
             story_events: Vec::new(),
             kills: Vec::new(),
+            quest_scripts: world
+                .try_resource::<super::QuestScriptInstances>()
+                .map(|instances| instances.0.clone())
+                .unwrap_or_default(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
                 .map(|players| {
@@ -1182,6 +1189,21 @@ pub(crate) fn apply_effect(
             ));
             None
         }
+        Effect::CopyQuestVariable { quest, from, to } => {
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            let from = crate::QuestScriptVariables::property_key(from);
+            let to = crate::QuestScriptVariables::property_key(to);
+            // The same pending-then-written chain `ModQuestVariable` reads.
+            let value = deferred
+                .quest_variables
+                .iter()
+                .rev()
+                .find(|(q, k, _)| *q == quest && *k == from)
+                .map(|(_, _, value)| *value)
+                .or_else(|| crate::quest_variable(world, quest, from))?;
+            deferred.quest_variables.push((quest, to, value));
+            None
+        }
         Effect::ModQuestVariable {
             quest,
             variable,
@@ -1252,8 +1274,8 @@ pub(crate) fn apply_effect(
             None
         }
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } => None,
-        Effect::Conditional { .. } => {
-            unreachable!("conditional effects are expanded by apply_effects")
+        Effect::Conditional { .. } | Effect::QuestScope { .. } => {
+            unreachable!("conditional and quest-scoped effects are expanded by apply_effects")
         }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
     }
@@ -2426,6 +2448,7 @@ fn apply_quest_scoped_effect(
             None
         }
         Effect::Conditional { .. }
+        | Effect::QuestScope { .. }
         | Effect::SetGlobalValue { .. }
         | Effect::AddItem { .. }
         | Effect::RemoveItem { .. }
@@ -2450,6 +2473,7 @@ fn apply_quest_scoped_effect(
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
         | Effect::ModQuestVariable { .. }
+        | Effect::CopyQuestVariable { .. }
         | Effect::SetActorValueNamed { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
@@ -2855,6 +2879,34 @@ pub fn apply_effects(
                 });
                 halted = true;
                 break;
+            }
+            // M47.2 — a quest-script body inlined into an INFO or scene
+            // fragment runs against its quest: that quest is the context and
+            // its VMAD binds the properties. It holds nothing latent, so it
+            // runs to completion here.
+            if let Effect::QuestScope {
+                quest,
+                effects: scoped,
+            } = effect
+            {
+                let Some(quest) = resolve_quest_logged(quest, context, vmad) else {
+                    continue;
+                };
+                let scripts = deferred.quest_scripts.clone();
+                let Some(quest_vmad) = scripts.get(&quest) else {
+                    log::debug!("fragment QuestScope skipped: quest {:08X} has no VMAD", quest.0);
+                    continue;
+                };
+                advances.extend(apply_effects(
+                    scoped,
+                    quest,
+                    Some(quest_vmad),
+                    world,
+                    stages,
+                    objectives,
+                    deferred,
+                ));
+                continue;
             }
             if let Effect::Conditional {
                 guards,

@@ -604,14 +604,13 @@ fn populate_scene_fragments_from_script_internal(
             );
             continue;
         };
-        if let Some(mut effects) =
-            crate::translate::effects::lower_fragment_with_script_metadata(
-                body,
-                &quest_properties,
-                &argless_functions,
-                providers.map(|scope| scope.catalog),
-            )
-        {
+        if let Some(mut effects) = crate::translate::effects::lower_scene_fragment(
+            body,
+            &quest_properties,
+            &argless_functions,
+            providers.map(|scope| scope.catalog),
+            providers.and_then(|scope| scope.library),
+        ) {
             if let Some(principal) = providers.and_then(|scope| scope.principal) {
                 crate::translate::effects::attribute_provider_calls(&mut effects, principal);
             }
@@ -709,6 +708,7 @@ fn populate_info_fragments_from_script_internal(
             &quest_properties,
             &argless_functions,
             providers.map(|scope| scope.catalog),
+            providers.and_then(|scope| scope.library),
         ) else {
             continue;
         };

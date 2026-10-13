@@ -28,6 +28,37 @@ pub struct ReferenceEnableState {
 
 impl Resource for ReferenceEnableState {}
 
+/// M47.2 — every quest's own VMAD (the scripts attached to the QUST and
+/// their property bindings), for [`Effect::QuestScope`](crate::Effect): a
+/// quest-script function inlined into an INFO or scene fragment resolves its
+/// properties here. Behind an `Arc` so a fragment run snapshots it before the
+/// quest guards at the cost of a refcount. `NOT_SAVED_BY_DESIGN`: rebuilt from
+/// the QUST records every boot.
+#[derive(Debug, Default, Clone)]
+pub struct QuestScriptInstances(
+    pub std::sync::Arc<HashMap<QuestFormId, ScriptInstanceData>>,
+);
+
+impl Resource for QuestScriptInstances {}
+
+/// Install the load order's [`QuestScriptInstances`]; returns how many quests
+/// carry a VMAD.
+pub fn install_quest_script_instances(
+    world: &mut World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> usize {
+    let instances: HashMap<QuestFormId, ScriptInstanceData> = index
+        .quests
+        .iter()
+        .filter_map(|(&form_id, quest)| {
+            Some((QuestFormId(form_id), quest.script_instance.clone()?))
+        })
+        .collect();
+    let count = instances.len();
+    world.insert_resource(QuestScriptInstances(std::sync::Arc::new(instances)));
+    count
+}
+
 /// M47.2 — the load order's references that start disabled, by the cell
 /// loader's own rule: "Initially Disabled" with no enable parent, or an
 /// enable-parent child whose parent-assumed-enabled state hides it

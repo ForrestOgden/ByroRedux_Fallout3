@@ -340,6 +340,18 @@ dialogue caller resolves to the NPC saying the line
 latent tail (a wait, a 3D-loaded poll, a provider barrier) declines: the
 speaker is a live entity a saved continuation could not name.
 
+A call into the fragment quest's own script (`kmyQuest.Startup()`) inlines
+the callee's body when it takes no arguments. In a quest fragment the
+fragment's VMAD is the quest's, so the effects splice in directly. From an
+INFO or scene fragment (2026-10-13) the callee's properties live on the
+quest's VMAD, not the fragment's. Its effects are wrapped in
+`Effect::QuestScope`, which runs them against the quest and its own VMAD
+(`QuestScriptInstances`, every quest's VMAD, snapshotted before the quest
+guards). A scope never holds a latent effect. Inside an inlined body, writes
+to the script's own variables lower too: a literal, `X = X ± c`, and
+`X = Y` (`Effect::CopyQuestVariable`). FO4's radio rotation
+(`kmyQuest.UpdateRadio()`, 437 INFO fragments) is the main beneficiary.
+
 Fragment `If`s lower when their condition is built from `FragmentGuard`s
 with `&&`, `||` (`FragmentGuard::Any`) and `!`. Negation is pushed to the
 atoms by De Morgan. The atoms: `GetStageDone` / FO4 `IsStageDone`,

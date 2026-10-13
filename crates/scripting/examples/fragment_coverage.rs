@@ -29,7 +29,8 @@ use byroredux_pex::{decompile::decompile_script, parse};
 use byroredux_scripting::fragment::quest_property_names_with_library;
 use byroredux_papyrus::ast::Param;
 use byroredux_scripting::translate::effects::{
-    lower_fragment_with_quest_properties, lower_info_fragment, lower_quest_fragment, Effect,
+    lower_fragment_with_quest_properties, lower_info_fragment, lower_quest_fragment,
+    lower_scene_fragment, Effect,
     ScriptLibrary, INFO_SPEAKER_PARAMETER,
 };
 
@@ -87,21 +88,35 @@ impl ScriptLibrary for ArchiveLibrary<'_> {
 /// Lower a fragment the way production does: a topic-info (`TIF_…`) fragment
 /// — the one carrying the speaker parameter — through the INFO entry point
 /// with its speaker bound, every other one through the quest/scene path.
+/// Which production entry point a fragment script goes through, with the
+/// script library every populate path now carries (M47.2).
+#[derive(Clone, Copy)]
+struct Production<'a> {
+    library: &'a dyn ScriptLibrary,
+    /// `QF_…` — the quest path.
+    quest: bool,
+    /// `SF_…` — the scene path.
+    scene: bool,
+}
+
 fn lower_as_production(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
-    quest_library: Option<&dyn ScriptLibrary>,
+    quest_library: Production<'_>,
 ) -> Option<Vec<Effect>> {
+    let library = Some(quest_library.library);
     if params
         .iter()
         .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER))
     {
-        lower_info_fragment(params, body, quest_properties, &HashSet::new(), None)
-    } else if let Some(library) = quest_library {
+        lower_info_fragment(params, body, quest_properties, &HashSet::new(), None, library)
+    } else if quest_library.quest {
         // A quest fragment (`QF_…`): production inlines calls into the
         // quest's own script.
-        lower_quest_fragment(body, quest_properties, &HashSet::new(), None, Some(library))
+        lower_quest_fragment(body, quest_properties, &HashSet::new(), None, library)
+    } else if quest_library.scene {
+        lower_scene_fragment(body, quest_properties, &HashSet::new(), None, library)
     } else {
         lower_fragment_with_quest_properties(body, quest_properties)
     }
@@ -191,7 +206,7 @@ fn decline_shape(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
-    quest_library: Option<&dyn ScriptLibrary>,
+    quest_library: Production<'_>,
 ) -> String {
     for i in 0..body.len() {
         if lower_as_production(params, &body[..=i], quest_properties, quest_library).is_none() {
@@ -215,7 +230,7 @@ fn if_aware_shape(
     prefix: &[byroredux_papyrus::span::Spanned<Stmt>],
     stmt: &Stmt,
     quest_properties: &HashSet<String>,
-    quest_library: Option<&dyn ScriptLibrary>,
+    quest_library: Production<'_>,
 ) -> String {
     let Stmt::If {
         body,
@@ -281,6 +296,8 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetLocationCleared { .. } => "SetCleared",
         Effect::SetBaseProtection { .. } => "SetEssential",
         Effect::Kill { .. } => "Kill",
+        Effect::QuestScope { .. } => "QuestScope",
+        Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
@@ -324,7 +341,7 @@ fn sample_decline(
     params: &[Param],
     body: &[byroredux_papyrus::span::Spanned<Stmt>],
     quest_properties: &HashSet<String>,
-    quest_library: Option<&dyn ScriptLibrary>,
+    quest_library: Production<'_>,
     shape: &str,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -413,7 +430,12 @@ fn main() {
             // `Fragments:Quests:QF_…` — the ones production populates through
             // the quest path, which inlines calls into the quest's script.
             let is_quest_fragment_script = script.name.node.0.to_ascii_lowercase().contains("qf_");
-            let quest_library: Option<&dyn ScriptLibrary> = is_quest_fragment_script.then_some(&library);
+            let script_name = script.name.node.0.to_ascii_lowercase();
+            let quest_library = Production {
+                library: &library,
+                quest: is_quest_fragment_script,
+                scene: script_name.contains("sf_"),
+            };
             for item in &script.body {
                 let ScriptItem::Function(func) = &item.node else {
                     continue;

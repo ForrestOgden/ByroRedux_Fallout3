@@ -861,6 +861,11 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// M47.2 — effects inlined from the quest script's function
+    /// (`kmyQuest.UpdateRadio()`) into an INFO or scene fragment: they run
+    /// with `quest` as their context and its VMAD for their properties.
+    /// Never holds a latent effect.
+    QuestScope { quest: QuestRef, effects: Vec<Effect> },
     /// M47.2 — `<actor>.Kill([akKiller = None])`: the actor dies through the
     /// engine's death path, or goes into bleedout when essential (CK *Kill*).
     Kill {
@@ -952,6 +957,14 @@ pub enum Effect {
         quest: QuestRef,
         variable: String,
         delta: f32,
+    },
+    /// M47.2 — `to = from` between two of a quest script's own variables
+    /// (`::LastSong02_var = ::LastSong01_var` in an inlined quest-script
+    /// body). A source with no value leaves the target untouched.
+    CopyQuestVariable {
+        quest: QuestRef,
+        from: String,
+        to: String,
     },
     SetQuestVariable {
         quest: QuestRef,
@@ -1088,16 +1101,25 @@ impl Effect {
 #[derive(Clone, Default)]
 struct Scope<'lib> {
     /// M47.2 — where a call into the quest's own script (`kmyQuest.Startup()`)
-    /// finds the callee's decompiled body to inline. `None` outside quest
-    /// fragments (their VMAD is the only one that carries the quest script's
-    /// properties) and in every bare harness.
+    /// finds the callee's decompiled body to inline. `None` in every bare
+    /// harness.
     library: Option<&'lib dyn ScriptLibrary>,
+    /// M47.2 — whether the fragment's VMAD is its quest's, so that the
+    /// quest script's properties resolve through it. True for quest fragments
+    /// and inlined quest-script bodies. On the INFO and scene paths (an
+    /// INFO's or SCEN's own VMAD) an inlined callee is wrapped in
+    /// [`Effect::QuestScope`] instead, and a quest script's own property
+    /// (`kmyQuest.CW`) declines.
+    vmad_is_quest: bool,
     /// The declared object type (lowercased script name) of each local
     /// (`MyQuestScript kmyQuest`), for resolving an inlined call's callee.
     local_types: HashMap<String, String>,
     /// `(script, function)` frames currently being inlined — the cycle guard
     /// and depth cap of [`inline_quest_script_call`].
     inline_stack: Vec<(String, String)>,
+    /// M47.2 — inside an inlined quest-script body, the lowercased names of
+    /// that script's own variables and properties (its quest variables).
+    script_variables: HashSet<String>,
     quest_locals: HashMap<String, QuestRef>,
     object_locals: HashMap<String, ObjectRef>,
     player_locals: HashSet<String>,
@@ -1296,6 +1318,26 @@ pub fn lower_quest_fragment(
 ) -> Option<Vec<Effect>> {
     let mut scope = Scope {
         library,
+        vmad_is_quest: true,
+        known_quest_properties: quest_property_names.clone(),
+        own_argless_functions: own_argless_function_names.clone(),
+        ..Scope::default()
+    };
+    lower_statements(body, &mut scope, providers, 0)
+}
+
+/// M47.2 — [`lower_fragment_with_script_metadata`] for a scene (`SF_…`)
+/// fragment, with a [`ScriptLibrary`] so a call into the owning quest's
+/// script inlines as an [`Effect::QuestScope`].
+pub fn lower_scene_fragment(
+    body: &[Spanned<Stmt>],
+    quest_property_names: &HashSet<String>,
+    own_argless_function_names: &HashSet<String>,
+    providers: Option<&PapyrusProviderCatalog>,
+    library: Option<&dyn ScriptLibrary>,
+) -> Option<Vec<Effect>> {
+    let mut scope = Scope {
+        library,
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
         ..Scope::default()
@@ -1329,24 +1371,24 @@ fn inline_quest_script_call(
     let Expr::MemberAccess { object, member } = &callee.node else {
         return None;
     };
-    let script_type = match &object.node {
+    let (quest, script_type) = match &object.node {
         Expr::Ident(name) => {
             let key = name.0.to_ascii_lowercase();
-            match scope.quest_locals.get(&key)? {
-                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+            let quest = match scope.quest_locals.get(&key)? {
+                quest @ (QuestRef::SelfRef | QuestRef::OwningQuest) => quest.clone(),
                 QuestRef::Property(_) => return None,
-            }
-            scope.local_types.get(&key)?.clone()
+            };
+            (quest, scope.local_types.get(&key)?.clone())
         }
         Expr::Cast { target_type, .. } => {
-            match quest_expr_ref(&object.node, scope)? {
-                QuestRef::SelfRef | QuestRef::OwningQuest => {}
+            let quest = match quest_expr_ref(&object.node, scope)? {
+                quest @ (QuestRef::SelfRef | QuestRef::OwningQuest) => quest,
                 QuestRef::Property(_) => return None,
-            }
+            };
             let byroredux_papyrus::ast::Type::Object(ty) = &target_type.node else {
                 return None;
             };
-            ty.0.to_ascii_lowercase()
+            (quest, ty.0.to_ascii_lowercase())
         }
         _ => return None,
     };
@@ -1373,19 +1415,43 @@ fn inline_quest_script_call(
     }
     let mut callee_scope = Scope {
         library: Some(library),
+        vmad_is_quest: true,
         known_quest_properties: crate::fragment::quest_property_names_with_library(
             &script,
             Some(library),
         ),
         own_argless_functions: crate::fragment::argless_function_names(&script),
         inline_stack: scope.inline_stack.iter().cloned().chain([frame]).collect(),
+        script_variables: script
+            .body
+            .iter()
+            .filter_map(|item| match &item.node {
+                byroredux_papyrus::ast::ScriptItem::Variable(v) => {
+                    Some(v.name.node.0.to_ascii_lowercase())
+                }
+                byroredux_papyrus::ast::ScriptItem::Property(p) => {
+                    Some(p.name.node.0.to_ascii_lowercase())
+                }
+                _ => None,
+            })
+            .collect(),
         ..Scope::default()
     };
     // Inside the callee, `Self` is the quest; bind it so `Self.Foo()` (a
     // call to another of its own functions) inlines through the same path.
     callee_scope.quest_locals.insert("self".into(), QuestRef::SelfRef);
     callee_scope.local_types.insert("self".into(), script_type);
-    lower_statements(&function.body, &mut callee_scope, providers, 0)
+    let effects = lower_statements(&function.body, &mut callee_scope, providers, 0)?;
+    if scope.vmad_is_quest {
+        return Some(effects);
+    }
+    // M47.2 — from an INFO or scene fragment the callee's properties live on
+    // the quest's VMAD, not the fragment's: scope them. The scope runs in one
+    // go, so a callee that would suspend declines.
+    if effects.iter().any(has_latent_tail) {
+        return None;
+    }
+    Some(vec![Effect::QuestScope { quest, effects }])
 }
 
 /// The parameter through which an INFO (`TIF_…`) fragment receives the
@@ -1408,8 +1474,10 @@ pub fn lower_info_fragment(
     quest_property_names: &HashSet<String>,
     own_argless_function_names: &HashSet<String>,
     providers: Option<&PapyrusProviderCatalog>,
+    library: Option<&dyn ScriptLibrary>,
 ) -> Option<Vec<Effect>> {
     let mut scope = Scope {
+        library,
         known_quest_properties: quest_property_names.clone(),
         own_argless_functions: own_argless_function_names.clone(),
         ..Scope::default()
@@ -1437,6 +1505,7 @@ fn has_latent_tail(effect: &Effect) -> bool {
             else_effects,
             ..
         } => then_effects.iter().chain(else_effects).any(has_latent_tail),
+        Effect::QuestScope { effects, .. } => effects.iter().any(has_latent_tail),
         _ => false,
     }
 }
@@ -1495,16 +1564,22 @@ fn lower_statements(
                 effects.push(lower_quest_variable_write(&target.node, *op, &value.node, scope)?);
             }
             // Re-assignment to an existing local: same binding rule.
-            Stmt::Assign { target, value, .. } => {
-                let Expr::Ident(name) = &target.node else {
+            Stmt::Assign { target, op, value } => {
+                let Expr::Ident(ident) = &target.node else {
                     return None; // assignment to an index — unmodeled
                 };
-                let name = name.0.to_ascii_lowercase();
+                let name = ident.0.to_ascii_lowercase();
                 // Only a local this function declared can be re-bound. A bare
                 // identifier that is none of them is a script variable or a
                 // property: that write is persistent state `bind_local` would
                 // record as a side-effect-free local and drop (#5638).
                 if !scope.declares(&name) {
+                    // M47.2 — inside an inlined quest-script body `Self` is
+                    // the quest, so `::X_var` is its script's own variable.
+                    if !scope.inline_stack.is_empty() && is_script_variable(&ident.0, scope) {
+                        effects.push(lower_self_variable_write(&ident.0, *op, &value.node, scope)?);
+                        continue;
+                    }
                     return None;
                 }
                 bind_local(scope, name, &value.node)?;
@@ -1645,6 +1720,76 @@ fn lower_quest_variable_write(
     Some(Effect::ModQuestVariable {
         quest,
         variable: member.node.0.clone(),
+        delta,
+    })
+}
+
+/// A decompiled auto-property / script-variable backing name, `::Name_var`.
+fn is_backing_variable(name: &str) -> bool {
+    name.starts_with("::") && name.len() > 6 && name.to_ascii_lowercase().ends_with("_var")
+}
+
+/// Inside an inlined quest-script body: whether `name` is one of that
+/// script's own variables — a `::Name_var` backing name, or a declared
+/// variable / property — and not a local.
+fn is_script_variable(name: &str, scope: &Scope) -> bool {
+    !scope.declares(&name.to_ascii_lowercase())
+        && (is_backing_variable(name)
+            || scope
+                .script_variables
+                .contains(&name.to_ascii_lowercase()))
+}
+
+/// M47.2 — a write to the quest script's own variable `name` (a
+/// `::Name_var`) inside an inlined quest-script body: a literal, the same
+/// variable plus or minus a literal, or a copy of another of its variables.
+fn lower_self_variable_write(
+    name: &str,
+    op: byroredux_papyrus::ast::AssignOp,
+    value: &Expr,
+    scope: &Scope,
+) -> Option<Effect> {
+    if op != byroredux_papyrus::ast::AssignOp::Eq {
+        return None;
+    }
+    let quest = QuestRef::SelfRef;
+    if let Some(value) = as_num(value) {
+        return Some(Effect::SetQuestVariable {
+            quest,
+            variable: name.to_owned(),
+            value,
+        });
+    }
+    fn strip(mut e: &Expr) -> &Expr {
+        while let Expr::Cast { expr, .. } = e {
+            e = &expr.node;
+        }
+        e
+    }
+    let own_variable = |e: &Expr| match strip(e) {
+        Expr::Ident(other) if is_script_variable(&other.0, scope) => Some(other.0.clone()),
+        _ => None,
+    };
+    if let Some(from) = own_variable(value) {
+        return Some(Effect::CopyQuestVariable {
+            quest,
+            from,
+            to: name.to_owned(),
+        });
+    }
+    let Expr::BinaryOp { op, left, right } = strip(value) else {
+        return None;
+    };
+    let same = |e: &Expr| own_variable(e).is_some_and(|other| other.eq_ignore_ascii_case(name));
+    let delta = match op {
+        BinaryOp::Add if same(&left.node) => as_num(&right.node)?,
+        BinaryOp::Add if same(&right.node) => as_num(&left.node)?,
+        BinaryOp::Sub if same(&left.node) => -as_num(&right.node)?,
+        _ => return None,
+    };
+    Some(Effect::ModQuestVariable {
+        quest,
+        variable: name.to_owned(),
         delta,
     })
 }
@@ -3300,6 +3445,9 @@ fn receiver_quest(object: &Expr, scope: &Scope) -> Option<QuestRef> {
 /// `Quest Property`. Needs the script library, to read the property's
 /// declared type; the INFO and scene paths carry none and decline.
 fn owner_quest_property(owner: &Expr, member: &str, scope: &Scope) -> Option<QuestRef> {
+    if !scope.vmad_is_quest {
+        return None;
+    }
     let library = scope.library?;
     let owner_type = match owner {
         Expr::Ident(name) => {
@@ -4702,6 +4850,7 @@ mod tests {
             &HashSet::new(),
             &HashSet::new(),
             None,
+            None,
         )
     }
 
@@ -4937,6 +5086,92 @@ mod tests {
             lower_fragment_with_script_metadata(&body, &without, &HashSet::new(), None),
             None
         );
+    }
+
+    /// M47.2 — an INFO fragment's call into its quest's script inlines as a
+    /// `QuestScope` (the callee's properties live on the quest's VMAD); a
+    /// latent callee declines, and a quest-script property read straight from
+    /// the INFO (`kmyQuest.CW`) still declines there.
+    #[test]
+    fn info_fragment_calls_into_the_quest_script_lower_as_quest_scopes() {
+        let library = PscLibrary::new(&[
+            "ScriptName RadioScript extends Quest\n\
+             ObjectReference Property RadioMarker Auto\n\
+             CWScript Property CW Auto\n\
+             Function UpdateRadio()\n RadioMarker.Enable()\n Self.SetStage(10)\n EndFunction\n\
+             Function SlowUpdate()\n Utility.Wait(1.0)\n Self.SetStage(20)\n EndFunction\n\
+             Int SongCount\nInt CurrentSong\nInt LastSong01\n\
+             Function Rotate()\n SongCount = SongCount + 1\n LastSong01 = CurrentSong\n CurrentSong = 0\n EndFunction\n",
+            "ScriptName CWScript extends Quest\n",
+        ]);
+        let lowered = |statement: &str| {
+            let source = format!(
+                "ScriptName TIF_Test extends TopicInfo\n\
+                 Function Fragment_0(ObjectReference akSpeakerRef)\n\
+                 RadioScript kmyQuest = Self.GetOwningQuest() as RadioScript\n\
+                 {statement}\n EndFunction\n"
+            );
+            let (script, errs) = parse_script(&source).expect("parses");
+            assert!(errs.is_empty(), "{errs:?}");
+            let function = script
+                .body
+                .iter()
+                .find_map(|item| match &item.node {
+                    ScriptItem::Function(f) => Some(f.clone()),
+                    _ => None,
+                })
+                .expect("a function");
+            lower_info_fragment(
+                &function.params,
+                &function.body,
+                &HashSet::new(),
+                &HashSet::new(),
+                None,
+                Some(&library),
+            )
+        };
+        assert_eq!(
+            lowered("kmyQuest.UpdateRadio()"),
+            Some(vec![Effect::QuestScope {
+                quest: QuestRef::OwningQuest,
+                effects: vec![
+                    Effect::Enable {
+                        object: ObjectRef::Property("RadioMarker".into()),
+                        fade_in: false,
+                    },
+                    Effect::SetStage {
+                        quest: QuestRef::SelfRef,
+                        stage: 10,
+                    },
+                ],
+            }])
+        );
+        assert_eq!(lowered("kmyQuest.SlowUpdate()"), None, "latent callee");
+        // The FO4 radio shape: the quest script's own variables.
+        assert_eq!(
+            lowered("kmyQuest.Rotate()"),
+            Some(vec![Effect::QuestScope {
+                quest: QuestRef::OwningQuest,
+                effects: vec![
+                    Effect::ModQuestVariable {
+                        quest: QuestRef::SelfRef,
+                        variable: "SongCount".into(),
+                        delta: 1.0,
+                    },
+                    Effect::CopyQuestVariable {
+                        quest: QuestRef::SelfRef,
+                        from: "CurrentSong".into(),
+                        to: "LastSong01".into(),
+                    },
+                    Effect::SetQuestVariable {
+                        quest: QuestRef::SelfRef,
+                        variable: "CurrentSong".into(),
+                        value: 0.0,
+                    },
+                ],
+            }])
+        );
+        assert_eq!(lowered("kmyQuest.CW.SetStage(2)"), None, "INFO VMAD has no CW");
     }
 
     /// M47.2 — a quest reached through the fragment quest's own typed

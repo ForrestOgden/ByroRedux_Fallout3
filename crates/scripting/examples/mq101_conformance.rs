@@ -148,6 +148,8 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetLocationCleared { .. } => "SetCleared",
         Effect::SetBaseProtection { .. } => "SetEssential",
         Effect::Kill { .. } => "Kill",
+        Effect::QuestScope { .. } => "QuestScope",
+        Effect::CopyQuestVariable { .. } => "CopyQuestVariable",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

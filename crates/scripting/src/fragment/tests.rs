@@ -4946,6 +4946,75 @@ fn a_backing_variable_quest_property_resolves_through_its_authored_name() {
     );
 }
 
+/// M47.2 — `CopyQuestVariable` copies a value written earlier in the same
+/// fragment, and an unset source leaves the target untouched.
+#[test]
+fn copy_quest_variable_reads_the_pending_write() {
+    use crate::quest_variables::QuestScriptVariables;
+    use crate::translate::compose::QuestRef;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![
+            Effect::SetQuestVariable {
+                quest: QuestRef::SelfRef,
+                variable: "::CurrentSong_var".into(),
+                value: 29.0,
+            },
+            Effect::CopyQuestVariable {
+                quest: QuestRef::SelfRef,
+                from: "::CurrentSong_var".into(),
+                to: "::LastSong01_var".into(),
+            },
+            Effect::CopyQuestVariable {
+                quest: QuestRef::SelfRef,
+                from: "::NeverSet_var".into(),
+                to: "::LastSong02_var".into(),
+            },
+        ],
+    );
+    let read = |name| {
+        world
+            .resource::<QuestScriptVariables>()
+            .get(Q, QuestScriptVariables::property_key(name))
+    };
+    assert_eq!(read("LastSong01"), Some(29.0));
+    assert_eq!(read("LastSong02"), None);
+}
+
+/// M47.2 — a `QuestScope` runs against its quest: the quest is the context
+/// and its own VMAD (not the fragment's) binds the properties.
+#[test]
+fn a_quest_scope_runs_against_its_quests_vmad() {
+    use crate::translate::compose::QuestRef;
+    const RADIO_MARKER: u32 = 0x000E_F21D;
+    let world = fixture();
+    let mut instances = HashMap::new();
+    instances.insert(Q, object_property_vmad(&[("RadioMarker", RADIO_MARKER)]));
+    {
+        let mut world = world;
+        world.insert_resource(super::QuestScriptInstances(std::sync::Arc::new(instances)));
+        world
+            .resource_mut::<crate::fragment::ReferenceEnableState>()
+            .set_enabled(RADIO_MARKER, false);
+        run_stage_effects(
+            &world,
+            // The INFO's own VMAD does not carry the property.
+            object_property_vmad(&[]),
+            vec![Effect::QuestScope {
+                quest: QuestRef::OwningQuest,
+                effects: vec![Effect::Enable {
+                    object: ObjectRef::Property("RadioMarker".into()),
+                    fade_in: false,
+                }],
+            }],
+        );
+        assert!(super::reference_enabled(&world, RADIO_MARKER));
+    }
+}
+
 /// M47.2 — `IsDisabled` / `IsEnabled` guards read a script's override,
 /// including one earlier in the same fragment, else the authored state.
 #[test]
