@@ -92,7 +92,7 @@ DLC archives joined on 2026-09-07 (#3925). Prefer that table over this one.
 | Skyrim SE         | BSA v105 (LZ4)     | **100%** (33 468, 8 archives) | 100%    | #3712 added the 44-NIF `Animations` archive; re-measured 2026-09-29. |
 | Skyrim LE         | BSA v104 zlib      | **100%** (22 466, 1 archive) | 100%    | `Skyrim - Meshes.bsa`; gated since fb8173fe0. |
 | Fallout 4         | BA2 BTDX v1/v7/v8  | **100%** (235 082, 8 archives) | 100%   | FaceGen truncation tail resolved (#1457, 2026-06-14). |
-| Fallout 76        | BA2 BTDX v1 GNRL   | **100%** (102 968, re-measured 2026-09-29) | 100%   | #3461 (2026-09-02) closed the 3 056-NIF `GeneratedMeshes` truncation tail; the re-measure swept 4 of the 20 mesh-bearing archives, incl. both `GeneratedMeshes`. |
+| Fallout 76        | BA2 BTDX v1 GNRL   | **100%** (102 980, re-measured 2026-10-03) | 100%   | #3461 (2026-09-02) closed the 3 056-NIF `GeneratedMeshes` truncation tail; the re-measure (#4628) swept 5 of the 20 mesh-bearing archives: Meshes, StaticMeshes, both `GeneratedMeshes`, Startup. |
 | Starfield         | BA2 BTDX v2/v3 LZ4 | **100.00%** aggregate (120 543 / 120 543, 13 archives, re-measured 2026-09-24) | 100% | Per-archive figures are in ROADMAP's matrix. MeshesPatch's populated-`BSWeakReferenceNode` truncation tail (was 325/29 849, mis-attributed to closed #746/#747) fixed by #2105 — an undocumented 2-byte field between the weak-ref array and `unkInt1`, gated on the same `bsver >= SF_FORM_ID` threshold as the per-entry `formID`. The later 6-file MeshesPatch and 13-file ShatteredSpace-Main01 residuals no longer reproduce (#4440). |
 
 The full multi-game sweep runs the seven `Game` variants in
@@ -345,9 +345,9 @@ cargo run -- --esm Starfield.esm \
 
 #### Fallout 76
 
-- **NIF parser**: **100% clean (102,968 / 102,968), 100% recoverable**
-  (re-measured 2026-09-29; the sweep covers 4 of the 20 mesh-bearing
-  archives, incl. both `GeneratedMeshes`). The 3,056-NIF truncation tail
+- **NIF parser**: **100% clean (102,980 / 102,980), 100% recoverable**
+  (re-measured 2026-10-03, #4628; the sweep covers 5 of the 20 mesh-bearing
+  archives: Meshes, StaticMeshes, both `GeneratedMeshes`, Startup). The 3,056-NIF truncation tail
   the 2026-08-29 widening (#3466) found — `GeneratedMeshes02` at 0.00%
   and `GeneratedMeshes01` at 95.03% clean, an undecoded
   `BSDistantObjectExtraData` block — was closed by #3461 (2026-09-02);
