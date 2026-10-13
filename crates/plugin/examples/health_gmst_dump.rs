@@ -4,6 +4,9 @@
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example health_gmst_dump -- <file.esm> [...]
+//!
+//! `GMST_MATCH=<substring>` dumps the GMSTs whose EditorID contains it
+//! (case-insensitive) instead, e.g. `GMST_MATCH=fBarter`.
 
 use byroredux_plugin::esm::reader::EsmReader;
 
@@ -51,7 +54,15 @@ fn walk(reader: &mut EsmReader<'_>, end: usize) -> anyhow::Result<()> {
                 _ => {}
             }
         }
-        if editor_id.starts_with("fAVD") && editor_id.to_ascii_lowercase().contains("health") {
+        let wanted = match std::env::var("GMST_MATCH") {
+            Ok(needle) => editor_id
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase()),
+            Err(_) => {
+                editor_id.starts_with("fAVD") && editor_id.to_ascii_lowercase().contains("health")
+            }
+        };
+        if wanted {
             println!(
                 "  {editor_id:42} form_id={:08X} value={value:?}",
                 header.form_id

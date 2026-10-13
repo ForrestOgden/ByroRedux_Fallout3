@@ -25,6 +25,18 @@ fn print_body(label: &str, body: &[byroredux_papyrus::span::Spanned<Stmt>]) {
     }
 }
 
+/// `Type name = default, …` — the parameter names a native's callers bind.
+fn signature(params: &[byroredux_papyrus::ast::Param]) -> String {
+    params
+        .iter()
+        .map(|p| match &p.default {
+            Some(default) => format!("{:?} {} = {:?}", p.ty.node, p.name.node.0, default.node),
+            None => format!("{:?} {}", p.ty.node, p.name.node.0),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let want = args[1].to_ascii_lowercase().replace(':', "\\");
@@ -57,12 +69,23 @@ fn main() {
         match &item.node {
             ScriptItem::Property(p) => println!("  Property {} {:?} = {:?}", p.name.node.0, p.ty.node, p.initial_value.as_ref().map(|v| &v.node)),
             ScriptItem::Variable(v) => println!("  Var {} {:?} = {:?}", v.name.node.0, v.ty.node, v.initial_value.as_ref().map(|i| &i.node)),
-            ScriptItem::Function(f) => print_body(&format!("Function {}", f.name.node.0), &f.body),
+            ScriptItem::Function(f) => print_body(
+                &format!("Function {}({})", f.name.node.0, signature(&f.params)),
+                &f.body,
+            ),
             ScriptItem::Event(e) => print_body(&format!("Event {}", e.name.node.0), &e.body),
             ScriptItem::State(state) => {
                 for si in &state.body {
                     match &si.node {
-                        StateItem::Function(f) => print_body(&format!("State {} / Function {}", state.name.node.0, f.name.node.0), &f.body),
+                        StateItem::Function(f) => print_body(
+                            &format!(
+                                "State {} / Function {}({})",
+                                state.name.node.0,
+                                f.name.node.0,
+                                signature(&f.params)
+                            ),
+                            &f.body,
+                        ),
                         StateItem::Event(e) => print_body(&format!("State {} / Event {}", state.name.node.0, e.name.node.0), &e.body),
                     }
                 }

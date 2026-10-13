@@ -11,6 +11,9 @@
 //!
 //! Usage:
 //!   cargo run --release -p byroredux-plugin --example perk_entry_census -- <ESM> [...]
+//!
+//! `CENSUS_ENTRY_POINT=<n>` also lists every entry on hook `n` with its
+//! per-tab condition functions.
 
 use std::collections::BTreeMap;
 
@@ -87,6 +90,49 @@ fn main() -> anyhow::Result<()> {
                             ));
                         }
                     }
+                }
+            }
+        }
+        // `CENSUS_ENTRY_POINT=<n>`: every entry on that hook, with its tabs'
+        // condition functions — which subjects a calculation must supply.
+        if let Some(wanted) = std::env::var("CENSUS_ENTRY_POINT")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+        {
+            for perk in index.perks.values() {
+                for e in &perk.entries {
+                    let PerkEntryBody::EntryPoint {
+                        entry_point_index,
+                        function,
+                        tab_count,
+                        function_data,
+                        ..
+                    } = &e.body
+                    else {
+                        continue;
+                    };
+                    if *entry_point_index != wanted {
+                        continue;
+                    }
+                    let tabs: Vec<String> = e
+                        .condition_tabs
+                        .iter()
+                        .map(|t| {
+                            let functions: Vec<String> = t
+                                .conditions
+                                .iter()
+                                .map(|c| format!("{}({:08X})", c.function_index, c.param_1))
+                                .collect();
+                            format!("tab {}: {}", t.tab, functions.join(" "))
+                        })
+                        .collect();
+                    println!(
+                        "  ep {wanted} {} ({:08X}) rank {} fn {function} {function_data:?} tabs {tab_count} [{}]",
+                        perk.editor_id,
+                        perk.form_id,
+                        e.rank,
+                        tabs.join("; ")
+                    );
                 }
             }
         }
