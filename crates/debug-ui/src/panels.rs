@@ -67,6 +67,8 @@ pub struct PanelSnapshot {
     /// The front of the script message-box queue, populated while the native
     /// message-box page is visible.
     pub message_box: Option<MessageBoxView>,
+    /// The open barter session, populated while one is in progress.
+    pub barter: Option<BarterSnapshot>,
     /// `(entity_id, name)` pairs. `None` until the operator opens
     /// the Entities panel — populating this on every frame would
     /// be unnecessary work for an overlay that's hidden most of
@@ -83,6 +85,32 @@ pub struct MessageBoxView {
     pub title: String,
     pub text: String,
     pub buttons: Vec<String>,
+}
+
+/// One barter session: the merchant's goods at the player's buying price and
+/// the player's goods the merchant buys, at the selling price.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BarterSnapshot {
+    pub vendor_name: String,
+    pub player_gold: u32,
+    pub vendor_gold: u32,
+    pub buy: Vec<BarterItemView>,
+    pub sell: Vec<BarterItemView>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BarterItemView {
+    pub form_id: u32,
+    pub name: String,
+    pub count: u32,
+    pub price: u32,
+}
+
+/// One unit bought from or sold to the merchant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarterAction {
+    Buy { form_id: u32 },
+    Sell { form_id: u32 },
 }
 
 /// Allocation-free native prompt assembled from the active binding and the
@@ -405,6 +433,8 @@ pub struct PanelOutputs {
     /// The button the player chose on the visible message box (its index;
     /// 0 for the implicit "Ok" of a box without buttons).
     pub message_box_choice: Option<usize>,
+    /// Trades the player made on the barter page, applied in order.
+    pub barter_actions: Vec<BarterAction>,
     /// Renderer-independent Studio mutations for the host to apply.
     pub studio_commands: Vec<StudioCommand>,
     /// True when the operator asked to refresh the entity list.
@@ -428,6 +458,7 @@ pub enum GameMenuPage {
     Inventory,
     Dialogue,
     MessageBox,
+    Barter,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -468,6 +499,7 @@ pub fn draw_game_menu(
         GameMenuPage::Inventory => "Inventory",
         GameMenuPage::Dialogue => "Conversation",
         GameMenuPage::MessageBox => "Message",
+        GameMenuPage::Barter => "Barter",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -482,6 +514,7 @@ pub fn draw_game_menu(
             GameMenuPage::Inventory => egui::vec2(900.0, 620.0),
             GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
             GameMenuPage::MessageBox => egui::vec2(520.0, 320.0),
+            GameMenuPage::Barter => egui::vec2(900.0, 620.0),
         })
         .frame(
             Frame::window(&ctx.global_style())
@@ -502,7 +535,83 @@ pub fn draw_game_menu(
             GameMenuPage::MessageBox => {
                 draw_message_box_page(ui, snapshot.message_box.as_ref(), state, outputs)
             }
+            GameMenuPage::Barter => draw_barter_page(ui, snapshot.barter.as_ref(), state, outputs),
         });
+}
+
+/// The barter page: the merchant's goods (buy) beside the player's goods the
+/// merchant takes (sell), one unit per click at the listed price. Closing is
+/// the shared resume path, which ends the session.
+fn draw_barter_page(
+    ui: &mut egui::Ui,
+    barter: Option<&BarterSnapshot>,
+    state: &mut GameMenuState,
+    outputs: &mut PanelOutputs,
+) {
+    let Some(barter) = barter else {
+        ui.label("The merchant has nothing to trade.");
+        ui.add_space(12.0);
+        if wide_button(ui, "Close (Esc)").clicked() {
+            outputs.resume_game = true;
+            state.visible = false;
+        }
+        return;
+    };
+    ui.heading(barter.vendor_name.clone());
+    ui.add_space(8.0);
+    let column = |ui: &mut egui::Ui,
+                  title: &str,
+                  gold: u32,
+                  items: &[BarterItemView],
+                  salt: &str,
+                  action: fn(u32) -> BarterAction,
+                  outputs: &mut PanelOutputs| {
+        ui.vertical(|ui| {
+            ui.label(RichText::new(format!("{title} — gold {gold}")).strong());
+            egui::ScrollArea::vertical()
+                .id_salt(salt)
+                .max_height(470.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(400.0);
+                    if items.is_empty() {
+                        ui.label("Nothing.");
+                    }
+                    for item in items {
+                        let label =
+                            format!("{}  ×{}  —  {} gold", item.name, item.count, item.price);
+                        if ui.selectable_label(false, label).clicked() {
+                            outputs.barter_actions.push(action(item.form_id));
+                        }
+                    }
+                });
+        });
+    };
+    ui.horizontal_top(|ui| {
+        column(
+            ui,
+            "Merchant's goods (buy)",
+            barter.vendor_gold,
+            &barter.buy,
+            "native_barter_buy",
+            |form_id| BarterAction::Buy { form_id },
+            outputs,
+        );
+        ui.separator();
+        column(
+            ui,
+            "Your goods (sell)",
+            barter.player_gold,
+            &barter.sell,
+            "native_barter_sell",
+            |form_id| BarterAction::Sell { form_id },
+            outputs,
+        );
+    });
+    ui.add_space(12.0);
+    if wide_button(ui, "Close (Esc)").clicked() {
+        outputs.resume_game = true;
+        state.visible = false;
+    }
 }
 
 /// A script message box: the CK *Message* page's "dialog box that pauses the

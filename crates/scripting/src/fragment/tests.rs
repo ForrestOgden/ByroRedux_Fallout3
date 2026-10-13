@@ -5593,3 +5593,20 @@ fn dispatch_set_actor_value_sets_the_base() {
     );
     assert_eq!(world.get::<ActorValues>(player).unwrap().current(AGGRESSION), 2.0);
 }
+
+/// M47.2 — `ShowBarterMenu` hands the vendor to the engine's barter menu.
+#[test]
+fn show_barter_menu_requests_the_vendor() {
+    const BELETHOR: u32 = 0x0001_3BB6;
+    let mut world = fixture();
+    let vendor = spawn_with_form_id(&mut world, BELETHOR);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Vendor", BELETHOR)]),
+        vec![Effect::ShowBarterMenu {
+            vendor: ActorRef::Object(ObjectRef::Property("::Vendor_var".into())),
+        }],
+    );
+    assert_eq!(crate::menus::take_barter_request(&world), Some(vendor));
+    assert_eq!(crate::menus::take_barter_request(&world), None, "consumed once");
+}

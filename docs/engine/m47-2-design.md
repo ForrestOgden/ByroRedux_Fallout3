@@ -400,7 +400,7 @@ open:
   global and actor-value writes in every spelling, perks, alias
   `ForceRefTo` / `Clear`, and `BlockActivation`.
 
-Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 63.4% on
+Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 63.9% on
 2026-10-13. The 2026-10-13 work added map markers, script story events,
 cleared locations, `Kill`, `SetEssential` / `SetProtected`, the
 enable-state / faction / 3D-loaded / distance guards, and quests reached
@@ -431,9 +431,10 @@ that does not exist yet:
   What leads now needs subsystems, not lowering:
   - script functions taking arguments over arrays and structs (`MoveSpouse`
     406, `GetMySquad` 200);
-  - menus (`ShowBarterMenu` 313). Messages shipped: `Message.Show` with
-    literal arguments, notifications, and the native message-box page
-    (`scripting.md` §Messages);
+  - menus. Messages shipped (`Message.Show` with literal arguments,
+    notifications, the native message-box page) and so did barter
+    (`ShowBarterMenu`, vendor factions, Speech/Charisma prices, parked
+    merchant stock); see `scripting.md` §Messages and §Barter;
   - timers and event registration (`Startup` 240, `RegisterForUpdate`);
   - reference-script functions (`ReArmTrigger` 231);
   - music types (`MusicType.Add` 164; xWMA music cannot be decoded yet);

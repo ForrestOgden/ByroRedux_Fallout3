@@ -44,7 +44,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 pub use panels::{
-    DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
+    BarterAction, BarterItemView, BarterSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
     InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
     ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, VitalBarView,
 };
@@ -302,6 +302,16 @@ impl DebugUiState {
 
     pub fn message_box_menu_visible(&self) -> bool {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::MessageBox
+    }
+
+    /// Open the native menu on the barter page.
+    pub fn open_barter_menu(&mut self) {
+        self.game_menu.visible = true;
+        self.game_menu.page = GameMenuPage::Barter;
+    }
+
+    pub fn barter_menu_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::Barter
     }
 
     pub fn close_game_menu(&mut self) {

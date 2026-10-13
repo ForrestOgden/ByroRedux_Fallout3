@@ -649,6 +649,64 @@ Not modelled:
 - The remaining replacement tags: `<BaseName>`, `<Token…>`, `<Alias.PronounObj…>`
   and similar.
 
+### Barter (M47.2)
+
+`Actor.ShowBarterMenu()` takes no arguments in Skyrim, Fallout 4 and
+Starfield. It opens the native barter page with the actor's vendor faction.
+The engine side is `byroredux/src/barter.rs`, and the scripting side only
+raises `PendingBarterMenu`.
+
+**Vendor data.** A `FACT` record names three things (xEdit TES5/FO4):
+- `VENC`, the "Merchant Container" `REFR`;
+- `VEND`, the "Vendor Buy/Sell List" `FLST`;
+- `VENV`, the vendor values, including the "Not/Sell Buy" flag, which turns
+  the list into what the vendor does *not* trade.
+
+Every vanilla `VENC` resolves to a placed `CONT`: 145 of 145 in Skyrim.esm and
+81 of 81 in Fallout4.esm. The vendor sells whatever its container holds. It
+buys a player item when the item's FormID, or one of its new `KWDA` keywords,
+is in the list.
+
+**Prices.** UESP *Skyrim:Speech* §Prices gives:
+
+```text
+price factor = fBarterMax - (fBarterMax - fBarterMin) * min(Speech, 100) / 100
+buy price    = round(value * buy modifier * price factor)
+sell price   = round(value * sell modifier / price factor)
+```
+
+The buy and sell modifiers are what the player's perks compose from 1.0 at the
+*Mod Buy Prices* (8) and *Mod Sell Prices* (60) entry points. In vanilla, the
+`Haggling*` perks apply to the player, and `Allure` and the vendor perks
+condition tab 1 on the vendor.
+
+Fallout 4 has the same shape over Charisma / 10, uncapped. The Fallout wiki
+gives "3.50 − Charisma × 0.15", which is Fallout4.esm's fBarterMax 3.5 and
+fBarterMin 2.0. Prices are clamped: a purchase costs at least `fBarterBuyMax`
+(1.2) × value and a sale pays at most `fBarterSellMax` (0.8) × value.
+Skyrim's executable carries the matching pair `fBarterBuyMin` 1.05 and
+`fBarterSellMax` 0.95.
+
+**Stock.** A merchant chest normally sits in an unloaded holding cell. For the
+length of the session, an entity stands in for the chest under the chest's own
+FormID. It is seeded from the `CONT` and the chest's parked
+`PersistentReferenceStates` row, the same way a cell load seeds a container.
+Closing the page parks the stock again, so the next barter, or the chest's own
+cell load, sees what was traded. Each trade moves one unit and its gold
+through the fragment runtime's `remove_items`, so equipment indices and
+`OnItemAdded`/`OnItemRemoved` behave as they do for any other transfer.
+
+The page pauses the game, like other menus. Opening it ends an open
+conversation, as the Inventory key does.
+
+Not modelled:
+- vendor hours and radius;
+- stolen-goods rules;
+- restocking;
+- Fallout 4 perk prices, because its `PERK` entry layout isn't decoded;
+- `GetDialogueTarget().ShowBarterMenu()` (98 fragments), where the speaker's
+  side isn't known.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

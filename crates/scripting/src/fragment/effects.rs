@@ -364,6 +364,8 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — messages to show, formatted after the guards drop (text
     /// replacement reads the alias bindings).
     messages: Vec<PendingMessage>,
+    /// M47.2 — the vendor an `Effect::ShowBarterMenu` asked to trade with.
+    barter: Option<EntityId>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -442,6 +444,7 @@ impl DeferredFragmentEffects {
             locals: HashMap::new(),
             reference_variables: Vec::new(),
             messages: Vec::new(),
+            barter: None,
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -491,6 +494,9 @@ impl DeferredFragmentEffects {
                 }
                 PendingMessage::Notify(text) => crate::messages::notify(world, text),
             }
+        }
+        if let Some(vendor) = self.barter.take() {
+            crate::menus::request_barter(world, vendor);
         }
         if !self.reference_variables.is_empty() {
             if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
@@ -1089,6 +1095,11 @@ pub(crate) fn apply_effect(
             deferred.messages.push(PendingMessage::Notify(text.clone()));
             None
         }
+        Effect::ShowBarterMenu { vendor } => {
+            let vendor = guard_actor(vendor, context, vmad, world, deferred)?;
+            deferred.barter = Some(vendor);
+            None
+        }
         Effect::SetReferenceVariable {
             object,
             variable,
@@ -1464,7 +1475,7 @@ fn apply_global_effect(
 /// items vanish. Script `OnItemRemoved` / `OnItemAdded` see the move. Every
 /// guard is scoped: the inventory write, then equipment, then the pool, then
 /// the event batches — none is held across another.
-fn remove_items(
+pub fn remove_items(
     world: &World,
     source: EntityId,
     item_form_id: u32,
@@ -1689,7 +1700,7 @@ fn apply_inventory_effect(
 
 /// Add `count` of `item_form_id` to `container`'s inventory (creating one: in
 /// Bethesda's runtime every object can receive items), emitting `OnItemAdded`.
-fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u32) {
+pub fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u32) {
     let Some(mut inventories) = world.query_mut::<Inventory>() else {
         log::debug!("fragment AddItem skipped: Inventory component never registered");
         return;
@@ -2620,6 +2631,7 @@ fn apply_quest_scoped_effect(
         | Effect::ShowMessage { .. }
         | Effect::ShowHelpMessage { .. }
         | Effect::Notification { .. }
+        | Effect::ShowBarterMenu { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }

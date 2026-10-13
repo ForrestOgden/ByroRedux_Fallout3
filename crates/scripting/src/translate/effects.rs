@@ -1041,6 +1041,9 @@ pub enum Effect {
     ShowHelpMessage { message: ObjectRef },
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
+    /// M47.2 — `<actor>.ShowBarterMenu()`: open the barter menu with the
+    /// actor's vendor faction ([`crate::menus`]).
+    ShowBarterMenu { vendor: ActorRef },
     /// M47.2 — a local assigned a number computed at run time
     /// (`int n = Utility.RandomInt(0, 3)`), read by later [`ValueExpr::Local`]s
     /// in the same run. A fragment holding one never suspends.
@@ -2452,6 +2455,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_relationship_rank,
     prim_show_message,
     prim_notification,
+    prim_show_barter_menu,
     prim_reward_player_xp,
     prim_player_caps,
     prim_set_objective_skipped,
@@ -3027,6 +3031,18 @@ fn prim_notification(e: &Expr, _scope: &Scope) -> Option<Effect> {
         return None;
     };
     Some(Effect::Notification { text: text.clone() })
+}
+
+/// `Actor.ShowBarterMenu()` — the same zero-argument native on Skyrim,
+/// Fallout 4 and Starfield.
+fn prim_show_barter_menu(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "ShowBarterMenu")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::ShowBarterMenu {
+        vendor: receiver_actor(object, scope)?,
+    })
 }
 
 /// `Game.RewardPlayerXP(int auiXPAmount, bool abDirect = false)` with a

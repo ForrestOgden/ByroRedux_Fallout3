@@ -892,6 +892,7 @@ mod tests {
             relations,
             ranks: Vec::new(),
             reputation: None,
+            vendor: None,
         };
         let factions = HashMap::from([
             (

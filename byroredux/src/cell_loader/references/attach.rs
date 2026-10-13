@@ -200,7 +200,7 @@ pub(super) fn attach_script_for_refr(
 /// Scope: this wires the DATA layer only. Interaction (loot prompt,
 /// opening a container, `open_sound` playback) is a separate
 /// interaction-layer milestone — see the issue for the full context.
-pub(super) fn attach_container_inventory(
+pub(crate) fn attach_container_inventory(
     world: &mut byroredux_core::ecs::world::World,
     entity: byroredux_core::ecs::EntityId,
     base_form_id: u32,

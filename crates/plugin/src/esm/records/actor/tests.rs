@@ -2166,3 +2166,27 @@ fn fallout3nv_starts_dead_keys_on_base_data_health() {
     let other = parse_npc(0x6, &[sub(b"DATA", &dead)], GameKind::Skyrim, &None);
     assert!(!other.starts_dead, "the health rule must not leak to other games");
 }
+
+#[test]
+fn fact_extracts_vendor_data() {
+    // VENV: start 8, end 20, radius 600, 2 unknown, buys stolen 0,
+    // not-in-list 1, 2 unknown (Skyrim layout).
+    let mut venv = Vec::new();
+    venv.extend_from_slice(&8u16.to_le_bytes());
+    venv.extend_from_slice(&20u16.to_le_bytes());
+    venv.extend_from_slice(&600u16.to_le_bytes());
+    venv.extend_from_slice(&[0, 0, 0, 1, 0, 0]);
+    let subs = vec![
+        sub(b"EDID", b"ServicesWhiterunBelethor\0"),
+        sub(b"VEND", 0x0009_17E8u32.to_le_bytes()),
+        sub(b"VENC", 0x000A_6C25u32.to_le_bytes()),
+        sub(b"VENV", &venv),
+    ];
+    let vendor = parse_fact(0x42, &subs, &None).vendor.expect("vendor faction");
+    assert_eq!(vendor.buy_sell_list, 0x0009_17E8);
+    assert_eq!(vendor.container, 0x000A_6C25);
+    assert_eq!((vendor.start_hour, vendor.end_hour, vendor.radius), (8, 20, 600));
+    assert!(!vendor.buys_stolen);
+    assert!(vendor.everything_not_in_list);
+    assert!(parse_fact(0x43, &[sub(b"EDID", b"NCR\0")], &None).vendor.is_none());
+}

@@ -26,6 +26,7 @@ pub mod fragment;
 pub mod globals;
 pub mod load_order;
 pub mod map_markers;
+pub mod menus;
 pub mod messages;
 pub mod location;
 pub mod magic;
@@ -92,7 +93,7 @@ pub use events::{
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system, fragment_idle_forms,
+    add_items, remove_items, apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system, fragment_idle_forms,
     fragment_continuation_system, populate_owned_info_fragments_from_pex_with_providers,
     populate_owned_quest_fragments_from_pex_detailed_with_providers,
     populate_owned_quest_fragments_from_script_with_providers,
@@ -310,6 +311,7 @@ pub fn register(world: &mut World) {
     equipment::register(world);
     player_control::register(world);
     bleedout::register(world);
+    menus::register(world);
     messages::register(world);
     cinematic::register(world);
     vm_state::register(world);

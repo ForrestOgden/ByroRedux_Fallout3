@@ -61,6 +61,25 @@ impl FactionRank {
     }
 }
 
+/// A vendor faction's merchant data (Skyrim / FO4 `VEND` / `VENC` / `VENV`,
+/// xEdit `wbDefinitionsTES5` / `wbDefinitionsFO4`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VendorData {
+    /// `VEND` — the "Vendor Buy/Sell List" `FLST`, 0 when absent.
+    pub buy_sell_list: u32,
+    /// `VENC` — the "Merchant Container" `REFR`, 0 when absent.
+    pub container: u32,
+    /// `VENV` "Start Hour" / "End Hour" / "Radius".
+    pub start_hour: u16,
+    pub end_hour: u16,
+    pub radius: u16,
+    /// `VENV` "Only Buys Stolen Items" (Skyrim) / "Buys Stolen Items" (FO4).
+    pub buys_stolen: bool,
+    /// `VENV` "Not/Sell Buy" (Skyrim) / "Buy/Sell Everything Not In List?"
+    /// (FO4): the list names what the vendor does *not* trade.
+    pub everything_not_in_list: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct FactionRecord {
     pub form_id: u32,
@@ -92,6 +111,9 @@ pub struct FactionRecord {
     /// FormID→type map (100%, alongside 36 more on `REFR`). `None` on every
     /// other game — no other title in the corpus authors `WMI1`.
     pub reputation: Option<u32>,
+    /// Merchant data, `None` for a faction that authors none of `VEND` /
+    /// `VENC` / `VENV`.
+    pub vendor: Option<VendorData>,
 }
 
 // ── Parsers ───────────────────────────────────────────────────────────
@@ -106,6 +128,7 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         relations: Vec::new(),
         ranks: Vec::new(),
         reputation: None,
+        vendor: None,
     };
 
     for sub in subs {
@@ -156,6 +179,27 @@ pub fn parse_fact(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             // reputation edge (#3325). Remapped to global load-order space
             // like every other embedded FormID, so `index.reputations`
             // lookups (keyed by the remapped record header FormID) hit.
+            b"VEND" if sub.data.len() >= 4 => {
+                let list = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                record.vendor.get_or_insert_with(VendorData::default).buy_sell_list = list;
+            }
+            b"VENC" if sub.data.len() >= 4 => {
+                let container = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                record.vendor.get_or_insert_with(VendorData::default).container = container;
+            }
+            // VENV: u16 start hour, u16 end hour, u16 radius, 2 unknown
+            // bytes, u8 buys stolen, u8 not-in-list; FO4's following "Buys
+            // NonStolen Items" byte is Skyrim's unknown padding, and the
+            // parser does not know the game, so it is not read.
+            b"VENV" if sub.data.len() >= 10 => {
+                let mut r = SubReader::new(&sub.data);
+                let vendor = record.vendor.get_or_insert_with(VendorData::default);
+                vendor.start_hour = r.u16_or_default();
+                vendor.end_hour = r.u16_or_default();
+                vendor.radius = r.u16_or_default();
+                vendor.buys_stolen = sub.data[8] != 0;
+                vendor.everything_not_in_list = sub.data[9] != 0;
+            }
             b"WMI1" if sub.data.len() >= 4 => {
                 let raw = SubReader::new(&sub.data).u32_or_default();
                 record.reputation = (raw != 0).then(|| remap_fid(raw, remap));

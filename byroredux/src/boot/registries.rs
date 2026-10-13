@@ -80,6 +80,7 @@ pub(crate) fn install_runtime_registries(world: &mut World, scheduler: &Schedule
     world.insert_resource(crate::save_io::PendingPlayerSaveActions::default());
     world.insert_resource(crate::notifications::PlayerNotifications::default());
     world.insert_resource(crate::notifications::MessageBoxQueue::default());
+    world.insert_resource(crate::barter::ActiveBarter::default());
     // M45.1 refinement — player/camera pose, refreshed each frame by
     // `capture_player_pose` and rode along in the snapshot so `load`
     // restores the saved spot instead of the cell's default door.

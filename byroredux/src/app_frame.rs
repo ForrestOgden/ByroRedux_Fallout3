@@ -855,7 +855,32 @@ impl App {
             self.open_dialogue_menu();
         }
         self.close_dialogue_menu_if_goodbye_ended();
+        self.present_barter_menu();
         self.present_script_messages();
+    }
+
+    /// M47.2 — a script's `ShowBarterMenu`: the barter page replaces any
+    /// open page (ending an open conversation, as the Inventory key does).
+    fn present_barter_menu(&mut self) {
+        let Some(vendor) = byroredux_scripting::menus::take_barter_request(&self.world) else {
+            return;
+        };
+        let dialogue_page = self
+            .debug_ui
+            .as_ref()
+            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        Self::leave_dialogue_page(&self.world, dialogue_page);
+        match crate::barter::begin_barter(&mut self.world, vendor) {
+            Ok(()) => {
+                if let Some(ui) = self.debug_ui.as_mut() {
+                    ui.open_barter_menu();
+                    self.release_world_input_for_ui();
+                } else {
+                    crate::barter::end_barter(&mut self.world);
+                }
+            }
+            Err(reason) => log::info!("ShowBarterMenu declined: {reason}"),
+        }
     }
 
     /// M47.2 — route this frame's script messages: notifications join the

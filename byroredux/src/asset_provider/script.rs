@@ -682,6 +682,11 @@ pub(crate) fn populate_scene_runtime(
     // M47.2 — MESG messages, display names and globals, for Message.Show.
     let messages = byroredux_scripting::install_message_catalog(world, index);
     log::info!("Installed message catalog: {messages} messages");
+    // M47.2 — vendor factions and barter prices, for ShowBarterMenu.
+    let vendors = crate::barter::install_barter_rules(world, index);
+    if vendors > 0 {
+        log::info!("Installed barter rules: {vendors} vendor factions");
+    }
     // M47.2 — every quest's VMAD, for quest-script bodies inlined into
     // INFO and scene fragments.
     byroredux_scripting::install_quest_script_instances(world, index);

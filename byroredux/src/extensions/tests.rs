@@ -4282,6 +4282,7 @@ fn content_catalog_sync_publishes_the_live_load_order_to_the_host() {
         relations,
         ranks: Vec::new(),
         reputation: None,
+        vendor: None,
     };
     let factions = std::collections::HashMap::from([
         (

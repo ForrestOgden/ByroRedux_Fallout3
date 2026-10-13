@@ -306,6 +306,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::ShowMessage { .. } => "ShowMessage",
         Effect::ShowHelpMessage { .. } => "ShowHelpMessage",
         Effect::Notification { .. } => "Notification",
+        Effect::ShowBarterMenu { .. } => "ShowBarterMenu",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

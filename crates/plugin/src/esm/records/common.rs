@@ -422,6 +422,9 @@ pub struct CommonItemFields {
     /// on scripting-as-ECS work "gated on M30.2/M48", which had long since
     /// shipped; #369's fix reached `CommonNamedFields` only.
     pub script_instance: Option<super::script_instance::ScriptInstanceData>,
+    /// `KWDA` keyword FormIDs (Skyrim+), what a vendor's buy/sell list
+    /// matches. Empty on the games without keywords.
+    pub keywords: Vec<u32>,
 }
 
 impl CommonItemFields {
@@ -440,6 +443,12 @@ impl CommonItemFields {
         // structurally impossible to diverge; `value`/`weight` stay on this
         // struct and are filled by the per-record parser as before.
         let named = CommonNamedFields::from_subs_with_remap(subs, remap);
+        let keywords = subs
+            .iter()
+            .filter(|sub| sub.sub_type == *b"KWDA")
+            .flat_map(|sub| sub.data.chunks_exact(4))
+            .map(|raw| remap_fid(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]), remap))
+            .collect();
         Self {
             editor_id: named.editor_id,
             full_name: named.full_name,
@@ -448,6 +457,7 @@ impl CommonItemFields {
             script_form_id: named.script_form_id,
             has_script: named.has_script,
             script_instance: named.script_instance,
+            keywords,
             ..Self::default()
         }
     }

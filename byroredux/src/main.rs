@@ -15,6 +15,7 @@ mod app_frame;
 mod app_step;
 mod loading_screen;
 mod asset_provider;
+mod barter;
 mod bench;
 mod bench_camera;
 mod boot;
@@ -1350,6 +1351,7 @@ impl App {
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
+        crate::barter::end_barter(&mut self.world);
         let opened = self
             .debug_ui
             .as_mut()
@@ -1369,6 +1371,7 @@ impl App {
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
+        crate::barter::end_barter(&mut self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.open_inventory_menu();
             self.release_world_input_for_ui();
@@ -1407,6 +1410,7 @@ impl App {
             .as_ref()
             .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
         Self::leave_dialogue_page(&self.world, dialogue_page);
+        crate::barter::end_barter(&mut self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1516,6 +1520,7 @@ fn build_debug_ui_snapshot(
             .flatten(),
         // Empty outside a script message box: the queue drains as answered.
         message_box: crate::notifications::front_message_box(world),
+        barter: crate::barter::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
     }
@@ -1612,6 +1617,12 @@ fn apply_debug_ui_outputs(
     for action in outputs.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
             log::warn!("native inventory action was unavailable for the current player/item");
+        }
+    }
+    // M47.2 — barter trades, one unit each; a refusal is player feedback.
+    for action in outputs.barter_actions {
+        if let Err(reason) = crate::barter::apply_action(world, action) {
+            crate::notifications::push(world, reason);
         }
     }
     for action in outputs.dialogue_actions {
