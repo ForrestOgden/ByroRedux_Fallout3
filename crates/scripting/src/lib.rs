@@ -148,7 +148,7 @@ pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwn
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
-pub use linked_refs::{linked_ref, LinkedRefOverrides};
+pub use linked_refs::{linked_ref, linked_ref_children, LinkedRefOverrides};
 pub use loc_ref_types::{has_loc_ref_type, LocRefTypeOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
 pub use followers::{FollowerFlag, FollowerFlags, FollowerState};

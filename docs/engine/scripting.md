@@ -738,6 +738,10 @@ runtime:
   is the host's.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
+- **Linked reference lists.** `GetLinkedRefChain(keyword, max)` returns the chain after the
+  reference ("will stop if it finds a loop", or at `iMaxExpectedLinkedRefs`, default 100), and
+  `GetLinkedRefChildren(keyword)` the loaded references directly linked to it (CK pages of the
+  same names); both read the effective link of `linked_ref` (a script's over the authored one).
 - **Linked references.** `GetNthLinkedRef(n[, keyword])` follows the link under
   the keyword (default none) n times; 0 is the object itself (CK *GetNthLinkedRef*).
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the

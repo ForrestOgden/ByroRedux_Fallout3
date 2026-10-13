@@ -2646,6 +2646,37 @@ fn get_nth_linked_ref_follows_the_chain_under_a_keyword() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `GetLinkedRefChain` lists the chain after the reference and stops at a
+/// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
+/// it.
+#[test]
+fn linked_ref_chain_and_children() {
+    const SECOND: u32 = 0x0002_0001;
+    const THIRD: u32 = 0x0002_0002;
+    let script = parsed_source(
+        "ScriptName QF_VmChain extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           ObjectReference[] chain = Marker.GetLinkedRefChain(None, 100)\n\
+           ObjectReference[] capped = Marker.GetLinkedRefChain(None, 1)\n\
+           If chain.Length == 2 && capped.Length == 1\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    {
+        let mut links = world.resource_mut::<crate::LinkedRefOverrides>();
+        links.set(MARKER, 0, SECOND);
+        links.set(SECOND, 0, THIRD);
+        links.set(THIRD, 0, MARKER); // a loop back to the start
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `PlaceAtMe` creates the references through the saved `CreatedReferences`
 /// (FormIDs in the scripted half of the created slot), returns the last one,
 /// disables only that one when asked, and flags `DeleteWhenAble`.

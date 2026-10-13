@@ -2592,6 +2592,8 @@ impl Vm<'_> {
                     | "geteditorlocation"
                     | "getcurrentpackage"
                     | "getfactionreaction"
+                    | "getlinkedrefchain"
+                    | "getlinkedrefchildren"
             );
         if !reads {
             return Ok(None);
@@ -2848,6 +2850,45 @@ impl Vm<'_> {
                     None => 0,
                 };
                 Some(self.linked_ref(*form, keyword).map_or(Value::None, Value::Form))
+            }
+            // CK *GetLinkedRefChain*: the references the object is linked to
+            // under the keyword, and whatever those are linked to, and so on;
+            // "Will stop if it finds a loop", or at `iMaxExpectedLinkedRefs`
+            // (default 100).
+            (Value::Form(form), "getlinkedrefchain") if args.len() <= 2 => {
+                let values = self.eval_args(frame, args)?;
+                let keyword = match values.first() {
+                    Some(Value::Form(keyword)) => *keyword,
+                    _ => 0,
+                };
+                let limit = values.get(1).and_then(Value::number).map_or(100, |max| max.max(0.0) as usize);
+                let mut seen = vec![*form];
+                let mut current = *form;
+                while seen.len() - 1 < limit {
+                    let Some(next) = self.linked_ref(current, keyword) else {
+                        break;
+                    };
+                    if seen.contains(&next) {
+                        break;
+                    }
+                    seen.push(next);
+                    current = next;
+                }
+                let chain = seen.into_iter().skip(1).map(Value::Form).collect();
+                Some(Value::Array(Rc::new(RefCell::new(chain))))
+            }
+            // CK *GetLinkedRefChildren*: the loaded references directly linked
+            // to this one under the keyword.
+            (Value::Form(form), "getlinkedrefchildren") if args.len() == 1 => {
+                let keyword = match self.eval(frame, &args[0].value.node)? {
+                    Value::Form(keyword) => keyword,
+                    _ => 0,
+                };
+                let children = crate::linked_ref_children(self.world, *form, keyword)
+                    .into_iter()
+                    .map(Value::Form)
+                    .collect();
+                Some(Value::Array(Rc::new(RefCell::new(children))))
             }
             // CK *GetNthLinkedRef*: 0 is the object itself, n follows the link
             // under the keyword (default none) n times.
@@ -4526,6 +4567,22 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Object);
             }
             (Kind::Object | Kind::Player, "getcurrentpackage") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "getlinkedrefchain")
+                if arg_kinds.len() <= 2
+                    && arg_kinds.first().is_none_or(|keyword| {
+                        matches!(keyword, Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object))
+                    })
+                    && arg_kinds
+                        .get(1)
+                        .is_none_or(|max| matches!(max, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num))) =>
+            {
+                return Some(Kind::Array);
+            }
+            (Kind::Object | Kind::Player, "getlinkedrefchildren")
+                if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object)]) =>
+            {
+                return Some(Kind::Array);
+            }
             (Kind::Object | Kind::Player, "getfactionreaction")
                 if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) =>
             {
