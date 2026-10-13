@@ -400,7 +400,7 @@ open:
   global and actor-value writes in every spelling, perks, alias
   `ForceRefTo` / `Clear`, and `BlockActivation`.
 
-Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 59.8% on
+Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 63.2% on
 2026-10-13. The 2026-10-13 work added map markers, script story events,
 cleared locations, `Kill`, `SetEssential` / `SetProtected`, the
 enable-state / faction / 3D-loaded / distance guards, and quests reached
@@ -417,13 +417,30 @@ and, where a session can show it, live:
 What remains is outside this milestone's shape, each owned by a subsystem
 that does not exist yet:
 
-- **The fragment long tail** (~40% of fragments; `fragment_coverage` now
+- **The fragment long tail** (~37% of fragments; `fragment_coverage`
   reports a failing `If` by its branch statement, `If>shape`, or as
-  `If(condition)`). It is led by bespoke script functions:
-  `UpdateRadio` 437, `MoveSpouse` 406, `Startup` 240 and `ReArmTrigger` 231.
-  INFO and scene fragments cannot inline them, since their callee properties
-  live on the owning quest's VMAD. The rest is `If`s over unmodelled reads,
-  barter/UI menus,
+  `If(condition)`; `DECLINE_TOP=n` widens the list). The 2026-10-13 pass
+  added several mechanisms:
+  - INFO and scene calls into the quest script (`QuestScope`), with the
+    script's own variables;
+  - typed quest and object properties;
+  - run-time numbers (`ValueExpr`, `Compare`, `SetLocal`);
+  - reference script variables;
+  - relationships, `Kill`, caps and XP rewards.
+
+  What leads now needs subsystems, not lowering:
+  - script functions taking arguments over arrays and structs (`MoveSpouse`
+    406, `GetMySquad` 200);
+  - menus (`ShowBarterMenu` 313, `Message.Show` 114);
+  - timers and event registration (`Startup` 240, `RegisterForUpdate`);
+  - reference-script functions (`ReArmTrigger` 231);
+  - music types (`MusicType.Add` 164; xWMA music cannot be decoded yet);
+  - animation graphs (`PlayAnimation` 144);
+  - FO4 AI actor values with no `AVIF` (`Game.GetAggressionAV`);
+  - workshop and assault systems.
+
+  A general Papyrus interpreter (Approach 3) would need those natives
+  first. The rest is `If`s over unmodelled reads, barter/UI menus,
   and script-filled reference
   collections (FO4's 554 `ALCS` aliases carry no fill data; scripts `AddRef`
   them). The player's `MoveTo` (teleport) shipped 2026-10-12, alias
