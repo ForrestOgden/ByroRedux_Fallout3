@@ -1253,6 +1253,15 @@ the constant names). The traps (`physicstrap`, `soundtrap`, `tripwire`, `magictr
 this native but still stop on `CalculateEncounterLevel`, whose level formula the CK does not
 give.
 
+### GetCurrentPackage (M47.2)
+
+CK *GetCurrentPackage - Actor*: the package the actor runs now. The AI already reports
+every package change to the package fragments (`report_package_transition`: the spawn
+winner, a re-selection, a combat suspension), and that report now also keeps
+`ActivePackages` (entity → package, unsaved: the AI reports again when an actor spawns after
+a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
+it as a value; an actor running none reads None.
+
 ### MusicType.Add / Remove (M47.2)
 
 CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start

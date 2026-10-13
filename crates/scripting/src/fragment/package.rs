@@ -137,8 +137,28 @@ pub fn report_package_end(world: &World, actor: EntityId, package: u32) {
     }
 }
 
+/// The package each actor is running now, by entity, kept from the
+/// transitions the host reports (`Actor.GetCurrentPackage`). `NOT_SAVED_BY_DESIGN`:
+/// the AI reports every actor's package again when it spawns after a load.
+#[derive(Debug, Default)]
+pub struct ActivePackages(pub HashMap<EntityId, u32>);
+
+impl Resource for ActivePackages {}
+
 /// Report that `actor`'s package changed from `from` to `to`.
 pub fn report_package_transition(world: &World, actor: EntityId, from: Option<u32>, to: Option<u32>) {
+    // Before the no-change early return: a spawn that reports no package must
+    // still clear what an earlier occupant of a reused entity id left.
+    if let Some(mut active) = world.try_resource_mut::<ActivePackages>() {
+        match to {
+            Some(package) => {
+                active.0.insert(actor, package);
+            }
+            None => {
+                active.0.remove(&actor);
+            }
+        }
+    }
     if from == to {
         return;
     }

@@ -201,6 +201,7 @@ pub fn register(world: &mut World) {
     world.insert_resource(PackageFragments::default());
     world.insert_resource(PendingPackageTransitions::default());
     world.insert_resource(PendingPackageEnds::default());
+    world.insert_resource(ActivePackages::default());
 }
 
 /// Execute the lowered Papyrus fragments emitted by scene playback this

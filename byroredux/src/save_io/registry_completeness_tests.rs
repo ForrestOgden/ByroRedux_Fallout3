@@ -673,6 +673,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("QuestStageFragments", "populated once at cell load from decoded VMAD/PEX, only ever read afterward"),
         ("PapyrusReferenceScripts", "M47.2 — the reference scripts the Papyrus VM runs on an entity, re-derived from the REFR/base VMAD at every cell attach; the scripts' variables and states live in the saved QuestScriptVariables / QuestScriptObjects under the reference's FormID"),
         ("PackageFragments", "M47.2 — the PF_ package fragments the Papyrus VM runs, populated once from the PACK VMADs and scripts, only read afterward"),
+        ("ActivePackages", "M47.2 — each actor's current package, kept from the AI's transition reports (rebuilt at spawn after a load)"),
         ("PendingPackageEnds", "M47.2 — package completions the AI reports (Travel arrival), drained the same frame by package_fragment_system"),
         ("PendingPackageTransitions", "M47.2 — package transitions the AI reports, drained the same frame by package_fragment_system"),
         ("CollectionAliasKinds", "M47.2 — which collection aliases the quests leave to scripts, derived from the installed QUST alias definitions at every load order install"),

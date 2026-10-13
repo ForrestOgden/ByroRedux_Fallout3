@@ -2590,6 +2590,7 @@ impl Vm<'_> {
                     | "enablelinkchain"
                     | "disablelinkchain"
                     | "geteditorlocation"
+                    | "getcurrentpackage"
             );
         if !reads {
             return Ok(None);
@@ -2716,6 +2717,17 @@ impl Vm<'_> {
                 }
                 Some(Value::None)
             }
+            // CK *GetCurrentPackage - Actor*: the package the actor runs now,
+            // from the AI's transition reports; None while it runs none.
+            (Value::Form(actor), "getcurrentpackage") if args.is_empty() => Some(
+                self.entity_of(*actor)
+                    .and_then(|entity| {
+                        self.world
+                            .try_resource::<super::ActivePackages>()
+                            .and_then(|active| active.0.get(&entity).copied())
+                    })
+                    .map_or(Value::None, Value::Form),
+            ),
             // CK *GetEditorLocation*: the reference's editor location.
             (Value::Form(reference), "geteditorlocation") if args.is_empty() => Some(
                 self.entity_of(*reference)
@@ -4496,6 +4508,7 @@ impl<'l> Checker<'l> {
             ) => {
                 return Some(Kind::Object);
             }
+            (Kind::Object | Kind::Player, "getcurrentpackage") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "getnthlinkedref")
                 if match arg_kinds.as_slice() {
                     [hops] | [hops, _] => {

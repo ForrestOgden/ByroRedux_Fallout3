@@ -2392,6 +2392,44 @@ fn help_message_helper_with_run_time_arguments_runs() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `GetCurrentPackage` reads the package the AI last reported for the actor,
+/// and None once it reports none.
+#[test]
+fn get_current_package_follows_the_reported_transitions() {
+    const PACKAGE: u32 = 0x0001_0F40;
+    let script = parsed_source(
+        "ScriptName QF_VmPackage extends Quest\n\
+         Actor Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetCurrentPackage()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER),
+    });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    let run = |world: &World| {
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(&world), 10, "no package reported");
+    crate::report_package_transition(&world, marker, None, Some(PACKAGE));
+    assert_eq!(world.resource::<crate::ActivePackages>().0.get(&marker), Some(&PACKAGE));
+    assert_eq!(run(&world), 20, "a package is running");
+    crate::report_package_transition(&world, marker, Some(PACKAGE), None);
+    assert_eq!(run(&world), 10, "the package ended");
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]
