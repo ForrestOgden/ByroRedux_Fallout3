@@ -357,7 +357,52 @@ order: when an artifact reads as "chrome / posterized", run
 
 ## 2. Superseded bench records
 
-### Attribution narrative for the live `a37fcba3c` record (moved 2026-10-10)
+Moved verbatim from ROADMAP's bench-of-record section at the Session 99 close,
+when `a3a7a43b0` became the record.
+
+### Superseded — stepped-camera refresh (2026-09-28, HEAD `a37fcba3c`)
+
+Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
+1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
+rejections**, every scene-state fingerprint gate passing. Raw rows:
+`docs/audits/BENCH_stepped-camera_a37fcba3c.tsv`.
+Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `88c23887b`.
+
+**Run conditions:** RTX 4070 Ti, 1380 / 12282 MiB VRAM in use and 1%
+utilisation at start; desktop apps (browser, mail, chat, editor) resident but
+idle. First record run with `BYROREDUX_SETTINGS_PATH` pointed at a fresh file,
+so no persisted menu setting reached any run (#4947). Every config passes
+`--upscaler` explicitly, so the persisted upscaler could not have leaked into
+earlier records either; the other persisted settings could have.
+
+| Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
+|---|---:|---:|---:|---:|
+| Cornell (37 ent, redistributable control) | **93.3 FPS / 10.72 ms** | 122.8 FPS / 8.15 ms | +2.57 ms (+24%) | 173.9 / 5.75 (+46%) |
+| Prospector (3114 ent) | **80.1 FPS / 12.48 ms** | 97.2 FPS / 10.29 ms | +2.19 ms (+18%) | 128.0 / 7.82 (+37%) |
+| Whiterun BanneredMare (5777 ent) | **83.8 FPS / 11.93 ms** | 134.2 FPS / 7.45 ms | +4.48 ms (+38%) | 190.9 / 5.24 (+56%) |
+| MedTek Research 01 (39560 ent) | **19.8 FPS / 50.50 ms** | 37.1 FPS / 26.98 ms | +23.52 ms (+47%) | 51.5 / 19.42 (+62%) |
+| FO4 Dugout Inn (11592 ent) | **41.2 FPS / 24.29 ms** | 68.4 FPS / 14.61 ms | +9.68 ms (+40%) | 89.5 / 11.18 (+54%) |
+
+FSR Quality remains a net win on all five scenes (+18% to +47%), Performance
+reaches +37% to +62%, and `native-aa` still loses 2% to 8%. MedTek
+`fsr-balanced` is not usable from this capture: one run took 50.1 ms against
+23.1 ms for another while its main pass stayed at ~20 ms in all three, i.e. a
+stall outside the GPU in one run.
+
+**Against the previous record (`4c9a5b36`) this is a large regression on FO4
+content** (Dugout TAA 11.12 → 24.29 ms, MedTek TAA 37.64 → 50.50 ms), carried
+by the fence wait; R6a-regress-22 later traced most of it to the bench
+camera's spawn move. Content was not unchanged either: Prospector lost ~35
+instances in the window to the dismemberment-cap reclassification and has
+moved twice since. Compare wall and fence only. The full attribution
+narrative, with every probe pair, is in
+[`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records).
+
+The 90-run same-session control behind this record (`4c9a5b36` vs
+`99933f87b` vs `a37fcba3c`), superseded by R6a-regress-22's pinned-pose
+reading, is in [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records).
+
+### Attribution narrative for the `a37fcba3c` record (moved 2026-10-10)
 
 Moved verbatim from ROADMAP's bench-of-record section at the Session 97 close
 to bring ROADMAP back under its 800-line cap; ROADMAP keeps a summary.
@@ -391,7 +436,7 @@ R6a-stale-22). The fence wait carries the regression (Dugout TAA 4.13 →
 merge rate at flat draw counts (Dugout `1935/326b/12c` → `2367/659b/43c`,
 Prospector `928/54b/6c` → `904/257b/68c`, MedTek 29 → 82 GPU calls).
 
-### Same-session control for the live `a37fcba3c` record (90 runs, Dugout + MedTek, 2026-09-28)
+### Same-session control for the `a37fcba3c` record (90 runs, Dugout + MedTek, 2026-09-28)
 
 Moved from ROADMAP at the Session 95 close; its third conclusion was
 superseded by #5128 (R6a-regress-22, a camera-origin move).

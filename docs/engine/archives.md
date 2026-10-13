@@ -369,7 +369,7 @@ on real Oblivion NetImmerse-era content.
   `u32` underflow when computing remaining bytes after the embedded-name
   prefix skip. Guarded with a checked subtraction that returns an
   `InvalidData` error instead of wrapping.
-- **Auto-detection from magic** (session 10, `asset_provider.rs`) — the
+- **Auto-detection from magic** (session 10, `asset_provider/archive.rs`) — the
   cell loader no longer hard-codes BSA vs BA2 per game; the loader peeks
   the 4-byte magic (`BSA\0` vs `BTDX`) and picks the reader. FO4
   installations with a mix of `.ba2` and `.bsa` (modded content) now

@@ -20,17 +20,17 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 98, 2026-10-12, HEAD `bc29e8923`. Workspace
+**Last session close:** Session 99, 2026-10-13, HEAD `a3a7a43b0`. Workspace
 numbers (tests, LOC, files, issue dirs) live in [Project Stats](#project-stats)
 only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.96.0 (#5308), which is also the
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
---workspace -- -D warnings` is **red** (5 lints, re-run at this close), and
-hosted CI is **red at HEAD on two jobs**: Test + Check + Clippy and the
-ABBA lock-order lane (both in Known Issues). All 9724 tests themselves pass.
+--workspace -- -D warnings` is **red** (8 lints in `core` and `scripting`; the
+crates behind them were not reached, Known Issues). The ABBA lock-order lane
+ran clean locally (9848 tests, no cycle). All 9955 tests pass.
 The bench-of-record below was taken at
-`a37fcba3c`, 812 commits before this close (R6a-stale-28). Its one open
+`a3a7a43b0`, this close's HEAD. Its one open
 regression, **R6a-regress-22**, turned out to be
 the bench camera moving with `b9e961eeb`'s interior spawn ladder, not
 renderer code (#5128, 2026-09-30); a small residual stays open — the
@@ -71,10 +71,11 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   (P5, 2026-10-01; soak's intermittent restore defect tracked in #5155).
 - **Scripting.** ECS-native event hooks and condition evaluator
   (M47.0/M47.1). Compiled `.pex` is decompiled and lowered through a
-  recognizer chain, with QUST fragments and aliases, and SCEN/PACK scenes
-  (MQ101 plays end-to-end). An SCDA interpreter runs Oblivion quest scripts
-  (M47.3). A first magic-runtime slice covers spell lists and the RACE
-  `SPLO` racial pair (#4415).
+  recognizer chain (QUST fragments, aliases, SCEN/PACK scenes; MQ101 plays
+  end-to-end), with a bounded Papyrus interpreter for the fragments and
+  reference scripts it declines (M47.2). An SCDA interpreter runs Oblivion
+  quest scripts (M47.3). A first magic-runtime slice covers spell lists and
+  the RACE `SPLO` racial pair (#4415).
   Dialogue: NPC activation selects a topic, a native response surface
   presents the INFO, and its `TIF_` fragments dispatch (P4).
   Story Manager (#5366 Phases 0–4, 2026-10-07 → 10-08): Skyrim+ quests autostart
@@ -132,7 +133,7 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
 
 **Repro-command CWD note:** bare `--bsa` / `--textures-bsa` / `--materials-ba2` names resolve against CWD, not the `--esm` folder. Run each bench with CWD set to that game's `Data/` directory. Run from elsewhere → archives silently fail → scene loads near-empty (Prospector: 36 entities / 3 meshes / spurious ~1792 FPS).
 
-**CWD-immune alternative (#3346):** `--game <profile>` (`fnv` / `fo3` / `skyrim` / …) expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml` via `expand_game_profile_args` (`byroredux/src/boot.rs`), so it works from any CWD and cannot mistype an archive name. Prefer it for ad-hoc runs and audits:
+**CWD-immune alternative (#3346):** `--game <profile>` (`fnv` / `fo3` / `skyrim` / …) expands to *absolute* `--esm` / `--bsa` / `--textures-bsa` paths from `assets/debug_profiles.toml` via `expand_game_profile_args` (`byroredux/src/boot/cli.rs`), so it works from any CWD and cannot mistype an archive name. Prefer it for ad-hoc runs and audits:
 `cargo run --release -- --game fnv --cell GSProspectorSaloonInterior --bench-frames 300 --bench-hold`.
 The bench-of-record table below deliberately keeps the bare-name + `cd` form for apples-to-apples continuity with the historical record — do not restate those numbers under a different invocation shape.
 
@@ -153,47 +154,45 @@ Superseded records (R6a-stale-15 at `8a668eff` through `4c9a5b36`) are in
 [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records);
 raw rows for every matrix are in `docs/audits/BENCH_*.tsv`.
 
-### Bench-of-record (LIVE) — stepped-camera refresh (2026-09-28, HEAD `a37fcba3c`)
+### Bench-of-record (LIVE) — stepped-camera refresh (2026-10-13, HEAD `a3a7a43b0`)
 
 Full matrix, 5 scenes × 5 configs × 3 runs of 300 frames, median with range,
 1280×720 output, per-scene CWD set to that game's `Data/`. **75 runs, zero
 rejections**, every scene-state fingerprint gate passing. Raw rows:
-`docs/audits/BENCH_stepped-camera_a37fcba3c.tsv`.
-Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `88c23887b`.
+`docs/audits/BENCH_stepped-camera_a3a7a43b0.tsv`.
+Repro: `scripts/fsr-bench-matrix.sh 3 300`, harness `a4ede5fa0`.
 
-**Run conditions:** RTX 4070 Ti, 1380 / 12282 MiB VRAM in use and 1%
-utilisation at start; desktop apps (browser, mail, chat, editor) resident but
-idle. First record run with `BYROREDUX_SETTINGS_PATH` pointed at a fresh file,
-so no persisted menu setting reached any run (#4947). Every config passes
-`--upscaler` explicitly, so the persisted upscaler could not have leaked into
-earlier records either; the other persisted settings could have.
+**Same-machine control:** the outgoing record `a37fcba3c` rebuilt in a
+worktree and run scene by scene, interleaved with HEAD, under HEAD's harness
+copied in byte-identically (its TSV header still stamps `88c23887b`; the copy
+was uncommitted there):
+`docs/audits/CONTROL_stepped-camera_a37fcba3c_under-a4ede5fa0.tsv`. Both builds
+report the same camera pose on all five scenes.
+
+**Run conditions:** RTX 4070 Ti, 2541 / 12282 MiB VRAM in use at 16%
+utilisation, 1-minute load average 2.5 at start, desktop apps resident;
+`BYROREDUX_SETTINGS_PATH` fresh per invocation. Not an idle machine.
 
 | Scene | TAA (native) | FSR Quality | net recovery | FSR Performance |
 |---|---:|---:|---:|---:|
-| Cornell (37 ent, redistributable control) | **93.3 FPS / 10.72 ms** | 122.8 FPS / 8.15 ms | +2.57 ms (+24%) | 173.9 / 5.75 (+46%) |
-| Prospector (3114 ent) | **80.1 FPS / 12.48 ms** | 97.2 FPS / 10.29 ms | +2.19 ms (+18%) | 128.0 / 7.82 (+37%) |
-| Whiterun BanneredMare (5777 ent) | **83.8 FPS / 11.93 ms** | 134.2 FPS / 7.45 ms | +4.48 ms (+38%) | 190.9 / 5.24 (+56%) |
-| MedTek Research 01 (39560 ent) | **19.8 FPS / 50.50 ms** | 37.1 FPS / 26.98 ms | +23.52 ms (+47%) | 51.5 / 19.42 (+62%) |
-| FO4 Dugout Inn (11592 ent) | **41.2 FPS / 24.29 ms** | 68.4 FPS / 14.61 ms | +9.68 ms (+40%) | 89.5 / 11.18 (+54%) |
+| Cornell (37 ent, redistributable control) | **97.8 FPS / 10.23 ms** | 127.7 FPS / 7.83 ms | +2.40 ms (+23%) | 189.1 / 5.29 (+48%) |
+| Prospector (2359 ent) | **83.0 FPS / 12.05 ms** | 109.9 FPS / 9.10 ms | +2.95 ms (+24%) | 148.9 / 6.71 (+44%) |
+| Whiterun BanneredMare (5825 ent) | **92.4 FPS / 10.82 ms** | 148.4 FPS / 6.74 ms | +4.08 ms (+38%) | 215.5 / 4.64 (+57%) |
+| MedTek Research 01 (25667 ent) | **38.9 FPS / 25.68 ms** | 62.1 FPS / 16.10 ms | +9.58 ms (+37%) | 75.1 / 13.32 (+48%) |
+| FO4 Dugout Inn (9347 ent) | **68.8 FPS / 14.54 ms** | 90.4 FPS / 11.07 ms | +3.47 ms (+24%) | 123.5 / 8.10 (+44%) |
 
-FSR Quality remains a net win on all five scenes (+18% to +47%), Performance
-reaches +37% to +62%, and `native-aa` still loses 2% to 8%. MedTek
-`fsr-balanced` is not usable from this capture: one run took 50.1 ms against
-23.1 ms for another while its main pass stayed at ~20 ms in all three, i.e. a
-stall outside the GPU in one run.
-
-**Against the previous record (`4c9a5b36`) this is a large regression on FO4
-content** (Dugout TAA 11.12 → 24.29 ms, MedTek TAA 37.64 → 50.50 ms), carried
-by the fence wait; R6a-regress-22 later traced most of it to the bench
-camera's spawn move. Content was not unchanged either: Prospector lost ~35
-instances in the window to the dismemberment-cap reclassification and has
-moved twice since. Compare wall and fence only. The full attribution
-narrative, with every probe pair, is in
-[`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records).
-
-The 90-run same-session control behind this record (`4c9a5b36` vs
-`99933f87b` vs `a37fcba3c`), superseded by R6a-regress-22's pinned-pose
-reading, is in [`roadmap-history.md` §2](docs/archive/roadmap-history.md#2-superseded-bench-records).
+FSR Quality is a net win on all five scenes (+23% to +38%), Performance +44%
+to +57%, and `native-aa` loses 3% to 4%. Cornell is the only content-identical
+control (37 entities, 32 draws on both builds): TAA 10.76 → 10.23 ms (−4.9%),
+Quality 8.07 → 7.83 ms, Balanced and Performance level. Every game scene's
+content moved between the records (control → HEAD entities: Prospector
+3114 → 2359, Whiterun 5777 → 5825, MedTek 39560 → 25667, Dugout 11592 → 9347,
+with draws and TLAS instances), so their frame-time drops (TAA: Prospector
+13.16 → 12.05, Whiterun 11.02 → 10.82, MedTek 48.34 → 25.68, Dugout
+22.37 → 14.54 ms) are not claimed as speed-ups. Prospector's change is the
+documented `f87490826` withholding; the MedTek and Dugout shifts are
+unattributed. **No scene mounts `--scripts-bsa`, so this record cannot see the
+Papyrus interpreter** (first Known Issue).
 
 ### Compatibility matrix
 
@@ -418,7 +417,7 @@ rewrite pressure.
 | Coordinate system                            | Z-up→Y-up with CW angle negation                                | Documented in `docs/engine/coordinate-system.md`. Keep.                                                                                                                                                                |
 | Rendering                                    | RT-first, rasterized fallback                                   | Scoped to RTX 4070 Ti target. Correct for this hardware. Keep.                                                                                                                                                         |
 | Legacy compat                                | Parse data, don't emulate engine                                | Better results, clean room, no copyright issues. Keep.                                                                                                                                                                 |
-| Scripting                                    | ECS-native (no VM)                                              | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. R5's one-quest prototype (closed 2026-05-16) confirmed the call; M47.2 builds on it.                             |
+| Scripting                                    | ECS-native; bounded interpreter fallback, per-frame budget pending | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. R5's one-quest prototype (closed 2026-05-16) confirmed the call; M47.2 builds on it.                             |
 
 ### Risk-reducers (R1–R7, 2026-04-22)
 
@@ -573,21 +572,17 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **R6a-stale-28 — bench-of-record `a37fcba3c` is 812 commits stale**
-  (2026-10-12 close). Frame-path changes since include #5154, #5018/#5191,
-  #5062, #5064, #4902/#4909/#4915, #5055/#4784, #5158's exposure retune
-  (`7d99ba7f0`), #5243, #5192, #5204, #5245, the sun-disc / sunset-palette
-  changes (`c60405083`, `56786698b`), Session 97's #5482 shadow toe, #5507 EMA
-  key, #5211 and the 2026-10 dependency refresh, and in Session 98 #5369's
-  dithered shadow rays + 1024-deep tail (`4d991bad7`, `48bed0504`) and #5565. Re-run
-  `scripts/fsr-bench-matrix.sh 3 300` with a
-  same-machine control; no HEAD frame-time claim is current until then.
-  The harness pair has moved twice since the record
-  (`scripts/check-bench-harness-provenance.sh a37fcba3c` reports DIVERGED);
-  both edits carry a recorded disposition (#5451, incl. the 2026-10-11
-  one-binary interleaved control — identical state_hash/entities/draws/
-  lights/TLAS, 12.03 vs 12.06 ms — so neither changes the Prospector row).
-  The 812-commit staleness above is what remains.
+- [ ] **Papyrus interpreter cost is unbudgeted** (measured 2026-10-13,
+  `docs/audits/BENCH_vm-cost_a3a7a43b0.txt`). Real cells are cheap: its
+  systems total ~70 µs/frame on Bleak Falls Barrow and single digits on the
+  Bannered Mare, and a scripted-scene A/B adds 0.16 ms (+1.0%). But all four
+  run as exclusive `Update` systems and nothing bounds them per frame. (1)
+  `script_update_system` rebuilds a map of every attached reference script
+  each frame, registration or not: ~0.31 µs per script (1.6 ms at 5 000, 6.9
+  ms at 20 000). (2) The 100 000-statement cap is per run: one runaway handler
+  costs 13.7 ms (82% of a 60 fps frame) and several in a frame add up. (3) An
+  `OnCellLoad` burst costs ~1.8 µs per reference (9 ms at 5 000). No per-frame
+  step budget exists. The Scripting keep-list row was reworded to match.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -690,13 +685,12 @@ performance finding. The measured knob table is in
 
 ### Infrastructure and tooling
 
-- [ ] **Hosted CI red at HEAD on two jobs** (2026-10-12). ABBA lane: green at
-  `1cb12fb3d` (#5535), red again since `6709eb65e` (#5734). Dialogue INFO
-  selection holds `QuestStageState` then `DialogueQuestConditions`, and its
-  `evaluate()` re-reads `QuestStageState` for `GetQuestRunning` under both
-  (`crates/scripting/src/dialogue.rs`, a production nest; 1 scripting test).
-  Clippy: 5 lints (`physics/world/mod.rs`, `texture_registry/dynamic_rgba.rs`,
-  `vulkan/reflect.rs`) that were red all of Session 98. Neither is filed yet.
+- [ ] **Clippy step red** (2026-10-13). `cargo clippy --workspace -- -D
+  warnings` on 1.96.0 stops at `core` (`character/leveling.rs:180`,
+  `manual_is_multiple_of`); with it allowed, `scripting` adds 7
+  (`translate/effects.rs`, `fragment/effects.rs`, `fragment/vm.rs`) and the
+  `byroredux` bin is not reached. `9896b1cf7` had re-zeroed the gate on
+  10-12. The ABBA lane ran clean locally at HEAD. Not yet filed.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
@@ -707,17 +701,17 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-12 (session close, HEAD `bc29e8923`). Every
+Ground-truth as of 2026-10-13 (session close, HEAD `a3a7a43b0`). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~725 871                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~778 307                 |
-| Source files (`.rs`, excl. `target/`)   | 1244 total · 1153 outside `tests/` dirs (+7 / +7 since the 2026-10-10 close) |
+| Rust source lines (`src/` dirs)         | ~756 381                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~809 426                 |
+| Source files (`.rs`, excl. `target/`)   | 1288 total · 1195 outside `tests/` dirs (+44 / +42 since the 2026-10-12 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **9724 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-12; 299 ignored; the lock-order detector is off in this count — see the hosted-CI Known Issue). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 5720 (`.claude/issues/`)     |
+| Tests                                   | **9955 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-13; 311 ignored; the lock-order detector is off in this count — a `BYRO_LOCK_ORDER_CHECK=1` run without `byroredux-ui` passed 9848). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 5724 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 057** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-09-29 re-measure swept 102 968 over 4 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 968 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
@@ -731,7 +725,9 @@ figure in this table was measured at that HEAD, not carried forward.
 
 | Claim                                                                     | Command                                                                                                                                                                                        |
 |---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `a37fcba3c`, 2026-09-28). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Bench-of-record (LIVE)** — the command behind every FPS/ms figure in the live bench table above (§Bench-of-record, HEAD `a3a7a43b0`, 2026-10-13). Per-scene CWD applies; scene subset via `FSR_BENCH_SCENES`, output via `FSR_BENCH_OUT`. The default set is four interiors plus Cornell — no ground cover (R6a-groundcover-1). | `scripts/fsr-bench-matrix.sh 3 300` |
+| **Papyrus interpreter cost census** — every µs/ms figure in the interpreter Known Issue (idle scan, `OnCellLoad` burst, polling, runaway cap) | `cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost` |
+| **Scripted-scene A/B** — the +0.16 ms / +1.0% figure: BleakFallsBarrow01 from Skyrim `Data/`, 3 alternating runs with and without `--scripts-bsa` (the ~70 µs per-system figures come from the log patch recorded in the audit file) | `byroredux --esm Skyrim.esm --cell BleakFallsBarrow01 --bsa "Skyrim - Meshes0.bsa" --bsa "Skyrim - Meshes1.bsa" --textures-bsa "Skyrim - Textures0.bsa" … --upscaler taa --bench-frames 600 --bench-mode renderer-stepped --bench-camera orbit [--scripts-bsa "Skyrim - Misc.bsa"]` |
 | **Same-machine control** (the method that makes a refresh interpretable — see **Standing methodology** under How to run a bench; used to prove PERF-REGRESSION-6c56e311 was code, and to prove R6a-stale-17's apparent regressions were not). Rebuild the prior record's commit in a worktree and bench it in the same session under the same load; the harness must be byte-identical at both commits (`diff` both scripts before trusting the comparison). | `git worktree add <dir> <prior-commit> && cd <dir> && cargo build --release && FSR_BENCH_SCENES="cornell prospector medtek" FSR_BENCH_OUT=<dir>/out <dir>/scripts/fsr-bench-matrix.sh 3 300` |
 | **Upscaler SSIM quality matrix** — the SSIM / outlier-percentage figures quoted for every preset (Cornell Quality 0.9554 SSIM / 1.68% outliers, Performance 0.9199 / 5.39%; FO4 Dugout higher SSIM, worse outliers). Scores each preset against the native TAA render over five deterministic `--bench-camera` paths. Append `game` to score real game content instead of the redistributable Cornell scene. | `cargo test --release -p byroredux --test upscaler_quality -- --ignored --nocapture` |
 | Megaton interior parse-side 929 REFRs (2026-04-19; test lives in the plugin **lib**, so a `--test parse_real_esm` filter runs 0 tests — #5070) | `cargo test -p byroredux-plugin --release --lib -- --ignored --exact esm::cell::tests::integration::parse_real_fo3_megaton_cell_baseline`                                                      |

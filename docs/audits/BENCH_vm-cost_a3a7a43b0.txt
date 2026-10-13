@@ -1,0 +1,114 @@
+Papyrus VM per-frame cost census, session 99 (HEAD a3a7a43b0, 2026-10-13)
+Repro A-D: cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost
+Repro E:   BYRO_PROFILE=1 with a log patch that prints SchedulerSystemTimings each second (see ROADMAP Known Issues)
+Repro F:   see the ROADMAP repro table row 'Scripted-scene A/B'
+All VM systems run in exclusive Update slots, so these are serial main-thread microseconds.
+
+A. idle frame (no events), µs per call of each VM system
+    refs     ref_events     quest_frag   continuation  script_update
+       0           0.54           0.13           0.33           0.34
+     100           0.94           0.19           0.33          32.42
+    1000           3.06           0.14           0.35         314.64
+    5000          12.77           0.13           0.34        1578.59
+   20000          50.91           0.14           0.36        6874.15
+
+B. burst: OnCellLoad to every attached reference in one frame
+    refs       frame_ms     us_per_ref
+     100          0.180           1.80
+    1000          1.775           1.78
+    5000          8.971           1.79
+
+C. polling: RegisterForUpdate(interval), 60 fps frames, µs per frame in script_update_system
+    refs   interval  mean_us/frame   max_us/frame
+     100        1.0          29.41         177.56
+    1000        1.0         294.87        1771.66
+    1000        0.1         509.77        1771.06
+    5000        1.0        1534.63       12587.16
+    5000        0.1        2623.49       10349.54
+
+D. runaway handler (statement cap 100000), one OnActivate
+  median 13.719 ms, min 13.484 ms, max 13.959 ms (10 runs)
+
+E. real cells, per-system time on the scheduler (BYRO_PROFILE, one sample per second, Skyrim.esm + Misc.bsa scripts)
+   Measurement build = HEAD + a 5-line log patch (all-system timings once a second); no other change.
+
+   BleakFallsBarrow01 (20 664 entities):
+   samples 25
+       5875.9 us mean    31449.1 us max  byroredux_physics::sync::physics_sync_system
+        602.9 us mean     7672.6 us max  byroredux_scripting::scene::quest_alias::quest_alias_refresh_system
+        509.3 us mean      970.4 us max  byroredux::systems::bounds::make_world_bound_propagation_system::{{closure}}
+        409.5 us mean     7722.8 us max  byroredux::systems::metrics::metrics_sample_system
+        307.5 us mean      382.5 us max  byroredux::extensions::systems::extension_custom_event_dispatch_system
+        232.7 us mean      335.4 us max  byroredux::boot::schedule::update::register_update_systems::trigger_detection_dispatch
+        230.0 us mean      754.0 us max  byroredux::systems::animation::make_animation_system::{{closure}}
+        212.2 us mean      831.9 us max  byroredux::interaction::interaction_system
+        135.3 us mean      201.7 us max  byroredux_scripting::dialogue::scene_dialogue_system
+         50.7 us mean       65.6 us max  byroredux_scripting::papyrus_provider::execute::papyrus_provider_system
+         45.8 us mean       76.1 us max  byroredux::boot::schedule::update::register_update_systems::script_update_dispatch
+         17.5 us mean      359.5 us max  byroredux::boot::schedule::update::register_update_systems::quest_fragment_dispatch
+          7.2 us mean       95.6 us max  byroredux_scripting::fragment::reference::reference_script_event_system
+          7.1 us mean       12.5 us max  byroredux_scripting::fragment::systems::fragment_continuation_system
+          1.5 us mean        2.5 us max  byroredux_scripting::quest_stages::quest_alias_readiness_stage_system
+
+   WhiterunBanneredMare (5 825 entities):
+   samples 77
+        215.7 us mean      467.8 us max  byroredux::interaction::interaction_system
+         93.8 us mean      234.7 us max  byroredux_physics::sync::physics_sync_system
+         92.6 us mean      194.8 us max  byroredux_scripting::dialogue::scene_dialogue_system
+         70.9 us mean      112.0 us max  byroredux::extensions::systems::extension_custom_event_dispatch_system
+         47.4 us mean     3604.7 us max  byroredux::systems::metrics::metrics_sample_system
+         40.0 us mean      176.7 us max  byroredux::systems::bounds::make_world_bound_propagation_system::{{closure}}
+         39.4 us mean     3012.9 us max  byroredux_scripting::scene::quest_alias::quest_alias_refresh_system
+         29.2 us mean       99.5 us max  byroredux::systems::animation::make_animation_system::{{closure}}
+         14.4 us mean       25.4 us max  byroredux_scripting::papyrus_provider::execute::papyrus_provider_system
+          5.5 us mean       11.3 us max  byroredux::boot::schedule::update::register_update_systems::script_update_dispatch
+          4.8 us mean      294.3 us max  byroredux::boot::schedule::update::register_update_systems::quest_fragment_dispatch
+          4.7 us mean       11.4 us max  byroredux_scripting::fragment::systems::fragment_continuation_system
+          2.6 us mean       45.9 us max  byroredux_scripting::fragment::reference::reference_script_event_system
+          0.8 us mean        2.3 us max  byroredux_scripting::quest_stages::quest_alias_readiness_stage_system
+          0.3 us mean        0.6 us max  byroredux_scripting::papyrus_demo::mg07_door::mg07_tick_system
+
+F. scripted-scene A/B, BleakFallsBarrow01, HEAD binary, renderer-stepped/orbit/taa, 600 frames, alternating runs
+   variant  run  wall_ms  entities  draws  state_hash
+   noscripts 1 wall_ms=15.77 entities=20257 draws=5702 state_hash=e994c6a24f3f517b
+   scripts 1 wall_ms=15.96 entities=20664 draws=5702 state_hash=ec7937162402093f
+   noscripts 2 wall_ms=16.02 entities=20257 draws=5702 state_hash=e994c6a24f3f517b
+   scripts 2 wall_ms=16.09 entities=20664 draws=5702 state_hash=ec7937162402093f
+   noscripts 3 wall_ms=15.93 entities=20257 draws=5702 state_hash=e994c6a24f3f517b
+   scripts 3 wall_ms=16.18 entities=20664 draws=5702 state_hash=ec7937162402093f
+
+G. log patch used for E (applied to a throwaway worktree, never committed)
+
+diff --git a/byroredux/src/systems/debug.rs b/byroredux/src/systems/debug.rs
+index 7f71129cf..9404f435e 100644
+--- a/byroredux/src/systems/debug.rs
++++ b/byroredux/src/systems/debug.rs
+@@ -180,7 +180,7 @@ fn top_systems(systems: &[(&'static str, f32)], n: usize) -> String {
+     systems
+         .iter()
+         .take(n)
+-        .map(|(name, ms)| format!("{name}={ms:.1}"))
++        .map(|(name, ms)| format!("{name}={ms:.4}"))
+         .collect::<Vec<_>>()
+         .join(" ")
+ }
+@@ -230,7 +230,7 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
+     // SLOW FRAME is otherwise unattributable. The scheduler rewrites the
+     // resource at the end of each run, so this frame's Late stage still
+     // sees the slow frame's timings, the same frame `cpu` describes.
+-    let systems = slow_frame
++    let systems = want_breakdown
+         .then(|| world.try_resource::<SchedulerSystemTimings>())
+         .flatten()
+         .map(|t| top_systems(&t.systems, 6));
+@@ -280,6 +280,10 @@ pub(crate) fn log_stats_system(world: &World, _dt: f32) {
+         if let Some(ref cpu) = cpu {
+             log::info!(target: "engine::stats", "cpu_ms: {cpu}");
+         }
++        // MEASUREMENT PATCH (session 99, VM cost) — every system's time on this frame.
++        if let Some(t) = world.try_resource::<SchedulerSystemTimings>() {
++            log::info!(target: "engine::stats", "sys_ms: {}", top_systems(&t.systems, 200));
++        }
+     }
+ }
+ 
