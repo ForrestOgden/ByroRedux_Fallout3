@@ -667,7 +667,7 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-With the VM, 77.0% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 76.8% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
@@ -706,10 +706,18 @@ a quest fragment's do. An event the script handles only in other states does
 nothing in the current one. The system runs ahead of quest-fragment dispatch, so
 a stage a reference script sets runs its fragment the same frame.
 
-With the VM, 39.7% of Skyrim's 19,412 scripted references run a script, up from
+With the VM, 14.6% of Skyrim's 19,412 scripted references run a script, up from
 7.5% with recognizers alone (`refr_script_coverage`; `VM_REASONS=1` lists why
-the VM declines the rest). Bleak Falls Barrow attaches 35, among them ambush
-draugr, pull bars, levers, traps and ore veins.
+the VM declines the rest, and `VM_REASON_FAMILIES=<text>` which scripts share a
+reason). Bleak Falls Barrow attaches 7, among them MS13's Arvel and spider
+triggers and the encounter enablers.
+
+Calls never resolve into the engine classes. `Form`, `ObjectReference`,
+`Quest`, `Actor` and the rest declare `Native` functions, and the script
+library serves them too, but their API is the native bridge's, including
+their scripted wrappers (`Quest.SetStage` → `SetCurrentStageID`). An event
+only those classes define (ObjectReference's empty `OnLoad`) is not one the
+script handles.
 
 Not modelled yet:
 - other events (`OnHit`, `OnCombatStateChanged`, `OnOpen`, …; `OnUpdate`

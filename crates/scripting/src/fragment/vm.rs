@@ -52,8 +52,8 @@ use std::sync::Arc;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_papyrus::ast::{
-    AssignOp, BinaryOp, CallArg, Expr, Identifier, Param, Script, ScriptItem, StateItem, Stmt, Type,
-    UnaryOp,
+    AssignOp, BinaryOp, CallArg, Expr, FunctionFlags, Identifier, Param, Script, ScriptItem, StateItem,
+    Stmt, Type, UnaryOp,
 };
 use byroredux_plugin::esm::records::condition::ConditionStringId;
 use byroredux_papyrus::span::{Span, Spanned};
@@ -367,12 +367,15 @@ struct Callable<'s> {
 }
 
 /// `name` defined in `script` — in the state block `state`, or in the empty
-/// state for `None` — as a function or an event.
+/// state for `None` — as a function or an event. A `Native` function is not
+/// one: its declaration (in `Quest`, `ObjectReference`, … which the script
+/// library also serves) has no body, and the native bridge runs it.
 fn callable_in<'s>(script: &'s Script, state: Option<&str>, name: &str) -> Option<Callable<'s>> {
     let named = |n: &Identifier| n.0.eq_ignore_ascii_case(name);
+    let scripted = |f: &byroredux_papyrus::ast::Function| !f.flags.contains(FunctionFlags::NATIVE);
     match state {
         None => script.body.iter().find_map(|item| match &item.node {
-            ScriptItem::Function(f) if named(&f.name.node) => Some(Callable {
+            ScriptItem::Function(f) if named(&f.name.node) && scripted(f) => Some(Callable {
                 params: &f.params,
                 body: &f.body,
                 returns: f.return_type.as_ref(),
@@ -387,7 +390,7 @@ fn callable_in<'s>(script: &'s Script, state: Option<&str>, name: &str) -> Optio
         Some(state) => script.body.iter().find_map(|item| match &item.node {
             ScriptItem::State(block) if block.name.node.0.eq_ignore_ascii_case(state) => {
                 block.body.iter().find_map(|item| match &item.node {
-                    StateItem::Function(f) if named(&f.name.node) => Some(Callable {
+                    StateItem::Function(f) if named(&f.name.node) && scripted(f) => Some(Callable {
                         params: &f.params,
                         body: &f.body,
                         returns: f.return_type.as_ref(),
@@ -438,11 +441,27 @@ fn script_chain(script: &Arc<Script>, scripts: &HashMap<String, Arc<Script>>) ->
     chain
 }
 
+/// An engine class — `Form`, `ObjectReference`, `Quest`, … — declares
+/// `Native` functions; no game script does. Its API, scripted wrappers
+/// included (`Quest.SetStage` → `SetCurrentStageID`), is the native
+/// bridge's, so calls never resolve into it.
+fn is_engine_class(script: &Script) -> bool {
+    let native = |f: &byroredux_papyrus::ast::Function| f.flags.contains(FunctionFlags::NATIVE);
+    script.body.iter().any(|item| match &item.node {
+        ScriptItem::Function(f) => native(f),
+        ScriptItem::State(block) => block.body.iter().any(|item| matches!(&item.node, StateItem::Function(f) if native(f))),
+        _ => false,
+    })
+}
+
 /// The body a call of `name` runs on an instance of `script` in `state`.
 /// CK *States (Papyrus)*: the current state down the `extends` chain, then
-/// the empty state down the chain.
+/// the empty state down the chain — stopping at the engine classes.
 fn resolve_in(script: &Arc<Script>, state: &str, name: &str, scripts: &HashMap<String, Arc<Script>>) -> Option<Code> {
-    let chain = script_chain(script, scripts);
+    let chain: Vec<_> = script_chain(script, scripts)
+        .into_iter()
+        .take_while(|script| !is_engine_class(script))
+        .collect();
     let in_state = (!state.is_empty())
         .then(|| {
             chain.iter().find(|s| callable_in(s, Some(state), name).is_some()).map(|s| Code {
@@ -1992,10 +2011,11 @@ impl<'l> Checker<'l> {
     }
 
     /// Every body a call of `name` on an instance of `script` may run — in
-    /// any state, down the `extends` chain — as (script, state).
+    /// any state, down the `extends` chain to the engine classes — as
+    /// (script, state).
     fn versions(&mut self, script: &Arc<Script>, name: &str) -> Vec<(Arc<Script>, Option<String>)> {
         let mut versions = Vec::new();
-        for script in self.chain(script) {
+        for script in self.chain(script).into_iter().take_while(|script| !is_engine_class(script)) {
             let states = std::iter::once(None).chain(state_names(&script).map(|state| Some(state.to_owned())));
             for state in states.collect::<Vec<_>>() {
                 if callable_in(&script, state.as_deref(), name).is_some() {

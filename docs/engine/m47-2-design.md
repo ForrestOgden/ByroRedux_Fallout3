@@ -429,12 +429,12 @@ that does not exist yet:
   - relationships, `Kill`, caps and XP rewards.
 
   The Papyrus VM (`scripting.md` §The Papyrus VM) now runs quest fragments
-  the lowering declines but its check accepts: 66.8% lowered, 77.0% lowered
+  the lowering declines but its check accepts: 66.8% lowered, 76.8% lowered
   or interpreted. It keeps object script variables across fragments
   (`QuestScriptObjects`) and suspends at `Utility.Wait` anywhere in a
   statement call chain (`VmResume` frames, saved with the continuation).
   It follows Papyrus states, and it runs reference scripts no recognizer
-  models (`scripting.md` §Reference scripts on the VM): 39.7% of Skyrim's
+  models (`scripting.md` §Reference scripts on the VM): 14.6% of Skyrim's
   scripted references run a script, up from 7.5%.
 
   Calls into a quest script's function may now pass arguments: a number

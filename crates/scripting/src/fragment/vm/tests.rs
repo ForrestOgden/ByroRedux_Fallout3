@@ -638,3 +638,32 @@ fn game_time_updates_count_game_hours() {
     assert!(!crate::fragment::reference_enabled(&world, REF));
     assert!(world.resource::<crate::ScriptUpdates>().registrations().is_empty(), "a single update");
 }
+
+/// A `Native` declaration in a parent script the library serves (`Quest`,
+/// `ObjectReference`, …) is not a script body: `Self.SetStage` still runs the
+/// native, never the declaration's empty body.
+#[test]
+fn native_declarations_in_parent_scripts_stay_natives() {
+    let quest = parsed_source(
+        "ScriptName Quest extends Form\n\
+         Bool Function SetStage(Int aiStage) Native\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmNatives extends Quest\n\
+         Function Fragment_1()\n Self.SetStage(20)\n EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("quest".to_owned(), Arc::clone(&quest))].into();
+    let library = Installed(&scripts);
+    let needed = check_function_reason(Arc::clone(&script), "Fragment_1", Some(&library)).expect("runs");
+    let mut world = world_with_fragment(script);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for needed in needed {
+            fragments.insert_vm_script(needed);
+        }
+    }
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
