@@ -476,7 +476,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v88 -> v89 (M47.2): `Effect::ForceLocationTo` and
 /// `AliasOverride::ForcedLocation`.
-pub const FORMAT_MAJOR: u16 = 89;
+///
+/// v89 -> v90 (M47.2): `ValueExpr::ActorValueReading` (`GetBaseValue`,
+/// `GetValuePercentage`).
+pub const FORMAT_MAJOR: u16 = 90;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

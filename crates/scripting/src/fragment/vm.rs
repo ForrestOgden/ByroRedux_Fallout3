@@ -4444,7 +4444,7 @@ impl<'l> Checker<'l> {
             (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
                 return Some(Kind::Object);
             }
-            (Kind::Object, "hasform") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) => {
+            (Kind::Object, "hasform") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Quest)]) => {
                 return Some(Kind::Bool);
             }
             (Kind::Object, "find") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) => {
@@ -4511,7 +4511,17 @@ impl<'l> Checker<'l> {
         };
         let result = self.check_native(placeholder, receiver_kind, &name, &arg_kinds, statement);
         if result.is_none() {
-            return self.fail(|| format!("native {name}/{} on {receiver_kind:?}", arg_kinds.len()));
+            return self.fail(|| {
+                let shapes: Vec<String> = arg_kinds
+                    .iter()
+                    .map(|arg| match arg {
+                        Arg::Literal(_) => "lit".to_string(),
+                        Arg::Kind(kind) => format!("{kind:?}"),
+                        Arg::Constant(_) => "const".to_string(),
+                    })
+                    .collect();
+                format!("native {name}/{} on {receiver_kind:?} ({})", arg_kinds.len(), shapes.join(","))
+            });
         }
         result
     }

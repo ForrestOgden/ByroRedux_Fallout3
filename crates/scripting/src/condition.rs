@@ -1314,6 +1314,90 @@ fn evaluate_contextual(
     }
 }
 
+/// Which layers of an actor value a read keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorValueView {
+    /// `base + permanent + temporary − damage`: `GetActorValue` / `GetValue`.
+    Current,
+    /// The base alone, no modifiers or damage: `GetBaseValue` /
+    /// `GetBaseActorValue`.
+    Base,
+    /// The ceiling `GetValuePercentage` divides by: everything but damage.
+    Undamaged,
+}
+
+/// `entity`'s `avif` actor value as `view` keeps its layers. The current
+/// view is the `GetActorValue` condition; the others compose the same way
+/// from a copy with the dropped layers cleared, so a derived stat takes its
+/// formula value either way.
+pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorValueView) -> f32 {
+    // GetActorValue(avif_form_id) → the Run-On actor's composed value
+    // for that actor value (base + permanent + temporary − damage), or
+    // 0.0 when the actor carries no `ActorValues` (or hasn't that value
+    // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
+    // already promoted to global load-order space at parse time
+    // (function 14 is in the CTDA form-id-param list, #1666), the same
+    // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
+    // hop (the key IS the AV's id, not the actor's identity). #1663.
+    use byroredux_core::character::{CharacterLevel, CharacterRuleset};
+    use byroredux_core::ecs::components::ActorValues;
+    // #3441 — the `ActorValues` storage guard must NOT stay live
+    // across the `CharacterRuleset` resource acquire below.
+    // `pool_regen_tick_system` (`character/regen.rs`) and
+    // `melee_damage_charal_bonus` (`combat.rs`) both take the pair the
+    // other way round (`CharacterRuleset` → `ActorValues`, the write
+    // side in the former), so holding the guard here closes a 2-cycle
+    // in the `BYRO_LOCK_ORDER_CHECK` graph — `lock_tracker` keys
+    // storages and resources into one `TypeId` map. Snapshot what the
+    // ruleset branch needs and drop the guard first; the clone only
+    // happens on the fall-through (the authored-value fast path
+    // returns while the guard is still the cheap borrow).
+    let avs = {
+        let Some(avs) = world.get::<ActorValues>(entity) else {
+            return 0.0; // no `ActorValues` → absent-AV default
+        };
+        // An authored carried value wins — populated SPECIAL/skills,
+        // baked NPC Health/AP, the player's stamped pools (#4674,
+        // kept current by #5039's refresh). #5042 — a modifier-only
+        // entry (a constant spell, `modav` or the SDK on a stat the
+        // actor does not carry) is NOT authored: its `0.0` base is a
+        // placeholder, so it falls through to the ruleset composer.
+        if let Some(value) = avs.get(avif).filter(|value| value.base_authored) {
+            return match view {
+                ActorValueView::Current => value.current(),
+                ActorValueView::Base => value.base + value.set_override,
+                ActorValueView::Undamaged => value.undamaged(),
+            };
+        }
+        let mut avs = avs.clone();
+        // The layers the view drops come off the copy, so the ruleset
+        // composes the same value it would for a read of that view.
+        if let Some(value) = avs.get(avif).copied() {
+            if view == ActorValueView::Base {
+                avs.set_permanent(avif, 0.0);
+                avs.mod_temporary(avif, -value.temporary_mod);
+            }
+            if view != ActorValueView::Current {
+                avs.restore(avif, value.damage);
+            }
+        }
+        avs
+    };
+    // `CharacterLevel` too: read it before the ruleset so the surviving
+    // direction stays `CharacterRuleset` → (nothing).
+    let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
+    // The one composer `melee_damage_charal_bonus` shares (#5042):
+    // formula + modifier layers for an actor-general Absolute row;
+    // the carried composition for everything else — including
+    // `PlayerOnly` rows on an NPC (the derived player answer must
+    // not leak onto an NPC that lacks the key) and `Multiplier` rows,
+    // whose `eval` is a ratio, not an actor-value reading (#2933).
+    match world.try_resource::<CharacterRuleset>() {
+        Some(rs) => rs.actor_value(avif, &avs, level),
+        None => avs.current(avif),
+    }
+}
+
 /// Dispatch one of the M47.1-catalog functions against the supplied
 /// entity. Returns `0.0` for unknown indices (Bethesda safe-default)
 /// or when the function's backing ECS storage isn't registered.
@@ -1334,58 +1418,7 @@ pub fn evaluate_function(
     }
     match function {
         ConditionFunction::GetActorValue => {
-            // GetActorValue(avif_form_id) → the Run-On actor's composed value
-            // for that actor value (base + permanent + temporary − damage), or
-            // 0.0 when the actor carries no `ActorValues` (or hasn't that value
-            // set — Bethesda's absent-AV default). `param_1` is the AVIF FormID,
-            // already promoted to global load-order space at parse time
-            // (function 14 is in the CTDA form-id-param list, #1666), the same
-            // space `ActorValues` is keyed in — a direct lookup, no FormIdPool
-            // hop (the key IS the AV's id, not the actor's identity). #1663.
-            use byroredux_core::character::{CharacterLevel, CharacterRuleset};
-            use byroredux_core::ecs::components::ActorValues;
-            // #3441 — the `ActorValues` storage guard must NOT stay live
-            // across the `CharacterRuleset` resource acquire below.
-            // `pool_regen_tick_system` (`character/regen.rs`) and
-            // `melee_damage_charal_bonus` (`combat.rs`) both take the pair the
-            // other way round (`CharacterRuleset` → `ActorValues`, the write
-            // side in the former), so holding the guard here closes a 2-cycle
-            // in the `BYRO_LOCK_ORDER_CHECK` graph — `lock_tracker` keys
-            // storages and resources into one `TypeId` map. Snapshot what the
-            // ruleset branch needs and drop the guard first; the clone only
-            // happens on the fall-through (the authored-value fast path
-            // returns while the guard is still the cheap borrow).
-            let avs = {
-                let Some(avs) = world.get::<ActorValues>(entity) else {
-                    return 0.0; // no `ActorValues` → absent-AV default
-                };
-                // An authored carried value wins — populated SPECIAL/skills,
-                // baked NPC Health/AP, the player's stamped pools (#4674,
-                // kept current by #5039's refresh). #5042 — a modifier-only
-                // entry (a constant spell, `modav` or the SDK on a stat the
-                // actor does not carry) is NOT authored: its `0.0` base is a
-                // placeholder, so it falls through to the ruleset composer.
-                if avs
-                    .get(condition.param_1)
-                    .is_some_and(|value| value.base_authored)
-                {
-                    return avs.current(condition.param_1);
-                }
-                avs.clone()
-            };
-            // `CharacterLevel` too: read it before the ruleset so the surviving
-            // direction stays `CharacterRuleset` → (nothing).
-            let level = world.get::<CharacterLevel>(entity).map_or(0, |l| l.level);
-            // The one composer `melee_damage_charal_bonus` shares (#5042):
-            // formula + modifier layers for an actor-general Absolute row;
-            // the carried composition for everything else — including
-            // `PlayerOnly` rows on an NPC (the derived player answer must
-            // not leak onto an NPC that lacks the key) and `Multiplier` rows,
-            // whose `eval` is a ratio, not an actor-value reading (#2933).
-            match world.try_resource::<CharacterRuleset>() {
-                Some(rs) => rs.actor_value(condition.param_1, &avs, level),
-                None => avs.current(condition.param_1),
-            }
+            actor_value_view(world, entity, condition.param_1, ActorValueView::Current)
         }
         ConditionFunction::GetQuestRunning => {
             // GetQuestRunning(quest) → 1.0 while the quest is running.
@@ -2710,21 +2743,60 @@ mod tests {
         assert!(evaluate(&list, &world, &ctx(actor)), "authored 1 + 5");
     }
 
+    /// `GetBaseValue` / `GetValuePercentage` read the same value with the
+    /// modifiers (and damage) dropped, for a derived stat as well as an
+    /// authored one.
+    #[test]
+    fn actor_value_views_drop_modifiers_and_damage() {
+        use byroredux_core::character::falloutnv_ruleset;
+        use byroredux_core::ecs::components::ActorValues;
+
+        const LUCK: u32 = 0x0B;
+        const CRIT: u32 = 0x2D5;
+        let resolve = |id: &str| match id {
+            "Luck" => Some(LUCK),
+            "CritChance" => Some(CRIT),
+            _ => None,
+        };
+        let mut world = World::new();
+        world.insert_resource(falloutnv_ruleset(resolve));
+        let actor = world.spawn();
+        let mut values = ActorValues::from_pairs([(LUCK, 4.0)]);
+        values.mod_permanent(CRIT, 5.0);
+        values.mod_temporary(CRIT, 2.0);
+        values.apply_damage(CRIT, 3.0);
+        world.insert(actor, values);
+        // Derived CritChance: formula 4 (Luck) plus the layers.
+        let read = |world: &World, avif, view| actor_value_view(world, actor, avif, view);
+        assert_eq!(read(&world, CRIT, ActorValueView::Current), 4.0 + 5.0 + 2.0 - 3.0);
+        assert_eq!(read(&world, CRIT, ActorValueView::Undamaged), 4.0 + 5.0 + 2.0);
+        assert_eq!(read(&world, CRIT, ActorValueView::Base), 4.0);
+        // Authored Luck with a modifier and damage.
+        {
+            let mut avs = world.get_mut::<ActorValues>(actor).unwrap();
+            avs.mod_permanent(LUCK, 2.0);
+            avs.apply_damage(LUCK, 1.0);
+        }
+        assert_eq!(read(&world, LUCK, ActorValueView::Current), 5.0);
+        assert_eq!(read(&world, LUCK, ActorValueView::Undamaged), 6.0);
+        assert_eq!(read(&world, LUCK, ActorValueView::Base), 4.0);
+    }
+
     /// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both
     /// acquire `CharacterRuleset` → `ActorValues` (the former for write), so
-    /// the `GetActorValue` arm must not hold its `ActorValues` guard across
+    /// the `GetActorValue` read must not hold its `ActorValues` guard across
     /// the ruleset acquire. `lock_tracker` keys storages and resources into
     /// one `TypeId` graph, so the reverse hold is a real 2-cycle.
     #[test]
     fn get_actor_value_does_not_hold_actor_values_across_ruleset() {
         let src = include_str!("condition.rs");
         let arm_start = src
-            .find("ConditionFunction::GetActorValue => {")
-            .expect("the GetActorValue arm must exist");
+            .find("pub fn actor_value_view(")
+            .expect("the GetActorValue read must exist");
         let arm = &src[arm_start..];
         let arm = &arm[..arm
-            .find("ConditionFunction::GetDistance => {")
-            .expect("GetDistance must follow GetActorValue")];
+            .find("/// Dispatch one of the M47.1-catalog functions")
+            .expect("evaluate_function must follow the actor value read")];
 
         let snapshot = arm
             .find("avs.clone()")

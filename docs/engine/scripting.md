@@ -467,7 +467,13 @@ and Skyrim's `SetAV` / `SetActorValue("Name", v)` lower to
 `Effect::SetActorValueNamed`. The name resolves through `ActorValueNames`,
 the AVIF editor IDs with their `AV` prefix stripped (`AVVariable06`); a
 legacy editor ID such as Illusion's `AVMysticism` does not resolve, and that
-write skips. `AddPerk` / `RemovePerk` edit the actor's `Perks` (parked with the rest of an
+write skips. The reads beyond the current value are `ValueExpr::ActorValueReading`:
+`GetBaseValue(av)` / `GetBaseActorValue("Name")` is the base with the
+modifiers and damage dropped (a derived stat takes its formula value), and
+`GetValuePercentage(av)` / `GetActorValuePercentage("Name")` is the current value
+over the undamaged ceiling, 0 to 1 (the CK: "as a percentage of its maximum
+value"); both compose through `condition::actor_value_view`, the one read the
+`GetActorValue` condition also uses. `AddPerk` / `RemovePerk` edit the actor's `Perks` (parked with the rest of an
 evicted actor's state); and the FO4 / Starfield spellings `EnableNoWait`,
 `DisableNoWait`, `TryToEnable`, `TryToDisable` and `Unlock` reuse the existing
 enable and lock effects.

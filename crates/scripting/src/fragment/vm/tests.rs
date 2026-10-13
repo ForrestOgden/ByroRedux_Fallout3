@@ -2257,6 +2257,46 @@ fn package_fragments_run_on_transitions() {
     assert!(!crate::fragment::reference_enabled(&world, ACTOR), "A ended: akActor disabled");
 }
 
+/// `GetBaseActorValue` reads the base without the modifiers, and
+/// `GetActorValuePercentage` the current value over the undamaged ceiling
+/// (CK: "as a percentage of its maximum value (from 0 to 1)").
+#[test]
+fn base_and_percentage_actor_value_reads() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::records::AvifRecord;
+    const AV: u32 = 0x0000_05F0;
+    let script = parsed_source(
+        "ScriptName QF_VmAv extends Quest\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           Float base = player.GetBaseActorValue(\"Variable06\")\n\
+           Float fraction = player.GetActorValuePercentage(\"Variable06\")\n\
+           If base == 10.0 && fraction == 0.5 && player.GetActorValue(\"Variable06\") == 10.0\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<ActorValues>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.actor_values.insert(
+        AV,
+        AvifRecord { form_id: AV, editor_id: "AVVariable06".into(), ..Default::default() },
+    );
+    crate::install_actor_value_names(&mut world, &index);
+    // base 10, +10 permanent, 10 damage: current 10 of an undamaged 20.
+    let mut values = ActorValues::new();
+    values.set_base(AV, 10.0);
+    values.mod_permanent(AV, 10.0);
+    values.apply_damage(AV, 10.0);
+    world.insert(player, values);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

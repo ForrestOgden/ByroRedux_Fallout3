@@ -3292,6 +3292,33 @@ pub(super) fn evaluate_value(
                 .and_then(|names| names.resolve(name))?;
             actor_value_now(world, actor, avif)
         }
+        ValueExpr::ActorValueReading(reading, actor, arg) => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let avif = match arg {
+                crate::translate::effects::ActorValueArg::Form(form) => {
+                    resolve_property_form_id(vmad, form.property_name())?
+                }
+                crate::translate::effects::ActorValueArg::Named(name) => world
+                    .try_resource::<crate::ActorValueNames>()
+                    .and_then(|names| names.resolve(name))?,
+            };
+            use crate::condition::{actor_value_view, ActorValueView};
+            match reading {
+                crate::translate::effects::ActorValueReading::Base => {
+                    actor_value_view(world, actor, avif, ActorValueView::Base)
+                }
+                // Current over the undamaged ceiling; an actor value the
+                // actor lacks reads 0, the absent-AV default.
+                crate::translate::effects::ActorValueReading::Percent => {
+                    let ceiling = actor_value_view(world, actor, avif, ActorValueView::Undamaged);
+                    if ceiling > 0.0 {
+                        (actor_value_view(world, actor, avif, ActorValueView::Current) / ceiling).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
+            }
+        }
         ValueExpr::LocationKeywordData(location, keyword) => {
             let location = resolve_property_form_id(vmad, location.property_name())?;
             let keyword = resolve_property_form_id(vmad, keyword.property_name())?;

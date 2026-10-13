@@ -292,6 +292,9 @@ pub enum ValueExpr {
     /// M47.2 — `<actor>.GetAV("Name")` / `GetValue(Game.GetHealthAV())`, an
     /// actor value by name ([`crate::ActorValueNames`]).
     ActorValueNamed(ActorRef, String),
+    /// M47.2 — `<actor>.GetBaseValue(av)` / `GetValuePercentage(av)` and
+    /// Skyrim's `GetBaseActorValue("Name")` / `GetActorValuePercentage("Name")`.
+    ActorValueReading(ActorValueReading, ActorRef, ActorValueArg),
     /// M47.2 — `Game.QueryStat("Houses Owned")`, a script-kept misc stat
     /// ([`crate::misc_stats::SCRIPT_STATS`]).
     MiscStat(String),
@@ -406,6 +409,15 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
             ActorValueArg::Form(form) => ValueExpr::ActorValue(actor, form),
             ActorValueArg::Named(name) => ValueExpr::ActorValueNamed(actor, name),
         });
+    }
+    for (names, reading) in [
+        (&["GetBaseValue", "GetBaseActorValue"][..], ActorValueReading::Base),
+        (&["GetValuePercentage", "GetActorValuePercentage"][..], ActorValueReading::Percent),
+    ] {
+        if let Some((object, [av])) = method_call_any(e, names) {
+            let actor = receiver_actor(object, scope)?;
+            return Some(ValueExpr::ActorValueReading(reading, actor, actor_value_arg(&av.value.node, scope)?));
+        }
     }
     Some(match guard_reading(e, scope)? {
         GuardReading::Stage(quest) => ValueExpr::Stage(quest),
@@ -4029,9 +4041,23 @@ fn prim_change_perk(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// M47.2 — how a call names an actor value: an `ActorValue` property, or a
 /// name — Skyrim's string (`SetAV("Health", …)`) or FO4's
 /// `Game.Get<Name>AV()` accessor (`GetHealthAV` names `Health`).
-enum ActorValueArg {
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ActorValueArg {
     Form(ObjectRef),
     Named(String),
+}
+
+/// M47.2 — which reading of an actor value a [`ValueExpr::ActorValueReading`]
+/// takes besides the current one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ActorValueReading {
+    /// `GetBaseValue` / `GetBaseActorValue`: the base, without modifiers.
+    Base,
+    /// `GetValuePercentage` / `GetActorValuePercentage`: the current value as
+    /// a fraction (0 to 1) of its maximum.
+    Percent,
 }
 
 fn actor_value_arg(e: &Expr, scope: &Scope) -> Option<ActorValueArg> {
