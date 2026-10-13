@@ -691,10 +691,9 @@ performance finding. The measured knob table is in
   CI form without `--all-targets` is clean; it went red twice in three days
   (10-12, 10-13), each time from a sweep of new code. **Re-zeroed same day**:
   all 18 lints fixed and both gates green at the fix commit; #5744's HKX
-  deny-level error included. The lane is not in CI — the plain
-  `cargo clippy --workspace` form stays the CI gate, so this can rot again;
-  re-run `cargo clippy --workspace --all-targets --keep-going -- -D warnings`
-  (1.96.0) before closing any sweep that adds test/example code.
+  deny-level error included. The lane now runs in CI as a non-blocking step
+  (`continue-on-error`), so drift is visible without gating merges; the plain
+  `cargo clippy --workspace` form stays the blocking gate.
 - [ ] **Offline texture-set upscale finalization.** `tools/texture-upscale`
   works end-to-end: set discovery, TOML manifests, an external ESRGAN-family
   pass, companion-map upsampling and provenance. Remaining: per-game/per-role
