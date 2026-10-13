@@ -875,7 +875,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v51 -> v52): the new
     // `ActorBaseProtectionOverrides` resource column, and the appended
     // `Effect::SetBaseProtection` variant (with `ActorBaseRef`).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8152_8bba_1b91_b7e0;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::Kill` variant (name-tagged; no older save carries it).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfd14_0ec8_b400_ff87;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -222,6 +222,24 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
             .writes::<byroredux_core::ecs::components::Dead>(),
     );
+    // M47.2 — script Kill requests, ahead of the shared death reconciler.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::combat::scripted_kill_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::story_manager::PendingScriptKills>()
+            .writes_resource::<crate::combat::PendingDeathReconciliations>()
+            .writes::<byroredux_core::ecs::components::Dead>()
+            .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            .reads::<byroredux_scripting::ActorProtection>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
+            .writes::<byroredux_scripting::Bleedout>()
+            .reads_resource::<byroredux_scripting::BleedoutRules>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>(),
+    );
     // Water hazards and drowning can mark actors dead from different stages.
     // Reconcile their structural consequences only after both producers have
     // run, in this exclusive lane where AI removal and ragdoll activation are
@@ -603,8 +621,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // gate that reads it.
             .reads_resource::<byroredux_scripting::ReferenceActivationBlocks>()
             .writes_resource::<byroredux_scripting::ReferenceActivationBlocks>()
-            // M47.2 — a spoken line's SendStoryEvent queues a script event.
+            // M47.2 — a spoken line's SendStoryEvent queues a script event,
+            // and its Kill a death request.
             .writes_resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>()
+            .writes_resource::<byroredux_scripting::story_manager::PendingScriptKills>()
             // M47.2 — a spoken line's AddToMap, and the marker guards.
             .reads_resource::<byroredux_scripting::MapMarkers>()
             .reads_resource::<byroredux_scripting::AuthoredMapMarkers>()

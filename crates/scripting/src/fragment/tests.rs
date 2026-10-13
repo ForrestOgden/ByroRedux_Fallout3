@@ -1067,6 +1067,18 @@ fn combat_gate_effects_set_faction_hostility_and_arm_ai_combat_state() {
         unconscious: false,
     }]);
     assert!(!crate::is_unconscious(&world, attacker));
+
+    // M47.2 — `Kill` queues a death request for the engine's death path,
+    // with the player as the killer.
+    run(&[Effect::Kill {
+        actor: actor(),
+        killer: Some(crate::translate::effects::ActorRef::Player),
+    }]);
+    let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    assert_eq!(
+        world.resource::<crate::story_manager::PendingScriptKills>().0,
+        vec![(attacker, Some(player))]
+    );
 }
 
 /// #5298 — the player-decline rule for the NPC-only arms is checked on the

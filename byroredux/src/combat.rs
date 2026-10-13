@@ -985,6 +985,30 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     }
 }
 
+/// M47.2 — script `Kill` requests (`PendingScriptKills`), through the same
+/// death path as a lethal hit: an essential victim goes into bleedout
+/// instead (the CK *Kill* console page: "Essential actors will be made
+/// 'unconscious'"); otherwise `Dead`, the KILL story event with the script's
+/// killer, and the queued teardown. `Kill` does not change Health.
+pub(crate) fn scripted_kill_system(world: &World, _dt: f32) {
+    let kills = world
+        .try_resource_mut::<byroredux_scripting::story_manager::PendingScriptKills>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    for (victim, killer) in kills {
+        if world.get::<Dead>(victim).is_some()
+            || byroredux_scripting::spare_from_death(world, victim, killer)
+        {
+            continue;
+        }
+        if let Some(mut dead) = world.query_mut::<Dead>() {
+            dead.insert(victim, Dead);
+        }
+        queue_dead_actor_reconciliation(world, victim);
+        crate::systems::story_events::raise_kill_story_event(world, victim, killer);
+    }
+}
+
 /// Drain parallel-safe death notifications after all producers have run.
 pub(crate) fn reconcile_pending_dead_actors_system(world: &World, _dt: f32) {
     let actors = world
@@ -1282,6 +1306,41 @@ mod tests {
         combat_damage_system(&world, 0.0);
         let last = world.resource::<CombatState>().last.clone().unwrap();
         assert_eq!((last.incoming, last.damage), (20.0, 4.0));
+    }
+
+    /// M47.2 — a script `Kill` takes a plain actor through the death path
+    /// (Dead, the KILL story event, the queued teardown) and puts an
+    /// essential one into bleedout without touching Health.
+    #[test]
+    fn a_scripted_kill_takes_the_death_path_or_bleeds_out() {
+        let (mut world, killer, target) = damage_fixture(50.0, None, false);
+        world.insert_resource(PendingDeathReconciliations::default());
+        world.register::<byroredux_scripting::story_manager::StoryEvent>();
+        let essential = world.spawn();
+        world.insert(essential, ActorValues::from_pairs([(0x2D4, 50.0)]));
+        world.insert(essential, ActorVitals { health: 0x2D4 });
+        world.insert(
+            essential,
+            byroredux_scripting::ActorProtection {
+                essential: true,
+                protected: false,
+            },
+        );
+        world
+            .resource_mut::<byroredux_scripting::story_manager::PendingScriptKills>()
+            .0
+            .extend([(target, Some(killer)), (essential, None)]);
+
+        scripted_kill_system(&world, 0.0);
+        assert!(world.get::<Dead>(target).is_some());
+        assert_eq!(world.resource::<PendingDeathReconciliations>().queued(), &[target]);
+        assert!(world.get::<Dead>(essential).is_none());
+        assert!(byroredux_scripting::is_bleeding_out(&world, essential));
+        assert_eq!(world.get::<ActorValues>(essential).unwrap().current(0x2D4), 50.0);
+        assert!(world
+            .resource::<byroredux_scripting::story_manager::PendingScriptKills>()
+            .0
+            .is_empty());
     }
 
     /// M47.2 — a lethal hit on an essential actor leaves it in bleedout, not

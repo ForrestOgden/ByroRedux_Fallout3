@@ -778,6 +778,12 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// M47.2 — `<actor>.Kill([akKiller = None])`: the actor dies through the
+    /// engine's death path, or goes into bleedout when essential (CK *Kill*).
+    Kill {
+        actor: ActorRef,
+        killer: Option<ActorRef>,
+    },
     /// #4816 — `<actor>.StopCombat()`: end the combat [`Self::StartCombat`]
     /// (or ambient faction hostility) armed on this actor. The ambient
     /// hostility system may start a fresh one if the actor still sees
@@ -1731,6 +1737,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_add_to_map,
     prim_set_location_cleared,
     prim_set_base_protection,
+    prim_kill,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2262,6 +2269,24 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
         marker: receiver_object(object, scope)?,
         fast_travel: bool_arg(args, 0)?.unwrap_or(false),
     })
+}
+
+/// `Actor.Kill(Actor akKiller = None)`. A player victim declines: the
+/// player's death is not a quest effect the runtime models.
+fn prim_kill(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "Kill")?;
+    if args.len() > 1 {
+        return None;
+    }
+    let actor = receiver_actor(object, scope)?;
+    if actor == ActorRef::Player {
+        return None;
+    }
+    let killer = match args.first().map(|arg| &arg.value.node) {
+        None | Some(Expr::NoneLit) => None,
+        Some(killer) => Some(receiver_actor(killer, scope)?),
+    };
+    Some(Effect::Kill { actor, killer })
 }
 
 /// `ActorBase.SetEssential(bool abEssential = true)` /
@@ -3090,6 +3115,14 @@ fn prim_player_animation_event(
 /// [`Effect::EvaluatePackage`] does not model (2,621 of the 2,628 pass
 /// the default).
 fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
+    // M47.2 — `ReferenceAlias.TryToEvaluatePackage()` is `EvaluatePackage` on
+    // the alias's actor when it is filled (the CK's own definition); an
+    // empty alias resolves to nothing and is skipped at run time.
+    if let Some((object, args)) = method_call(e, "TryToEvaluatePackage") {
+        return args.is_empty().then(|| {
+            receiver_object(object, scope).map(|actor| Effect::EvaluatePackage { actor })
+        })?;
+    }
     let (object, args) = method_call(e, "EvaluatePackage")?;
     if args.len() > 1 || bool_arg(args, 0)?.unwrap_or(false) {
         return None;
@@ -3741,15 +3774,14 @@ mod tests {
 
     #[test]
     fn declines_on_unmodeled_effect() {
-        // An object-targeting effect (Kill) isn't in this increment's
-        // table — the whole fragment declines, never partially applies.
-        // (#3489 — this used to exercise `Enable()`, which is now modeled;
-        // `Kill()` keeps the same "still unmodeled" shape.)
+        // An object-targeting effect (SetGhost) isn't in the table — the
+        // whole fragment declines, never partially applies. (#3489 — this
+        // used to exercise `Enable()`, then `Kill()`; both are modeled now.)
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_4()\n\
              Self.SetStage(10)\n\
-             akTarget.Kill()\n EndFunction\n",
+             akTarget.SetGhost()\n EndFunction\n",
         );
         assert_eq!(lower_fragment(&body), None);
     }
@@ -3975,6 +4007,40 @@ mod tests {
                 },
             ])
         );
+    }
+
+    /// M47.2 — `Kill` with and without a killer (a player victim declines),
+    /// and an alias's `TryToEvaluatePackage`.
+    #[test]
+    fn kill_and_try_to_evaluate_package_lower() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_Kyr.GetActorRef().Kill(None)\n\
+             Alias_Victim.GetActorRef().Kill(Game.GetPlayer())\n\
+             Alias_Spectator1.TryToEvaluatePackage()\n EndFunction\n",
+        );
+        let alias = |name: &str| ObjectRef::Property(name.into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Kill {
+                    actor: ActorRef::Object(alias("Alias_Kyr")),
+                    killer: None,
+                },
+                Effect::Kill {
+                    actor: ActorRef::Object(alias("Alias_Victim")),
+                    killer: Some(ActorRef::Player),
+                },
+                Effect::EvaluatePackage {
+                    actor: alias("Alias_Spectator1"),
+                },
+            ])
+        );
+        let player = first_fn_body(
+            "ScriptName QF extends Quest\nFunction Fragment_8()\nGame.GetPlayer().Kill(None)\nEndFunction\n",
+        );
+        assert_eq!(lower_fragment(&player), None, "the player's death is not modelled");
     }
 
     /// M47.2 — `SetEssential` / `SetProtected` on an actor's base and on an

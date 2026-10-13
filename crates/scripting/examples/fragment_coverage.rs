@@ -280,6 +280,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::AddToMap { .. } => "AddToMap",
         Effect::SetLocationCleared { .. } => "SetCleared",
         Effect::SetBaseProtection { .. } => "SetEssential",
+        Effect::Kill { .. } => "Kill",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

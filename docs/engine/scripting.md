@@ -525,7 +525,14 @@ guards. `<actor>.GetActorBase().SetEssential([b])` / `SetProtected([b])` (or
 an ActorBase property's) record a per-base override in the saved
 `ActorBaseProtectionOverrides`. Setting one flag clears the other (CK
 *SetEssential / SetProtected - ActorBase*), and the override wins over the
-base's stamp for every actor of that base. Live (Skyrim, Riverwood's Sleeping Giant Inn): Delphine, essential,
+base's stamp for every actor of that base. `<actor>.Kill([akKiller])` queues
+`PendingScriptKills`, which `scripted_kill_system` drains through the same
+path: an essential victim goes into bleedout (the CK *Kill* page: "Essential
+actors will be made unconscious"), and Health is untouched ("this function
+doesn't kill by modifying the health"). Otherwise the victim gets `Dead`, the
+KILL story event with the script's killer, and the shared teardown. A protected
+alias's victim dies only when the player is passed as the killer, which is the
+CK's own documented workaround. Live (Skyrim, Riverwood's Sleeping Giant Inn): Delphine, essential,
 went down at −4 health instead of dying and got back up 20 s later at 30
 health. Orgnar, not essential, died to the same blows.
 

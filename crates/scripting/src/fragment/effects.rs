@@ -347,6 +347,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SendStoryEvent` events, queued for the Story Manager
     /// after the guards drop.
     story_events: Vec<crate::story_manager::StoryEvent>,
+    /// M47.2 — `Effect::Kill` requests, queued in
+    /// [`crate::story_manager::PendingScriptKills`] after the guards drop.
+    kills: Vec<(EntityId, Option<EntityId>)>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -413,6 +416,7 @@ impl DeferredFragmentEffects {
             location_clears: Vec::new(),
             base_protection: Vec::new(),
             story_events: Vec::new(),
+            kills: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
                 .map(|players| {
@@ -449,6 +453,13 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.kills.is_empty() {
+            if let Some(mut pending) =
+                world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
+            {
+                pending.0.append(&mut self.kills);
+            }
+        }
         if !self.story_events.is_empty() {
             if let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
@@ -996,6 +1007,14 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::Kill { actor, killer } => {
+            let victim = guard_actor(actor, context, vmad, world, deferred)?;
+            let killer = killer
+                .as_ref()
+                .and_then(|killer| guard_actor(killer, context, vmad, world, deferred));
+            deferred.kills.push((victim, killer));
             None
         }
         Effect::SetBaseProtection {
@@ -2436,6 +2455,7 @@ fn apply_quest_scoped_effect(
         | Effect::AddToMap { .. }
         | Effect::SetLocationCleared { .. }
         | Effect::SetBaseProtection { .. }
+        | Effect::Kill { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }

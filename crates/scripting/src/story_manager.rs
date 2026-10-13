@@ -124,6 +124,9 @@ pub fn register(world: &mut World) {
     if world.try_resource::<PendingScriptStoryEvents>().is_none() {
         world.insert_resource(PendingScriptStoryEvents::default());
     }
+    if world.try_resource::<PendingScriptKills>().is_none() {
+        world.insert_resource(PendingScriptKills::default());
+    }
 }
 
 /// Script-raised story events (M47.2, `Keyword.SendStoryEvent`) waiting for
@@ -136,6 +139,14 @@ pub fn register(world: &mut World) {
 pub struct PendingScriptStoryEvents(pub Vec<StoryEvent>);
 
 impl Resource for PendingScriptStoryEvents {}
+
+/// M47.2 — `Effect::Kill` requests, `(victim, killer)`, queued after the
+/// quest-state guards drop and drained by the engine's death path the same
+/// frame; `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub struct PendingScriptKills(pub Vec<(EntityId, Option<EntityId>)>);
+
+impl Resource for PendingScriptKills {}
 
 /// One node of the folded [`SmTree`] arena.
 pub struct SmTreeNode {
