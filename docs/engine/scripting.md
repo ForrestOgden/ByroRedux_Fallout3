@@ -1262,6 +1262,18 @@ winner, a re-selection, a combat suspension), and that report now also keeps
 a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
 it as a value; an actor running none reads None.
 
+### GetFactionReaction (M47.2)
+
+CK *GetFactionReaction - Actor*: "the faction-based reaction between this actor and another",
+0 Neutral, 1 Enemy, 2 Ally, 3 Friend. It shares one rule with ambient hostility,
+`combat::combined_reaction` (moved out of `faction_hostility.rs` so the two cannot drift): over
+every directed pair of the two actors' factions (rank below zero is not membership) a script's
+`SetEnemy` / `SetAlly` override wins over the authored `XNAM` relation, then a Friend pair beats an
+Ally pair, either beats an Enemy pair, and anything else is Neutral. The original engine's
+combination of conflicting memberships is undocumented; this is engine policy. The authored
+relations reach the VM through `FactionCatalog`, published beside the resolver by
+`install_form_resolver`. An actor that is not loaded stops the run.
+
 ### MusicType.Add / Remove (M47.2)
 
 CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start

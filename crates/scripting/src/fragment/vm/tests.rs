@@ -2430,6 +2430,50 @@ fn get_current_package_follows_the_reported_transitions() {
     assert_eq!(run(&world), 10, "the package ended");
 }
 
+/// `GetFactionReaction` reports 0 Neutral, 1 Enemy, 2 Ally, 3 Friend from the
+/// two actors' faction memberships and the scripted relations.
+#[test]
+fn get_faction_reaction_reads_the_factions() {
+    use byroredux_core::ecs::components::FactionRanks;
+    use byroredux_sdk::relationships::CombatReaction;
+    const GUARDS: u32 = 0x0000_0123;
+    const BANDITS: u32 = 0x0000_0124;
+    let script = parsed_source(
+        "ScriptName QF_VmReaction extends Quest\n\
+         Actor Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetFactionReaction(Marker) == 1\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    world.register::<FactionRanks>();
+    let identity = crate::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        PluginId::from_filename("Skyrim.esm"),
+    )]);
+    let guards = identity.form_ref(GUARDS).unwrap();
+    let bandits = identity.form_ref(BANDITS).unwrap();
+    world.insert_resource(identity);
+    let mut pool = FormIdPool::default();
+    let marker_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    // One actor in both factions: the guards' view of the bandits is its own.
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(marker_id));
+    world.insert(marker, FactionRanks(vec![(GUARDS, 0), (BANDITS, 0)]));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "neutral by default");
+    world.resource_mut::<crate::FactionRelations>().set_reaction(guards, bandits, CombatReaction::Enemy);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "enemy once scripted");
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

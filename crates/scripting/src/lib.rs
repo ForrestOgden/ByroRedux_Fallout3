@@ -77,7 +77,7 @@ pub use story_manager::{
     story_manager_dispatch_system, SmNodeRuntime, SmTree, SmTreeNode, StoryClock, StoryEvent,
     StoryEventAliasFill, StoryEventFill, StoryLocationCursor, StoryManagerNodeState, StoryManagerRng,
 };
-pub use combat::{is_in_combat, AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
+pub use combat::{combined_reaction, faction_reaction, FactionCatalog, is_in_combat, AiCombatState, AmbientEngagement, FactionReactionOverride, FactionRelations};
 pub use compatibility::{
     analyze_obscript_bytecode_compatibility, analyze_pex_compatibility,
     analyze_source_compatibility, classify_method_call, classify_static_call,

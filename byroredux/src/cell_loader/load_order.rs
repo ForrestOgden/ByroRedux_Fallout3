@@ -317,6 +317,7 @@ pub(crate) fn install_form_resolver(
     load_order: std::sync::Arc<LoadOrder>,
 ) {
     world.insert_resource(resolver.identity().clone());
+    world.insert_resource(byroredux_scripting::FactionCatalog(resolver.faction_relationships()));
     world.insert_resource(resolver);
     world.insert_resource(ActiveLoadOrder(load_order));
 }

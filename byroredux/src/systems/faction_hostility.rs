@@ -160,25 +160,10 @@ pub(crate) fn standing(
     overrides: &FactionRelations,
     catalog: &FactionRelationshipCatalog,
 ) -> Standing {
-    let mut enemy = false;
-    for &own in perceiver {
-        for &other in target {
-            let reaction = overrides.reaction(own, other).or_else(|| {
-                catalog
-                    .relationship(own, other)
-                    .and_then(|relation| relation.combat_reaction())
-            });
-            match reaction {
-                Some(CombatReaction::Friend | CombatReaction::Ally) => return Standing::Friendly,
-                Some(CombatReaction::Enemy) => enemy = true,
-                Some(CombatReaction::Neutral) | None => {}
-            }
-        }
-    }
-    if enemy {
-        Standing::Enemy
-    } else {
-        Standing::Neutral
+    match byroredux_scripting::combined_reaction(perceiver, target, overrides, catalog) {
+        CombatReaction::Friend | CombatReaction::Ally => Standing::Friendly,
+        CombatReaction::Enemy => Standing::Enemy,
+        CombatReaction::Neutral => Standing::Neutral,
     }
 }
 

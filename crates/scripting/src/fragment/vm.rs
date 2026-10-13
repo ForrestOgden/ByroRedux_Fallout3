@@ -2591,6 +2591,7 @@ impl Vm<'_> {
                     | "disablelinkchain"
                     | "geteditorlocation"
                     | "getcurrentpackage"
+                    | "getfactionreaction"
             );
         if !reads {
             return Ok(None);
@@ -2716,6 +2717,22 @@ impl Vm<'_> {
                     current = self.linked_ref(link, keyword);
                 }
                 Some(Value::None)
+            }
+            // CK *GetFactionReaction - Actor*: 0 Neutral, 1 Enemy, 2 Ally, 3 Friend,
+            // by the engine-policy combination of the two actors' factions.
+            (Value::Form(actor), "getfactionreaction") if args.len() == 1 => {
+                let other = match self.eval(frame, &args[0].value.node)? {
+                    Value::Form(other) => other,
+                    _ => return stop("GetFactionReaction without an actor"),
+                };
+                let reaction = self
+                    .entity_of(*actor)
+                    .zip(self.entity_of(other))
+                    .and_then(|(actor, other)| crate::faction_reaction(self.world, actor, other));
+                match reaction {
+                    Some(reaction) => Some(Value::Int(reaction)),
+                    None => return stop("GetFactionReaction on an actor that is not loaded"),
+                }
             }
             // CK *GetCurrentPackage - Actor*: the package the actor runs now,
             // from the AI's transition reports; None while it runs none.
@@ -4509,6 +4526,11 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Object);
             }
             (Kind::Object | Kind::Player, "getcurrentpackage") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "getfactionreaction")
+                if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) =>
+            {
+                return Some(Kind::Num);
+            }
             (Kind::Object | Kind::Player, "getnthlinkedref")
                 if match arg_kinds.as_slice() {
                     [hops] | [hops, _] => {

@@ -14,7 +14,8 @@ use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_sdk::identity::FormRef;
-use byroredux_sdk::relationships::CombatReaction;
+use byroredux_sdk::relationships::{CombatReaction, FactionRelationshipCatalog};
+use std::sync::Arc;
 
 /// An actor in combat against `target`. Two producers arm it:
 /// `Effect::StartCombat` (a quest fragment forces the fight) and, since
@@ -177,6 +178,75 @@ impl FactionRelations {
     }
 }
 
+/// The load order's authored faction relations (`XNAM`), published beside the
+/// resolver that builds them so scripts can read how two actors' factions
+/// treat each other. `NOT_SAVED_BY_DESIGN`: derived from the load order.
+#[derive(Debug, Clone, Default)]
+pub struct FactionCatalog(pub Arc<FactionRelationshipCatalog>);
+
+impl Resource for FactionCatalog {}
+
+/// The engine-policy combination of every directed faction pair between two
+/// actors: an override set by script wins over the authored relation, a Friend
+/// pair beats an Ally pair, either beats an Enemy pair, and anything else is
+/// Neutral. How the original engine combines conflicting memberships is
+/// undocumented; this is the one rule ambient hostility and
+/// `GetFactionReaction` share.
+pub fn combined_reaction(
+    own: &[FormRef],
+    other: &[FormRef],
+    overrides: &FactionRelations,
+    catalog: &FactionRelationshipCatalog,
+) -> CombatReaction {
+    let (mut friend, mut ally, mut enemy) = (false, false, false);
+    for &own in own {
+        for &other in other {
+            let reaction = overrides.reaction(own, other).or_else(|| {
+                catalog
+                    .relationship(own, other)
+                    .and_then(|relation| relation.combat_reaction())
+            });
+            match reaction {
+                Some(CombatReaction::Friend) => friend = true,
+                Some(CombatReaction::Ally) => ally = true,
+                Some(CombatReaction::Enemy) => enemy = true,
+                Some(CombatReaction::Neutral) | None => {}
+            }
+        }
+    }
+    if friend {
+        CombatReaction::Friend
+    } else if ally {
+        CombatReaction::Ally
+    } else if enemy {
+        CombatReaction::Enemy
+    } else {
+        CombatReaction::Neutral
+    }
+}
+
+/// The portable identities of the factions `actor` belongs to (a negative rank
+/// is not membership: content uses -1 to take an actor out of a faction).
+fn faction_refs(world: &World, actor: EntityId) -> Option<Vec<FormRef>> {
+    let ids: Vec<u32> = world
+        .get::<byroredux_core::ecs::components::FactionRanks>(actor)
+        .map(|ranks| ranks.0.iter().filter(|(_, rank)| *rank >= 0).map(|(faction, _)| *faction).collect())
+        .unwrap_or_default();
+    let identity = world.try_resource::<crate::LoadOrderIdentity>()?;
+    Some(ids.into_iter().filter_map(|faction| identity.form_ref(faction)).collect())
+}
+
+/// CK *GetFactionReaction - Actor*: "the faction-based reaction between this
+/// actor and another" — 0 Neutral, 1 Enemy, 2 Ally, 3 Friend. `None` when the
+/// load order's identity is not installed.
+pub fn faction_reaction(world: &World, actor: EntityId, other: EntityId) -> Option<i32> {
+    let own = faction_refs(world, actor)?;
+    let other = faction_refs(world, other)?;
+    let overrides = world.try_resource::<FactionRelations>().map(|r| r.clone()).unwrap_or_default();
+    let catalog = world.try_resource::<FactionCatalog>().map(|c| Arc::clone(&c.0)).unwrap_or_default();
+    Some(reaction_raw(combined_reaction(&own, &other, &overrides, &catalog)) as i32)
+}
+
 /// Inverse of [`CombatReaction::from_raw`].
 fn reaction_raw(reaction: CombatReaction) -> u32 {
     match reaction {
@@ -240,6 +310,23 @@ mod tests {
         assert_eq!(relations.reaction(b, a), Some(CombatReaction::Neutral));
         assert_eq!(relations.overrides.len(), 2);
         assert_eq!(relations.reaction(a, form(0x14)), None);
+    }
+
+    /// The shared policy: a Friend pair beats an Ally pair, either beats an
+    /// Enemy pair, and a script's override wins over the authored relation.
+    #[test]
+    fn combined_reaction_prefers_friendship_then_hostility() {
+        let (a, b, c) = (form(1), form(2), form(3));
+        let catalog = FactionRelationshipCatalog::default();
+        let mut relations = FactionRelations::default();
+        assert_eq!(combined_reaction(&[a], &[b], &relations, &catalog), CombatReaction::Neutral);
+        relations.set_reaction(a, b, CombatReaction::Enemy);
+        assert_eq!(combined_reaction(&[a], &[b], &relations, &catalog), CombatReaction::Enemy);
+        relations.set_reaction(a, c, CombatReaction::Ally);
+        assert_eq!(combined_reaction(&[a], &[b, c], &relations, &catalog), CombatReaction::Ally);
+        relations.set_reaction(a, c, CombatReaction::Friend);
+        assert_eq!(combined_reaction(&[a], &[b, c], &relations, &catalog), CombatReaction::Friend);
+        assert_eq!(combined_reaction(&[], &[b, c], &relations, &catalog), CombatReaction::Neutral);
     }
 
     #[test]
