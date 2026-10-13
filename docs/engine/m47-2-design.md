@@ -9,7 +9,8 @@ M47.0 (event-hooks runtime, 2026-05-23), M47.1 (condition eval, 2026-05-23).
 > script libraries; a lowering table turns what it can into ECS effects; and a
 > **bounded Papyrus interpreter** (`fragment/vm.rs`, a per-frame statement budget,
 > saved continuations) runs what it declines — quest, scene, INFO and package
-> fragments, reference scripts, and quest-alias scripts, with update/timer, distance,
+> fragments (package Begin/Change/End, the End on a Travel arrival; terminal menu items),
+> reference scripts, and quest-alias scripts, with update/timer, distance,
 > custom/remote and hit-event registrations. The statically-checked contract (a script
 > runs only if every handler it has of the delivered events runs whole) keeps the
 > "decline rather than guess" posture of the original design. The original non-goals
