@@ -346,8 +346,13 @@ atoms by De Morgan. The atoms: `GetStageDone` / FO4 `IsStageDone`,
 `IsRunning`, `IsCompleted`, `GetStage` compared with a literal,
 `IsObjectiveDisplayed` / `IsObjectiveCompleted`, a global's `GetValue()` /
 `GetValueInt()` / `.Value`, a quest-script variable, an actor's `IsDead`,
-`HasPerk` and `GetItemCount`, a scene's `IsPlaying`, and
-`<actor>.GetCurrentLocation().HasKeyword(kw)` (the location runtime). Each
+`HasPerk` and `GetItemCount`, a scene's `IsPlaying`,
+`<actor>.GetCurrentLocation().HasKeyword(kw)` (the location runtime), and —
+2026-10-13 — `IsDisabled` / `IsEnabled`, `IsInFaction`, `Is3DLoaded` and
+`GetDistance(target)` against a literal. `IsDisabled` falls back to the
+authored state by the cell loader's own rule (`AuthoredDisabledReferences`),
+and a reference with no live entity reads as not loaded and infinitely far.
+Each
 compares with a literal on either side. A guard whose quest, global or actor
 does not resolve declines the whole conditional at runtime; a quest-variable
 guard sees a write made earlier in the same fragment. An actor's own

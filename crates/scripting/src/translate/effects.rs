@@ -186,6 +186,23 @@ pub enum FragmentGuard {
     LocationCleared { location: ObjectRef, expected: bool },
     /// `<actor>.IsBleedingOut()` is `expected`.
     ActorBleedingOut { actor: ActorRef, expected: bool },
+    /// `<reference>.IsEnabled()` is `expected` (`IsDisabled()` inverted).
+    ReferenceEnabled { object: ObjectRef, expected: bool },
+    /// `<actor>.IsInFaction(faction)` is `expected`.
+    InFaction {
+        actor: ActorRef,
+        faction: ObjectRef,
+        expected: bool,
+    },
+    /// `<reference>.Is3DLoaded()` is `expected`.
+    Loaded3D { object: ObjectRef, expected: bool },
+    /// `<from>.GetDistance(<to>)` compared with `value`.
+    Distance {
+        from: ActorRef,
+        to: ActorRef,
+        comparison: GuardComparison,
+        value: f32,
+    },
     /// `<actor>.IsEssential()` is `expected`.
     ActorEssential { actor: ActorRef, expected: bool },
     /// `<actor>.GetCurrentLocation().HasKeyword(keyword)` is `expected` — the
@@ -217,6 +234,11 @@ enum GuardReading {
     LocationCleared(ObjectRef),
     ActorBleedingOut(ActorRef),
     ActorEssential(ActorRef),
+    /// `IsEnabled()` reads true when enabled; `IsDisabled()` is the negation.
+    ReferenceEnabled(ObjectRef, bool),
+    InFaction(ActorRef, ObjectRef),
+    Loaded3D(ObjectRef),
+    Distance(ActorRef, ActorRef),
 }
 
 /// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
@@ -366,6 +388,42 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_actor(object, scope).map(GuardReading::ActorDead))
             .flatten();
     }
+    for (method, enabled) in [("IsEnabled", true), ("IsDisabled", false)] {
+        if let Some((object, args)) = method_call(e, method) {
+            return args
+                .is_empty()
+                .then(|| {
+                    receiver_object(object, scope)
+                        .map(|object| GuardReading::ReferenceEnabled(object, enabled))
+                })
+                .flatten();
+        }
+    }
+    if let Some((object, args)) = method_call(e, "IsInFaction") {
+        return Some(GuardReading::InFaction(
+            receiver_actor(object, scope)?,
+            one_object(args)?,
+        ));
+    }
+    if let Some((object, args)) = method_call(e, "Is3DLoaded") {
+        return args
+            .is_empty()
+            .then(|| receiver_object(object, scope).map(GuardReading::Loaded3D))
+            .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "GetDistance") {
+        let [target] = args else {
+            return None;
+        };
+        let mut target = &target.value.node;
+        while let Expr::Cast { expr, .. } = target {
+            target = &expr.node;
+        }
+        return Some(GuardReading::Distance(
+            receiver_actor(object, scope)?,
+            receiver_actor(target, scope)?,
+        ));
+    }
     if let Some((object, args)) = method_call(e, "IsBleedingOut") {
         return args
             .is_empty()
@@ -506,6 +564,25 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         GuardReading::ActorEssential(actor) => FragmentGuard::ActorEssential {
             actor,
             expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ReferenceEnabled(object, enabled) => FragmentGuard::ReferenceEnabled {
+            object,
+            expected: bool_expectation(comparison, value)? == enabled,
+        },
+        GuardReading::InFaction(actor, faction) => FragmentGuard::InFaction {
+            actor,
+            faction,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::Loaded3D(object) => FragmentGuard::Loaded3D {
+            object,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::Distance(from, to) => FragmentGuard::Distance {
+            from,
+            to,
+            comparison,
+            value,
         },
         GuardReading::HasPerk(actor, perk) => FragmentGuard::HasPerk {
             actor,
@@ -4009,6 +4086,61 @@ mod tests {
         );
     }
 
+    /// M47.2 — enable-state, faction, 3D-loaded and distance guards.
+    #[test]
+    fn reference_faction_loaded_and_distance_guards_lower() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             If HallNormalState.IsDisabled() == False && Game.GetPlayer().IsInFaction(SonsFaction) == False\n\
+             Self.SetStage(10)\n\
+             EndIf\n\
+             If !Alias_Dexion.GetReference().Is3DLoaded() && Game.GetPlayer().GetDistance(HitchingPost) < 3000.0\n\
+             Self.SetStage(20)\n\
+             EndIf\n EndFunction\n",
+        );
+        let stage = |stage| Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage,
+        };
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Conditional {
+                    guards: vec![
+                        FragmentGuard::ReferenceEnabled {
+                            object: ObjectRef::Property("HallNormalState".into()),
+                            expected: true,
+                        },
+                        FragmentGuard::InFaction {
+                            actor: ActorRef::Player,
+                            faction: ObjectRef::Property("SonsFaction".into()),
+                            expected: false,
+                        },
+                    ],
+                    then_effects: vec![stage(10)],
+                    else_effects: vec![],
+                },
+                Effect::Conditional {
+                    guards: vec![
+                        FragmentGuard::Loaded3D {
+                            object: ObjectRef::Property("Alias_Dexion".into()),
+                            expected: false,
+                        },
+                        FragmentGuard::Distance {
+                            from: ActorRef::Player,
+                            to: ActorRef::Object(ObjectRef::Property("HitchingPost".into())),
+                            comparison: GuardComparison::Lt,
+                            value: 3000.0,
+                        },
+                    ],
+                    then_effects: vec![stage(20)],
+                    else_effects: vec![],
+                },
+            ])
+        );
+    }
+
     /// M47.2 — `Kill` with and without a killer (a player victim declines),
     /// and an alias's `TryToEvaluatePackage`.
     #[test]
@@ -6297,12 +6429,13 @@ mod tests {
 
     #[test]
     fn declines_unmodeled_conditional_guard() {
-        // `GetStage() >= 5` and disjunctions lower since M47.2; a faction
-        // test (alone or inside a disjunction), a fragment-script variable
-        // (`Self.x`) and a stage compared with a non-literal still decline.
+        // `GetStage() >= 5`, disjunctions and faction tests lower since
+        // M47.2; an unmodelled read (alone or inside a disjunction), a
+        // fragment-script variable (`Self.x`) and a stage compared with a
+        // non-literal still decline.
         for condition in [
-            "Game.GetPlayer().IsInFaction(SomeFaction)",
-            "Self.GetStageDone(5) || Game.GetPlayer().IsInFaction(SomeFaction)",
+            "Game.GetPlayer().IsInCombat()",
+            "Self.GetStageDone(5) || Game.GetPlayer().IsInCombat()",
             "Self.bDone",
             "Self.GetStage() >= Self.GetStage()",
         ] {

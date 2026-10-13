@@ -28,6 +28,56 @@ pub struct ReferenceEnableState {
 
 impl Resource for ReferenceEnableState {}
 
+/// M47.2 — the load order's references that start disabled, by the cell
+/// loader's own rule: "Initially Disabled" with no enable parent, or an
+/// enable-parent child whose parent-assumed-enabled state hides it
+/// (`EnableParent::default_disabled`, #471). `IsDisabled` / `IsEnabled`
+/// guards read it where no script has touched the reference.
+/// `NOT_SAVED_BY_DESIGN`: rebuilt from the REFRs every boot.
+#[derive(Debug, Default, Clone)]
+pub struct AuthoredDisabledReferences(pub HashSet<u32>);
+
+impl Resource for AuthoredDisabledReferences {}
+
+/// Install the load order's [`AuthoredDisabledReferences`]; returns how many
+/// there are.
+pub fn install_authored_disabled_references(
+    world: &mut World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) -> usize {
+    let cells = index
+        .cells
+        .cells
+        .values()
+        .chain(index.cells.exterior_cells.values().flat_map(|grid| grid.values()))
+        .chain(index.cells.worldspace_persistent_cells.values());
+    let disabled: HashSet<u32> = cells
+        .flat_map(|cell| cell.references.iter())
+        .filter(|placed| match placed.enable_parent {
+            Some(parent) => parent.default_disabled(),
+            None => placed.initially_disabled,
+        })
+        .map(|placed| placed.form_id)
+        .collect();
+    let count = disabled.len();
+    world.insert_resource(AuthoredDisabledReferences(disabled));
+    count
+}
+
+/// Whether reference `form_id` is enabled: a script's `Enable()` /
+/// `Disable()` wins, else its authored state. Each guard is released before
+/// the next.
+pub fn reference_enabled(world: &World, form_id: u32) -> bool {
+    let scripted = world
+        .try_resource::<ReferenceEnableState>()
+        .and_then(|state| state.override_for(form_id));
+    scripted.unwrap_or_else(|| {
+        !world
+            .try_resource::<AuthoredDisabledReferences>()
+            .is_some_and(|authored| authored.0.contains(&form_id))
+    })
+}
+
 /// References whose default activation a script blocked (M47.2): the CK's
 /// `BlockActivation` — "blocks, or unblocks, normal activation processing for
 /// this reference. References with blocked activation will still send

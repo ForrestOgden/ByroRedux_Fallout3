@@ -637,7 +637,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::ActorProtection>()
             .reads::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
-            .writes_resource::<byroredux_scripting::ActorBaseProtectionOverrides>(),
+            .writes_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
+            // M47.2 — the IsDisabled / IsEnabled guards' authored state.
+            .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

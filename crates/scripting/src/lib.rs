@@ -101,7 +101,8 @@ pub use fragment::{
     scene_fragment_dispatch_system, DeferredFragmentEffects, DialogueInfoFragments,
     FragmentExecutionQueue, FragmentPexTranslation, LockOverride, OwnedFragmentProviders,
     PendingFragmentActivations, PlayerMoveRequest, QuestStageFragments, ReferenceActivationBlocks,
-    ReferenceEnableState, default_activation_blocked,
+    ReferenceEnableState, default_activation_blocked, install_authored_disabled_references,
+    reference_enabled, AuthoredDisabledReferences,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
 };
 pub use faction_changes::{

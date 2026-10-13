@@ -2565,6 +2565,72 @@ fn evaluate_guard(
             let actor = guard_actor(actor, context, vmad, world, deferred)?;
             crate::bleedout::is_essential(world, actor) == *expected
         }
+        FragmentGuard::ReferenceEnabled { object, expected } => {
+            let form_id = object_form_id(vmad, world, context, object, deferred)?;
+            // An `Enable()` / `Disable()` earlier in the same fragment is
+            // visible.
+            let enabled = match deferred
+                .reference_enable_changes
+                .iter()
+                .rev()
+                .find(|(changed, _)| *changed == form_id)
+            {
+                Some(&(_, enabled)) => enabled,
+                None => super::reference_enabled(world, form_id),
+            };
+            enabled == *expected
+        }
+        FragmentGuard::InFaction {
+            actor,
+            faction,
+            expected,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            let member = crate::condition::evaluate_function(
+                crate::condition::ConditionFunction::GetInFaction,
+                &byroredux_plugin::esm::records::condition::Condition {
+                    param_1: faction,
+                    ..Default::default()
+                },
+                actor,
+                world,
+            ) == 1.0;
+            member == *expected
+        }
+        FragmentGuard::Loaded3D { object, expected } => {
+            // A reference with no live entity is not loaded.
+            let form_id = object_form_id(vmad, world, context, object, deferred)?;
+            let loaded = crate::condition::resolve_entity_by_global_form_id(world, form_id)
+                .is_some_and(|entity| {
+                    crate::condition::evaluate_function(
+                        crate::condition::ConditionFunction::HasLoaded3D,
+                        &byroredux_plugin::esm::records::condition::Condition::default(),
+                        entity,
+                        world,
+                    ) == 1.0
+                });
+            loaded == *expected
+        }
+        FragmentGuard::Distance {
+            from,
+            to,
+            comparison,
+            value,
+        } => {
+            use byroredux_core::ecs::components::GlobalTransform;
+            let from = guard_actor(from, context, vmad, world, deferred)?;
+            let to = guard_actor(to, context, vmad, world, deferred)?;
+            // Like the GetDistance condition: a reference with no placement
+            // reads as infinitely far.
+            let from = world.get::<GlobalTransform>(from).map(|t| t.translation);
+            let to = world.get::<GlobalTransform>(to).map(|t| t.translation);
+            let distance = match (from, to) {
+                (Some(from), Some(to)) => (from - to).length(),
+                _ => f32::MAX,
+            };
+            comparison.apply(distance, *value)
+        }
         FragmentGuard::HasPerk {
             actor,
             perk,

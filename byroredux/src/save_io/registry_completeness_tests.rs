@@ -509,6 +509,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
         ("ExperienceRules", "Fallout kill-experience bands and health share; rebuilt from the load order's GMSTs by install_experience_rules every boot"),
         ("PlayerDamageDealt", "the player's damage on each actor still standing, for the kill-experience share; mid-fight session state"),
+        ("AuthoredDisabledReferences", "the load order's initially-disabled references (the cell loader's own rule); rebuilt from the REFRs by install_authored_disabled_references every boot"),
         ("PendingScriptKills", "script Kill requests queued after the quest guards drop, drained by scripted_kill_system the same or the next frame"),
         ("EncumbranceRules", "the CarryWeight / InventoryWeight AVIFs and the over-encumbered movement effect; rebuilt from the load order by install_encumbrance_rules every boot"),
         ("PlayerEncumbrance", "the player's carried weight against Carry Weight; re-derived from the inventory by encumbrance_system every frame"),

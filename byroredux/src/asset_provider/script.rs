@@ -665,6 +665,8 @@ pub(crate) fn populate_scene_runtime(
     // perks whenever a calculation consults a hook.
     // M47.2 — map markers' authored visibility, for IsMapMarkerVisible.
     byroredux_scripting::install_map_markers(world, index);
+    // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
+    byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.
     byroredux_scripting::install_actor_value_names(world, index);
     // M47.2 — New Vegas Damage Threshold (armor DT + the DT actor value,

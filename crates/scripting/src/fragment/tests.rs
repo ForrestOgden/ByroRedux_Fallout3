@@ -4920,6 +4920,57 @@ fn set_cleared_clears_the_location() {
     );
 }
 
+/// M47.2 — `IsDisabled` / `IsEnabled` guards read a script's override,
+/// including one earlier in the same fragment, else the authored state.
+#[test]
+fn reference_enabled_guard_reads_scripts_then_the_authored_state() {
+    use crate::QuestScriptVariables;
+    const STARTS_DISABLED: u32 = 0x0002_0001;
+    const STARTS_ENABLED: u32 = 0x0002_0002;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    world.insert_resource(super::AuthoredDisabledReferences(
+        [STARTS_DISABLED].into_iter().collect(),
+    ));
+    let enabled = |name: &str, expected| FragmentGuard::ReferenceEnabled {
+        object: ObjectRef::Property(name.into()),
+        expected,
+    };
+    let mark = |variable: &str| Effect::SetQuestVariable {
+        quest: QuestRef::SelfRef,
+        variable: variable.into(),
+        value: 1.0,
+    };
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Hidden", STARTS_DISABLED), ("Shown", STARTS_ENABLED)]),
+        vec![
+            Effect::Conditional {
+                guards: vec![enabled("Hidden", false), enabled("Shown", true)],
+                then_effects: vec![mark("Authored")],
+                else_effects: vec![],
+            },
+            Effect::Enable {
+                object: ObjectRef::Property("Hidden".into()),
+                fade_in: false,
+            },
+            Effect::Conditional {
+                guards: vec![enabled("Hidden", true)],
+                then_effects: vec![mark("Pending")],
+                else_effects: vec![],
+            },
+        ],
+    );
+    let read = |name| {
+        world
+            .resource::<QuestScriptVariables>()
+            .get(Q, QuestScriptVariables::property_key(name))
+    };
+    assert_eq!(read("Authored"), Some(1.0));
+    assert_eq!(read("Pending"), Some(1.0));
+    assert!(super::reference_enabled(&world, STARTS_DISABLED), "the Enable() landed");
+}
+
 /// M47.2 — `SetEssential` on an ActorBase property records the override
 /// once the guards drop, clearing the protected flag.
 #[test]

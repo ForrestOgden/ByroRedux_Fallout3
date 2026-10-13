@@ -877,7 +877,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::SetBaseProtection` variant (with `ActorBaseRef`).
     // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
     // `Effect::Kill` variant (name-tagged; no older save carries it).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfd14_0ec8_b400_ff87;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `FragmentGuard::ReferenceEnabled` / `InFaction` / `Loaded3D` /
+    // `Distance` variants.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfc36_9667_f033_db4a;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
