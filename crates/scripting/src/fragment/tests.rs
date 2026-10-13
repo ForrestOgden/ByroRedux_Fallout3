@@ -5910,3 +5910,40 @@ fn wait_while_polls_until_its_condition_fails() {
     fragment_continuation_system(&world, 1.0);
     assert_eq!(caps(&world), 1, "the condition failed: the fragment ran on");
 }
+
+/// M47.2 — a wait inside a conditional branch suspends the fragment and the
+/// resume runs the rest of the branch, then the rest of the program.
+#[test]
+fn a_wait_inside_a_branch_resumes_into_the_branch_then_the_program() {
+    let world = fixture();
+    world.resource_mut::<QuestStageFragments>().insert(
+        Q,
+        1,
+        vec![
+            Effect::Conditional {
+                guards: vec![FragmentGuard::StageDone {
+                    quest: QuestRef::SelfRef,
+                    stage: 1,
+                    done: true,
+                }],
+                then_effects: vec![Effect::Wait { seconds: 1.0 }, Effect::PlayerCaps { delta: 1 }],
+                else_effects: vec![],
+            },
+            Effect::PlayerCaps { delta: 10 },
+        ],
+    );
+    let caps = |world: &World| {
+        let player = world.resource::<PapyrusPlayerEntity>().0;
+        world
+            .get::<byroredux_core::ecs::components::Inventory>(player)
+            .map_or(0, |inventory| {
+                inventory.items.iter().filter(|s| s.base_form_id == 0xF).map(|s| s.count).sum::<u32>()
+            })
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 1);
+    emit_advance(&world, Q, 1);
+    quest_fragment_dispatch_system(&world);
+    assert_eq!(caps(&world), 0, "suspended inside the branch");
+    fragment_continuation_system(&world, 1.0);
+    assert_eq!(caps(&world), 11, "the branch's rest, then the program's");
+}

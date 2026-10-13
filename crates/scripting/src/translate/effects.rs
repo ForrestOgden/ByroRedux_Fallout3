@@ -2280,19 +2280,12 @@ fn lower_statements(
                 if scope.rebound_by(&then_scope) || scope.rebound_by(&else_scope) {
                     return None;
                 }
-                let has_latent = |branch: &[Effect]| {
-                    branch.iter().any(|effect| {
-                        matches!(
-                            effect,
-                            Effect::Wait { .. }
-                                | Effect::WaitForActors3DLoaded { .. }
-                                | Effect::WaitWhile { .. }
-                        )
-                    })
-                };
-                if has_latent(&then_effects) || has_latent(&else_effects) {
-                    return None;
-                }
+                // M47.2 — a branch may wait: `apply_effects`' cursor stack
+                // (#3935) suspends with the rest of the branch followed by the
+                // rest of the program, so the resume continues exactly there.
+                // The callers still refuse a latent effect where it cannot
+                // suspend (a quest scope, a speaker line, run-time locals) —
+                // `has_latent_tail` looks into branches.
                 effects.push(Effect::Conditional {
                     guards,
                     then_effects,
