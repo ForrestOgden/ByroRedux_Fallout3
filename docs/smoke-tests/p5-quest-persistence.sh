@@ -14,7 +14,7 @@
 #   4. The restored chain is live: setstage 35 again displays objective 35.
 #   5. F5 again, engine.quit, relaunch with --load: the stage-35 state
 #      survives the process restart.
-#   6. #5366 Phase 3: the SM-fired WIGreeting (boot CLOC start) is still
+#   6. #5366 Phase 3: the SM-fired TG06 quest (boot CLOC start) is still
 #      running after the F9 quickload — the Story Manager's quest
 #      lifecycle and node-policy state ride the same save.
 #
@@ -170,12 +170,16 @@ require_in "result: set stage=35" "the restored chain advanced again after quick
 require_in "35: displayed=true" "objective 35 re-displayed after restore + advance" "$LOG_DIR/a6-relive.log"
 
 # ── #5366 Phase 3 — the SM-fired quest survived the F5/F9 round trip ────────
-# The boot-time CLOC starts WIGreeting (0x000C7919) through the Story
-# Manager in this cell too; the quicksave→quickload cycle must carry it
-# (lifecycle + the node-policy state that says the boot event fired).
-dbg "$LOG_DIR/a5b-smquest.log" "quest.show 0x000C7919"
-require_in "Quest 0x000C7919" "the SM-fired WIGreeting is present after quickload" "$LOG_DIR/a5b-smquest.log"
-require_in "state: running" "WIGreeting (SM CLOC start) survived the F5/F9 round trip" "$LOG_DIR/a5b-smquest.log"
+# The boot-time CLOC starts TG06_dunMarkarthWizardsQuartersQST (0x00087105)
+# through the Story Manager: `TG06WizardsQuartersNode`'s one gate is
+# `GetInCurrentLoc MarkarthLocation`, and MarkarthWarrens is a child of
+# Markarth (M47.2 location runtime). The quicksave→quickload cycle must carry
+# it (lifecycle + the node-policy state that says the boot event fired).
+# (Pre-#5380 this leg named WIGreeting, which now declines on its
+# uncatalogued fn-145 gate — see sm1-story-manager.sh.)
+dbg "$LOG_DIR/a5b-smquest.log" "quest.show 0x00087105"
+require_in "Quest 0x00087105" "the SM-fired TG06 quest is present after quickload" "$LOG_DIR/a5b-smquest.log"
+require_in "state: running" "TG06 (SM CLOC start) survived the F5/F9 round trip" "$LOG_DIR/a5b-smquest.log"
 
 # ── Session B — the same state survives a process restart ───────────────────
 dbg "$LOG_DIR/a7-quicksave2.log" "input.press quicksave"

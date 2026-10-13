@@ -5960,5 +5960,3 @@ fn fallout_armor_damage_threshold_and_resistance_decode() {
         assert_eq!(armor(&index, "MS10LindensOutcastPowerArmor"), (0.0, 40));
     }
 }
-
-
