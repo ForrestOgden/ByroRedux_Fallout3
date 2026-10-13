@@ -346,36 +346,62 @@ recognizer family. `SCDA` disassembly deferred (filed).
 ## Verification checklist for "M47.2 done" (per phase)
 
 **Phase 0**
-- [ ] `translate_script` is called from the cell-loader REFR-attach path
-- [ ] `RecognizeCtx.script_instance` carries decoded VMAD at attach time
-- [ ] `RecognizeCtx.owning_quest` resolves for alias-attached scripts
+- [x] `translate_script` is called from the cell-loader REFR-attach path (`cell_loader/references/attach.rs`)
+- [x] `RecognizeCtx.script_instance` carries decoded VMAD at attach time
+- [x] `RecognizeCtx.owning_quest` resolves for alias-attached scripts
 - [x] hardcoded `papyrus_demo::register_spawners` retired from the attach path (#2191)
-- [ ] emitted components + `QuestStageState` registered with the M45 `SaveRegistry`
+- [x] emitted components + `QuestStageState` registered with the M45 `SaveRegistry` (`save_io.rs`)
 - [ ] synthetic E2E: `.psc` ACTI w/ VMAD → component lands → event → side-effect marker on player
 - [ ] script state survives a `save`→`load` round-trip
 
 **Phase 1**
-- [ ] `.pex` container + tables decode to a partial `Script`
-- [ ] a real compiled vanilla script attaches via name+property classification
-- [ ] decode rejects malformed `.pex` (bad magic / version / truncation) cleanly
+- [x] `.pex` container + tables decode to a partial `Script` (`crates/pex`)
+- [x] a real compiled vanilla script attaches via name+property classification (`pex_recognize_e2e`, DA10)
+- [x] decode rejects malformed `.pex` (bad magic / version / truncation) cleanly (`crates/pex/src/reader.rs` tests)
 
 **Phase 2**
-- [ ] Papyrus-Assembly opcodes decode; jump graph lifts to If/ElseIf/While
-- [ ] fidelity gate: recognizer output identical for `.psc` vs decompiled `.pex`
+- [x] Papyrus-Assembly opcodes decode; jump graph lifts to If/ElseIf/While (26,640 / 26,641 corpus scripts)
+- [x] fidelity gate: recognizer output identical for `.psc` vs decompiled `.pex` (#1740)
 - [ ] `quest_stage_gate` + `rumble` fire on decompiled vanilla content
 
 **Phase 3**
 - [ ] top-N script families by corpus frequency have generic recognizers
-- [ ] condition-function catalog expanded to cover recognized scripts' CTDAs
-- [ ] coverage metric (recognized / total scripted REFRs) reported on a real cell
+- [x] condition-function catalog expanded to cover recognized scripts' CTDAs (25 functions, incl. `GetVMQuestVariable`)
+- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 51.5% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
 - [ ] `sys.accesses` reports 0 unknown / 0 conflicts after additions
 
 **Phase 5**
-- [ ] Obscript `SCTX` parses to an Obscript AST
-- [ ] an Obscript recognizer family fires on FO3/FNV scripted REFRs
+- [ ] Obscript `SCTX` parses to an Obscript AST — superseded: M47.3 executes the `SCDA` bytecode directly
+- [ ] an Obscript recognizer family fires on FO3/FNV scripted REFRs — superseded by M47.3's quest VM
+
+### M47.2 closeout (2026-10-12)
+
+The runtime half grew past the recognizer catalog this plan started with. The
+2026-10-12 pass added, each grounded in corpus censuses and xEdit's
+definitions: decompiled locals (fragment lowering 18.1% → 44.1% on Skyrim),
+the player as an inventory container, `RemoveItem`, the dialogue speaker
+(`akSpeakerRef`), quest-script variables (`SetQuestVariable` /
+`GetVMQuestVariable`), widened `If` guards, saved scripted faction
+membership, Skyrim alias getters, FO4 actor-value `SetValue`, quest-script
+call inlining, perk entry-point composition (with the corrected PERK decode),
+created-object "In" alias grants, and `PlayIdle` on any content-named IDLE.
+
+What remains is outside this milestone's shape, each owned by a subsystem
+that does not exist yet:
+
+- **The fragment long tail** (~48% of fragments): bespoke script functions,
+  map markers (`AddToMap`), barter/UI menus, the player's `MoveTo`
+  (teleport), and script-filled reference collections (FO4's 554 `ALCS`
+  aliases carry no fill data; scripts `AddRef` them).
+- **Perk hooks beyond strike damage:** XP, skill points, carry weight and
+  damage threshold have no consuming systems; weapon-tab subjects need
+  equipped weapons as entities.
+- **Created Object "At"** (1,389 Skyrim + FO4 aliases, mostly NPC spawns):
+  needs runtime reference creation with a saved identity.
+- **LCTN aliases and location run-on conditions:** need a location runtime.
 
 Always confirm milestone state against [ROADMAP.md](../../ROADMAP.md).
 
