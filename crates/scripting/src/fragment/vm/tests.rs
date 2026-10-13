@@ -1223,3 +1223,66 @@ fn structs_and_array_methods_run() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
     let _ = &mut world;
 }
+
+/// A package's Begin / Change fragments run with `akActor` bound to the
+/// actor; a switch of package runs the old one's Change and the new one's
+/// Begin.
+#[test]
+fn package_fragments_run_on_transitions() {
+    use byroredux_plugin::esm::records::script_instance::PackageFragmentEvent;
+    const PACK_A: u32 = 0x0001_0F30;
+    const PACK_B: u32 = 0x0001_0F31;
+    const ACTOR: u32 = 0x0001_0F32;
+    let a = parsed_source(
+        "ScriptName PF_A extends Package\n\
+         Function Fragment_0(Actor akActor)\n akActor.Disable()\n EndFunction\n\
+         Function Fragment_1(Actor akActor)\n Self.SetStage(30)\n EndFunction\n",
+    );
+    let b = parsed_source(
+        "ScriptName PF_B extends Package\n\
+         Function Fragment_0(Actor akActor)\n akActor.Enable()\n EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(ACTOR),
+    });
+    world.insert_resource(pool);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(id));
+    let installed = std::cell::RefCell::new(Vec::new());
+    let library: HashMap<String, Arc<Script>> = HashMap::new();
+    let library = Installed(&library);
+    for (package, script, bindings) in [
+        (
+            PACK_A,
+            a,
+            vec![(PackageFragmentEvent::Begin, "Fragment_0"), (PackageFragmentEvent::Change, "Fragment_1")],
+        ),
+        (PACK_B, b, vec![(PackageFragmentEvent::Begin, "Fragment_0")]),
+    ] {
+        let mut fragments = world.resource_mut::<crate::PackageFragments>();
+        let n = crate::populate_package_fragments(&mut fragments, package, None, script, &bindings, &library, &mut |s| {
+            installed.borrow_mut().push(s)
+        });
+        assert_eq!(n, bindings.len());
+    }
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in installed.into_inner() {
+            fragments.insert_vm_script(script);
+        }
+    }
+    crate::report_package_transition(&world, actor, None, Some(PACK_A));
+    crate::package_fragment_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, ACTOR), "A began: akActor disabled");
+    crate::report_package_transition(&world, actor, Some(PACK_A), Some(PACK_B));
+    crate::package_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, ACTOR), "B began: akActor enabled");
+}

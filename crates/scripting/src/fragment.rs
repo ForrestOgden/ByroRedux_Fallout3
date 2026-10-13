@@ -57,6 +57,7 @@ use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::{ActorRef, Effect};
 
 mod effects;
+mod package;
 mod populate;
 mod reference;
 mod state;
@@ -65,6 +66,7 @@ mod updates;
 pub mod vm;
 
 pub use effects::*;
+pub use package::*;
 pub use populate::*;
 pub use reference::*;
 pub use state::*;
@@ -90,6 +92,7 @@ pub use updates::*;
 pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),
+    include_str!("fragment/package.rs"),
     include_str!("fragment/populate.rs"),
     include_str!("fragment/reference.rs"),
     include_str!("fragment/systems.rs"),

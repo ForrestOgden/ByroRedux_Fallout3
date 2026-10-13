@@ -702,13 +702,25 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-Quest, scene and topic-info fragments all fall back to the VM. The scene and
+Quest, scene, topic-info and package fragments all fall back to the VM. The scene and
 INFO walks collect the scripts it needs and install them beside the quest
 walk's. A topic-info fragment's `akSpeakerRef` binds to the speaker of the
-line, as the lowering binds it. Package (`PF_`) fragments are not wired on
-either path yet.
+line, as the lowering binds it.
 
-With the VM, 79.3% of the Skyrim corpus runs (Fallout 4: 71.7%) (lowered + interpreted;
+Package (`PF_`) fragments (`crates/scripting/src/fragment/package.rs`) run
+on package transitions. The PACK `VMAD` fragment section decodes per xEdit's
+`wbScriptFragmentsPack` (flags: 1 Begin, 2 End, 4 Change). A fragment installs
+only when the VM's check accepts it, and it runs with `akActor` bound to the
+actor running the package. The AI reports each actor's package changes: the
+spawn-time winner, a re-selection and a combat / unconscious suspension. The
+old package's Change fragment then runs, followed by the new one's Begin. The
+CK's *OnEnd* / *OnChange - Package* pages define End as a normal end and
+Change as ended or preempted. This engine re-selects by conditions and
+schedules and doesn't model a procedure completing, so every switch is a
+preemption: End fragments are installed but don't run until procedure
+completion lands.
+
+With the VM, 79.4% of the Skyrim corpus runs (Fallout 4: 72.0%) (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:
@@ -716,7 +728,7 @@ Not modelled yet:
   per-skill usage progression in CHARAL);
 - alias update registrations and FO4's distance / custom-event
   registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
-- package (`PF_`) fragments, which need package begin / end / change events.
+- package End fragments (procedure completion).
 
 ### Reference scripts on the VM (M47.2)
 

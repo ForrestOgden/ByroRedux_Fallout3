@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 68;
+    const BASELINE_MAJOR: u16 = 69;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -944,7 +944,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v67 -> v68):
     // `PropertyValue::Struct` + `StructMember` (FO4 VMAD structs, which a
     // saved continuation's VMAD can carry).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6083_df64_7b65_a749;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v68 -> v69):
+    // `PackageFragmentEvent` / `PackageScriptFragment` (PACK VMAD fragment
+    // bindings).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0221_bd5a_8da7_8d90;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

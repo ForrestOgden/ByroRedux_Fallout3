@@ -561,6 +561,72 @@ fn populate_info_fragments(
     }
 }
 
+/// M47.2 — install the Papyrus VM's package (`PF_`) fragments from each
+/// `PACK`'s `VMAD` bindings, for the package-transition dispatcher. Session-
+/// gated like the INFO walk.
+fn populate_package_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    if world
+        .resource::<byroredux_scripting::PackageFragments>()
+        .is_populated()
+    {
+        return;
+    }
+    world
+        .resource_mut::<byroredux_scripting::PackageFragments>()
+        .mark_populated();
+    if !world
+        .try_resource::<ScriptProvider>()
+        .is_some_and(|provider| !provider.is_empty())
+    {
+        return;
+    }
+    let Some(script_provider) = world.remove_resource::<ScriptProvider>() else {
+        return;
+    };
+    let library = ProviderScriptLibrary::new(&script_provider);
+    let mut vm_scripts = Vec::new();
+    let mut fragments = byroredux_scripting::PackageFragments::default();
+    let mut total = 0usize;
+    for (&form_id, package) in &index.packages {
+        if package.script_fragments.is_empty() {
+            continue;
+        }
+        let mut by_script: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
+        for fragment in &package.script_fragments {
+            by_script
+                .entry(fragment.script_name.as_str())
+                .or_default()
+                .push((fragment.event, fragment.fragment_name.as_str()));
+        }
+        for (script_name, bindings) in by_script {
+            use byroredux_scripting::translate::effects::ScriptLibrary as _;
+            let Some(script) = library.script(script_name) else {
+                continue;
+            };
+            total += byroredux_scripting::populate_package_fragments(
+                &mut fragments,
+                form_id,
+                package.script_instance.as_ref(),
+                script,
+                &bindings,
+                &library,
+                &mut |needed| vm_scripts.push(needed),
+            );
+        }
+    }
+    drop(library);
+    world.insert_resource(script_provider);
+    install_vm_scripts(world, vm_scripts);
+    if total > 0 {
+        log::info!("M47.2: installed {total} package fragments for {} packages", fragments.len());
+    }
+    fragments.mark_populated();
+    world.insert_resource(fragments);
+}
+
 /// Install every parsed Skyrim+ `SCEN` definition and its referenced
 /// `DIAL`/`INFO` topics into the ECS runtime.
 ///
@@ -674,6 +740,7 @@ pub(crate) fn populate_scene_runtime(
     // drift from the three siblings below.
     populate_quest_fragments(world, index);
     populate_info_fragments(world, index);
+    populate_package_fragments(world, index);
     crate::inventory::install_catalog(world, index);
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));

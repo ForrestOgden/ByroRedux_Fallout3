@@ -743,6 +743,10 @@ pub(crate) fn suspend_ambient_behavior_for_combat(world: &World, actor: EntityId
     if !active && world.get::<Seated>(actor).is_none() {
         return;
     }
+    let previous = world
+        .get::<AmbientPackageRuntime>(actor)
+        .and_then(|runtime| runtime.active_package_form_id);
+    byroredux_scripting::report_package_transition(world, actor, previous, None);
     clear_ambient_behavior(world, actor);
     if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
         if let Some(runtime) = runtimes.get_mut(actor) {
@@ -845,6 +849,8 @@ pub(super) fn apply_ai_package_behavior(
         AmbientBehavior::from_package(package, template, resolved.shell.form_id)
     });
 
+    // M47.2 — the spawn-time winner begins (its Begin fragment runs).
+    byroredux_scripting::report_package_transition(world, placement_root, None, active_package_form_id);
     world.insert(
         placement_root,
         AmbientPackageRuntime {
@@ -1034,6 +1040,12 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
             "[m42-reselect] actor {actor} -> pack {:?}",
             active_id.map(|id| format!("{id:08X}"))
         );
+        // M47.2 — the package fragments: the old package changed, the new
+        // one began.
+        let previous = world
+            .get::<AmbientPackageRuntime>(actor)
+            .and_then(|runtime| runtime.active_package_form_id);
+        byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         clear_ambient_behavior(world, actor);
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);

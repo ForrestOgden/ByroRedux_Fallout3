@@ -527,13 +527,14 @@ fn main() {
                         );
                         *decline_hist.entry(shape).or_default() += 1;
                         // Production runs the VM fallback on the quest,
-                        // scene and topic-info paths; package (`PF_`) and
-                        // other fragments are not wired.
+                        // scene, topic-info and package paths.
                         let info = func
                             .params
                             .iter()
                             .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER));
-                        let wired = quest_library.quest || quest_library.scene || info;
+                        // Package fragments (`PF_…`) run on package transitions.
+                        let package = script.name.node.0.to_ascii_lowercase().contains("pf_");
+                        let wired = quest_library.quest || quest_library.scene || info || package;
                         let checked = if wired {
                             byroredux_scripting::fragment::vm::check_function_reason(
                                 std::sync::Arc::clone(&script_arc),
@@ -541,7 +542,7 @@ fn main() {
                                 Some(&library),
                             )
                         } else {
-                            Err("not a quest, scene or topic-info fragment".to_owned())
+                            Err("not a quest, scene, topic-info or package fragment".to_owned())
                         };
                         match checked {
                             Ok(_) => interpretable += 1,

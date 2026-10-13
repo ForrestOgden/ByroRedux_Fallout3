@@ -155,6 +155,8 @@ pub fn register(world: &mut World) {
     world.register::<PapyrusReferenceScripts>();
     world.insert_resource(ScriptUpdates::default());
     world.insert_resource(UpdateHandlerChecks::default());
+    world.insert_resource(PackageFragments::default());
+    world.insert_resource(PendingPackageTransitions::default());
 }
 
 /// Execute the lowered Papyrus fragments emitted by scene playback this

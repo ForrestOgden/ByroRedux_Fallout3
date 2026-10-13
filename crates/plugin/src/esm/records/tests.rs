@@ -2901,6 +2901,8 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // FormIDs) is consumed by `ScriptInstanceData::parse_with_consumed`
     // before this decoder starts, remap included.
     ("script_instance.rs", "parse_info_fragments"),
+    // M47.2 — the PACK twin of the INFO decoder: flags and strings only.
+    ("script_instance.rs", "parse_package_fragments"),
     ("misc/equipment.rs", "parse_bptd"),
     // TRNS carries no FormIDs at all — EDID + a pos/rot/scale/zoom float
     // struct. The only cross-record reference in the pairing (LSCR.TNAM →

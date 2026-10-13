@@ -5,6 +5,7 @@ use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
 use super::super::condition::{push_ctda, ConditionList};
 use crate::esm::reader::{GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
+use super::super::script_instance::{parse_package_fragments, PackageScriptFragment, ScriptInstanceData};
 
 /// `PACK` AI package record. 30-procedure scheduling system
 /// (guard patrols, merchant behavior, dialogue triggers, ambient
@@ -101,6 +102,12 @@ pub struct PackRecord {
     /// `condition_met` predicate rather than reaching across the crate
     /// boundary (scripting depends on plugin, not the reverse).
     pub conditions: ConditionList,
+    /// M47.2 — Skyrim+ `VMAD` scripts section: the `PF_` package fragment
+    /// script's properties.
+    pub script_instance: Option<ScriptInstanceData>,
+    /// M47.2 — the `VMAD` fragment section's Begin / End / Change bindings
+    /// ([`parse_package_fragments`]).
+    pub script_fragments: Vec<PackageScriptFragment>,
 }
 
 /// PACK location data from PLDT — where a package's activity centers.
@@ -822,6 +829,11 @@ pub fn parse_pack(
     let pkcu_index = subs.iter().position(|sub| sub.sub_type == *b"PKCU");
     for (sub_index, sub) in subs.iter().enumerate() {
         match &sub.sub_type {
+            // M47.2 — the package fragment script and its bindings.
+            b"VMAD" if !sub.data.is_empty() => {
+                out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
+                out.script_fragments = parse_package_fragments(&sub.data);
+            }
             // #5504 — Oblivion's legacy 4-byte PKDT: u16 flags @0, u8
             // procedure @2, one junk byte @3. `Oblivion.esm` authors 561 of
             // them beside 6,648 eight-byte ones; validated against EDIDs

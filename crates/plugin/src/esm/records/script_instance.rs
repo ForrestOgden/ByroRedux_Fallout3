@@ -594,6 +594,67 @@ pub fn parse_info_fragments(vmad: &[u8]) -> Vec<InfoScriptFragment> {
     out
 }
 
+/// When a package fragment runs (CK *Package Fragments*: "when the package
+/// begins, when the package ends, and when the package changes").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PackageFragmentEvent {
+    Begin,
+    /// The package ended normally.
+    End,
+    /// The package ended or was preempted.
+    Change,
+}
+
+/// One package (`PACK`) fragment binding: a `PF_` script's `Fragment_N`
+/// and the event it runs on.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PackageScriptFragment {
+    pub event: PackageFragmentEvent,
+    pub script_name: String,
+    pub fragment_name: String,
+}
+
+/// Decode a `PACK` `VMAD` fragment section (xEdit `wbScriptFragmentsPack`):
+/// version `2`, a flags byte (1 = OnBegin, 2 = OnEnd, 4 = OnChange), the
+/// script file name, then one fragment entry per set flag in that order —
+/// each an unknown byte, a script name and a fragment name.
+pub fn parse_package_fragments(vmad: &[u8]) -> Vec<PackageScriptFragment> {
+    let (_, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = Cursor::new(section);
+    if c.u8() != Some(2) {
+        return Vec::new();
+    }
+    let Some(flags) = c.u8() else {
+        return Vec::new();
+    };
+    let Some(_file_name) = c.wstring() else {
+        return Vec::new();
+    };
+    let events = [
+        (0b001, PackageFragmentEvent::Begin),
+        (0b010, PackageFragmentEvent::End),
+        (0b100, PackageFragmentEvent::Change),
+    ];
+    let mut out = Vec::new();
+    for (_, event) in events.into_iter().filter(|(bit, _)| flags & bit != 0) {
+        let Some(_unknown) = c.u8() else { break };
+        let (Some(script_name), Some(fragment_name)) = (c.wstring(), c.wstring()) else {
+            break;
+        };
+        out.push(PackageScriptFragment {
+            event,
+            script_name,
+            fragment_name,
+        });
+    }
+    out
+}
+
 /// Minimal bounds-checked little-endian cursor over a VMAD payload.
 struct Cursor<'a> {
     data: &'a [u8],
@@ -1180,6 +1241,27 @@ mod tests {
             }])])
         );
         assert_eq!(properties[2].value, PropertyValue::Int32(7));
+    }
+
+    /// A PACK fragment section binds one fragment per set flag, in
+    /// Begin / End / Change order.
+    #[test]
+    fn package_fragments_decode_by_flag() {
+        let mut vmad = empty_scripts_prefix();
+        vmad.push(2);
+        vmad.push(0b101); // OnBegin + OnChange
+        push_wstring(&mut vmad, "PF_WalkHome_000ABCDE");
+        for fragment in ["Fragment_0", "Fragment_2"] {
+            vmad.push(0);
+            push_wstring(&mut vmad, "PF_WalkHome_000ABCDE");
+            push_wstring(&mut vmad, fragment);
+        }
+        let fragments = parse_package_fragments(&vmad);
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].event, PackageFragmentEvent::Begin);
+        assert_eq!(fragments[0].fragment_name, "Fragment_0");
+        assert_eq!(fragments[1].event, PackageFragmentEvent::Change);
+        assert_eq!(fragments[1].fragment_name, "Fragment_2");
     }
 
     // ---- SCEN fragment section ----------------------------------------

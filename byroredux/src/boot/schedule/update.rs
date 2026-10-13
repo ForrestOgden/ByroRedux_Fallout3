@@ -477,6 +477,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // the SCEN package system drains the transient marker. Time-driven checks
     // are bounded to one pass per in-game minute inside the system.
     scheduler.add_exclusive(Stage::Update, crate::npc_spawn::ambient_ai_package_system);
+    // M47.2 — the package transitions it reports run their PF_ fragments.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::package_fragment_system);
     // #5367 Phase F — force-greet directives (Dialogue-procedure
     // packages) walk their NPCs to the player and open the conversation
     // without activation. After the ambient package system so a fresh
