@@ -1391,3 +1391,150 @@ fn follower_flags_set_and_read() {
     let flags = world.resource::<crate::FollowerState>().flags(BUDDY);
     assert!(flags.teammate && !flags.can_do_favor && flags.doing_favor);
 }
+
+// ── Session 99 — Papyrus VM per-frame cost census (`#[ignore]`) ─────────────
+//
+// `cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost`
+//
+// Everything the VM adds to the frame runs in exclusive `Update` systems
+// (`reference_script_event_system`, `quest_fragment_dispatch_system`,
+// `fragment_continuation_system`, `script_update_system`), so these are
+// serial main-thread costs. Four questions, each a table row:
+//   A. idle: N attached reference scripts, no events this frame
+//   B. burst: one `OnCellLoad` delivered to all N in a single frame
+//   C. polling: N scripts on `RegisterForUpdate(interval)`, 60 fps frames
+//   D. runaway: one handler that loops until the 100 000-statement cap
+
+fn vm_cost_world(n: usize, source: &str, name: &str) -> (World, Vec<byroredux_core::ecs::EntityId>) {
+    let script = parsed_source(source);
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("the VM runs it");
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let mut refs = Vec::with_capacity(n);
+    let ids: Vec<_> = (0..n)
+        .map(|i| {
+            pool.intern(FormIdPair {
+                plugin: PluginId::from_filename("Skyrim.esm"),
+                local: LocalFormId(0x0002_0000 + i as u32),
+            })
+        })
+        .collect();
+    world.insert_resource(pool);
+    let instance = ScriptInstance { name: name.into(), status: 0, properties: Vec::new() };
+    for id in ids {
+        let r = world.spawn();
+        world.insert(r, FormIdComponent(id));
+        crate::attach_reference_script(&mut world, r, &instance, events.clone(), scripts.clone());
+        refs.push(r);
+    }
+    (world, refs)
+}
+
+fn vm_cost_us<F: FnMut()>(iters: u32, mut f: F) -> f64 {
+    for _ in 0..(iters / 10).max(1) {
+        f();
+    }
+    let t = std::time::Instant::now();
+    for _ in 0..iters {
+        f();
+    }
+    t.elapsed().as_secs_f64() * 1e6 / f64::from(iters)
+}
+
+#[test]
+#[ignore = "timing census; run with --release --nocapture"]
+fn vm_cost_idle_burst_polling_runaway() {
+    const SRC: &str = "ScriptName VmCostScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count = 10\n EndEvent\n\
+         Event OnLoad()\n Count += 1\n EndEvent\n\
+         Event OnActivate(ObjectReference akActionRef)\n Count += 1\n EndEvent\n";
+    eprintln!("\nA. idle frame (no events), µs per call of each VM system");
+    eprintln!("{:>8} {:>14} {:>14} {:>14} {:>14}", "refs", "ref_events", "quest_frag", "continuation", "script_update");
+    for n in [0usize, 100, 1000, 5000, 20000] {
+        let (world, _refs) = vm_cost_world(n, SRC, "VmCostScript");
+        let iters = if n >= 5000 { 200 } else { 2000 };
+        let a = vm_cost_us(iters, || crate::reference_script_event_system(&world, 0.016));
+        let b = vm_cost_us(iters, || crate::fragment::quest_fragment_dispatch_system(&world));
+        let c = vm_cost_us(iters, || crate::fragment_continuation_system(&world, 0.016));
+        let d = vm_cost_us(iters, || crate::script_update_system(&world, 0.016, Some(1.0)));
+        eprintln!("{n:>8} {a:>14.2} {b:>14.2} {c:>14.2} {d:>14.2}");
+    }
+
+    eprintln!("\nB. burst: OnCellLoad to every attached reference in one frame");
+    eprintln!("{:>8} {:>14} {:>14}", "refs", "frame_ms", "us_per_ref");
+    for n in [100usize, 1000, 5000] {
+        let (mut world, refs) = vm_cost_world(n, SRC, "VmCostScript");
+        // first delivery also runs OnInit; time the steady OnLoad after it
+        for r in &refs {
+            world.insert(*r, crate::OnCellLoadEvent);
+        }
+        crate::reference_script_event_system(&world, 0.0);
+        let mut total = 0.0;
+        let reps = 20;
+        for _ in 0..reps {
+            for r in &refs {
+                world.insert(*r, crate::OnCellLoadEvent);
+            }
+            let t = std::time::Instant::now();
+            crate::reference_script_event_system(&world, 0.0);
+            total += t.elapsed().as_secs_f64() * 1e3;
+        }
+        let ms = total / f64::from(reps);
+        eprintln!("{n:>8} {ms:>14.3} {:>14.2}", ms * 1e3 / n as f64);
+    }
+
+    eprintln!("\nC. polling: RegisterForUpdate(interval), 60 fps frames, µs per frame in script_update_system");
+    eprintln!("{:>8} {:>10} {:>14} {:>14}", "refs", "interval", "mean_us/frame", "max_us/frame");
+    for (n, interval) in [(100usize, "1.0"), (1000, "1.0"), (1000, "0.1"), (5000, "1.0"), (5000, "0.1")] {
+        let src = format!(
+            "ScriptName VmPollScript extends ObjectReference\n\
+             Int Property Count Auto\n\
+             Event OnInit()\n RegisterForUpdate({interval})\n EndEvent\n\
+             Event OnUpdate()\n Count += 1\n EndEvent\n"
+        );
+        let (mut world, refs) = vm_cost_world(n, &src, "VmPollScript");
+        for r in &refs {
+            world.insert(*r, crate::OnCellLoadEvent);
+        }
+        crate::reference_script_event_system(&world, 0.0);
+        for r in &refs {
+            world.remove::<crate::OnCellLoadEvent>(*r);
+        }
+        let frames = 600;
+        let (mut sum, mut max) = (0.0f64, 0.0f64);
+        for _ in 0..frames {
+            let t = std::time::Instant::now();
+            crate::script_update_system(&world, 1.0 / 60.0, Some(1.0));
+            let us = t.elapsed().as_secs_f64() * 1e6;
+            sum += us;
+            max = max.max(us);
+        }
+        eprintln!("{n:>8} {interval:>10} {:>14.2} {max:>14.2}", sum / f64::from(frames));
+    }
+
+    eprintln!("\nD. runaway handler (statement cap 100000), one OnActivate");
+    let src = "ScriptName VmRunawayScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Event OnActivate(ObjectReference akActionRef)\n\
+           While Count >= 0\n Count += 1\n EndWhile\n\
+         EndEvent\n";
+    let (mut world, refs) = vm_cost_world(1, src, "VmRunawayScript");
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut samples = Vec::new();
+    for _ in 0..10 {
+        world.insert(refs[0], crate::ActivateEvent { activator: player });
+        let t = std::time::Instant::now();
+        crate::reference_script_event_system(&world, 0.0);
+        samples.push(t.elapsed().as_secs_f64() * 1e3);
+        world.remove::<crate::ActivateEvent>(refs[0]);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    eprintln!("  median {:.3} ms, min {:.3} ms, max {:.3} ms (10 runs)", samples[5], samples[0], samples[9]);
+}
