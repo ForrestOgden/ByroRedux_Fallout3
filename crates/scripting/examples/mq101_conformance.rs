@@ -163,6 +163,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetAlly { .. } => "SetAlly",
         Effect::DeleteWhenAble { .. } => "DeleteWhenAble",
         Effect::WaitWhile { .. } => "WaitWhile",
+        Effect::Interpret { .. } => "Interpret",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

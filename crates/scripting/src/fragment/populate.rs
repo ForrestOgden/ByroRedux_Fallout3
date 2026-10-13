@@ -375,13 +375,32 @@ fn populate_quest_fragments_from_script_internal(
         // the map (a lookup miss is equivalent to an empty entry).
         // M47.2 — quest fragments inline calls into the quest's own script
         // when a script library is supplied.
-        if let Some(mut effects) = crate::translate::effects::lower_quest_fragment(
+        let lowered = crate::translate::effects::lower_quest_fragment(
             body,
             &quest_properties,
             &argless_functions,
             providers.map(|scope| scope.catalog),
             providers.and_then(|scope| scope.library),
-        ) {
+        )
+        .or_else(|| {
+            // M47.2 — a fragment the lowering declines runs on the Papyrus VM
+            // when its ahead-of-time check passes.
+            let library = providers.and_then(|scope| scope.library)?;
+            let script = std::sync::Arc::new(script.clone());
+            let scripts = super::vm::check_function(
+                std::sync::Arc::clone(&script),
+                fragment_name,
+                Some(library),
+            )?;
+            for needed in scripts {
+                frags.insert_vm_script(needed);
+            }
+            Some(vec![Effect::Interpret {
+                script: script.name.node.0.clone(),
+                function: (*fragment_name).to_owned(),
+            }])
+        });
+        if let Some(mut effects) = lowered {
             if let Some(principal) = providers.and_then(|scope| scope.principal) {
                 crate::translate::effects::attribute_provider_calls(&mut effects, principal);
             }

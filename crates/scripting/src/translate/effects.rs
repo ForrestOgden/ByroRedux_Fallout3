@@ -1149,6 +1149,10 @@ pub enum Effect {
     ShowHelpMessage { message: ObjectRef },
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
+    /// M47.2 — a fragment the lowering declines, run by the Papyrus VM
+    /// ([`crate::fragment::vm`]): `script`'s `function`, installed with the
+    /// scripts it reaches.
+    Interpret { script: String, function: String },
     /// M47.2 — `<reference>.DeleteWhenAble()`: a created reference is deleted
     /// once its cell is gone ([`crate::CreatedDeletion`]); an authored one
     /// cannot be deleted.
@@ -2119,6 +2123,12 @@ fn locals_never_suspend(effects: &Vec<Effect>) -> bool {
 }
 
 /// Whether running `effect` can suspend the fragment and queue the rest.
+/// M47.2 — whether `effect` suspends a run (a wait, a provider barrier),
+/// for the Papyrus VM, which cannot.
+pub fn is_latent(effect: &Effect) -> bool {
+    has_latent_tail(effect)
+}
+
 fn has_latent_tail(effect: &Effect) -> bool {
     match effect {
         Effect::Wait { .. }
@@ -2612,6 +2622,54 @@ fn is_side_effect_free(e: &Expr) -> bool {
 }
 
 /// Classify a single effect statement against the primitive table.
+/// M47.2 — how the Papyrus VM ([`crate::vm`]) names the values it binds for
+/// one native call or read it hands to this module's primitives. Every value
+/// is a synthetic identifier: a quest or a player through these sets, any
+/// other form as a property of the synthetic VMAD the VM applies the result
+/// against; numbers, Bools and strings stay literals.
+#[derive(Debug, Default, Clone)]
+pub struct NativeBindings {
+    pub players: HashSet<String>,
+    pub quests: HashSet<String>,
+}
+
+impl NativeBindings {
+    fn scope(&self) -> Scope<'static> {
+        let mut scope = Scope {
+            vmad_is_quest: true,
+            ..Scope::default()
+        };
+        for name in &self.players {
+            scope.player_locals.insert(name.to_ascii_lowercase());
+        }
+        for name in &self.quests {
+            scope
+                .quest_locals
+                .insert(name.to_ascii_lowercase(), QuestRef::Property(name.clone()));
+        }
+        scope
+    }
+}
+
+/// M47.2 — a native statement call with VM-bound values as an [`Effect`].
+pub fn classify_native_effect(e: &Expr, bindings: &NativeBindings) -> Option<Effect> {
+    let scope = bindings.scope();
+    classify_effect(e, &scope)
+}
+
+/// M47.2 — a native numeric read with VM-bound values as a [`ValueExpr`].
+pub fn classify_native_value(e: &Expr, bindings: &NativeBindings) -> Option<ValueExpr> {
+    classify_value(e, &bindings.scope())
+}
+
+/// M47.2 — a native Bool read with VM-bound values as guards that hold
+/// exactly when it is true.
+pub fn classify_native_guard(e: &Expr, bindings: &NativeBindings) -> Option<Vec<FragmentGuard>> {
+    let mut guards = Vec::new();
+    classify_condition(e, &bindings.scope(), false, &mut guards)?;
+    Some(guards)
+}
+
 fn classify_effect(e: &Expr, scope: &Scope) -> Option<Effect> {
     EFFECT_PRIMITIVES.iter().find_map(|p| p(e, scope))
 }

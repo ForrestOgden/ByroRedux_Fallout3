@@ -428,6 +428,10 @@ that does not exist yet:
   - reference script variables;
   - relationships, `Kill`, caps and XP rewards.
 
+  The Papyrus VM (`scripting.md` §The Papyrus VM) now runs quest fragments
+  the lowering declines but its check accepts: 66.8% lowered, 69.3% lowered
+  or interpreted.
+
   Calls into a quest script's function may now pass arguments: a number
   becomes a run-time local, the player or speaker binds directly, and a
   fragment property rides `QuestScope.bindings` into the quest's VMAD. The

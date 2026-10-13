@@ -611,6 +611,49 @@ Not modelled: `SetNoBleedoutRecovery` / `GetNoBleedoutRecovery` (694), and
 attackers keep striking an actor in bleedout (harmlessly) until their own
 combat ends.
 
+### The Papyrus VM (M47.2)
+
+`crates/scripting/src/fragment/vm.rs` runs a quest fragment the effect
+lowering declines. The lowering can't express values it only learns at run
+time, such as an object local assigned from a call
+(`ObjectReference x = Alias.GetRef()`), a quest-script function that returns
+a value, or a loop. The VM interprets those over the decompiled AST.
+
+The VM owns control flow and values: locals, numeric script variables (the
+`QuestScriptVariables` store), `If`/`While`/`Return`, arithmetic, comparisons,
+string concatenation and arrays. Every native still runs through the effect
+runtime:
+- **Native statements.** A statement such as `x.Enable()` is re-written with
+  its evaluated receiver and arguments bound to synthetic names. A form
+  becomes a property of a synthetic VMAD, a quest or the player is bound
+  through `NativeBindings`, and a number stays a literal. The result is
+  classified by the lowering's own primitive table and applied by
+  `apply_effects`.
+- **Native reads.** Reads (`IsDisabled`, `GetStage`, `GetValue`, …) are
+  classified the same way, as a `ValueExpr` or as guards, and evaluated.
+- **Object reads.** The VM reads these itself: alias references,
+  `GetOwningQuest`, `GetPlayer`, `GetLinkedRef`, base objects, location-alias
+  and current locations, and `GetDialogueTarget`.
+- **Quest-script calls.** A call into a quest's script runs here against that
+  quest's VMAD.
+
+`check_function` decides at populate time, against typed placeholders, whether
+every statement and call of the fragment and of the functions it reaches runs
+on the VM. It passes literal arguments as written. Only fragments that pass
+are installed as `Effect::Interpret`. A run that still meets something it
+can't do, such as a native that declines its actual values, stops and logs
+it.
+
+With the VM, 69.3% of the corpus runs (lowered + interpreted;
+`fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
+Skyrim installs 125 more quest-stage fragments.
+
+Not modelled yet:
+- latent calls (`Utility.Wait`), the largest rejection;
+- object script variables (the next largest);
+- INFO and scene fragments, which still use the lowering only;
+- calls into non-quest scripts.
+
 ### Messages and text replacement (M47.2)
 
 `MESG` records parse their "Message Box" flag (DNAM bit 0) and their `ITXT`

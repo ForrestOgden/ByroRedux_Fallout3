@@ -350,6 +350,9 @@ impl ReferenceScriptState {
 #[derive(Debug, Clone, Default)]
 pub struct QuestStageFragments {
     map: Arc<HashMap<(QuestFormId, u16), Vec<Effect>>>,
+    /// M47.2 — the scripts the Papyrus VM runs (`Effect::Interpret`
+    /// fragments and the quest scripts they call), by lowercased name.
+    vm_scripts: Arc<HashMap<String, Arc<byroredux_papyrus::ast::Script>>>,
     /// The QF_ script's own property table per quest — the same VMAD
     /// scripts-section bytes the QUST record's fragment section is read
     /// alongside. Lets a fragment's cross-quest `Property`-targeted
@@ -378,6 +381,16 @@ pub struct QuestStageFragments {
 impl Resource for QuestStageFragments {}
 
 impl QuestStageFragments {
+    /// M47.2 — register a script the Papyrus VM runs.
+    pub fn insert_vm_script(&mut self, script: Arc<byroredux_papyrus::ast::Script>) {
+        Arc::make_mut(&mut self.vm_scripts).insert(script.name.node.0.to_ascii_lowercase(), script);
+    }
+
+    /// M47.2 — every script the Papyrus VM runs.
+    pub fn vm_scripts(&self) -> Arc<HashMap<String, Arc<byroredux_papyrus::ast::Script>>> {
+        Arc::clone(&self.vm_scripts)
+    }
+
     /// Register a stage's lowered fragment effects.
     pub fn insert(&mut self, quest: QuestFormId, stage: u16, effects: Vec<Effect>) {
         Arc::make_mut(&mut self.map).insert((quest, stage), effects);

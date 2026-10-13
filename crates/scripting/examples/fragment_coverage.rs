@@ -311,6 +311,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::SetAlly { .. } => "SetAlly",
         Effect::DeleteWhenAble { .. } => "DeleteWhenAble",
         Effect::WaitWhile { .. } => "WaitWhile",
+        Effect::Interpret { .. } => "Interpret",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",
@@ -480,6 +481,10 @@ fn main() {
     // recognizer for that name could reach.
     let call_census = std::env::var("CALL_CENSUS").is_ok();
     let mut call_hist: BTreeMap<String, usize> = BTreeMap::new();
+    // M47.2 — declined fragments the Papyrus VM's ahead-of-time check
+    // accepts (production installs them as `Effect::Interpret`).
+    let mut interpretable = 0usize;
+    let mut vm_reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut event_hist: BTreeMap<String, (usize, usize)> = BTreeMap::new();
 
     let archives: Vec<Archive> = args
@@ -518,6 +523,7 @@ fn main() {
             // M47.2 — production classifies quest-script-typed properties
             // through the script library on every populate path.
             let quest_properties = quest_property_names_with_library(&script, Some(&library));
+            let script_arc = std::sync::Arc::new(script.clone());
             // Quest-fragment scripts: `QF_…`, `DLC1_QF_…`, FO4's
             // `Fragments:Quests:QF_…` — the ones production populates through
             // the quest path, which inlines calls into the quest's script.
@@ -595,6 +601,14 @@ fn main() {
                             &shape,
                         );
                         *decline_hist.entry(shape).or_default() += 1;
+                        match byroredux_scripting::fragment::vm::check_function_reason(
+                            std::sync::Arc::clone(&script_arc),
+                            &func.name.node.0,
+                            Some(&library),
+                        ) {
+                            Ok(_) => interpretable += 1,
+                            Err(reason) => *vm_reasons.entry(reason).or_default() += 1,
+                        }
                         if call_census {
                             let mut names = std::collections::BTreeSet::new();
                             collect_call_names(&func.body, &mut names);
@@ -637,6 +651,17 @@ fn main() {
         "  of which rely on a placeholder effect: {claimed_with_placeholder} \
          (lowered, but a call in them is a counter-only stub)"
     );
+    println!(
+        "  of the declined, the Papyrus VM runs: {interpretable} — lowered + interpreted {:.1}%",
+        pct(claimed + interpretable, behavioral)
+    );
+    if std::env::var("VM_REASONS").is_ok() {
+        let mut reasons: Vec<_> = vm_reasons.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1));
+        for (reason, count) in reasons.into_iter().take(50) {
+            println!("    vm: {reason:48} {count}");
+        }
+    }
     println!(
         "declined: {} ({:.1}%)",
         behavioral - claimed,

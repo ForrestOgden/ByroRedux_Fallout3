@@ -60,6 +60,7 @@ mod effects;
 mod populate;
 mod state;
 mod systems;
+pub mod vm;
 
 pub use effects::*;
 pub use populate::*;
@@ -87,6 +88,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/effects.rs"),
     include_str!("fragment/populate.rs"),
     include_str!("fragment/systems.rs"),
+    include_str!("fragment/vm.rs"),
 );
 
 #[cfg(test)]

@@ -478,10 +478,13 @@ pub struct DeferredFragmentEffects {
     running_scenes: std::collections::HashSet<u32>,
     /// M47.2 — every quest's VMAD, for `Effect::QuestScope`: snapshotted (an
     /// `Arc` clone) before the quest-state guards.
-    quest_scripts: std::sync::Arc<HashMap<QuestFormId, ScriptInstanceData>>,
+    pub(super) quest_scripts: std::sync::Arc<HashMap<QuestFormId, ScriptInstanceData>>,
+    /// M47.2 — the Papyrus VM's scripts ([`QuestStageFragments::vm_scripts`]),
+    /// snapshotted with the quest VMADs.
+    pub(super) vm_scripts: std::sync::Arc<HashMap<String, std::sync::Arc<byroredux_papyrus::ast::Script>>>,
     /// M47.2 — `Effect::SetQuestVariable` writes, applied to
     /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
-    quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
+    pub(super) quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -540,6 +543,10 @@ impl DeferredFragmentEffects {
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
+                .unwrap_or_default(),
+            vm_scripts: world
+                .try_resource::<super::QuestStageFragments>()
+                .map(|fragments| fragments.vm_scripts())
                 .unwrap_or_default(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
@@ -1550,7 +1557,7 @@ pub(crate) fn apply_effect(
         Effect::Wait { .. } | Effect::WaitForActors3DLoaded { .. } | Effect::WaitWhile { .. } => {
             None
         }
-        Effect::Conditional { .. } | Effect::QuestScope { .. } => {
+        Effect::Conditional { .. } | Effect::QuestScope { .. } | Effect::Interpret { .. } => {
             unreachable!("conditional and quest-scoped effects are expanded by apply_effects")
         }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
@@ -2804,6 +2811,7 @@ fn apply_quest_scoped_effect(
         | Effect::Wait { .. }
         | Effect::WaitForActors3DLoaded { .. }
         | Effect::WaitWhile { .. }
+        | Effect::Interpret { .. }
         | Effect::AddRaceSpells { .. }
         | Effect::RemoveRaceSpells { .. }
         | Effect::ProviderCall(_) => {
@@ -2844,7 +2852,7 @@ fn actor_value_now(world: &World, actor: EntityId, avif: u32) -> f32 {
     )
 }
 
-fn evaluate_value(
+pub(super) fn evaluate_value(
     value: &ValueExpr,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
@@ -2963,7 +2971,7 @@ fn evaluate_value(
     })
 }
 
-fn evaluate_guard(
+pub(super) fn evaluate_guard(
     guard: &FragmentGuard,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
@@ -3372,6 +3380,13 @@ pub fn apply_effects(
                 });
                 halted = true;
                 break;
+            }
+            // M47.2 — a fragment the lowering declined, run by the Papyrus VM.
+            if let Effect::Interpret { script, function } = effect {
+                advances.extend(super::vm::run_fragment(
+                    script, function, context, vmad, world, stages, objectives, deferred,
+                ));
+                continue;
             }
             // M47.2 — a quest-script body inlined into an INFO or scene
             // fragment runs against its quest: that quest is the context and
