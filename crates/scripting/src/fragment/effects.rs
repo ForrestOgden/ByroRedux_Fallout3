@@ -350,6 +350,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
+    /// M47.2 — `Effect::SetLocationCleared` changes, recorded in
+    /// [`crate::LocationClearState`] after the guards drop.
+    location_clears: Vec<(u32, bool)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
@@ -403,6 +406,7 @@ impl DeferredFragmentEffects {
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
             map_markers: Vec::new(),
+            location_clears: Vec::new(),
             story_events: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
@@ -451,6 +455,13 @@ impl DeferredFragmentEffects {
             if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
                     markers.add(marker, fast_travel);
+                }
+            }
+        }
+        if !self.location_clears.is_empty() {
+            if let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
+                for (location, cleared) in std::mem::take(&mut self.location_clears) {
+                    state.set_cleared(location, cleared);
                 }
             }
         }
@@ -971,6 +982,14 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::SetLocationCleared { location, cleared } => {
+            let Some(location) = resolve_location(vmad, world, context, location) else {
+                log::debug!("fragment SetCleared skipped: the location does not resolve");
+                return None;
+            };
+            deferred.location_clears.push((location, *cleared));
             None
         }
         Effect::BlockActivation { object, blocked } => {
@@ -2378,6 +2397,7 @@ fn apply_quest_scoped_effect(
         | Effect::ForceAlias { .. }
         | Effect::BlockActivation { .. }
         | Effect::AddToMap { .. }
+        | Effect::SetLocationCleared { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
@@ -2544,6 +2564,15 @@ fn evaluate_guard(
                 .iter()
                 .any(|(added, travel)| *added == marker && *travel);
             (pending || crate::map_marker_fast_travel(world, marker)) == *expected
+        }
+        FragmentGuard::LocationCleared { location, expected } => {
+            let location = resolve_location(vmad, world, context, location)?;
+            // A `SetCleared` earlier in the same fragment is visible.
+            let cleared = match deferred.location_clears.iter().rev().find(|(set, _)| *set == location) {
+                Some(&(_, cleared)) => cleared,
+                None => crate::location_cleared(world, location),
+            };
+            cleared == *expected
         }
         FragmentGuard::Any(alternatives) => {
             // Every guard is evaluated (no short-circuit), so an unresolvable

@@ -4867,6 +4867,47 @@ fn add_to_map_records_the_marker() {
     );
 }
 
+/// M47.2 — `SetCleared` records the location once the guards drop, and an
+/// `IsCleared` guard later in the same fragment already sees it.
+#[test]
+fn set_cleared_clears_the_location() {
+    use crate::QuestScriptVariables;
+    const LOCATION: u32 = 0x0001_8EE9;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    world.insert_resource(crate::LocationClearState::default());
+    let dungeon = || ObjectRef::Property("Dungeon".into());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Dungeon", LOCATION)]),
+        vec![
+            Effect::SetLocationCleared {
+                location: dungeon(),
+                cleared: true,
+            },
+            Effect::Conditional {
+                guards: vec![FragmentGuard::LocationCleared {
+                    location: dungeon(),
+                    expected: true,
+                }],
+                then_effects: vec![Effect::SetQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "Seen".into(),
+                    value: 1.0,
+                }],
+                else_effects: vec![],
+            },
+        ],
+    );
+    assert!(crate::location_cleared(&world, LOCATION));
+    assert_eq!(
+        world
+            .resource::<QuestScriptVariables>()
+            .get(Q, QuestScriptVariables::property_key("Seen")),
+        Some(1.0)
+    );
+}
+
 /// M47.2 — `BlockActivation` records the reference in the activation-block
 /// ledger once the quest-state guards drop, and an unblock clears it.
 #[test]

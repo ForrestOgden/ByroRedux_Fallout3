@@ -5927,6 +5927,20 @@ fn skyrim_location_hierarchy_resolves() {
     assert_eq!(whiterun.keywords.len(), 12);
     assert_eq!(whiterun.editor_location_refs.len(), 175);
     assert!(!whiterun.ref_type_refs.is_empty());
+    // The `Boss` location ref type (LCRT) tags the refs whose deaths clear a
+    // location: 374 locations author one; Bleak Falls Barrow has its one.
+    let boss: Vec<u32> = index
+        .location_ref_types
+        .values()
+        .filter(|ref_type| ref_type.editor_id == "Boss")
+        .map(|ref_type| ref_type.form_id)
+        .collect();
+    assert_eq!(boss, vec![0x0001_30F7]);
+    let bosses_of = |location: &byroredux_plugin::esm::records::LctnRecord| {
+        location.ref_type_refs.iter().filter(|(kind, _)| *kind == boss[0]).count()
+    };
+    assert_eq!(index.locations.values().filter(|location| bosses_of(location) > 0).count(), 374);
+    assert_eq!(bosses_of(&index.locations[&0x0001_8EE9]), 1);
     assert!(index.cells.cells.values().any(|cell| cell.location_form.is_some()));
 }
 

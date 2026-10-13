@@ -604,6 +604,8 @@ pub fn build_save_registry() -> SaveRegistry {
         )
         // M47.2 — script AddToMap (discovered / fast-travel markers).
         .register_resource::<byroredux_scripting::MapMarkers>("MapMarkers")
+        // M47.2 — cleared locations (dead bosses, script SetCleared).
+        .register_resource::<byroredux_scripting::LocationClearState>("LocationClearState")
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

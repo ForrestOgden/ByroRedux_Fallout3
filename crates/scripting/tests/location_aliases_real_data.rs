@@ -88,3 +88,59 @@ fn skyrim_location_aliases_fill_against_the_real_hierarchy() {
     assert_eq!(counts["script-filled"].1, 0);
 }
 
+
+/// M47.2 — CK *Cell Reset*: a location clears once its `Boss` references
+/// are dead. Every Skyrim boss-bearing location clears when (and only when)
+/// its last boss dies; a boss is resolved through the alias-candidate
+/// reference FormID, as the live death path does.
+#[test]
+#[ignore = "needs Skyrim SE game data on disk"]
+fn skyrim_locations_clear_when_their_bosses_die() {
+    use byroredux_scripting::{location_cleared, note_actor_death, LocationTable};
+    let Some(index) = skyrim_index() else {
+        eprintln!("[Skyrim location clearing] skipping: game data unavailable");
+        return;
+    };
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    install_location_table(&mut world, &index);
+    let boss_locations: Vec<(u32, Vec<u32>)> = {
+        let table = world.resource::<LocationTable>();
+        table
+            .locations()
+            .iter()
+            .map(|&location| (location, table.bosses(location).to_vec()))
+            .filter(|(_, bosses)| !bosses.is_empty())
+            .collect()
+    };
+    assert_eq!(boss_locations.len(), 374);
+    let spawn = |world: &mut World, reference: u32| {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            byroredux_scripting::SceneAliasCandidate {
+                reference_form_id: reference,
+                base_form_id: 0,
+                linked_refs: Vec::new(),
+                location_ref_types: Vec::new(),
+            },
+        );
+        entity
+    };
+    let mut multi_boss = 0;
+    for (location, bosses) in &boss_locations {
+        let (last, rest) = bosses.split_last().unwrap();
+        for &boss in rest {
+            let entity = spawn(&mut world, boss);
+            note_actor_death(&world, entity);
+        }
+        if !rest.is_empty() && !rest.contains(last) {
+            multi_boss += 1;
+            assert!(!location_cleared(&world, *location), "{location:08X}: a boss lives");
+        }
+        let entity = spawn(&mut world, *last);
+        note_actor_death(&world, entity);
+        assert!(location_cleared(&world, *location), "{location:08X}");
+    }
+    eprintln!("{} boss locations, {multi_boss} with several bosses", boss_locations.len());
+}

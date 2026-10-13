@@ -46,6 +46,14 @@ pub(crate) fn whiterun_index() -> EsmIndex {
             },
         );
     }
+    index.location_ref_types.insert(
+        BOSS_REF_TYPE,
+        byroredux_plugin::esm::records::MinimalEsmRecord {
+            form_id: BOSS_REF_TYPE,
+            editor_id: "Boss".into(),
+            ..Default::default()
+        },
+    );
     index.cells.cells.insert(
         "whiterundragonsreach".into(),
         CellData {
@@ -327,5 +335,70 @@ mod ref_type_and_shared_editor_location {
         assert!(on_location(WHITERUN_HOLD, holds(181, 1, LOC_TYPE_HOLD)));
         assert!(!on_location(WHITERUN, holds(181, 1, LOC_TYPE_HOLD)), "wrong keyword");
         assert!(!on_location(DRAGONSREACH, holds(181, 1, 0)), "does not contain Whiterun");
+    }
+
+    /// M47.2 — CK *Cell Reset*: a location clears once every `Boss` ref is
+    /// dead, or when a script calls `SetCleared`; 250 / 598 read it.
+    #[test]
+    fn a_location_clears_when_every_boss_is_dead() {
+        const SECOND_BOSS: u32 = 0x000A_0003;
+        let mut index = whiterun_index();
+        index
+            .locations
+            .get_mut(&DRAGONSREACH)
+            .unwrap()
+            .ref_type_refs
+            .push((BOSS_REF_TYPE, SECOND_BOSS));
+        let mut world = World::new();
+        crate::register(&mut world);
+        world.insert_resource(byroredux_core::form_id::FormIdPool::new());
+        install_location_table(&mut world, &index);
+        let spawn = |world: &mut World, reference: u32| {
+            let entity = world.spawn();
+            let form = world
+                .resource_mut::<byroredux_core::form_id::FormIdPool>()
+                .intern(byroredux_core::form_id::FormIdPair {
+                    plugin: byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
+                    local: byroredux_core::form_id::LocalFormId(reference),
+                });
+            world.insert(entity, byroredux_core::ecs::components::FormIdComponent(form));
+            entity
+        };
+        let first = spawn(&mut world, BOSS_REF);
+        let second = spawn(&mut world, SECOND_BOSS);
+        let bystander = spawn(&mut world, PERSISTENT_REF);
+        world
+            .resource_mut::<LocationAliasBindings>()
+            .bind(QUEST, 4, DRAGONSREACH);
+        let cleared = |world: &World, condition: Condition| {
+            evaluate_condition(
+                &condition,
+                world,
+                &ConditionContext::for_subject(EntityId::MAX).with_quest(QUEST),
+            )
+        };
+
+        note_actor_death(&world, bystander);
+        note_actor_death(&world, first);
+        assert!(!location_cleared(&world, DRAGONSREACH), "one boss still lives");
+        note_actor_death(&world, second);
+        note_actor_death(&world, second);
+        assert!(location_cleared(&world, DRAGONSREACH));
+        assert!(!location_cleared(&world, WHITERUN), "clearing is not inherited");
+        assert!(cleared(&world, holds(250, DRAGONSREACH, 0)));
+        assert!(!cleared(&world, holds(250, WHITERUN, 0)));
+        assert!(cleared(&world, holds(598, 4, 0)));
+        assert!(!cleared(&world, holds(598, 3, 0)));
+
+        // `SetCleared(false)` un-clears; the dead bosses stay dead, so the
+        // location is not cleared again until a script says so.
+        world
+            .resource_mut::<LocationClearState>()
+            .set_cleared(DRAGONSREACH, false);
+        assert!(!cleared(&world, holds(250, DRAGONSREACH, 0)));
+        world
+            .resource_mut::<LocationClearState>()
+            .set_cleared(WHITERUN, true);
+        assert!(cleared(&world, holds(250, WHITERUN, 0)));
     }
 }

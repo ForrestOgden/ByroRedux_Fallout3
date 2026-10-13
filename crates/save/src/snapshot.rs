@@ -346,7 +346,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v48 -> v49 (M47.2): a new resource column, `MapMarkers` (script
 /// `AddToMap`). A pre-v49 save has none, so discovered markers would hide
 /// again; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 49;
+///
+/// v49 -> v50 (M47.2): a new resource column, `LocationClearState` (cleared
+/// locations and dead bosses). A pre-v50 save has none, so cleared dungeons
+/// would read as uncleared; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 50;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

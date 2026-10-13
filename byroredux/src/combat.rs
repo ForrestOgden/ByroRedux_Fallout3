@@ -902,6 +902,9 @@ pub(crate) fn reconcile_dead_actor(world: &World, actor: EntityId) -> String {
     // entity-anchored sound) the actor was speaking. Death sounds are
     // detached one-shots, so they are not affected.
     crate::systems::dialogue_voice::stop_line_voice(world, actor);
+    // M47.2 — a dead `Boss` can clear its location (idempotent, so the
+    // save-load sweep re-reaching a corpse is harmless).
+    byroredux_scripting::note_actor_death(world, actor);
     // A freshly respawned corpse can regain its authored weapon before the
     // save's empty inventory is overlaid. Absence of EquippedWeapon is not a
     // saved tombstone, so reconstruct the take-all result from saved inventory.

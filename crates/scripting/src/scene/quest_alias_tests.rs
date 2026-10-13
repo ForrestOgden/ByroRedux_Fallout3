@@ -2191,3 +2191,72 @@ fn scripted_alias_overrides_apply_in_the_refresh() {
         "a stopped quest's overrides drop"
     );
 }
+
+/// M47.2 — CK *Quest Alias Tab*, Allow Cleared: a condition-matched location
+/// alias never takes a cleared location unless flagged, and a flagged one
+/// still prefers an uncleared match.
+#[test]
+fn location_aliases_skip_cleared_locations_unless_allowed() {
+    use crate::location::tests::{whiterun_index, DRAGONSREACH, LOC_TYPE_HOLD, TAMRIEL, WHITERUN};
+    use crate::location::{install_location_table, LocationAliasBindings, LocationClearState};
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionValue, RunOn,
+    };
+    use byroredux_plugin::esm::records::{AliasFlags, ALIAS_FLAG_ALLOW_CLEARED, ALIAS_FLAG_ALLOW_REUSE};
+    const LATER: u32 = 0x300;
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    install_location_table(&mut world, &whiterun_index());
+    world.insert_resource(QuestStageState::default());
+    // Not a hold: Tamriel, Whiterun and Dragonsreach match.
+    let not_a_hold = Condition {
+        function_index: 562,
+        comparator: ComparisonOp::Ne,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: LOC_TYPE_HOLD,
+        run_on: RunOn::Subject,
+        ..Default::default()
+    };
+    let alias = |alias_id, flags| QuestAlias {
+        alias_id,
+        is_location: true,
+        match_conditions: vec![not_a_hold],
+        flags: AliasFlags(ALIAS_FLAG_ALLOW_REUSE | flags),
+        ..Default::default()
+    };
+    let quest = |form_id| QustRecord {
+        form_id,
+        aliases: vec![alias(0, 0), alias(1, ALIAS_FLAG_ALLOW_CLEARED)],
+        ..Default::default()
+    };
+    install_scene_quest_aliases(&mut world, [quest(QUEST), quest(LATER)]);
+    let bound = |world: &World, quest, alias_id| {
+        world
+            .resource::<LocationAliasBindings>()
+            .resolve(QuestFormId(quest), alias_id)
+    };
+    let start = |world: &World, quest| {
+        world
+            .resource_mut::<QuestStageState>()
+            .start_quest(QuestFormId(quest), None);
+        mark_scene_actor_bindings_dirty(world);
+        refresh_scene_actor_bindings(world);
+    };
+
+    for location in [TAMRIEL, WHITERUN] {
+        world.resource_mut::<LocationClearState>().set_cleared(location, true);
+    }
+    start(&world, QUEST);
+    assert_eq!(bound(&world, QUEST, 0), Some(DRAGONSREACH), "the one uncleared match");
+    assert_eq!(bound(&world, QUEST, 1), Some(DRAGONSREACH), "uncleared preferred");
+
+    world.resource_mut::<LocationClearState>().set_cleared(DRAGONSREACH, true);
+    start(&world, LATER);
+    assert_eq!(bound(&world, LATER, 0), None, "every match is cleared");
+    assert!(
+        bound(&world, LATER, 1).is_some_and(|location| [TAMRIEL, WHITERUN, DRAGONSREACH]
+            .contains(&location)),
+        "Allow Cleared takes a cleared match"
+    );
+}

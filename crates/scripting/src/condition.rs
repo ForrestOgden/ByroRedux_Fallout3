@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **35 functions** at their canonical CTDA
+//! lineage. This catalog ships **37 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -64,6 +64,8 @@
 //! | 563   | LocationHasRefType     | `LocationTable` ref types   |
 //! | 181   | HasSameEditorLocAsRefAlias | `LocationTable` editor refs |
 //! | 576   | GetEventData           | `EventDataSlots`            |
+//! | 250   | GetLocationCleared     | `LocationClearState`        |
+//! | 598   | GetLocationAliasCleared | `LocationClearState`       |
 //!
 //! Unknown function indices evaluate to `0.0` (the Bethesda "unknown
 //! function → safe-default" contract) and are logged at debug for
@@ -259,6 +261,12 @@ pub enum ConditionFunction {
     /// compared. Reads the [`ConditionContext::event_data`] — outside Story
     /// Manager dispatch it is 0. Skyrim / FO4 index **576**.
     GetEventData,
+    /// `GetLocationCleared(location) → f32` (M47.2): the location is cleared
+    /// ([`crate::LocationClearState`]). Skyrim / FO4 index **250**.
+    GetLocationCleared,
+    /// `GetLocationAliasCleared(alias) → f32` (M47.2): the owning quest's
+    /// location alias holds a cleared location. Skyrim / FO4 index **598**.
+    GetLocationAliasCleared,
     /// Function index outside the M47.1 catalog. Evaluates to 0.0
     /// (the Bethesda "unknown function safe-default" — see file-
     /// header doc-comment).
@@ -327,13 +335,15 @@ impl ConditionFunction {
             // different function.
             181 => Self::HasSameEditorLocAsRefAlias,
             576 => Self::GetEventData,
+            250 => Self::GetLocationCleared,
+            598 => Self::GetLocationAliasCleared,
             other => Self::Unknown(other),
         }
     }
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 35] = [
+    pub const CATALOG: [ConditionFunction; 37] = [
         Self::GetDistance,
         Self::GetActorValue,
         Self::GetDead,
@@ -369,6 +379,8 @@ impl ConditionFunction {
         Self::LocationHasRefType,
         Self::HasSameEditorLocAsRefAlias,
         Self::GetEventData,
+        Self::GetLocationCleared,
+        Self::GetLocationAliasCleared,
     ];
 
     /// Whether `param_1` of this function is a FormID — the slice of catalog
@@ -402,10 +414,12 @@ impl ConditionFunction {
             | Self::GetInCurrentLoc
             | Self::LocationHasKeyword
             | Self::GetIsEditorLocation
-            | Self::LocationHasRefType => true,
+            | Self::LocationHasRefType
+            | Self::GetLocationCleared => true,
             // Alias ids are quest-local indices, not FormIDs; GetEventData's
             // first parameter is a function:member pair.
             Self::GetEventData
+            | Self::GetLocationAliasCleared
             | Self::GetInCurrentLocAlias
             | Self::HasSameEditorLocAsRefAlias
             | Self::GetIsAliasRef
@@ -459,6 +473,8 @@ impl ConditionFunction {
             Self::LocationHasRefType => "LocationHasRefType",
             Self::HasSameEditorLocAsRefAlias => "HasSameEditorLocAsRefAlias",
             Self::GetEventData => "GetEventData",
+            Self::GetLocationCleared => "GetLocationCleared",
+            Self::GetLocationAliasCleared => "GetLocationAliasCleared",
             Self::Unknown(_) => "Unknown",
         }
     }
@@ -509,6 +525,8 @@ impl ConditionFunction {
             | Self::HasSameEditorLocAsRefAlias => true,
             Self::LocAliasIsLocation
             | Self::GetEventData
+            | Self::GetLocationCleared
+            | Self::GetLocationAliasCleared
             | Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetRandomPercent
@@ -570,6 +588,8 @@ impl ConditionFunction {
             | Self::LocationHasRefType
             | Self::HasSameEditorLocAsRefAlias
             | Self::GetEventData
+            | Self::GetLocationCleared
+            | Self::GetLocationAliasCleared
             | Self::Unknown(_) => true,
         }
     }
@@ -592,6 +612,7 @@ impl ConditionFunction {
                 | Self::LocationHasRefType
                 | Self::HasSameEditorLocAsRefAlias
                 | Self::GetEventData
+                | Self::GetLocationAliasCleared
         )
     }
 
@@ -1132,6 +1153,10 @@ fn evaluate_contextual(
                 (LocationSubject::Reference(_), None) => false,
             })
         }
+        ConditionFunction::GetLocationAliasCleared => truth(
+            ctx.alias_location(world, alias_id)
+                .is_some_and(|location| crate::location::location_cleared(world, location)),
+        ),
         ConditionFunction::GetEventData => {
             let Some(event) = ctx.event_data else {
                 return 0.0;
@@ -1577,7 +1602,11 @@ pub fn evaluate_function(
         | ConditionFunction::LocAliasIsLocation
         | ConditionFunction::LocationHasRefType
         | ConditionFunction::HasSameEditorLocAsRefAlias
-        | ConditionFunction::GetEventData => 0.0,
+        | ConditionFunction::GetEventData
+        | ConditionFunction::GetLocationAliasCleared => 0.0,
+        ConditionFunction::GetLocationCleared => {
+            truth(crate::location::location_cleared(world, condition.param_1))
+        }
         ConditionFunction::Unknown(index) => {
             log::trace!(
                 "M47.1: condition function index {index} not in M47.1 catalog — \

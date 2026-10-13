@@ -460,8 +460,22 @@ quest and other quests' "Reserves Location" aliases are honoured. A binding
 holds until its quest stops and is saved (`LocationAliasBindings`), so a random
 pick survives a reload.
 
-Not modelled: cleared state (every location is uncleared, so "Allow Cleared"
-changes nothing) and an unloaded reference's death (`LocationHasRefType` sees
+**Cleared locations.** The CK *Cell Reset* page: "Locations are cleared when
+all of their bosses (creatures tagged with the 'Boss' LocRefType) are dead [or]
+a script calls `SetCleared()`." `LocationTable` indexes each location's
+`Boss`-typed references (the `LCRT` whose editor ID is `Boss`, `0x130F7` in
+Skyrim.esm; 374 locations have bosses, 159 of them several).
+`reconcile_dead_actor`, the death path every kill, start-dead actor and save
+load funnels through, calls `note_actor_death`. That records the dead boss by
+reference FormID in the saved `LocationClearState` and clears the location
+once its last boss is dead. `<location>.SetCleared([abCleared])` (a location
+property or a location alias's `GetLocation()`) sets it directly, and
+`IsCleared()` guards read it. Conditions `GetLocationCleared` (250) and
+`GetLocationAliasCleared` (598) read it too. A Find Matching location alias
+never picks a cleared location unless flagged "Allow Cleared", and a flagged
+one still prefers an uncleared match (CK *Quest Alias Tab*).
+
+Not modelled: an unloaded reference's death for `LocationHasRefType` (it sees
 scripted disables only). Against `Skyrim.esm` with no references loaded, all
 162 Specific aliases, 3 of 4 External aliases and 28 of 136 Find Matching
 aliases bind. The rest of the Find Matching aliases condition on a reference

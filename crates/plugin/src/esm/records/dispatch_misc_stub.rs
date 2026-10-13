@@ -128,6 +128,11 @@ pub(super) fn dispatch_misc_stub_group(
                 .imagespace_modifiers
                 .insert(fid, parse_imad(fid, subs, game));
         })?,
+        b"LCRT" => extract_records(reader, end, b"LCRT", &mut |fid, subs| {
+            index
+                .location_ref_types
+                .insert(fid, parse_minimal_esm_record(fid, subs));
+        })?,
         b"LCTN" => extract_records(reader, end, b"LCTN", &mut |fid, subs| {
             index.locations.insert(fid, parse_lctn(fid, subs, &remap));
         })?,

@@ -429,7 +429,8 @@ that does not exist yet:
   [scripting.md §Locations](scripting.md#locations-and-location-aliases-m472).
   Script-raised story events (`SCPT`) and `GetEventData` shipped 2026-10-13
   ([scripting.md §Script-raised story events](scripting.md#script-raised-story-events-m472)).
-  Still open: cleared-location state.
+  Cleared-location state (dead bosses, `SetCleared`, conditions 250 / 598,
+  "Allow Cleared") shipped 2026-10-13.
 
 Always confirm milestone state against [ROADMAP.md](../../ROADMAP.md).
 

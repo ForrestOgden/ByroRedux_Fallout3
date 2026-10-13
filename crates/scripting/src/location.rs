@@ -44,6 +44,10 @@ pub struct LocationTable {
     editor_locations: HashMap<u32, u32>,
     /// Per location, its `(location ref type, reference)` static refs.
     ref_types: HashMap<u32, Vec<(u32, u32)>>,
+    /// Per location, its `Boss`-tagged references (the `LCRT` editor ID
+    /// `Boss`), and per such reference the locations it is a boss of.
+    bosses: HashMap<u32, Vec<u32>>,
+    boss_of: HashMap<u32, Vec<u32>>,
     /// Every location, by FormID — the pool a "find matching location"
     /// alias fill draws from.
     locations: Vec<u32>,
@@ -74,6 +78,20 @@ impl LocationTable {
             }
         }
         table.locations.sort_unstable();
+        let boss_types: Vec<u32> = index
+            .location_ref_types
+            .values()
+            .filter(|ref_type| ref_type.editor_id.eq_ignore_ascii_case("Boss"))
+            .map(|ref_type| ref_type.form_id)
+            .collect();
+        for location in index.locations.values() {
+            for &(kind, reference) in &location.ref_type_refs {
+                if boss_types.contains(&kind) {
+                    table.bosses.entry(location.form_id).or_default().push(reference);
+                    table.boss_of.entry(reference).or_default().push(location.form_id);
+                }
+            }
+        }
         let exterior = index
             .cells
             .exterior_cells
@@ -134,6 +152,16 @@ impl LocationTable {
             .flatten()
             .filter(move |(kind, _)| *kind == ref_type)
             .map(|(_, reference)| *reference)
+    }
+
+    /// The locations `reference` is a `Boss` of.
+    pub fn boss_locations(&self, reference: u32) -> &[u32] {
+        self.boss_of.get(&reference).map_or(&[], Vec::as_slice)
+    }
+
+    /// The `Boss` references of `location`.
+    pub fn bosses(&self, location: u32) -> &[u32] {
+        self.bosses.get(&location).map_or(&[], Vec::as_slice)
     }
 
     /// The location a cell is tagged with (`XLCN`).
@@ -242,6 +270,81 @@ impl LocationAliasBindings {
     }
 }
 
+/// Cleared locations (M47.2). The CK *Cell Reset* page: "Locations are
+/// cleared when all of their bosses (creatures tagged with the 'Boss'
+/// LocRefType) are dead [or] a script calls `SetCleared()` on the location."
+/// The dead bosses are kept by reference FormID, so a boss killed in one
+/// visit still counts after its cell unloads. Saved.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct LocationClearState {
+    cleared: std::collections::HashSet<u32>,
+    dead_bosses: std::collections::HashSet<u32>,
+}
+
+impl Resource for LocationClearState {}
+
+impl LocationClearState {
+    pub fn is_cleared(&self, location: u32) -> bool {
+        self.cleared.contains(&location)
+    }
+
+    /// `Location.SetCleared(abCleared)`.
+    pub fn set_cleared(&mut self, location: u32, cleared: bool) {
+        if cleared {
+            self.cleared.insert(location);
+        } else {
+            self.cleared.remove(&location);
+        }
+    }
+}
+
+/// Whether `location` is cleared.
+pub fn location_cleared(world: &World, location: u32) -> bool {
+    world
+        .try_resource::<LocationClearState>()
+        .is_some_and(|state| state.is_cleared(location))
+}
+
+/// Record a death (M47.2): when `entity` is a `Boss` of some location, the
+/// location clears once every one of its bosses is dead. Called from every
+/// death producer; idempotent.
+pub fn note_actor_death(world: &World, entity: EntityId) {
+    let reference = crate::condition::entity_global_form_id(world, entity).or_else(|| {
+        world
+            .get::<crate::scene::SceneAliasCandidate>(entity)
+            .map(|candidate| candidate.reference_form_id)
+    });
+    let Some(reference) = reference else {
+        return;
+    };
+    let boss_of: Vec<(u32, Vec<u32>)> = {
+        let Some(table) = world.try_resource::<LocationTable>() else {
+            return;
+        };
+        table
+            .boss_locations(reference)
+            .iter()
+            .map(|&location| (location, table.bosses(location).to_vec()))
+            .collect()
+    };
+    if boss_of.is_empty() {
+        return;
+    }
+    let Some(mut state) = world.try_resource_mut::<LocationClearState>() else {
+        return;
+    };
+    state.dead_bosses.insert(reference);
+    for (location, bosses) in boss_of {
+        if !state.cleared.contains(&location)
+            && bosses.iter().all(|boss| state.dead_bosses.contains(boss))
+        {
+            state.cleared.insert(location);
+            log::info!("Location {location:08X} cleared: every boss is dead");
+        }
+    }
+}
+
 /// Install the load order's [`LocationTable`] (replacing the previous one)
 /// and an empty [`PlayerLocation`] / [`LocationAliasBindings`] if none
 /// exists yet. Returns the number of
@@ -255,6 +358,9 @@ pub fn install_location_table(world: &mut World, index: &EsmIndex) -> usize {
     }
     if world.try_resource::<LocationAliasBindings>().is_none() {
         world.insert_resource(LocationAliasBindings::default());
+    }
+    if world.try_resource::<LocationClearState>().is_none() {
+        world.insert_resource(LocationClearState::default());
     }
     count
 }

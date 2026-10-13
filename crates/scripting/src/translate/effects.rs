@@ -182,6 +182,8 @@ pub enum FragmentGuard {
     MapMarkerVisible { marker: ObjectRef, expected: bool },
     /// `<marker>.CanFastTravelToMarker()` is `expected`.
     MapMarkerFastTravel { marker: ObjectRef, expected: bool },
+    /// `<location>.IsCleared()` is `expected`.
+    LocationCleared { location: ObjectRef, expected: bool },
     /// `<actor>.GetCurrentLocation().HasKeyword(keyword)` is `expected` — the
     /// actor's current location itself (the M47.2 location runtime).
     LocationKeyword {
@@ -208,6 +210,7 @@ enum GuardReading {
     LocationKeyword(ActorRef, ObjectRef),
     MapMarkerVisible(ObjectRef),
     MapMarkerFastTravel(ObjectRef),
+    LocationCleared(ObjectRef),
 }
 
 /// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
@@ -375,6 +378,12 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             .then(|| receiver_object(object, scope).map(GuardReading::MapMarkerVisible))
             .flatten();
     }
+    if let Some((object, args)) = method_call(e, "IsCleared") {
+        return args
+            .is_empty()
+            .then(|| receiver_location(object, scope).map(GuardReading::LocationCleared))
+            .flatten();
+    }
     if let Some((object, args)) = method_call(e, "CanFastTravelToMarker") {
         return args
             .is_empty()
@@ -497,6 +506,10 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
         },
         GuardReading::MapMarkerFastTravel(marker) => FragmentGuard::MapMarkerFastTravel {
             marker,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::LocationCleared(location) => FragmentGuard::LocationCleared {
+            location,
             expected: bool_expectation(comparison, value)?,
         },
         GuardReading::LocationKeyword(actor, keyword) => FragmentGuard::LocationKeyword {
@@ -848,6 +861,9 @@ pub enum Effect {
     },
     /// M47.2 — `<marker>.AddToMap([abFastTravel = false])`.
     AddToMap { marker: ObjectRef, fast_travel: bool },
+    /// M47.2 — `<location>.SetCleared([abCleared = true])`: a location
+    /// property, or a location alias's `GetLocation()`.
+    SetLocationCleared { location: ObjectRef, cleared: bool },
     /// M47.2 — `<keyword>.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1,
     /// aiValue2)`: raises a script (`SCPT`) Story Manager event carrying the
     /// keyword, the location, the two references and the two integers.
@@ -1670,6 +1686,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_block_activation,
     prim_send_story_event,
     prim_add_to_map,
+    prim_set_location_cleared,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2203,6 +2220,18 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Location.SetCleared(bool abCleared = true)`.
+fn prim_set_location_cleared(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetCleared")?;
+    if args.len() > 1 {
+        return None;
+    }
+    Some(Effect::SetLocationCleared {
+        location: receiver_location(object, scope)?,
+        cleared: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
 /// `Keyword.SendStoryEvent(Location akLoc = None, ObjectReference akRef1 =
 /// None, ObjectReference akRef2 = None, int aiValue1 = 0, int aiValue2 = 0)`
 /// — every parameter materialized by the compiler. A `None` literal leaves a
@@ -2221,7 +2250,7 @@ fn prim_send_story_event(e: &Expr, scope: &Scope) -> Option<Effect> {
     };
     let location = match unwrap(0) {
         None | Some(Expr::NoneLit) => None,
-        Some(node) => Some(receiver_object(node, scope)?),
+        Some(node) => Some(receiver_location(node, scope)?),
     };
     let mut references = [None, None];
     for (slot, index) in references.iter_mut().zip([1, 2]) {
@@ -3097,6 +3126,20 @@ fn alias_reference_getter(e: &Expr) -> Option<(&Expr, &[byroredux_papyrus::ast::
         .find_map(|getter| method_call(e, getter))
 }
 
+/// A location-typed receiver or argument: a `Location` property, or a
+/// `LocationAlias` property's `GetLocation()` (the alias resolves at run
+/// time through its bound location).
+fn receiver_location(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    if let Expr::Cast { expr, .. } = object {
+        return receiver_location(&expr.node, scope);
+    }
+    match method_call(object, "GetLocation") {
+        Some((alias, args)) if args.is_empty() => receiver_object(alias, scope),
+        Some(_) => None,
+        None => receiver_object(object, scope),
+    }
+}
+
 fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
     match value {
         Expr::Cast { expr, .. } => player_expr_ref(&expr.node, scope),
@@ -3818,6 +3861,39 @@ mod tests {
                 Effect::AddToMap {
                     marker: ObjectRef::Property("CityMarker".into()),
                     fast_travel: true
+                },
+            ])
+        );
+    }
+
+    /// M47.2 — `SetCleared` on a location property and on a location
+    /// alias's `GetLocation()`, under an `IsCleared` guard.
+    #[test]
+    fn location_clearing_lowers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             If !Alias_Dungeon.GetLocation().IsCleared()\n Alias_Dungeon.GetLocation().SetCleared()\n EndIf\n\
+             BleakFallsLocation.SetCleared(false)\n EndFunction\n",
+        );
+        let dungeon = || ObjectRef::Property("Alias_Dungeon".into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Conditional {
+                    guards: vec![FragmentGuard::LocationCleared {
+                        location: dungeon(),
+                        expected: false
+                    }],
+                    then_effects: vec![Effect::SetLocationCleared {
+                        location: dungeon(),
+                        cleared: true
+                    }],
+                    else_effects: vec![],
+                },
+                Effect::SetLocationCleared {
+                    location: ObjectRef::Property("BleakFallsLocation".into()),
+                    cleared: false
                 },
             ])
         );

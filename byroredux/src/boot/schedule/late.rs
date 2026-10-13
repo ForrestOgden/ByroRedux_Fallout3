@@ -596,7 +596,10 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's AddToMap, and the marker guards.
             .reads_resource::<byroredux_scripting::MapMarkers>()
             .reads_resource::<byroredux_scripting::AuthoredMapMarkers>()
-            .writes_resource::<byroredux_scripting::MapMarkers>(),
+            .writes_resource::<byroredux_scripting::MapMarkers>()
+            // M47.2 — a spoken line's SetCleared, and the IsCleared guard.
+            .reads_resource::<byroredux_scripting::LocationClearState>()
+            .writes_resource::<byroredux_scripting::LocationClearState>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

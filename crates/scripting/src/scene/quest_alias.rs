@@ -17,8 +17,8 @@ use byroredux_core::ecs::world::World;
 use rustc_hash::{FxHashMap, FxHashSet};
 use byroredux_plugin::esm::records::condition::event_data_slot;
 use byroredux_plugin::esm::records::{
-    AliasFillType, QuestAlias, QustRecord, ALIAS_FLAG_ALLOW_DEAD, ALIAS_FLAG_ALLOW_RESERVED,
-    ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES,
+    AliasFillType, QuestAlias, QustRecord, ALIAS_FLAG_ALLOW_CLEARED, ALIAS_FLAG_ALLOW_DEAD,
+    ALIAS_FLAG_ALLOW_RESERVED, ALIAS_FLAG_ALLOW_REUSE, ALIAS_FLAG_CLOSEST, ALIAS_FLAG_RESERVES,
 };
 
 use super::{register, SceneActorBindings};
@@ -1341,10 +1341,22 @@ fn fill_location_alias(
                 .try_resource::<LocationTable>()
                 .map(|table| table.locations().to_vec())
                 .unwrap_or_default();
-            let matching: Vec<u32> = pool
+            let mut matching: Vec<u32> = pool
                 .into_iter()
                 .filter(|&location| passes(location, locations))
                 .collect();
+            // CK *Quest Alias Tab*, Allow Cleared: "If unchecked, 'Cleared'
+            // Locations will never be selected for this alias. If checked,
+            // 'Cleared' Locations can be checked, but uncleared locations
+            // will be preferred if available."
+            let (cleared, uncleared): (Vec<u32>, Vec<u32>) = matching
+                .iter()
+                .partition(|&&location| crate::location::location_cleared(world, location));
+            if !uncleared.is_empty() || !alias.flags.has(ALIAS_FLAG_ALLOW_CLEARED) {
+                matching = uncleared;
+            } else {
+                matching = cleared;
+            }
             let pick = world
                 .try_resource_mut::<crate::story_manager::StoryManagerRng>()
                 .map_or(0, |mut rng| rng.pick(matching.len()));

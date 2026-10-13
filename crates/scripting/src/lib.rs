@@ -118,8 +118,8 @@ pub use map_markers::{
     MapMarkers,
 };
 pub use location::{
-    current_location, editor_location, install_location_table, LocationAliasBindings,
-    LocationTable, PlayerLocation,
+    current_location, editor_location, install_location_table, location_cleared,
+    note_actor_death, LocationAliasBindings, LocationClearState, LocationTable, PlayerLocation,
 };
 pub use magic::{
     add_race_spells, add_spell, remove_race_spells, remove_spell, CanonicalSpell,
@@ -211,6 +211,10 @@ pub fn register(world: &mut World) {
     // replaces this default).
     if world.try_resource::<ScriptedFactionChanges>().is_none() {
         world.insert_resource(ScriptedFactionChanges::default());
+    }
+    // M47.2 — cleared locations (saved).
+    if world.try_resource::<LocationClearState>().is_none() {
+        world.insert_resource(LocationClearState::default());
     }
     // M47.2 — scripted AddToMap (saved).
     if world.try_resource::<MapMarkers>().is_none() {
