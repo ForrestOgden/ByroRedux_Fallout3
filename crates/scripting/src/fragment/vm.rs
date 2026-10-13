@@ -1151,6 +1151,84 @@ impl Vm<'_> {
         Ok(())
     }
 
+    /// `RegisterForHitEvent` / `UnregisterForHitEvent` /
+    /// `UnregisterForAllHitEvents` on the script itself (see [`super::hits`]).
+    fn hit_registration(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let target = |value: &Value| match value {
+            Value::Form(form) if *form != 0 => Some(super::DistanceTarget::Reference(*form)),
+            Value::Alias { quest, alias } => Some(super::DistanceTarget::Alias {
+                quest: *quest,
+                alias: *alias,
+            }),
+            _ => None,
+        };
+        let request = match name {
+            "unregisterforallhitevents" => super::HitRequest::UnregisterAll,
+            "unregisterforhitevent" => match values.first().and_then(target) {
+                Some(target) => super::HitRequest::Unregister { target },
+                None => return Ok(()),
+            },
+            _ => {
+                // CK: the target is "the ObjectReference, ReferenceAlias or
+                // RefCollectionAlias that is being hit"; a None registers nothing.
+                let Some(target) = values.first().and_then(target) else {
+                    return Ok(());
+                };
+                let aggressor = match values.get(1) {
+                    None | Some(Value::None) => None,
+                    Some(value @ Value::Form(form)) if *form != 0 => {
+                        // A faction filter matches the aggressor's membership;
+                        // any other form the check let through is a reference.
+                        if self.declared_object_type(frame, args.get(1)).is_some_and(|ty| ty.eq_ignore_ascii_case("faction")) {
+                            Some(super::HitAggressor::Faction(*form))
+                        } else {
+                            target_of_aggressor(value).map(super::HitAggressor::Target)
+                        }
+                    }
+                    Some(value) => match target_of_aggressor(value) {
+                        Some(aggressor) => Some(super::HitAggressor::Target(aggressor)),
+                        None => return stop("a hit event aggressor filter beyond None, a reference, an alias and a faction"),
+                    },
+                };
+                if !matches!(values.get(2), None | Some(Value::None)) || !matches!(values.get(3), None | Some(Value::None)) {
+                    return stop("a hit event source or projectile filter");
+                }
+                let tri = |index: usize| values.get(index).and_then(Value::int).unwrap_or(-1);
+                super::HitRequest::Register {
+                    target,
+                    filter: super::HitFilter {
+                        aggressor,
+                        power: tri(4),
+                        sneak: tri(5),
+                        bash: tri(6),
+                        block: tri(7),
+                        invert: values.get(8).is_some_and(|value| !value.truthy()),
+                    },
+                }
+            }
+        };
+        let script = frame.script.name.node.0.clone();
+        self.deferred.hit_requests.push((frame.owner.0, script, request));
+        Ok(())
+    }
+
+    /// The declared object type of a call argument written as a property or a
+    /// cast of one (`OnHitFaction`, `Alias_Boss as ScriptObject`).
+    fn declared_object_type(&self, frame: &Frame, arg: Option<&CallArg>) -> Option<String> {
+        let mut expr = &arg?.value.node;
+        while let Expr::Cast { expr: inner, .. } = expr {
+            expr = &inner.node;
+        }
+        let Expr::Ident(name) = expr else {
+            return None;
+        };
+        match member_type_in(&frame.script, &name.0, &self.deferred.vm_scripts)? {
+            Type::Object(ty) => Some(ty.0),
+            _ => None,
+        }
+    }
+
     /// `GotoState(state)` for a script without the compiler's generated
     /// one: `OnEndState` in the old state, the switch, `OnBeginState` in the
     /// new one (CK *OnBeginState*: also when re-entering the same state).
@@ -2646,6 +2724,9 @@ impl Vm<'_> {
             if super::DistanceRequest::handler(&name).is_some() {
                 return self.distance_registration(frame, None, &name, args).map(|_| Flow::Normal);
             }
+            if super::HitRequest::handler(&name).is_some() {
+                return self.hit_registration(frame, &name, args).map(|_| Flow::Normal);
+            }
             let mut numbers = Vec::with_capacity(args.len());
             for arg in args {
                 numbers.push(self.eval(frame, &arg.value.node)?.number());
@@ -2719,6 +2800,7 @@ fn quest_update_call(callee: &Expr) -> Option<(&Expr, String)> {
 fn registration_handler(name: &str) -> Option<&'static str> {
     super::UpdateRequest::handler(name)
         .or_else(|| super::DistanceRequest::handler(name))
+        .or_else(|| super::HitRequest::handler(name))
         .or_else(|| super::EventRequest::is_call(name).then_some(""))
 }
 
@@ -2920,7 +3002,7 @@ pub fn check_reference_script(
     let mut checker = Checker::new(library, &script);
     let mut handled = Vec::new();
     for event in events {
-        if checker.versions(&script, event).is_empty() {
+        if checker.versions(&script, event).is_empty() || checker.hit_by_registration(&script, event) {
             continue;
         }
         if checker.check_call_into(&script, event, true, Kind::Object).is_none() {
@@ -2945,7 +3027,7 @@ pub fn check_alias_script(
     let mut checker = Checker::new(library, &script);
     let mut handled = Vec::new();
     for event in events {
-        if checker.versions(&script, event).is_empty() {
+        if checker.versions(&script, event).is_empty() || checker.hit_by_registration(&script, event) {
             continue;
         }
         if checker.check_call_into(&script, event, true, Kind::Alias).is_none() {
@@ -3249,6 +3331,21 @@ impl<'l> Checker<'l> {
             }
         }
         versions
+    }
+
+    /// Whether `event` is Fallout 4's `OnHit(akTarget, akAggressor, akSource,
+    /// akProjectile, abPowerAttack, abSneakAttack, abBashAttack, abHitBlocked,
+    /// apMaterial)`: unlike Skyrim's seven-parameter `OnHit`, it is delivered only
+    /// to the script that registered for it (`RegisterForHitEvent`), so the
+    /// engine's automatic delivery leaves it alone and the registration site
+    /// checks it.
+    fn hit_by_registration(&mut self, script: &Arc<Script>, event: &str) -> bool {
+        event.eq_ignore_ascii_case("onhit")
+            && self
+                .versions(script, event)
+                .iter()
+                .find_map(|(defined_in, state)| callable_in(defined_in, state.as_deref(), event).map(|c| c.params.len()))
+                .is_some_and(|params| params > 7)
     }
 
     /// Check a call of `function` on an instance of `script` whose `Self`
@@ -3609,6 +3706,30 @@ impl<'l> Checker<'l> {
             Expr::MemberAccess { object, member } => (Some(&object.node), member.node.0.to_ascii_lowercase()),
             _ => return None,
         };
+        // A hit registration's aggressor filter is matched against a reference
+        // or a faction, so a property or local declared as one (an `Actor`, an
+        // `ObjectReference`, a `ReferenceAlias`, a `Faction`) counts as one; a
+        // form of any other type (a keyword, a base object) is a filter this
+        // runtime does not match.
+        if name == "registerforhitevent" {
+            if let (Some(arg), Some(Arg::Kind(Kind::Object))) = (args.get(1), arg_kinds.get(1)) {
+                // A cast to `ScriptObject` hides the declared type: look through it.
+                let mut declared = &arg.value.node;
+                while let Expr::Cast { expr, .. } = declared {
+                    declared = &expr.node;
+                }
+                let is_reference = self.static_type(frame, declared).is_some_and(|ty| match ty {
+                    Type::Object(name) => {
+                        let lower = name.0.to_ascii_lowercase();
+                        lower == "objectreference" || lower == "actor" || lower == "faction" || lower.contains("alias")
+                    }
+                    _ => false,
+                });
+                if is_reference {
+                    arg_kinds[1] = Arg::Kind(Kind::Player);
+                }
+            }
+        }
         // The frame's own script function.
         if receiver.is_none()
             || receiver.is_some_and(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))
@@ -3981,9 +4102,46 @@ impl<'l> Checker<'l> {
     }
 }
 
+/// The aggressor a hit registration filters on, when the filter is one this
+/// runtime matches: a reference (the check proved the filter's declared type is
+/// one) or an alias.
+fn target_of_aggressor(value: &Value) -> Option<super::DistanceTarget> {
+    match value {
+        Value::Form(form) if *form != 0 => Some(super::DistanceTarget::Reference(*form)),
+        Value::Alias { quest, alias } => Some(super::DistanceTarget::Alias {
+            quest: *quest,
+            alias: *alias,
+        }),
+        _ => None,
+    }
+}
+
 /// An update or timer call's arguments: numbers, at most as many as it
 /// takes, and the interval when it starts one.
 fn update_args_ok(name: &str, args: &[Arg]) -> bool {
+    // A hit registration: the target (a reference, the player or an alias), an
+    // aggressor filter that is `None`, the player or an alias, `None` source and
+    // projectile filters, four numbers and the `abMatch` Bool.
+    if super::HitRequest::handler(name).is_some() {
+        let object = |arg: &Arg| matches!(arg, Arg::Kind(Kind::Object | Kind::Player | Kind::Alias));
+        let unset = |arg: &Arg| matches!(arg, Arg::Literal(Expr::NoneLit));
+        let number = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num));
+        let flag = |arg: &Arg| matches!(arg, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool));
+        return match name {
+            "unregisterforallhitevents" => args.is_empty(),
+            "unregisterforhitevent" => args.len() == 1 && object(&args[0]),
+            _ => {
+                !args.is_empty()
+                    && args.len() <= 9
+                    && object(&args[0])
+                    && args.get(1).is_none_or(|a| unset(a) || matches!(a, Arg::Kind(Kind::Player | Kind::Alias)))
+                    && args.get(2).is_none_or(unset)
+                    && args.get(3).is_none_or(unset)
+                    && args.iter().skip(4).take(4).all(number)
+                    && args.get(8).is_none_or(flag)
+            }
+        };
+    }
     // A distance registration: two objects (a reference, a player or an alias)
     // and, registering, a number.
     if super::DistanceRequest::handler(name).is_some() {

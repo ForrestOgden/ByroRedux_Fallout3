@@ -1075,6 +1075,33 @@ Coverage (`examples/alias_script_coverage.rs`): the VM runs 44 % of Skyrim's ali
 script instances; Fallout 4 12.5 % and Starfield 7 % wait on `RegisterForHitEvent`
 registrations (their `OnHit` is registration-based, not delivered automatically).
 
+### Hit events (M47.2)
+
+Fallout 4 and Starfield deliver `OnHit(akTarget, akAggressor, akSource,
+akProjectile, abPowerAttack, abSneakAttack, abBashAttack, abHitBlocked,
+apMaterial)` only to a script that registered for it with
+`RegisterForHitEvent(akTarget, akAggressorFilter, akSourceFilter,
+akProjectileFilter, aiPowerFilter, aiSneakFilter, aiBashFilter, aiBlockFilter,
+abMatch)` (CK *RegisterForHitEvent - ScriptObject*): "a single OnHit event
+matching the filters", removed after the first matching hit; the target is a
+reference or an alias; the power/sneak/bash/block filters are `<0` either, `0`
+must not be, `>0` must be; `abMatch` false inverts. `HitRegistrations` (saved)
+holds them; `hit_event_system` (after `reference_script_event_system`, while the
+`HitEvent` markers stand) delivers each once, with all nine arguments (the
+source is the aggressor's equipped weapon; no projectile or material). The
+aggressor filter is `None`, a reference, an alias or a faction (an actor in it);
+the source and projectile filters must be `None`; other filters stop the run
+rather than match on a guess. A quest's or alias's registrations end when its
+quest stops (`prune_stopped_quests`).
+
+Skyrim's seven-parameter `OnHit(akAggressor, …)` is automatic. The check tells
+them apart by the handler's parameter count: the nine-parameter `OnHit` is left
+out of the automatic events (delivering seven arguments to it would mis-bind
+every one) and checked where the script registers.
+
+The delivery systems (updates, distance, custom/remote and hit events) share
+`ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and properties.
+
 ### Script-created references (M47.2)
 
 `ObjectReference.PlaceAtMe(akFormToPlace, aiCount, abForcePersist,

@@ -456,7 +456,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v81 -> v82 (M47.2): the `AliasScriptOwners` resource column (alias script
 /// owner ids and started quests).
-pub const FORMAT_MAJOR: u16 = 82;
+///
+/// v82 -> v83 (M47.2): the `HitRegistrations` resource column
+/// (`RegisterForHitEvent`).
+pub const FORMAT_MAJOR: u16 = 83;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

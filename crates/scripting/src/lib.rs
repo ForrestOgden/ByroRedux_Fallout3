@@ -118,6 +118,7 @@ pub use fragment::{
     PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
+    hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
@@ -272,6 +273,10 @@ pub fn register(world: &mut World) {
     }
     if world.try_resource::<AliasScriptOwners>().is_none() {
         world.insert_resource(AliasScriptOwners::default());
+    }
+    // M47.2 — Papyrus hit event registrations (saved).
+    if world.try_resource::<HitRegistrations>().is_none() {
+        world.insert_resource(HitRegistrations::default());
     }
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {

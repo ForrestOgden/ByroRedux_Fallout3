@@ -540,6 +540,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::reference_script_event_system,
     );
+    // M47.2 — the hits scripts registered for (Fallout 4 / Starfield
+    // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
+    // stand.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::hit_event_system);
     // Dispatch quest fragments right after the advance that emits the
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).

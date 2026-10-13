@@ -345,25 +345,12 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
     if due_now.is_empty() {
         return;
     }
-    let quests = world
-        .try_resource::<crate::QuestScriptInstances>()
-        .map(|instances| Arc::clone(&instances.0))
-        .unwrap_or_default();
-    let fragments = world.resource::<QuestStageFragments>().clone();
+    let owners = super::owners::ScriptOwners::new(world);
     // Each owner's standing: a quest delivers while it runs, a reference while
     // it is loaded. Quest state is read first and released.
     let quest_standing: Vec<Option<bool>> = {
         let stages = world.resource::<QuestStageState>();
-        due_now
-            .iter()
-            .map(|(_, r)| {
-                let quest = QuestFormId(r.owner);
-                let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
-                is_quest
-                    .then(|| stages.is_running(quest))
-                    .or_else(|| super::alias_owner_standing(world, r.owner, &stages))
-            })
-            .collect()
+        due_now.iter().map(|(_, r)| owners.standing(world, &stages, r.owner)).collect()
     };
     let holds: Vec<(usize, Hold)> = due_now
         .iter()
@@ -396,12 +383,6 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
             other => (index, other),
         })
         .collect();
-    let on_quest: std::collections::HashSet<u32> = due_now
-        .iter()
-        .zip(&quest_standing)
-        .filter(|(_, standing)| standing.is_some())
-        .map(|((_, r), _)| r.owner)
-        .collect();
     let due = world.resource_mut::<ScriptUpdates>().settle(&holds);
     if due.is_empty() {
         return;
@@ -409,19 +390,14 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
     let mut advances = Vec::new();
     for registration in due {
         let owner = QuestFormId(registration.owner);
-        let on_quest = on_quest.contains(&registration.owner);
         let event = registration.clock.event(registration.timer.is_some());
-        // An alias owner has a standing too (its quest's), but is no quest.
-        let kind = super::vm::SelfKind::of_owner(
-            registration.owner,
-            on_quest && !super::is_alias_owner(registration.owner),
-        );
+        let kind = owners.kind(registration.owner);
         let key = (registration.script.to_ascii_lowercase(), event, kind);
         let cached = world
             .try_resource::<UpdateHandlerChecks>()
             .and_then(|checks| checks.0.get(&key).copied());
         let runs = cached.unwrap_or_else(|| {
-            let runs = super::vm::handler_runs(&fragments.vm_scripts(), &registration.script, event, kind);
+            let runs = super::vm::handler_runs(&owners.scripts(), &registration.script, event, kind);
             if let Some(mut checks) = world.try_resource_mut::<UpdateHandlerChecks>() {
                 checks.0.insert(key, runs);
             }
@@ -435,20 +411,7 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
             );
             continue;
         }
-        let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
-            Some(vmad) => Some(vmad.clone()),
-            None if super::is_alias_owner(registration.owner) => {
-                super::alias_owner_vmad(world, registration.owner, &registration.script)
-            }
-            None => ReferenceScriptIndex::lookup(world, registration.owner).and_then(|entity| {
-                let attached = world.get::<PapyrusReferenceScripts>(entity)?;
-                attached
-                    .0
-                    .iter()
-                    .find(|script| script.script.eq_ignore_ascii_case(&registration.script))
-                    .map(|script| (*script.vmad).clone())
-            }),
-        };
+        let vmad = owners.vmad(world, registration.owner, &registration.script);
         let effect = Effect::Interpret {
             script: registration.script.clone(),
             function: event.to_owned(),

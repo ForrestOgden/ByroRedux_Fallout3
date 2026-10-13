@@ -719,6 +719,122 @@ fn alias_scripts_start_follow_their_reference_and_shut_down() {
     assert_eq!(count(&world), Some(115.0), "shut down once");
 }
 
+/// A Fallout 4 alias script registers for its own hit in `OnAliasInit`; the
+/// `OnHit(akTarget, akAggressor, …)` it declares is not delivered automatically,
+/// runs once for the first matching hit, and is delivered the nine arguments of
+/// its signature.
+#[test]
+fn hit_events_are_registered_single_shot_and_filtered() {
+    const ALIAS: i16 = 5;
+    const FILLED: u32 = 0x0001_0F60;
+    let script = parsed_source(
+        "ScriptName VmHitAlias extends ReferenceAlias\n\
+         ObjectReference Property Marker Auto\n\
+         Int Property Hits Auto\n\
+         Event OnAliasInit()\n\
+           RegisterForHitEvent(Self as ScriptObject, None, None, None, -1, 0, -1, -1, True)\n\
+         EndEvent\n\
+         Event OnHit(ObjectReference akTarget, ObjectReference akAggressor, Form akSource, Projectile akProjectile, \
+             Bool abPowerAttack, Bool abSneakAttack, Bool abBashAttack, Bool abHitBlocked, String apMaterial)\n\
+           Hits += 1\n\
+           If akAggressor == Game.GetPlayer() && abPowerAttack\n Marker.Enable()\n EndIf\n\
+         EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_alias_script(Arc::clone(&script), &crate::DELIVERED_ALIAS_EVENTS, None).expect("the VM runs it");
+    assert_eq!(events, ["OnAliasInit"], "OnHit is registration-based: not delivered automatically");
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Fallout4.esm"),
+        local: LocalFormId(FILLED),
+    });
+    world.insert_resource(pool);
+    let filled = world.spawn();
+    world.insert(filled, FormIdComponent(id));
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(MARKER, false);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in scripts {
+            fragments.insert_vm_script(script);
+        }
+    }
+    let instance = ScriptInstance {
+        name: "VmHitAlias".into(),
+        status: 0,
+        properties: vec![ScriptProperty {
+            name: "Marker".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: MARKER,
+                alias: -1,
+            },
+        }],
+    };
+    world.resource_mut::<crate::QuestAliasScripts>().set_checked(
+        Q,
+        vec![crate::AliasScript {
+            alias: ALIAS,
+            script: "VmHitAlias".into(),
+            vmad: Arc::new(ScriptInstanceData {
+                version: 6,
+                object_format: 2,
+                scripts: vec![instance],
+            }),
+            events,
+        }],
+    );
+    world.resource_mut::<crate::SceneActorBindings>().bind(Q, i32::from(ALIAS), filled);
+    world.resource_mut::<QuestStageState>().start_quest(Q, None);
+    crate::alias_script_event_system(&world, 0.0);
+    assert_eq!(world.resource::<crate::HitRegistrations>().entries().len(), 1, "registered in OnAliasInit");
+
+    let owner = world.resource::<crate::AliasScriptOwners>().owner_of(Q, ALIAS).unwrap();
+    let hits = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(owner), crate::QuestScriptVariables::property_key("Hits"))
+    };
+    let strike = |world: &mut World, sneak: bool| {
+        world.insert(
+            filled,
+            crate::HitEvent {
+                aggressor: player,
+                source: filled,
+                projectile: filled,
+                damage: 3.0,
+                power_attack: true,
+                sneak_attack: sneak,
+                bash_attack: false,
+                blocked: false,
+            },
+        );
+        // The automatic delivery leaves it alone, the registration takes it.
+        crate::reference_script_event_system(&world, 0.0);
+        crate::hit_event_system(&world, 0.0);
+        world.remove::<crate::HitEvent>(filled);
+    };
+    // A sneak attack fails the aiSneakFilter 0: no delivery, still registered.
+    strike(&mut world, true);
+    assert_eq!(hits(&world), None);
+    assert_eq!(world.resource::<crate::HitRegistrations>().entries().len(), 1);
+    // The first matching hit is delivered with its signature's arguments, once.
+    strike(&mut world, false);
+    assert_eq!(hits(&world), Some(1.0));
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "akAggressor and abPowerAttack arrived");
+    assert!(world.resource::<crate::HitRegistrations>().entries().is_empty(), "single shot");
+    strike(&mut world, false);
+    assert_eq!(hits(&world), Some(1.0), "re-registration is the script's to do");
+}
+
 /// `RegisterForUpdate` delivers `OnUpdate` every interval until the handler
 /// unregisters; the check accepts the registration because the handler runs.
 #[test]

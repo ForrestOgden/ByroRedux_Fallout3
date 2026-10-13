@@ -162,7 +162,7 @@ impl DistanceWatches {
 }
 
 /// The entity a target stands for right now.
-fn target_entity(world: &World, target: DistanceTarget) -> Option<EntityId> {
+pub(super) fn target_entity(world: &World, target: DistanceTarget) -> Option<EntityId> {
     match target {
         DistanceTarget::Reference(form) => {
             if form == 0x14 {
@@ -179,7 +179,7 @@ fn target_entity(world: &World, target: DistanceTarget) -> Option<EntityId> {
 }
 
 /// The form a delivered event names an object by.
-fn entity_form(world: &World, entity: EntityId) -> Option<u32> {
+pub(super) fn entity_form(world: &World, entity: EntityId) -> Option<u32> {
     let player = world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
         .map(|player| player.0);
@@ -198,25 +198,12 @@ pub fn distance_event_system(world: &World, _dt: f32) {
         }
         _ => return,
     };
-    let quests = world
-        .try_resource::<crate::QuestScriptInstances>()
-        .map(|instances| Arc::clone(&instances.0))
-        .unwrap_or_default();
-    let fragments = world.resource::<QuestStageFragments>().clone();
+    let owners = super::owners::ScriptOwners::new(world);
     // Quest standing first, released before anything else is read: a quest
     // delivers while it runs and drops its registrations when it stops.
     let standing: Vec<Option<bool>> = {
         let stages = world.resource::<QuestStageState>();
-        candidates
-            .iter()
-            .map(|(_, w)| {
-                let quest = QuestFormId(w.owner);
-                let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
-                is_quest
-                    .then(|| stages.is_running(quest))
-                    .or_else(|| super::alias_owner_standing(world, w.owner, &stages))
-            })
-            .collect()
+        candidates.iter().map(|(_, w)| owners.standing(world, &stages, w.owner)).collect()
     };
     let mut dropped = Vec::new();
     let mut fired: Vec<(usize, DistanceWatch, u32, u32, f32)> = Vec::new();
@@ -276,26 +263,12 @@ pub fn distance_event_system(world: &World, _dt: f32) {
     let mut advances = Vec::new();
     for (_, watch, form_a, form_b, distance) in fired {
         let owner = QuestFormId(watch.owner);
-        let on_quest = quests.contains_key(&owner) || fragments.vmad(owner).is_some();
         let event = watch.event();
-        let kind = super::vm::SelfKind::of_owner(watch.owner, on_quest);
-        let runs = super::vm::handler_runs(&fragments.vm_scripts(), &watch.script, event, kind);
-        if !runs {
+        if !owners.handler_runs(watch.owner, &watch.script, event) {
             log::debug!("{:08X}: {}.{event} skipped: the Papyrus VM does not run it", watch.owner, watch.script);
             continue;
         }
-        let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
-            Some(vmad) => Some(vmad.clone()),
-            None if super::is_alias_owner(watch.owner) => super::alias_owner_vmad(world, watch.owner, &watch.script),
-            None => ReferenceScriptIndex::lookup(world, watch.owner).and_then(|entity| {
-                let attached = world.get::<PapyrusReferenceScripts>(entity)?;
-                attached
-                    .0
-                    .iter()
-                    .find(|script| script.script.eq_ignore_ascii_case(&watch.script))
-                    .map(|script| (*script.vmad).clone())
-            }),
-        };
+        let vmad = owners.vmad(world, watch.owner, &watch.script);
         let effect = Effect::Interpret {
             script: watch.script.clone(),
             function: event.to_owned(),

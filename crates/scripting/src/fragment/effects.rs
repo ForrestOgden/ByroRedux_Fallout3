@@ -468,6 +468,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — distance registrations a Papyrus VM run asked for: the owner,
     /// the script, the change.
     pub(super) distance_requests: Vec<(u32, String, super::DistanceRequest)>,
+    /// M47.2 — hit event registration changes, applied to
+    /// [`super::HitRegistrations`] after the guards drop.
+    pub(super) hit_requests: Vec<(u32, String, super::HitRequest)>,
     /// M47.2 — reference-collection members a Papyrus VM run wrote back,
     /// applied to [`crate::AliasCollections`] after the guards drop.
     pub(super) alias_collections: Vec<(crate::alias_collections::CollectionKey, Vec<u32>)>,
@@ -597,6 +600,7 @@ impl DeferredFragmentEffects {
                 .unwrap_or_default(),
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
+            hit_requests: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
             collection_kinds: world
@@ -709,6 +713,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.alias_collections.clear();
+        }
+        if !self.hit_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::HitRegistrations>() {
+                for (owner, script, request) in self.hit_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.hit_requests.clear();
         }
         if !self.distance_requests.is_empty() {
             if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {

@@ -236,20 +236,14 @@ pub(super) fn enqueue(
     if registrants.is_empty() {
         return;
     }
-    let fragments = world.resource::<QuestStageFragments>().clone();
-    let scripts = fragments.vm_scripts();
-    let quests = world
-        .try_resource::<crate::QuestScriptInstances>()
-        .map(|instances| Arc::clone(&instances.0))
-        .unwrap_or_default();
+    let owners = super::owners::ScriptOwners::new(world);
+    let scripts = owners.scripts();
     for registration in registrants {
         let Some(handler) = handler_name(&scripts, registration) else {
             continue;
         };
         let owner = QuestFormId(registration.owner);
-        let on_quest = quests.contains_key(&owner) || fragments.vmad(owner).is_some();
-        let kind = super::vm::SelfKind::of_owner(registration.owner, on_quest);
-        if !super::vm::handler_runs(&scripts, &registration.script, &handler, kind) {
+        if !owners.handler_runs(registration.owner, &registration.script, &handler) {
             log::debug!(
                 "{:08X}: {}.{handler} skipped: the Papyrus VM does not run it",
                 registration.owner,
@@ -257,20 +251,7 @@ pub(super) fn enqueue(
             );
             continue;
         }
-        let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
-            Some(vmad) => Some(vmad.clone()),
-            None if super::is_alias_owner(registration.owner) => {
-                super::alias_owner_vmad(world, registration.owner, &registration.script)
-            }
-            None => ReferenceScriptIndex::lookup(world, registration.owner).and_then(|entity| {
-                let attached = world.get::<PapyrusReferenceScripts>(entity)?;
-                attached
-                    .0
-                    .iter()
-                    .find(|script| script.script.eq_ignore_ascii_case(&registration.script))
-                    .map(|script| (*script.vmad).clone())
-            }),
-        };
+        let vmad = owners.vmad(world, registration.owner, &registration.script);
         let mut handler_args = vec![VmStored::Form(sender_form)];
         handler_args.extend_from_slice(args);
         let effect = Effect::Interpret {
@@ -286,33 +267,28 @@ pub(super) fn enqueue(
 }
 
 /// Drop the registrations of quests that stopped (the CK: "Aliases and quests
-/// will automatically unregister for this event when the quest stops").
+/// will automatically unregister for this event when the quest stops"): the
+/// custom / remote event registrations and the hit event registrations of the
+/// quests and of the alias scripts they own.
 pub(super) fn prune_stopped_quests(world: &World) {
-    let owners: Vec<u32> = match world.try_resource::<EventRegistrations>() {
-        Some(registrations) if !registrations.entries.is_empty() => {
-            let mut owners: Vec<u32> = registrations.entries.iter().map(|e| e.owner).collect();
-            owners.sort_unstable();
-            owners.dedup();
-            owners
-        }
-        _ => return,
-    };
-    let quests = world
-        .try_resource::<crate::QuestScriptInstances>()
-        .map(|instances| Arc::clone(&instances.0))
+    let mut registered: Vec<u32> = world
+        .try_resource::<EventRegistrations>()
+        .map(|registrations| registrations.entries.iter().map(|e| e.owner).collect())
         .unwrap_or_default();
-    let fragments = world.resource::<QuestStageFragments>().clone();
+    if let Some(hits) = world.try_resource::<super::HitRegistrations>() {
+        registered.extend(hits.entries().iter().map(|e| e.owner));
+    }
+    if registered.is_empty() {
+        return;
+    }
+    registered.sort_unstable();
+    registered.dedup();
+    let owners = super::owners::ScriptOwners::new(world);
     let stopped: Vec<u32> = {
         let stages = world.resource::<QuestStageState>();
-        owners
+        registered
             .into_iter()
-            .filter(|owner| {
-                let quest = QuestFormId(*owner);
-                let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
-                // An alias script's registrations end with its quest too.
-                is_quest && !stages.is_running(quest)
-                    || super::alias_owner_standing(world, *owner, &stages) == Some(false)
-            })
+            .filter(|owner| owners.standing(world, &stages, *owner) == Some(false))
             .collect()
     };
     if stopped.is_empty() {
@@ -320,6 +296,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
     }
     if let Some(mut registrations) = world.try_resource_mut::<EventRegistrations>() {
         registrations.entries.retain(|e| !stopped.contains(&e.owner));
+    }
+    if let Some(mut hits) = world.try_resource_mut::<super::HitRegistrations>() {
+        hits.drop_owners(&stopped);
     }
 }
 
