@@ -296,7 +296,9 @@ impl Parser {
                 | Token::KwEndEvent
                 | Token::KwEndFunction
                 | Token::KwEndProperty
-                | Token::KwEndState => {
+                | Token::KwEndState
+                | Token::KwEndStruct
+                | Token::KwEndGroup => {
                     self.pos -= 1; // un-consume: the block owns this token
                     return;
                 }

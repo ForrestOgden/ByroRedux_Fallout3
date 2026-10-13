@@ -409,6 +409,34 @@ mod tests {
         );
     }
 
+    /// #5444 — the struct and group member loops also end a line with
+    /// `expect_eol`, so a glued `EndStruct` / `EndGroup` must stay for them too.
+    /// Pre-fix, recovery ate the terminator, the container ran to EOF and the
+    /// valid `Function` after it was lost to a four-error cascade.
+    #[test]
+    fn glued_struct_and_group_terminators_stay_for_their_container() {
+        for (name, source) in [
+            (
+                "struct",
+                "ScriptName Foo\nStruct S\nInt a = 1 EndStruct\nFunction F()\nEndFunction\n",
+            ),
+            (
+                "group",
+                "ScriptName Foo\nGroup G\nInt Property A Auto EndGroup\nFunction F()\nEndFunction\n",
+            ),
+        ] {
+            let (script, errors) = crate::parse_script(source).expect("recovers");
+            assert_eq!(errors.len(), 1, "{name}: only the glue is an error: {errors:?}");
+            assert!(
+                script
+                    .body
+                    .iter()
+                    .any(|item| matches!(&item.node, crate::ast::ScriptItem::Function(f) if f.name.node.0 == "F")),
+                "{name}: the function after the glued terminator survives"
+            );
+        }
+    }
+
     // ── #1712 / SCR-D4-01 — statement recursion-depth guard ──
 
     /// Build `depth` nested `<kw> True … End<kw>` blocks around a single
