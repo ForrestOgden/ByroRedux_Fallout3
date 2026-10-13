@@ -383,6 +383,76 @@ fn sample_decline(
     eprintln!("SAMPLE {file}: {}", &text[..text.len().min(900)]);
 }
 
+/// Every called member name in `body` (lowercased), descending into
+/// branches, loops and nested expressions.
+fn collect_call_names(
+    body: &[byroredux_papyrus::span::Spanned<Stmt>],
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    fn expr(e: &Expr, out: &mut std::collections::BTreeSet<String>) {
+        match e {
+            Expr::Call { callee, args } => {
+                if let Expr::MemberAccess { object, member } = &callee.node {
+                    out.insert(member.node.0.to_ascii_lowercase());
+                    expr(&object.node, out);
+                } else {
+                    expr(&callee.node, out);
+                }
+                for arg in args {
+                    expr(&arg.value.node, out);
+                }
+            }
+            Expr::MemberAccess { object, .. } => expr(&object.node, out),
+            Expr::Cast { expr: inner, .. } => expr(&inner.node, out),
+            Expr::BinaryOp { left, right, .. } => {
+                expr(&left.node, out);
+                expr(&right.node, out);
+            }
+            Expr::UnaryOp { operand, .. } => expr(&operand.node, out),
+            Expr::Index { object, index } => {
+                expr(&object.node, out);
+                expr(&index.node, out);
+            }
+            _ => {}
+        }
+    }
+    for stmt in body {
+        match &stmt.node {
+            Stmt::ExprStmt(e) | Stmt::Return(Some(e)) => expr(&e.node, out),
+            Stmt::Assign { target, value, .. } => {
+                expr(&target.node, out);
+                expr(&value.node, out);
+            }
+            Stmt::VarDecl(variable) => {
+                if let Some(init) = &variable.initial_value {
+                    expr(&init.node, out);
+                }
+            }
+            Stmt::If {
+                condition,
+                body,
+                elseif_clauses,
+                else_body,
+            } => {
+                expr(&condition.node, out);
+                collect_call_names(body, out);
+                for clause in elseif_clauses {
+                    expr(&clause.0.node, out);
+                    collect_call_names(&clause.1, out);
+                }
+                if let Some(else_body) = else_body {
+                    collect_call_names(else_body, out);
+                }
+            }
+            Stmt::While { condition, body } => {
+                expr(&condition.node, out);
+                collect_call_names(body, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -404,6 +474,11 @@ fn main() {
     // `EVENT_COVERAGE=1`: how many quest scripts' timer events
     // (`OnUpdate`, `OnTimer`, …) lower on the quest path, by event.
     let event_coverage = std::env::var("EVENT_COVERAGE").is_ok();
+    // `CALL_CENSUS=1`: across declined fragments, how many call each name
+    // (anywhere in the body, branches included) — what a native or a
+    // recognizer for that name could reach.
+    let call_census = std::env::var("CALL_CENSUS").is_ok();
+    let mut call_hist: BTreeMap<String, usize> = BTreeMap::new();
     let mut event_hist: BTreeMap<String, (usize, usize)> = BTreeMap::new();
 
     let archives: Vec<Archive> = args
@@ -519,6 +594,13 @@ fn main() {
                             &shape,
                         );
                         *decline_hist.entry(shape).or_default() += 1;
+                        if call_census {
+                            let mut names = std::collections::BTreeSet::new();
+                            collect_call_names(&func.body, &mut names);
+                            for name in names {
+                                *call_hist.entry(name).or_default() += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -532,6 +614,14 @@ fn main() {
             100.0 * n as f64 / d as f64
         }
     };
+    if call_census {
+        let mut calls: Vec<_> = call_hist.iter().collect();
+        calls.sort_by(|a, b| b.1.cmp(a.1));
+        println!("calls in declined fragments (top 60):");
+        for (name, count) in calls.into_iter().take(60) {
+            println!("  {name:32} {count}");
+        }
+    }
     for (event, (total, lowered)) in &event_hist {
         println!("event {event}: {lowered}/{total} lower on the quest path");
     }

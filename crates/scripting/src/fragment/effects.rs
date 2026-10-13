@@ -108,6 +108,14 @@ fn resolve_object(
     via: &ObjectRef,
     bindings: &crate::scene::SceneActorBindings,
 ) -> Option<byroredux_core::ecs::storage::EntityId> {
+    if let ObjectRef::Linked { .. } = via {
+        let target = linked_target(vmad, world, context, via, bindings)?;
+        let entity = crate::condition::resolve_entity_by_global_form_id(world, target);
+        if entity.is_none() {
+            log::debug!("fragment effect skipped: linked ref {target:08X} has no live entity");
+        }
+        return entity;
+    }
     let name = via.property_name();
     let Some(value) = vmad?
         .scripts
@@ -143,6 +151,37 @@ fn resolve_object(
 /// already worked, and the alias arm is strictly additive. Returns `None`
 /// when neither resolves (for a lock change the live component change still
 /// stands and only its persistence is lost).
+/// M47.2 — the FormID an [`ObjectRef::Linked`] names: the source
+/// reference's `XLKR` link under the keyword (or the unkeyworded one), read
+/// from the live source's [`crate::scene::SceneAliasCandidate`]. The target
+/// itself need not be loaded.
+fn linked_target(
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    context: QuestFormId,
+    via: &ObjectRef,
+    bindings: &crate::scene::SceneActorBindings,
+) -> Option<u32> {
+    let ObjectRef::Linked { from, keyword } = via else {
+        return None;
+    };
+    let keyword = match keyword {
+        Some(keyword) => resolve_property_form_id(vmad, keyword.property_name())?,
+        None => 0,
+    };
+    let source = resolve_object(vmad, world, context, from, bindings)?;
+    let target = world
+        .get::<crate::scene::SceneAliasCandidate>(source)?
+        .linked_refs
+        .iter()
+        .find(|(link, _)| *link == keyword || (keyword == 0 && *link == 0xFFFF_FFFF))
+        .map(|(_, target)| *target);
+    if target.is_none() {
+        log::debug!("fragment effect skipped: no linked ref under keyword {keyword:08X}");
+    }
+    target
+}
+
 fn object_form_id(
     vmad: Option<&ScriptInstanceData>,
     world: &World,
@@ -150,6 +189,9 @@ fn object_form_id(
     target: &ObjectRef,
     deferred: &DeferredFragmentEffects,
 ) -> Option<u32> {
+    if let ObjectRef::Linked { .. } = target {
+        return linked_target(vmad, world, context, target, &deferred.scene_actor_bindings);
+    }
     resolve_property_form_id(vmad, target.property_name()).or_else(|| {
         let entity = resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
         entity_global_form_id(world, entity)
@@ -1868,12 +1910,9 @@ fn apply_placement_effect(
             // world-free path unchanged for the case that already worked and
             // makes the alias arm strictly additive. `ReferenceEnableState`
             // is FormID-keyed (so the state outlives the reference's cell),
-            // hence the trip back through `entity_global_form_id`.
-            let form_id = resolve_property_form_id(vmad, object.property_name()).or_else(|| {
-                let entity =
-                    resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)?;
-                entity_global_form_id(world, entity)
-            })?;
+            // hence the trip back through `entity_global_form_id` —
+            // [`object_form_id`], which also reads an unloaded linked ref.
+            let form_id = object_form_id(vmad, world, context, object, deferred)?;
             // #3489 — the symmetric counterpart to Disable, sharing this arm
             // (same receiver resolution, same sink) rather than duplicating
             // it: `Effect::Enable` is the only other variant reaching here,

@@ -74,12 +74,23 @@ pub enum ObjectRef {
     /// A property (`ObjectReference`/`Actor`/`Form`-typed) bound via
     /// VMAD by name.
     Property(String),
+    /// M47.2 — `<from>.GetLinkedRef([keyword])`: the reference `from` is
+    /// linked to (its `XLKR`) under `keyword`, or under no keyword — the CK
+    /// *GetLinkedRef*'s "unkeyworded link" — when `None`.
+    Linked {
+        from: Box<ObjectRef>,
+        keyword: Option<Box<ObjectRef>>,
+    },
 }
 
 impl ObjectRef {
+    /// The VMAD property this names; empty for a linked reference, which
+    /// names none (so a form lookup through it finds nothing).
     pub fn property_name(&self) -> &str {
-        let ObjectRef::Property(name) = self;
-        vmad_property_name(name)
+        match self {
+            ObjectRef::Property(name) => vmad_property_name(name),
+            ObjectRef::Linked { .. } => "",
+        }
     }
 }
 

@@ -1804,6 +1804,12 @@ fn inline_quest_script_call(
                         .object_locals
                         .insert(key, ObjectRef::Property(name));
                 }
+                // A linked reference resolves through its source's own
+                // binding, which a quest scope cannot carry.
+                ActorRef::Object(linked @ ObjectRef::Linked { .. }) if scope.vmad_is_quest => {
+                    callee_scope.object_locals.insert(key, linked);
+                }
+                ActorRef::Object(ObjectRef::Linked { .. }) => return None,
                 ActorRef::Object(ObjectRef::Property(name)) => {
                     let parameter = format!("inline.{script_type}.{function_name}.{key}");
                     bindings.push((
@@ -4418,6 +4424,9 @@ fn object_expr_ref(value: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = value {
         return object_expr_ref(&expr.node, scope);
     }
+    if let Some(linked) = linked_reference(value, scope) {
+        return Some(linked);
+    }
     if let Expr::Ident(name) = value {
         return scope
             .object_locals
@@ -4478,9 +4487,28 @@ fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
 /// [`ObjectRef`]'s doc). A bare property is accepted, and a local is accepted
 /// only when [`bind_local`] proved it came from a VMAD alias getter; unrelated
 /// or plain locals still decline.
+/// M47.2 — `<reference>.GetLinkedRef([apKeyword])`.
+fn linked_reference(e: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    let (from, args) = method_call(e, "GetLinkedRef")?;
+    if args.len() > 1 {
+        return None;
+    }
+    let keyword = match args.first().map(|arg| &arg.value.node) {
+        None | Some(Expr::NoneLit) => None,
+        Some(keyword) => Some(Box::new(receiver_object(keyword, scope)?)),
+    };
+    Some(ObjectRef::Linked {
+        from: Box::new(receiver_object(from, scope)?),
+        keyword,
+    })
+}
+
 fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = object {
         return receiver_object(&expr.node, scope);
+    }
+    if let Some(linked) = linked_reference(object, scope) {
+        return Some(linked);
     }
     // M47.2 — `kmyQuest.Prop`, an object property of the fragment quest's
     // own script; the quest's VMAD binds it like a fragment property. A
@@ -8238,6 +8266,39 @@ mod tests {
                 }],
                 else_effects: vec![],
             }])
+        );
+    }
+
+    /// M47.2 — `GetLinkedRef([keyword])` as a receiver and as a local's
+    /// initializer.
+    #[test]
+    fn linked_refs_lower_as_linked_object_refs() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\nReferenceAlias Property Alias_Gate Auto\n\
+             Keyword Property LinkGate Auto\nFunction Fragment_5()\n\
+             Alias_Gate.GetReference().GetLinkedRef(LinkGate).Disable()\n\
+             ObjectReference lever = Alias_Gate.GetRef().GetLinkedRef()\n\
+             lever.Enable()\n EndFunction\n",
+        );
+        let gate = || Box::new(ObjectRef::Property("Alias_Gate".into()));
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::Disable {
+                    object: ObjectRef::Linked {
+                        from: gate(),
+                        keyword: Some(Box::new(ObjectRef::Property("LinkGate".into()))),
+                    },
+                    fade_out: false,
+                },
+                Effect::Enable {
+                    object: ObjectRef::Linked {
+                        from: gate(),
+                        keyword: None,
+                    },
+                    fade_in: false,
+                },
+            ])
         );
     }
 

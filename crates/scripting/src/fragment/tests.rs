@@ -5785,3 +5785,45 @@ fn quest_scope_bindings_carry_the_fragments_properties() {
     );
     assert!(super::reference_enabled(&world, HOUSE_MARKER));
 }
+
+/// M47.2 — a linked ref resolves through its loaded source's `XLKR` links,
+/// under the keyword or the unkeyworded link, and a FormID-keyed effect
+/// reaches a target that is not loaded.
+#[test]
+fn linked_refs_resolve_through_the_sources_links() {
+    const SOURCE: u32 = 0x0001_0A00;
+    const LINK_GATE: u32 = 0x0009_0001;
+    const GATE: u32 = 0x0001_0A01;
+    const LEVER: u32 = 0x0001_0A02;
+    let mut world = fixture();
+    let source = spawn_with_form_id(&mut world, SOURCE);
+    world.register::<crate::scene::SceneAliasCandidate>();
+    world.insert(
+        source,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: SOURCE,
+            linked_refs: vec![(LINK_GATE, GATE), (0, LEVER)],
+            ..Default::default()
+        },
+    );
+    let linked = |keyword: Option<&str>| ObjectRef::Linked {
+        from: Box::new(ObjectRef::Property("Source".into())),
+        keyword: keyword.map(|k| Box::new(ObjectRef::Property(k.into()))),
+    };
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Source", SOURCE), ("LinkGate", LINK_GATE)]),
+        vec![
+            Effect::Disable {
+                object: linked(Some("LinkGate")),
+                fade_out: false,
+            },
+            Effect::Disable {
+                object: linked(None),
+                fade_out: false,
+            },
+        ],
+    );
+    assert!(!super::reference_enabled(&world, GATE), "keyworded link");
+    assert!(!super::reference_enabled(&world, LEVER), "unkeyworded link");
+}
