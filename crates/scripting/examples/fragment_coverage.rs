@@ -401,6 +401,10 @@ fn main() {
     let mut claimed_effects = 0usize;
     // #3498 — the tally the module doc always claimed to produce.
     let mut decline_hist: BTreeMap<String, usize> = BTreeMap::new();
+    // `EVENT_COVERAGE=1`: how many quest scripts' timer events
+    // (`OnUpdate`, `OnTimer`, …) lower on the quest path, by event.
+    let event_coverage = std::env::var("EVENT_COVERAGE").is_ok();
+    let mut event_hist: BTreeMap<String, (usize, usize)> = BTreeMap::new();
 
     let archives: Vec<Archive> = args
         .iter()
@@ -448,6 +452,32 @@ fn main() {
                 quest: is_quest_fragment_script,
                 scene: script_name.contains("sf_"),
             };
+            let extends_quest = script
+                .parent
+                .as_ref()
+                .is_some_and(|parent| parent.node.0.eq_ignore_ascii_case("quest"));
+            if event_coverage && extends_quest {
+                for item in &script.body {
+                    let ScriptItem::Event(event) = &item.node else {
+                        continue;
+                    };
+                    let name = event.name.node.0.to_ascii_lowercase();
+                    if !name.contains("update") && !name.contains("timer") {
+                        continue;
+                    }
+                    let lowered = lower_quest_fragment(
+                        &event.body,
+                        &quest_properties,
+                        &HashSet::new(),
+                        None,
+                        Some(&library),
+                    )
+                    .is_some();
+                    let row = event_hist.entry(name).or_default();
+                    row.0 += 1;
+                    row.1 += usize::from(lowered);
+                }
+            }
             for item in &script.body {
                 let ScriptItem::Function(func) = &item.node else {
                     continue;
@@ -502,6 +532,9 @@ fn main() {
             100.0 * n as f64 / d as f64
         }
     };
+    for (event, (total, lowered)) in &event_hist {
+        println!("event {event}: {lowered}/{total} lower on the quest path");
+    }
     println!("\n######## b2 fragment-lowerer coverage ########");
     println!("empty fragments (trivial no-op): {empty}");
     println!("behavioral fragments: {behavioral}");

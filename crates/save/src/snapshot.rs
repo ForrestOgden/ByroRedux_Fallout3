@@ -379,7 +379,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v56 -> v57 (M47.2): `ActorControlState` gained the required `ghost`
 /// flag (`Actor.SetGhost`); a pre-v57 save has none.
-pub const FORMAT_MAJOR: u16 = 57;
+///
+/// v57 -> v58 (M47.2): `Effect::QuestScope` gained the required `bindings`
+/// (an inlined function's arguments), changing saved fragment continuations.
+pub const FORMAT_MAJOR: u16 = 58;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

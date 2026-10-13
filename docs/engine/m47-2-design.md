@@ -400,7 +400,7 @@ open:
   global and actor-value writes in every spelling, perks, alias
   `ForceRefTo` / `Clear`, and `BlockActivation`.
 
-Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 65.4% on
+Fragment lowering went 51.5% → 57.2% on 2026-10-12, then to 65.5% on
 2026-10-13. The 2026-10-13 work added map markers, script story events,
 cleared locations, `Kill`, `SetEssential` / `SetProtected`, the
 enable-state / faction / 3D-loaded / distance guards, and quests reached
@@ -427,6 +427,13 @@ that does not exist yet:
   - run-time numbers (`ValueExpr`, `Compare`, `SetLocal`);
   - reference script variables;
   - relationships, `Kill`, caps and XP rewards.
+
+  Calls into a quest script's function may now pass arguments: a number
+  becomes a run-time local, the player or speaker binds directly, and a
+  fragment property rides `QuestScope.bindings` into the quest's VMAD. The
+  callees that still decline mostly need value-returning script functions
+  (`MoveSpouse` assigns `TranslateHouseAliasToInt(NewHouse)`), a Papyrus
+  interpreter's job.
 
   What leads now needs subsystems, not lowering:
   - script functions taking arguments over arrays and structs (`MoveSpouse`

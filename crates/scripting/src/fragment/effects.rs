@@ -3324,6 +3324,7 @@ pub fn apply_effects(
             if let Effect::QuestScope {
                 quest,
                 effects: scoped,
+                bindings,
             } = effect
             {
                 let Some(quest) = resolve_quest_logged(quest, context, vmad) else {
@@ -3333,6 +3334,38 @@ pub fn apply_effects(
                 let Some(quest_vmad) = scripts.get(&quest) else {
                     log::debug!("fragment QuestScope skipped: quest {:08X} has no VMAD", quest.0);
                     continue;
+                };
+                // M47.2 — the inlined function's object arguments that name
+                // this fragment's properties: the quest's VMAD plus one
+                // script carrying each as the parameter's property, valued
+                // as the fragment's.
+                let bound;
+                let quest_vmad = if bindings.is_empty() {
+                    quest_vmad
+                } else {
+                    let mut merged = quest_vmad.clone();
+                    merged.scripts.push(byroredux_plugin::esm::records::script_instance::ScriptInstance {
+                        name: "<inline arguments>".into(),
+                        status: 0,
+                        properties: bindings
+                            .iter()
+                            .filter_map(|(parameter, argument)| {
+                                let value = vmad?
+                                    .scripts
+                                    .iter()
+                                    .find_map(|script| script.property(argument))?
+                                    .value
+                                    .clone();
+                                Some(byroredux_plugin::esm::records::script_instance::ScriptProperty {
+                                    name: parameter.clone(),
+                                    status: 1,
+                                    value,
+                                })
+                            })
+                            .collect(),
+                    });
+                    bound = merged;
+                    &bound
                 };
                 advances.extend(apply_effects(
                     scoped,

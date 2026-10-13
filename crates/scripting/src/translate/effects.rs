@@ -1154,7 +1154,16 @@ pub enum Effect {
     /// (`kmyQuest.UpdateRadio()`) into an INFO or scene fragment: they run
     /// with `quest` as their context and its VMAD for their properties.
     /// Never holds a latent effect.
-    QuestScope { quest: QuestRef, effects: Vec<Effect> },
+    ///
+    /// `bindings` pass the inlined function's object arguments that name the
+    /// *fragment's* properties: `(parameter property, fragment property)`.
+    /// At run time each becomes a property of the quest's VMAD, valued as the
+    /// fragment's (`MoveSpouse(akSpeaker, SolitudeHouse)` from an INFO).
+    QuestScope {
+        quest: QuestRef,
+        effects: Vec<Effect>,
+        bindings: Vec<(String, String)>,
+    },
     /// M47.2 — `Game.RewardPlayerXP(auiXPAmount, abDirect = false)` (FO4 /
     /// Starfield): experience through the engine's level roll; `direct`
     /// bypasses the XP modifiers.
@@ -1687,9 +1696,6 @@ fn inline_quest_script_call(
     let Expr::Call { callee, args } = e else {
         return None;
     };
-    if !args.is_empty() {
-        return None;
-    }
     let Expr::MemberAccess { object, member } = &callee.node else {
         return None;
     };
@@ -1728,7 +1734,7 @@ fn inline_quest_script_call(
         }
         _ => None,
     })?;
-    if !function.params.is_empty()
+    if args.len() > function.params.len()
         || function
             .flags
             .intersects(byroredux_papyrus::ast::FunctionFlags::NATIVE | byroredux_papyrus::ast::FunctionFlags::GLOBAL)
@@ -1762,10 +1768,60 @@ fn inline_quest_script_call(
     // Inside the callee, `Self` is the quest; bind it so `Self.Foo()` (a
     // call to another of its own functions) inlines through the same path.
     callee_scope.quest_locals.insert("self".into(), QuestRef::SelfRef);
-    callee_scope.local_types.insert("self".into(), script_type);
+    callee_scope.local_types.insert("self".into(), script_type.clone());
+    // M47.2 — bind the arguments. A number becomes a run-time local set in
+    // the caller's context; a reference binds the parameter to the same
+    // thing — the player, the speaker, or a property (through the quest
+    // scope's bindings when the property is the fragment's own). Anything
+    // else declines.
+    let mut prologue = Vec::new();
+    let mut bindings = Vec::new();
+    for (index, param) in function.params.iter().enumerate() {
+        let arg = match args.get(index) {
+            Some(arg) => &arg.value.node,
+            None => &param.default.as_ref()?.node,
+        };
+        let key = param.name.node.0.to_ascii_lowercase();
+        match &param.ty.node {
+            byroredux_papyrus::ast::Type::Int
+            | byroredux_papyrus::ast::Type::Float
+            | byroredux_papyrus::ast::Type::Bool => {
+                prologue.push(Effect::SetLocal {
+                    local: format!("{script_type}.{function_name}.{key}"),
+                    value: classify_value(arg, scope)?,
+                });
+                callee_scope.runtime_locals.insert(key);
+            }
+            byroredux_papyrus::ast::Type::Object(_) => match receiver_actor(arg, scope)? {
+                ActorRef::Player => {
+                    callee_scope.player_locals.insert(key);
+                }
+                ActorRef::Speaker => {
+                    callee_scope.speaker_locals.insert(key);
+                }
+                ActorRef::Object(ObjectRef::Property(name)) if scope.vmad_is_quest => {
+                    callee_scope
+                        .object_locals
+                        .insert(key, ObjectRef::Property(name));
+                }
+                ActorRef::Object(ObjectRef::Property(name)) => {
+                    let parameter = format!("inline.{script_type}.{function_name}.{key}");
+                    bindings.push((
+                        parameter.clone(),
+                        crate::translate::compose::vmad_property_name(&name).to_owned(),
+                    ));
+                    callee_scope
+                        .object_locals
+                        .insert(key, ObjectRef::Property(parameter));
+                }
+            },
+            _ => return None,
+        }
+    }
     let effects = lower_statements(&function.body, &mut callee_scope, providers, 0)?;
     if scope.vmad_is_quest {
-        return Some(effects);
+        prologue.extend(effects);
+        return Some(prologue);
     }
     // M47.2 — from an INFO or scene fragment the callee's properties live on
     // the quest's VMAD, not the fragment's: scope them. The scope runs in one
@@ -1773,7 +1829,12 @@ fn inline_quest_script_call(
     if effects.iter().any(has_latent_tail) {
         return None;
     }
-    Some(vec![Effect::QuestScope { quest, effects }])
+    prologue.push(Effect::QuestScope {
+        quest,
+        effects,
+        bindings,
+    });
+    Some(prologue)
 }
 
 /// M47.2 — an INFO or scene statement that reads the quest script's own
@@ -1795,6 +1856,7 @@ fn quest_vmad_statement(
     Some(Effect::QuestScope {
         quest: QuestRef::OwningQuest,
         effects: vec![effect],
+        bindings: Vec::new(),
     })
 }
 
@@ -1987,9 +2049,14 @@ fn prune_unread_locals(effects: Vec<Effect>) -> Vec<Effect> {
                     then_effects: prune(then_effects, read),
                     else_effects: prune(else_effects, read),
                 },
-                Effect::QuestScope { quest, effects } => Effect::QuestScope {
+                Effect::QuestScope {
+                    quest,
+                    effects,
+                    bindings,
+                } => Effect::QuestScope {
                     quest,
                     effects: prune(effects, read),
+                    bindings,
                 },
                 other => other,
             })
@@ -2101,6 +2168,7 @@ fn lower_statements(
                         Some(Effect::QuestScope {
                             quest: QuestRef::OwningQuest,
                             effects: vec![write],
+                            bindings: Vec::new(),
                         })
                     })?;
                 effects.push(write);
@@ -6039,6 +6107,79 @@ mod tests {
         );
     }
 
+    /// M47.2 — arguments to an inlined quest-script function: the speaker
+    /// binds the parameter to the speaker, a fragment property rides the
+    /// quest scope's bindings, and a number becomes a run-time local set in
+    /// the caller's context.
+    #[test]
+    fn inlined_quest_script_calls_bind_their_arguments() {
+        let library = PscLibrary::new(&[
+            "ScriptName SpouseScript extends Quest\n\
+             Function MoveSpouse(Actor Spouse, ReferenceAlias NewHouse, Int Stage)\n\
+             Spouse.EvaluatePackage()\n NewHouse.TryToEvaluatePackage()\n\
+             If Stage > 10\n Self.SetStage(30)\n EndIf\n EndFunction\n",
+        ]);
+        let source = "ScriptName TIF_Test extends TopicInfo\n\
+             ReferenceAlias Property SolitudeHouse Auto\n\
+             Function Fragment_0(ObjectReference akSpeakerRef)\n\
+             Actor akSpeaker = akSpeakerRef as Actor\n\
+             (Self.GetOwningQuest() as SpouseScript).MoveSpouse(akSpeaker, SolitudeHouse, 20)\n EndFunction\n";
+        let (script, errs) = parse_script(source).expect("parses");
+        assert!(errs.is_empty(), "{errs:?}");
+        let function = script
+            .body
+            .iter()
+            .find_map(|item| match &item.node {
+                ScriptItem::Function(f) => Some(f.clone()),
+                _ => None,
+            })
+            .expect("a function");
+        let lowered = lower_info_fragment(
+            &function.params,
+            &function.body,
+            &HashSet::new(),
+            &HashSet::new(),
+            None,
+            Some(&library),
+        )
+        .expect("lowers");
+        let [Effect::SetLocal { local, value }, Effect::QuestScope {
+            quest,
+            effects,
+            bindings,
+        }] = lowered.as_slice()
+        else {
+            panic!("{lowered:?}");
+        };
+        assert_eq!(local, "spousescript.movespouse.stage");
+        assert_eq!(value, &ValueExpr::Literal(20.0));
+        assert_eq!(quest, &QuestRef::OwningQuest);
+        assert_eq!(
+            bindings,
+            &vec![(
+                "inline.spousescript.movespouse.newhouse".to_owned(),
+                "SolitudeHouse".to_owned()
+            )]
+        );
+        let [Effect::EvaluatePackage {
+            actor: ActorRef::Speaker,
+        }, Effect::EvaluatePackage {
+            actor: ActorRef::Object(house),
+        }, Effect::Conditional { guards, .. }] = effects.as_slice()
+        else {
+            panic!("{effects:?}");
+        };
+        assert_eq!(
+            house,
+            &ObjectRef::Property("inline.spousescript.movespouse.newhouse".into())
+        );
+        assert!(matches!(
+            guards.as_slice(),
+            [FragmentGuard::Compare { left: ValueExpr::Local(local), .. }]
+                if local == "spousescript.movespouse.stage"
+        ), "{guards:?}");
+    }
+
     /// M47.2 — an INFO fragment's call into its quest's script inlines as a
     /// `QuestScope` (the callee's properties live on the quest's VMAD), and so
     /// does a statement reading a quest-script property (`kmyQuest.CW`); a
@@ -6084,6 +6225,7 @@ mod tests {
         assert_eq!(
             lowered("kmyQuest.UpdateRadio()"),
             Some(vec![Effect::QuestScope {
+                bindings: Vec::new(),
                 quest: QuestRef::OwningQuest,
                 effects: vec![
                     Effect::Enable {
@@ -6103,6 +6245,7 @@ mod tests {
         assert_eq!(
             lowered("kmyQuest.RadioMarker.Disable()"),
             Some(vec![Effect::QuestScope {
+                bindings: Vec::new(),
                 quest: QuestRef::OwningQuest,
                 effects: vec![Effect::Disable {
                     object: ObjectRef::Property("RadioMarker".into()),
@@ -6119,6 +6262,7 @@ mod tests {
         assert_eq!(
             lowered("kmyQuest.Rotate()"),
             Some(vec![Effect::QuestScope {
+                bindings: Vec::new(),
                 quest: QuestRef::OwningQuest,
                 effects: vec![
                     Effect::ModQuestVariable {
@@ -6144,6 +6288,7 @@ mod tests {
         assert_eq!(
             lowered("kmyQuest.CW.SetStage(2)"),
             Some(vec![Effect::QuestScope {
+                bindings: Vec::new(),
                 quest: QuestRef::OwningQuest,
                 effects: vec![Effect::SetStage {
                     quest: QuestRef::Property("CW".into()),

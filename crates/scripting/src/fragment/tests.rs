@@ -5115,6 +5115,7 @@ fn a_quest_scope_runs_against_its_quests_vmad() {
             // The INFO's own VMAD does not carry the property.
             object_property_vmad(&[]),
             vec![Effect::QuestScope {
+                bindings: Vec::new(),
                 quest: QuestRef::OwningQuest,
                 effects: vec![Effect::Enable {
                     object: ObjectRef::Property("RadioMarker".into()),
@@ -5749,4 +5750,38 @@ fn set_ally_writes_directed_ally_and_friend_reactions() {
     let relations = world.resource::<crate::FactionRelations>();
     assert_eq!(relations.reaction(vampires, serana), Some(CombatReaction::Ally));
     assert_eq!(relations.reaction(serana, vampires), Some(CombatReaction::Friend));
+}
+
+/// M47.2 — a quest scope's bindings carry the fragment's property into the
+/// quest's VMAD under the parameter's name: `MoveSpouse(…, SolitudeHouse)`
+/// from an INFO enables the INFO's marker through the quest-scoped body.
+#[test]
+fn quest_scope_bindings_carry_the_fragments_properties() {
+    use crate::translate::compose::QuestRef;
+    const HOUSE_MARKER: u32 = 0x000E_F21E;
+    let world = fixture();
+    let mut instances = HashMap::new();
+    // The quest's own VMAD knows nothing of the house.
+    instances.insert(Q, object_property_vmad(&[]));
+    let mut world = world;
+    world.insert_resource(super::QuestScriptInstances(std::sync::Arc::new(instances)));
+    world
+        .resource_mut::<crate::fragment::ReferenceEnableState>()
+        .set_enabled(HOUSE_MARKER, false);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("SolitudeHouse", HOUSE_MARKER)]),
+        vec![Effect::QuestScope {
+            quest: QuestRef::OwningQuest,
+            effects: vec![Effect::Enable {
+                object: ObjectRef::Property("inline.spousescript.movespouse.newhouse".into()),
+                fade_in: false,
+            }],
+            bindings: vec![(
+                "inline.spousescript.movespouse.newhouse".into(),
+                "SolitudeHouse".into(),
+            )],
+        }],
+    );
+    assert!(super::reference_enabled(&world, HOUSE_MARKER));
 }
