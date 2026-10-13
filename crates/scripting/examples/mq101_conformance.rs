@@ -140,6 +140,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SetGlobalRelative { .. } => "SetGlobalRelative",
         Effect::ChangePerk { .. } => "ChangePerk",
         Effect::ForceAlias { .. } => "ForceAlias",
+        Effect::ModQuestVariable { .. } => "ModQuestVariable",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

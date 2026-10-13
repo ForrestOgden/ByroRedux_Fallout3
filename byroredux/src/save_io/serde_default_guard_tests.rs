@@ -853,7 +853,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // still reads.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v46 -> v47): the new
     // `AliasOverrides` resource column and `Effect::ForceAlias`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe5af_a15e_7c97_42c5;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::ModQuestVariable` variant (name-tagged; no older save carries
+    // it, every older one still reads).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb826_ae6d_44be_38e0;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

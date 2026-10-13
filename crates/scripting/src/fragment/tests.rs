@@ -4796,6 +4796,33 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("AnyFails"), Some(-1.0));
 }
 
+/// M47.2 — a quest-variable increment builds on the variable's value,
+/// including a write earlier in the same fragment.
+#[test]
+fn quest_variable_increments_build_on_the_current_value() {
+    use crate::QuestScriptVariables;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![
+            Effect::ModQuestVariable {
+                quest: QuestRef::SelfRef,
+                variable: "Count".into(),
+                delta: 1.0,
+            },
+            Effect::ModQuestVariable {
+                quest: QuestRef::SelfRef,
+                variable: "Count".into(),
+                delta: 2.0,
+            },
+        ],
+    );
+    let vars = world.resource::<QuestScriptVariables>();
+    assert_eq!(vars.get(Q, QuestScriptVariables::property_key("Count")), Some(3.0));
+}
+
 /// M47.2 — `ForceRefTo` records the target's reference FormID against the
 /// alias the property names (quest + alias index), and `Clear` records the
 /// clear.

@@ -792,6 +792,13 @@ pub enum Effect {
     /// auto property, recorded in [`crate::QuestScriptVariables`] under the
     /// backing `::Property_var` name `GetVMQuestVariable` conditions read.
     /// The value is a numeric / Bool literal (Bool as 0 / 1).
+    /// M47.2 — `<quest>.<Property> = <quest>.<Property> ± delta`: a relative
+    /// quest-script variable write (counters).
+    ModQuestVariable {
+        quest: QuestRef,
+        variable: String,
+        delta: f32,
+    },
     SetQuestVariable {
         quest: QuestRef,
         variable: String,
@@ -1387,22 +1394,75 @@ fn lower_quest_variable_write(
     let Expr::MemberAccess { object, member } = target else {
         return None;
     };
-    if matches!(&object.node, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
-        return None;
+    // M47.2 — `<global>.Value = …`, the GlobalVariable property's write.
+    if member.node.0.eq_ignore_ascii_case("value") {
+        if let Some(global) = global_property(&object.node, scope) {
+            return Some(match as_num(value) {
+                Some(value) => Effect::SetGlobalValue { global, value },
+                None => {
+                    let (source, offset) = relative_global_value(value, scope)?;
+                    Effect::SetGlobalRelative {
+                        global,
+                        source,
+                        offset,
+                    }
+                }
+            });
+        }
     }
-    let quest = match &object.node {
-        Expr::Ident(_) => explicit_quest_receiver(&object.node, scope)?,
-        Expr::Cast { .. } => match quest_expr_ref(&object.node, scope)? {
-            quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => quest,
-            QuestRef::Property(_) => return None,
-        },
+    let quest = quest_variable_receiver(&object.node, scope)?;
+    if let Some(value) = as_num(value) {
+        return Some(Effect::SetQuestVariable {
+            quest,
+            variable: member.node.0.clone(),
+            value,
+        });
+    }
+    // `X = X + c` / `X = c + X` / `X = X - c` on the same variable.
+    let mut node = value;
+    while let Expr::Cast { expr, .. } = node {
+        node = &expr.node;
+    }
+    let Expr::BinaryOp { op, left, right } = node else {
+        return None;
+    };
+    let same = |e: &Expr| {
+        let mut e = e;
+        while let Expr::Cast { expr, .. } = e {
+            e = &expr.node;
+        }
+        matches!(e, Expr::MemberAccess { object: o, member: m }
+            if m.node.0.eq_ignore_ascii_case(&member.node.0)
+                && quest_variable_receiver(&o.node, scope).as_ref() == Some(&quest))
+    };
+    let delta = match op {
+        BinaryOp::Add if same(&left.node) => as_num(&right.node)?,
+        BinaryOp::Add if same(&right.node) => as_num(&left.node)?,
+        BinaryOp::Sub if same(&left.node) => -as_num(&right.node)?,
         _ => return None,
     };
-    Some(Effect::SetQuestVariable {
+    Some(Effect::ModQuestVariable {
         quest,
         variable: member.node.0.clone(),
-        value: as_num(value)?,
+        delta,
     })
+}
+
+/// The quest whose script variable `<object>.<name>` names: the fragment's
+/// own quest (`kmyQuest`, `(GetOwningQuest() as X)`) or a known quest
+/// property; `Self` (a fragment-script variable) declines.
+fn quest_variable_receiver(object: &Expr, scope: &Scope) -> Option<QuestRef> {
+    if matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
+        return None;
+    }
+    match object {
+        Expr::Ident(_) => explicit_quest_receiver(object, scope),
+        Expr::Cast { .. } => match quest_expr_ref(object, scope)? {
+            quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => Some(quest),
+            QuestRef::Property(_) => None,
+        },
+        _ => None,
+    }
 }
 
 /// Record a local's binding, or decline the whole fragment.
@@ -1959,6 +2019,25 @@ fn item_count_arg(
     global_value_read(&arg.value.node, scope).map(ItemCount::Global)
 }
 
+/// A GlobalVariable named directly (`Global`) or through a property of the
+/// fragment's own quest script (`kmyQuest.Global`) — for a quest fragment
+/// the quest's `VMAD` carries that script's properties too, so both resolve
+/// the same way at runtime.
+fn global_property(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    match object {
+        Expr::Ident(_) => global_receiver(object, scope),
+        Expr::MemberAccess { object, member } => {
+            match explicit_quest_receiver(&object.node, scope)? {
+                QuestRef::SelfRef | QuestRef::OwningQuest => {
+                    Some(ObjectRef::Property(member.node.0.clone()))
+                }
+                QuestRef::Property(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The global a value expression reads: `<global>.GetValue()`,
 /// `<global>.GetValueInt()` or `<global>.Value`, under any casts.
 fn global_value_read(expr: &Expr, scope: &Scope) -> Option<ObjectRef> {
@@ -1970,13 +2049,13 @@ fn global_value_read(expr: &Expr, scope: &Scope) -> Option<ObjectRef> {
         if let Some((object, args)) = method_call(node, name) {
             return args
                 .is_empty()
-                .then(|| global_receiver(object, scope))
+                .then(|| global_property(object, scope))
                 .flatten();
         }
     }
     match node {
         Expr::MemberAccess { object, member } if member.node.0.eq_ignore_ascii_case("value") => {
-            global_receiver(&object.node, scope)
+            global_property(&object.node, scope)
         }
         _ => None,
     }
@@ -3574,6 +3653,71 @@ mod tests {
         }
     }
 
+    /// M47.2 — writes to a global's `.Value` (directly or through the quest
+    /// script's property) and quest-variable increments.
+    #[test]
+    fn global_value_assignments_and_counters_lower() {
+        let property = |name: &str| ObjectRef::Property(name.into());
+        for (statement, expected) in [
+            (
+                "RadioReady.Value = 1.0",
+                Effect::SetGlobalValue {
+                    global: property("RadioReady"),
+                    value: 1.0,
+                },
+            ),
+            (
+                "kmyQuest.pRDSGlobal.Value = 1 as Float",
+                Effect::SetGlobalValue {
+                    global: property("pRDSGlobal"),
+                    value: 1.0,
+                },
+            ),
+            (
+                "Counter.Value = Counter.Value + 1.0",
+                Effect::SetGlobalRelative {
+                    global: property("Counter"),
+                    source: property("Counter"),
+                    offset: 1.0,
+                },
+            ),
+            (
+                "kmyQuest.SynthsFreed = kmyQuest.SynthsFreed + 1",
+                Effect::ModQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "SynthsFreed".into(),
+                    delta: 1.0,
+                },
+            ),
+            (
+                "kmyQuest.Tries = kmyQuest.Tries - 2",
+                Effect::ModQuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "Tries".into(),
+                    delta: -2.0,
+                },
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_8()\n\
+                 Quest __temp = Self as Quest\n\
+                 MyQuestScript kmyQuest = __temp as MyQuestScript\n\
+                 {statement}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), Some(vec![expected]), "{statement}");
+        }
+        // A different variable on the right is not a counter.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Quest __temp = Self as Quest\n\
+             MyQuestScript kmyQuest = __temp as MyQuestScript\n\
+             kmyQuest.A = kmyQuest.B + 1\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
     /// M47.2 — `ForceRefTo` with the player, an alias's reference or a
     /// property, and `Clear`, on an alias property receiver.
     #[test]
@@ -3787,13 +3931,12 @@ mod tests {
         );
     }
 
-    /// A computed value, a compound operator, a bare `Self` receiver (a
-    /// topic-info fragment's own script, not the quest), an unknown property
-    /// receiver and an index target all decline.
+    /// A compound operator, a bare `Self` receiver (a topic-info fragment's
+    /// own script, not the quest), an unknown property receiver and an index
+    /// target all decline. (`X = X + 1` lowers since M47.2.)
     #[test]
     fn quest_variable_writes_decline_what_they_cannot_name() {
         for statement in [
-            "kmyQuest.Count = kmyQuest.Count + 1",
             "kmyQuest.Count += 1",
             "Self.Count = 1",
             "SomeObjectProperty.Count = 1",

@@ -365,7 +365,10 @@ player in place when the reference is resident (camera, then the body grounded
 under it) or queues the door-transition machinery to the reference's cell at
 its placement. `AddItem` / `RemoveItem` counts may read a global
 (`ItemCount::Global`, truncated toward zero when applied); `G.Mod(x)` and
-`G.SetValue(S.GetValue() ± c)` lower to `Effect::SetGlobalRelative`;
+`G.SetValue(S.GetValue() ± c)` lower to `Effect::SetGlobalRelative`, and so
+do assignments to a global's `.Value` (directly or through the quest
+script's property, `kmyQuest.SomeGlobal.Value`); a quest-variable counter
+`kmyQuest.X = kmyQuest.X ± c` lowers to `Effect::ModQuestVariable`;
 `AddPerk` / `RemovePerk` edit the actor's `Perks` (parked with the rest of an
 evicted actor's state); and the FO4 / Starfield spellings `EnableNoWait`,
 `DisableNoWait`, `TryToEnable`, `TryToDisable` and `Unlock` reuse the existing
@@ -1156,7 +1159,7 @@ original `.swf` files. See
 | **M30.2** | Papyrus statement + item parser (full `.psc` parse) | **Closed 2026-05-23** (`ab0eee96`). All four R5 scripts round-trip with zero recovered errors. Unblocks M47.2. |
 | **M47.0** | Event-hooks runtime | **Closed 2026-05-23** (6 phases, `6c51af55..03837739`). `ScriptRegistry`, marker catalog, `script.activate` console command, e2e tests. |
 | **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + OR-precedence evaluator; the initial 7-function catalog has since grown to 19 modeled variants and multiple quest/scene/package consumers. |
-| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (55.8% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
+| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (56.1% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
 | **M43** | Quests & dialogue | **Quest/scene core shipped; broader integration open** — lifecycle, stages, objectives, aliases, fragments and scene phases are live. Story Manager search/payloads and full dialogue/UI integration remain open; see ROADMAP. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).

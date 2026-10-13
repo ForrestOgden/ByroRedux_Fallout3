@@ -1005,6 +1005,26 @@ pub(crate) fn apply_effect(
             ));
             None
         }
+        Effect::ModQuestVariable {
+            quest,
+            variable,
+            delta,
+        } => {
+            // Read through the same pending-then-written-then-authored chain
+            // a guard uses, so an earlier write in this fragment counts.
+            let quest = resolve_quest_logged(quest, context, vmad)?;
+            let key = crate::QuestScriptVariables::property_key(variable);
+            let current = deferred
+                .quest_variables
+                .iter()
+                .rev()
+                .find(|(q, k, _)| *q == quest && *k == key)
+                .map(|(_, _, value)| *value)
+                .or_else(|| crate::quest_variable(world, quest, key))
+                .unwrap_or(0.0);
+            deferred.quest_variables.push((quest, key, current + delta));
+            None
+        }
         Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
@@ -2252,6 +2272,7 @@ fn apply_quest_scoped_effect(
         | Effect::ShowRaceMenu
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
+        | Effect::ModQuestVariable { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }
