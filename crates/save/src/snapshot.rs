@@ -448,7 +448,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v78 -> v79 (M47.2): `Effect::SetLinkedRef` and the `LinkedRefOverrides`
 /// resource column (links scripts set).
-pub const FORMAT_MAJOR: u16 = 79;
+///
+/// v79 -> v80 (M47.2): `FactionChange::RemoveAll` (`RemoveFromAllFactions`).
+pub const FORMAT_MAJOR: u16 = 80;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

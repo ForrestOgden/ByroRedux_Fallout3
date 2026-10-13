@@ -1025,6 +1025,14 @@ The CK says the amount is "automatically modified by any active effects such as
 a Guardian Stone"; those modifiers are not modelled. `IncrementSkill` is not
 lowered yet.
 
+### Faction membership (M47.2)
+
+`AddToFaction`, `RemoveFromFaction`, `SetFactionRank` and `RemoveFromAllFactions`
+(CK: "Remove this actor from all factions they are a member of") edit the live
+`FactionRanks` and the saved `ScriptedFactionChanges` ledger. `RemoveAll` names
+no faction: the apply step records every faction the actor was in as removed,
+so the spawn re-derivation replays the departure.
+
 ### Scripted links (M47.2)
 
 `ObjectReference.SetLinkedRef(apRef, apKeyword = None)` ("Sets the reference

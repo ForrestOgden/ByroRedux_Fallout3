@@ -32,6 +32,9 @@ pub enum FactionChange {
     Remove,
     /// `SetFactionRank(rank)` — join if needed.
     SetRank(i8),
+    /// `RemoveFromAllFactions` — leave every faction the actor is a member of
+    /// (CK *RemoveFromAllFactions - Actor*). The call names no faction.
+    RemoveAll,
 }
 
 impl FactionChange {
@@ -48,6 +51,7 @@ impl FactionChange {
                 ranks.remove(faction);
             }
             Self::SetRank(rank) => ranks.set_rank(faction, rank),
+            Self::RemoveAll => ranks.0.clear(),
         }
         ranks.rank(faction)
     }
@@ -127,6 +131,9 @@ mod tests {
         assert_eq!(FactionChange::Add.apply(&mut ranks, 2), Some(0), "joins at rank 0");
         assert_eq!(FactionChange::SetRank(-1).apply(&mut ranks, 4), Some(-1), "joins at the rank");
         assert_eq!(FactionChange::Remove.apply(&mut ranks, 1), None);
+        let mut everyone = FactionRanks::from_pairs([(1, 3), (2, 0)]);
+        assert_eq!(FactionChange::RemoveAll.apply(&mut everyone, 0), None);
+        assert!(everyone.is_empty(), "every membership dropped");
         assert_eq!(ranks.0, vec![(2, 0), (4, -1)]);
     }
 

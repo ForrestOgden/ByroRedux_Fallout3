@@ -3451,6 +3451,18 @@ fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `AddToFaction(akFaction)` / `RemoveFromFaction(akFaction)` /
 /// `SetFactionRank(akFaction, aiRank)` with a literal rank in `i8` range.
 fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
+    // `RemoveFromAllFactions()` names no faction; the effect's faction is
+    // unused.
+    if let Some((object, args)) = method_call(e, "RemoveFromAllFactions") {
+        if !args.is_empty() {
+            return None;
+        }
+        return Some(Effect::ChangeFaction {
+            actor: receiver_actor(object, scope)?,
+            faction: ObjectRef::Property(String::new()),
+            change: crate::FactionChange::RemoveAll,
+        });
+    }
     let (object, args, change) = if let Some((object, args)) = method_call(e, "AddToFaction") {
         (object, args, crate::FactionChange::Add)
     } else if let Some((object, args)) = method_call(e, "RemoveFromFaction") {
@@ -6424,6 +6436,18 @@ mod tests {
              Alias_Boss.GetActorRef().SetFactionRank(BanditFaction, -1)\n EndFunction\n",
         );
         let object = |name: &str| ObjectRef::Property(name.into());
+        assert_eq!(
+            lower_fragment(&first_fn_body(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_9()\n\
+                 Game.GetPlayer().RemoveFromAllFactions()\n EndFunction\n"
+            )),
+            Some(vec![Effect::ChangeFaction {
+                actor: ActorRef::Player,
+                faction: object(""),
+                change: crate::FactionChange::RemoveAll,
+            }])
+        );
         assert_eq!(
             lower_fragment(&body),
             Some(vec![

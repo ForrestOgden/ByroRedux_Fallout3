@@ -890,6 +890,15 @@ impl DeferredFragmentEffects {
                 .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
                 .map(|player| player.0);
             for (actor, faction, change) in std::mem::take(&mut self.faction_changes) {
+                // `RemoveFromAllFactions` names no faction: the ledger records
+                // each one the actor was in as removed.
+                let left: Vec<u32> = match change {
+                    crate::FactionChange::RemoveAll => world
+                        .get::<byroredux_core::ecs::components::FactionRanks>(actor)
+                        .map(|ranks| ranks.0.iter().map(|(faction, _)| *faction).collect())
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
                 let rank = {
                     let Some(mut storage) =
                         world.query_mut::<byroredux_core::ecs::components::FactionRanks>()
@@ -913,7 +922,13 @@ impl DeferredFragmentEffects {
                 match reference {
                     Some(reference) => {
                         if let Some(mut ledger) = world.try_resource_mut::<crate::ScriptedFactionChanges>() {
-                            ledger.record(reference, faction, rank);
+                            if change == crate::FactionChange::RemoveAll {
+                                for faction in left {
+                                    ledger.record(reference, faction, None);
+                                }
+                            } else {
+                                ledger.record(reference, faction, rank);
+                            }
                         }
                     }
                     None => log::debug!(
@@ -1652,7 +1667,10 @@ pub(crate) fn apply_effect(
                 &deferred.scene_actor_bindings,
                 deferred.speaker,
             )?;
-            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            let faction = match change {
+                crate::FactionChange::RemoveAll => 0,
+                _ => resolve_property_form_id(vmad, faction.property_name())?,
+            };
             deferred.faction_changes.push((actor, faction, *change));
             None
         }

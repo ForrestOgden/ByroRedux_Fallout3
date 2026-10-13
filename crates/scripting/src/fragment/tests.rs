@@ -5584,6 +5584,37 @@ fn dispatch_change_faction_edits_ranks_and_records_the_ledger() {
     assert_eq!(ledger.changes_for(crate::PLAYER_REFERENCE), &[(FACTION, Some(3))]);
 }
 
+/// M47.2 — `RemoveFromAllFactions` empties the live `FactionRanks` and the
+/// ledger records every faction the actor was in as removed, so the spawn
+/// re-derivation replays the departure.
+#[test]
+fn dispatch_remove_from_all_factions_records_each_departure() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::FactionRanks;
+
+    const ACTOR_REF: u32 = 0x000A_1240;
+    const A: u32 = 0x0001_38B8;
+    const B: u32 = 0x0001_5FFB;
+    let mut world = fixture();
+    world.register::<FactionRanks>();
+    let actor = spawn_with_form_id(&mut world, ACTOR_REF);
+    world.insert(actor, FactionRanks::from_pairs([(A, 1), (B, 0)]));
+
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Actor", ACTOR_REF)]),
+        vec![Effect::ChangeFaction {
+            actor: ActorRef::Object(ObjectRef::Property("Actor".into())),
+            faction: ObjectRef::Property(String::new()),
+            change: crate::FactionChange::RemoveAll,
+        }],
+    );
+    assert!(world.get::<FactionRanks>(actor).unwrap().is_empty());
+    let ledger = world.resource::<crate::ScriptedFactionChanges>();
+    assert_eq!(ledger.changes_for(ACTOR_REF), &[(A, None), (B, None)]);
+}
+
 /// M47.2 — the IDLEs installed fragments play, resolved through each
 /// fragment's VMAD, `If` branches included; what the app decodes HKX for.
 #[test]
