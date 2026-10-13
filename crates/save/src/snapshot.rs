@@ -409,7 +409,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v65 -> v66 (M47.2): `Effect::IncrementStat`, `ValueExpr::MiscStat`, and a
 /// new resource column, `MiscStats` (script-kept misc stats).
-pub const FORMAT_MAJOR: u16 = 66;
+///
+/// v66 -> v67 (M47.2): `UpdateRegistration` gained the required `timer`
+/// (Fallout 4 `StartTimer` / `StartTimerGameTime` IDs).
+pub const FORMAT_MAJOR: u16 = 67;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

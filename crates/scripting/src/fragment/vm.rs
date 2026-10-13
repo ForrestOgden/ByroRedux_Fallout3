@@ -747,12 +747,12 @@ impl Vm<'_> {
     /// script attached to it that handles the update registers (or all of
     /// them unregister).
     fn quest_update(&mut self, frame: &mut Frame, quest: u32, name: &str, args: &[CallArg]) -> Run<()> {
-        let interval = match args.first() {
-            Some(arg) => self.eval(frame, &arg.value.node)?.number(),
-            None => None,
-        };
-        let Some(request) = super::UpdateRequest::of_call(name, interval) else {
-            return stop(format!("{name} without an interval"));
+        let mut numbers = Vec::with_capacity(args.len());
+        for arg in args {
+            numbers.push(self.eval(frame, &arg.value.node)?.number());
+        }
+        let Some(request) = super::UpdateRequest::of_call(name, &numbers) else {
+            return stop(format!("{name} without its numbers"));
         };
         let handler = super::UpdateRequest::handler(name).unwrap_or_default();
         let owner = QuestFormId(quest);
@@ -1760,12 +1760,12 @@ impl Vm<'_> {
             }
         }
         if let Some(name) = update_call(&callee.node) {
-            let interval = match args.first() {
-                Some(arg) => self.eval(frame, &arg.value.node)?.number(),
-                None => None,
-            };
-            let Some(request) = super::UpdateRequest::of_call(&name, interval) else {
-                return stop(format!("{name} without an interval"));
+            let mut numbers = Vec::with_capacity(args.len());
+            for arg in args {
+                numbers.push(self.eval(frame, &arg.value.node)?.number());
+            }
+            let Some(request) = super::UpdateRequest::of_call(&name, &numbers) else {
+                return stop(format!("{name} without its numbers"));
             };
             let script = frame.script.name.node.0.clone();
             self.deferred.script_updates.push((frame.owner.0, script, request));
@@ -2517,8 +2517,7 @@ impl<'l> Checker<'l> {
             }
             // An update registration: the handler it delivers to must run.
             if let Some(handler) = super::UpdateRequest::handler(&name) {
-                let interval_ok = handler.is_empty()
-                    || matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]);
+                let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {
                     return self.fail(|| format!("{name} as written"));
                 }
@@ -2584,8 +2583,7 @@ impl<'l> Checker<'l> {
         // Another quest's update registration: its handler must run.
         if receiver_kind == Kind::Quest {
             if let Some(handler) = super::UpdateRequest::handler(&name) {
-                let interval_ok = handler.is_empty()
-                    || matches!(arg_kinds.as_slice(), [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]);
+                let interval_ok = update_args_ok(&name, &arg_kinds);
                 if !statement || !interval_ok {
                     return self.fail(|| format!("{name} as written"));
                 }
@@ -2735,6 +2733,14 @@ impl<'l> Checker<'l> {
         }
         None
     }
+}
+
+/// An update or timer call's arguments: numbers, at most as many as it
+/// takes, and the interval when it starts one.
+fn update_args_ok(name: &str, args: &[Arg]) -> bool {
+    let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
+    let starts = !super::UpdateRequest::handler(name).unwrap_or_default().is_empty();
+    args.len() <= super::UpdateRequest::max_args(name) && (!starts || !args.is_empty()) && args.iter().all(numeric)
 }
 
 /// A native call's argument as the check sees it.

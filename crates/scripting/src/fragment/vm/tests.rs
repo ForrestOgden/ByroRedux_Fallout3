@@ -1001,3 +1001,48 @@ fn engine_constant_arguments_pass_by_name() {
         .map(|request| request.motion_type);
     assert_eq!(request, Some(byroredux_core::ecs::components::MotionType::Keyframed));
 }
+
+/// Fallout 4 timers: `StartTimer(afInterval, aiTimerID)` fires `OnTimer` once
+/// with its ID; `CancelTimer` stops one; a game-time interval under 0.033
+/// hours rounds up to it.
+#[test]
+fn timers_fire_once_with_their_id() {
+    let script = parsed_source(
+        "ScriptName QF_VmTimers extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Int Fired\n\
+         Function Fragment_1()\n\
+           StartTimer(5.0, 7)\n\
+           StartTimer(1.0, 8)\n\
+           CancelTimer(8)\n\
+           StartTimerGameTime(0.01, 3)\n\
+         EndFunction\n\
+         Event OnTimer(Int aiTimerID)\n\
+           If aiTimerID == 7\n Marker.Enable()\n EndIf\n\
+           Fired += 1\n\
+         EndEvent\n\
+         Event OnTimerGameTime(Int aiTimerID)\n\
+           If aiTimerID == 3\n Self.SetStage(20)\n EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let fired = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(Q, crate::QuestScriptVariables::property_key("Fired"))
+    };
+    crate::script_update_system(&world, 2.0, Some(0.0));
+    assert_eq!(fired(&world), None, "timer 8 was cancelled, 7 is not due");
+    crate::script_update_system(&world, 3.5, Some(0.02));
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "OnTimer(7)");
+    assert_eq!(fired(&world), Some(1.0));
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "0.02 h < the 0.033 h floor");
+    crate::script_update_system(&world, 0.1, Some(0.04));
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    crate::script_update_system(&world, 10.0, Some(1.0));
+    assert_eq!(fired(&world), Some(1.0), "a timer fires once");
+}

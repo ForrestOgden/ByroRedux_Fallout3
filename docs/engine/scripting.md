@@ -694,7 +694,8 @@ With the VM, 78.3% of the Skyrim corpus runs (lowered + interpreted;
 Not modelled yet:
 - several actor natives (`SetPlayerTeammate`; `AdvanceSkill`, which needs
   per-skill usage progression in CHARAL);
-- FO4 timers (`StartTimer` / `OnTimer`) and alias update registrations;
+- alias update registrations and FO4's distance / custom-event
+  registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
 - package (`PF_`) fragments, which need package begin / end / change events.
 
 ### Reference scripts on the VM (M47.2)
@@ -767,6 +768,15 @@ above serves only the hand-written recognizer path.
 - `UnregisterForUpdate()` cancels both.
 - The `GameTime` twins count game hours.
 - A quest's registrations end when the quest stops.
+
+Fallout 4's timers ride the same registry, following the FO4 CK's *StartTimer
+- ScriptObject* family:
+- `StartTimer(afInterval, aiTimerID = 0)` and `StartTimerGameTime` are
+  one-shot, and deliver `OnTimer(aiTimerID)` / `OnTimerGameTime(aiTimerID)`;
+- a timer ID is unique per script, real-time and game-time IDs don't
+  conflict, and restarting a ticking ID resets it;
+- `CancelTimer` / `CancelTimerGameTime(aiTimerID = 0)` stop one;
+- a game-time interval under 0.033 hours is rounded up to it.
 
 A registration on another quest (`kmyQuest.RegisterForUpdate(5.0)`) registers
 every script attached to that quest that handles the update. The saved

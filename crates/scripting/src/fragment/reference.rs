@@ -50,7 +50,7 @@ pub const DELIVERED_EVENTS: [&str; 8] = [
 pub(super) fn is_delivered_event(name: &str) -> bool {
     DELIVERED_EVENTS
         .iter()
-        .chain(&["OnUpdate", "OnUpdateGameTime"])
+        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime"])
         .any(|event| event.eq_ignore_ascii_case(name))
 }
 
