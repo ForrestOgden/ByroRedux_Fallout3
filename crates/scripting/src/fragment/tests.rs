@@ -8,7 +8,7 @@ use crate::quest_stages::{
     QuestFormId, QuestObjectiveState, QuestStageAdvanced, QuestStageAdvancedBatch, QuestStageState,
 };
 use crate::translate::compose::{ObjectRef, QuestRef};
-use crate::translate::effects::{Effect, StageDoneGuard};
+use crate::translate::effects::{Effect, FragmentGuard};
 use crate::CinematicAnimationEvent;
 use byroredux_core::ecs::world::World;
 
@@ -217,7 +217,7 @@ fn branch_provider_barrier_resumes_branch_and_outer_tails_in_order() {
     );
     let effects = [
         Effect::Conditional {
-            guards: vec![StageDoneGuard {
+            guards: vec![FragmentGuard::StageDone {
                 quest: QuestRef::SelfRef,
                 stage: 2,
                 done: false,
@@ -487,7 +487,7 @@ fn quest_fragments_flush_provider_barriers_before_the_next_event() {
 fn apply_effects_selects_get_stage_done_conditional_branch() {
     let world = World::new();
     let effects = vec![Effect::Conditional {
-        guards: vec![StageDoneGuard {
+        guards: vec![FragmentGuard::StageDone {
             quest: QuestRef::SelfRef,
             stage: 2,
             done: false,
@@ -536,7 +536,7 @@ fn apply_effects_selects_get_stage_done_conditional_branch() {
 fn apply_effects_declines_conditional_with_unresolvable_guard() {
     let world = World::new();
     let effects = vec![Effect::Conditional {
-        guards: vec![StageDoneGuard {
+        guards: vec![FragmentGuard::StageDone {
             quest: QuestRef::Property("SomeQuestProperty".to_owned()),
             stage: 2,
             done: false,
@@ -4143,7 +4143,7 @@ fn apply_effects_dispatches_thousands_of_sequential_conditionals() {
             // `SelfRef` always resolves, and stage 0 is not done, so every
             // sibling takes its `else` branch — the arm that used to build
             // the flattened tail.
-            guards: vec![StageDoneGuard {
+            guards: vec![FragmentGuard::StageDone {
                 quest: QuestRef::SelfRef,
                 stage: 0,
                 done: true,
@@ -4441,4 +4441,99 @@ fn spoken_fragment_resolves_the_speaker() {
     let inventory = world.get::<Inventory>(npc).expect("the speaker received the gold");
     assert_eq!(inventory.items[0].base_form_id, GOLD);
     assert_eq!(inventory.items[0].count, 10);
+}
+
+/// M47.2 — every widened guard kind reads its live state at dispatch, and a
+/// quest-variable guard sees a write made earlier in the same fragment.
+#[test]
+fn widened_fragment_guards_read_live_state() {
+    use crate::quest_variables::QuestScriptVariables;
+    use crate::translate::compose::{ObjectRef, QuestRef};
+    use crate::translate::effects::GuardComparison;
+
+    const RANSOM: u32 = 0x0000_9001;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    world.insert_resource(crate::Globals::default());
+    world.resource_mut::<crate::Globals>().set(RANSOM, 3.0);
+    world
+        .resource_mut::<crate::quest_stages::QuestObjectiveState>()
+        .set_displayed(Q, 10, true);
+
+    let probe = |name: &str, guard: FragmentGuard| Effect::Conditional {
+        guards: vec![guard],
+        then_effects: vec![Effect::SetQuestVariable {
+            quest: QuestRef::SelfRef,
+            variable: name.into(),
+            value: 1.0,
+        }],
+        else_effects: vec![Effect::SetQuestVariable {
+            quest: QuestRef::SelfRef,
+            variable: name.into(),
+            value: -1.0,
+        }],
+    };
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Ransom", RANSOM)]),
+        vec![
+            Effect::SetQuestVariable {
+                quest: QuestRef::SelfRef,
+                variable: "Flag".into(),
+                value: 2.0,
+            },
+            probe("Running", FragmentGuard::QuestRunning { quest: QuestRef::SelfRef, running: true }),
+            probe(
+                "StageGe",
+                FragmentGuard::Stage {
+                    quest: QuestRef::SelfRef,
+                    comparison: GuardComparison::Ge,
+                    value: 10.0,
+                },
+            ),
+            probe(
+                "StageLt",
+                FragmentGuard::Stage {
+                    quest: QuestRef::SelfRef,
+                    comparison: GuardComparison::Lt,
+                    value: 10.0,
+                },
+            ),
+            probe(
+                "Displayed",
+                FragmentGuard::ObjectiveDisplayed { quest: QuestRef::SelfRef, objective: 10, expected: true },
+            ),
+            probe(
+                "Completed",
+                FragmentGuard::ObjectiveCompleted { quest: QuestRef::SelfRef, objective: 10, expected: true },
+            ),
+            probe(
+                "Global",
+                FragmentGuard::Global {
+                    global: ObjectRef::Property("Ransom".into()),
+                    comparison: GuardComparison::Eq,
+                    value: 3.0,
+                },
+            ),
+            probe(
+                "SameFragmentWrite",
+                FragmentGuard::QuestVariable {
+                    quest: QuestRef::SelfRef,
+                    variable: "Flag".into(),
+                    comparison: GuardComparison::Eq,
+                    value: 2.0,
+                },
+            ),
+        ],
+    );
+    let vars = world.resource::<QuestScriptVariables>();
+    let read = |name| vars.get(Q, QuestScriptVariables::property_key(name));
+    // `run_stage_effects` sets stage 10, which starts the quest.
+    assert_eq!(read("Running"), Some(1.0));
+    assert_eq!(read("StageGe"), Some(1.0));
+    assert_eq!(read("StageLt"), Some(-1.0));
+    assert_eq!(read("Displayed"), Some(1.0));
+    assert_eq!(read("Completed"), Some(-1.0));
+    assert_eq!(read("Global"), Some(1.0));
+    assert_eq!(read("SameFragmentWrite"), Some(1.0));
 }

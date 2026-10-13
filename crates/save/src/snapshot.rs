@@ -303,7 +303,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// quest-script property writes `GetVMQuestVariable` conditions read. A
 /// pre-v40 save carries none of them, so a restored quest would re-gate its
 /// dialogue on authored defaults; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 40;
+///
+/// v40 -> v41 (M47.2): `Effect::Conditional`'s guards widened from the
+/// `StageDoneGuard` struct to the `FragmentGuard` enum (running / stage /
+/// objective / global / quest-variable reads). Queued fragment tails carry
+/// `Effect`s, so a v40 save with a queued conditional cannot be re-read.
+pub const FORMAT_MAJOR: u16 = 41;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

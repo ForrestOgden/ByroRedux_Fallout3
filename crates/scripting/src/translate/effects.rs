@@ -44,18 +44,300 @@ use crate::cinematic::CinematicAnimationEvent;
 use crate::papyrus_provider::{lower_provider_call, PapyrusProviderCatalog};
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
-    as_num, classify_guard_atom, int_arg, is_game_get_player, method_call, quest_via, split_and,
-    GuardMatch, ObjectRef, QuestRef,
+    as_num, int_arg, is_game_get_player, method_call, quest_via, split_and, ObjectRef, QuestRef,
 };
 
-/// One conservatively lowered `Quest.GetStageDone` predicate guarding a
-/// fragment branch.
+/// A comparison operator of a fragment guard, applied as
+/// `reading <op> value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum GuardComparison {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl GuardComparison {
+    fn from_op(op: byroredux_papyrus::ast::BinaryOp) -> Option<Self> {
+        use byroredux_papyrus::ast::BinaryOp as B;
+        Some(match op {
+            B::Eq => Self::Eq,
+            B::Ne => Self::Ne,
+            B::Lt => Self::Lt,
+            B::Le => Self::Le,
+            B::Gt => Self::Gt,
+            B::Ge => Self::Ge,
+            _ => return None,
+        })
+    }
+
+    /// The operator with its operands swapped (`5 < x` is `x > 5`).
+    fn swapped(self) -> Self {
+        match self {
+            Self::Eq | Self::Ne => self,
+            Self::Lt => Self::Gt,
+            Self::Le => Self::Ge,
+            Self::Gt => Self::Lt,
+            Self::Ge => Self::Le,
+        }
+    }
+
+    /// The logical negation (`!(x < 5)` is `x >= 5`).
+    fn negated(self) -> Self {
+        match self {
+            Self::Eq => Self::Ne,
+            Self::Ne => Self::Eq,
+            Self::Lt => Self::Ge,
+            Self::Le => Self::Gt,
+            Self::Gt => Self::Le,
+            Self::Ge => Self::Lt,
+        }
+    }
+
+    pub fn apply(self, reading: f32, value: f32) -> bool {
+        match self {
+            Self::Eq => reading == value,
+            Self::Ne => reading != value,
+            Self::Lt => reading < value,
+            Self::Le => reading <= value,
+            Self::Gt => reading > value,
+            Self::Ge => reading >= value,
+        }
+    }
+}
+
+/// One conservatively lowered predicate guarding a fragment branch (M47.2
+/// widened it from `GetStageDone` alone). Every guard reads quest, objective,
+/// global or quest-variable state the runtime holds; anything else declines.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct StageDoneGuard {
-    pub quest: QuestRef,
-    pub stage: u16,
-    pub done: bool,
+pub enum FragmentGuard {
+    /// `<quest>.GetStageDone(stage)` (FO4: `IsStageDone`) is `done`.
+    StageDone {
+        quest: QuestRef,
+        stage: u16,
+        done: bool,
+    },
+    /// `<quest>.IsRunning()` is `running`.
+    QuestRunning { quest: QuestRef, running: bool },
+    /// `<quest>.GetStage() <op> value`.
+    Stage {
+        quest: QuestRef,
+        comparison: GuardComparison,
+        value: f32,
+    },
+    /// `<quest>.IsObjectiveDisplayed(objective)` is `expected`.
+    ObjectiveDisplayed {
+        quest: QuestRef,
+        objective: i32,
+        expected: bool,
+    },
+    /// `<quest>.IsObjectiveCompleted(objective)` is `expected`.
+    ObjectiveCompleted {
+        quest: QuestRef,
+        objective: i32,
+        expected: bool,
+    },
+    /// `<global>.GetValue() / GetValueInt() / .Value <op> value`.
+    Global {
+        global: ObjectRef,
+        comparison: GuardComparison,
+        value: f32,
+    },
+    /// `<quest>.<Property> <op> value` — a quest script variable
+    /// ([`Effect::SetQuestVariable`]'s read side).
+    QuestVariable {
+        quest: QuestRef,
+        variable: String,
+        comparison: GuardComparison,
+        value: f32,
+    },
+}
+
+/// What a guard atom reads, before its comparison is attached.
+enum GuardReading {
+    StageDone(QuestRef, u16),
+    QuestRunning(QuestRef),
+    Stage(QuestRef),
+    ObjectiveDisplayed(QuestRef, i32),
+    ObjectiveCompleted(QuestRef, i32),
+    Global(ObjectRef),
+    QuestVariable(QuestRef, String),
+}
+
+/// Classify one guard atom (a conjunct of an `If` condition).
+fn classify_fragment_guard(atom: &Expr, scope: &Scope) -> Option<FragmentGuard> {
+    use byroredux_papyrus::ast::UnaryOp;
+    match atom {
+        Expr::UnaryOp {
+            op: UnaryOp::Not,
+            operand,
+        } => {
+            let (reading, comparison, value) = classify_comparison(&operand.node, scope)?;
+            guard_from(reading, comparison.negated(), value)
+        }
+        _ => {
+            let (reading, comparison, value) = classify_comparison(atom, scope)?;
+            guard_from(reading, comparison, value)
+        }
+    }
+}
+
+/// `reading <op> literal` in either operand order, or a bare reading used as a
+/// boolean (`!= 0`).
+fn classify_comparison(atom: &Expr, scope: &Scope) -> Option<(GuardReading, GuardComparison, f32)> {
+    if let Expr::BinaryOp { op, left, right } = atom {
+        let comparison = GuardComparison::from_op(*op)?;
+        if let (Some(reading), Some(value)) = (guard_reading(&left.node, scope), as_num(&right.node)) {
+            return Some((reading, comparison, value));
+        }
+        if let (Some(value), Some(reading)) = (as_num(&left.node), guard_reading(&right.node, scope)) {
+            return Some((reading, comparison.swapped(), value));
+        }
+        return None;
+    }
+    Some((guard_reading(atom, scope)?, GuardComparison::Ne, 0.0))
+}
+
+fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
+    if let Expr::Cast { expr, .. } = e {
+        return guard_reading(&expr.node, scope);
+    }
+    let quest = |object: &Expr| -> Option<QuestRef> {
+        if matches!(object, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
+            return Some(QuestRef::SelfRef);
+        }
+        match object {
+            Expr::Ident(_) => explicit_quest_receiver(object, scope),
+            Expr::Cast { .. } | Expr::Call { .. } => match quest_expr_ref(object, scope)? {
+                quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => Some(quest),
+                QuestRef::Property(_) => None,
+            },
+            _ => None,
+        }
+    };
+    let int = |args: &[byroredux_papyrus::ast::CallArg]| -> Option<i64> {
+        if args.len() == 1 {
+            int_arg(args, 0)
+        } else {
+            None
+        }
+    };
+    for name in ["GetStageDone", "IsStageDone"] {
+        if let Some((object, args)) = method_call(e, name) {
+            let stage = u16::try_from(int(args)?).ok()?;
+            return Some(GuardReading::StageDone(quest(object)?, stage));
+        }
+    }
+    if let Some((object, args)) = method_call(e, "IsRunning") {
+        return args.is_empty().then_some(())
+            .and_then(|()| Some(GuardReading::QuestRunning(quest(object)?)));
+    }
+    if let Some((object, args)) = method_call(e, "GetStage") {
+        return args.is_empty().then_some(())
+            .and_then(|()| Some(GuardReading::Stage(quest(object)?)));
+    }
+    if let Some((object, args)) = method_call(e, "IsObjectiveDisplayed") {
+        let objective = i32::try_from(int(args)?).ok()?;
+        return Some(GuardReading::ObjectiveDisplayed(quest(object)?, objective));
+    }
+    if let Some((object, args)) = method_call(e, "IsObjectiveCompleted") {
+        let objective = i32::try_from(int(args)?).ok()?;
+        return Some(GuardReading::ObjectiveCompleted(quest(object)?, objective));
+    }
+    for name in ["GetValue", "GetValueInt"] {
+        if let Some((object, args)) = method_call(e, name) {
+            if !args.is_empty() {
+                return None;
+            }
+            return global_receiver(object, scope).map(GuardReading::Global);
+        }
+    }
+    if let Expr::MemberAccess { object, member } = e {
+        // `<global>.Value` — the GlobalVariable property spelling.
+        if member.node.0.eq_ignore_ascii_case("value") {
+            if let Some(global) = global_receiver(&object.node, scope) {
+                return Some(GuardReading::Global(global));
+            }
+        }
+        if matches!(&object.node, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
+            return None;
+        }
+        let quest = match &object.node {
+            Expr::Ident(_) => explicit_quest_receiver(&object.node, scope)?,
+            Expr::Cast { .. } => match quest_expr_ref(&object.node, scope)? {
+                quest @ (QuestRef::OwningQuest | QuestRef::SelfRef) => quest,
+                QuestRef::Property(_) => return None,
+            },
+            _ => return None,
+        };
+        return Some(GuardReading::QuestVariable(quest, member.node.0.clone()));
+    }
+    None
+}
+
+/// A bare identifier naming a VMAD property (the GLOB a `GetValue()` reads):
+/// not a local of any kind, not a known quest property.
+fn global_receiver(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
+    let Expr::Ident(name) = object else {
+        return None;
+    };
+    let key = name.0.to_ascii_lowercase();
+    if scope.declares(&key) || scope.speaker_locals.contains(&key) {
+        return None;
+    }
+    receiver_object(object, scope)
+}
+
+/// A boolean reading compared with a literal becomes the bool it must equal;
+/// a comparison every bool satisfies, or none does, declines.
+fn bool_expectation(comparison: GuardComparison, value: f32) -> Option<bool> {
+    let when_true = comparison.apply(1.0, value);
+    let when_false = comparison.apply(0.0, value);
+    (when_true != when_false).then_some(when_true)
+}
+
+fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) -> Option<FragmentGuard> {
+    Some(match reading {
+        GuardReading::StageDone(quest, stage) => FragmentGuard::StageDone {
+            quest,
+            stage,
+            done: bool_expectation(comparison, value)?,
+        },
+        GuardReading::QuestRunning(quest) => FragmentGuard::QuestRunning {
+            quest,
+            running: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ObjectiveDisplayed(quest, objective) => FragmentGuard::ObjectiveDisplayed {
+            quest,
+            objective,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ObjectiveCompleted(quest, objective) => FragmentGuard::ObjectiveCompleted {
+            quest,
+            objective,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::Stage(quest) => FragmentGuard::Stage {
+            quest,
+            comparison,
+            value,
+        },
+        GuardReading::Global(global) => FragmentGuard::Global {
+            global,
+            comparison,
+            value,
+        },
+        GuardReading::QuestVariable(quest, variable) => FragmentGuard::QuestVariable {
+            quest,
+            variable,
+            comparison,
+            value,
+        },
+    })
 }
 
 /// Typed provider invocation deferred until fragment ECS guards are released.
@@ -98,11 +380,11 @@ pub(crate) fn attribute_provider_calls(
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum Effect {
-    /// `If <GetStageDone && ...> ... [Else ...] EndIf`. Only conjunctions
-    /// of exact boolean stage predicates lower; elseif/disjunction and latent
-    /// effects inside either branch remain decline-on-unknown.
+    /// `If <guard && ...> ... [Else ...] EndIf`. Only conjunctions of
+    /// [`FragmentGuard`]s lower; elseif/disjunction and latent effects inside
+    /// either branch remain decline-on-unknown.
     Conditional {
-        guards: Vec<StageDoneGuard>,
+        guards: Vec<FragmentGuard>,
         then_effects: Vec<Effect>,
         else_effects: Vec<Effect>,
     },
@@ -718,18 +1000,7 @@ fn lower_statements(
                 split_and(&condition.node, &mut atoms);
                 let guards = atoms
                     .into_iter()
-                    .map(|atom| match classify_guard_atom(atom, None)? {
-                        GuardMatch::StageDone {
-                            via,
-                            stage,
-                            expected,
-                        } if expected == 0.0 || expected == 1.0 => Some(StageDoneGuard {
-                            quest: via,
-                            stage,
-                            done: expected == 1.0,
-                        }),
-                        _ => None,
-                    })
+                    .map(|atom| classify_fragment_guard(atom, scope))
                     .collect::<Option<Vec<_>>>()?;
                 let mut then_scope = scope.clone();
                 let then_effects = lower_statements(body, &mut then_scope, providers, depth + 1)?;
@@ -4246,12 +4517,12 @@ mod tests {
             lower_fragment(&body),
             Some(vec![Effect::Conditional {
                 guards: vec![
-                    StageDoneGuard {
+                    FragmentGuard::StageDone {
                         quest: QuestRef::SelfRef,
                         stage: 2,
                         done: false,
                     },
-                    StageDoneGuard {
+                    FragmentGuard::StageDone {
                         quest: QuestRef::SelfRef,
                         stage: 6,
                         done: false,
@@ -4395,12 +4666,106 @@ mod tests {
 
     #[test]
     fn declines_unmodeled_conditional_guard() {
+        // `GetStage() >= 5` lowers since M47.2; a faction test, a disjunction,
+        // a fragment-script variable (`Self.x`) and a stage compared with a
+        // non-literal still decline.
+        for condition in [
+            "Game.GetPlayer().IsInFaction(SomeFaction)",
+            "Self.GetStageDone(5) || Self.GetStageDone(6)",
+            "Self.bDone",
+            "Self.GetStage() >= Self.GetStage()",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_5()\n\
+                 If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{condition}");
+        }
+    }
+
+    /// M47.2 — the guard atoms the corpus uses beyond `GetStageDone`: negated
+    /// stage tests (and FO4's `IsStageDone` spelling), `IsRunning`, stage
+    /// comparisons with the literal on either side, objective state, global
+    /// reads and quest-script variables.
+    #[test]
+    fn lowers_the_widened_guard_atoms() {
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_5()\n\
-             If Self.GetStage() >= 5\n Self.SetStage(10)\n EndIf\n EndFunction\n",
+             Quest __temp = Self as Quest\n\
+             MyQuestScript kmyQuest = __temp as MyQuestScript\n\
+             If !Self.GetStageDone(100) && Self.IsStageDone(5) == false && OtherQuest.IsRunning()\n\
+             Self.SetStage(10)\n\
+             EndIf\n\
+             If 20 > OtherQuest.GetStage() && Self.IsObjectiveDisplayed(10) && !Self.IsObjectiveCompleted(60)\n\
+             Self.SetStage(11)\n\
+             EndIf\n\
+             If Ransom.GetValueInt() == 3 && Ransom.Value < 1.0 && kmyQuest.bDeaconTalkedTo == 1\n\
+             Self.SetStage(12)\n\
+             EndIf\n EndFunction\n",
         );
-        assert_eq!(lower_fragment(&body), None);
+        let mut quests = HashSet::new();
+        quests.insert("otherquest".to_string());
+        let other = || QuestRef::Property("OtherQuest".into());
+        let then = |stage| vec![Effect::SetStage { quest: QuestRef::SelfRef, stage }];
+        assert_eq!(
+            lower_fragment_with_quest_properties(&body, &quests),
+            Some(vec![
+                Effect::Conditional {
+                    guards: vec![
+                        FragmentGuard::StageDone { quest: QuestRef::SelfRef, stage: 100, done: false },
+                        FragmentGuard::StageDone { quest: QuestRef::SelfRef, stage: 5, done: false },
+                        FragmentGuard::QuestRunning { quest: other(), running: true },
+                    ],
+                    then_effects: then(10),
+                    else_effects: vec![],
+                },
+                Effect::Conditional {
+                    guards: vec![
+                        FragmentGuard::Stage {
+                            quest: other(),
+                            comparison: GuardComparison::Lt,
+                            value: 20.0,
+                        },
+                        FragmentGuard::ObjectiveDisplayed {
+                            quest: QuestRef::SelfRef,
+                            objective: 10,
+                            expected: true,
+                        },
+                        FragmentGuard::ObjectiveCompleted {
+                            quest: QuestRef::SelfRef,
+                            objective: 60,
+                            expected: false,
+                        },
+                    ],
+                    then_effects: then(11),
+                    else_effects: vec![],
+                },
+                Effect::Conditional {
+                    guards: vec![
+                        FragmentGuard::Global {
+                            global: ObjectRef::Property("Ransom".into()),
+                            comparison: GuardComparison::Eq,
+                            value: 3.0,
+                        },
+                        FragmentGuard::Global {
+                            global: ObjectRef::Property("Ransom".into()),
+                            comparison: GuardComparison::Lt,
+                            value: 1.0,
+                        },
+                        FragmentGuard::QuestVariable {
+                            quest: QuestRef::SelfRef,
+                            variable: "bDeaconTalkedTo".into(),
+                            comparison: GuardComparison::Eq,
+                            value: 1.0,
+                        },
+                    ],
+                    then_effects: then(12),
+                    else_effects: vec![],
+                },
+            ])
+        );
     }
 
     #[test]

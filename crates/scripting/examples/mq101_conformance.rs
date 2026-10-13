@@ -35,7 +35,7 @@ use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::{
-    lower_fragment_with_quest_properties, Effect, StageDoneGuard,
+    lower_fragment_with_quest_properties, Effect, FragmentGuard,
 };
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
@@ -1346,9 +1346,9 @@ fn run() -> Result<Checks, Box<dyn Error>> {
         scene_1_end_effects.as_deref(),
         Some([Effect::Conditional { guards, then_effects, else_effects }])
             if guards == &[
-                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 2, done: false },
-                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 6, done: false },
-                StageDoneGuard { quest: QuestRef::OwningQuest, stage: 7, done: false },
+                FragmentGuard::StageDone { quest: QuestRef::OwningQuest, stage: 2, done: false },
+                FragmentGuard::StageDone { quest: QuestRef::OwningQuest, stage: 6, done: false },
+                FragmentGuard::StageDone { quest: QuestRef::OwningQuest, stage: 7, done: false },
             ]
             && matches!(then_effects.as_slice(), [Effect::SetStage { quest: QuestRef::OwningQuest, stage: 35 }])
             && else_effects.is_empty()

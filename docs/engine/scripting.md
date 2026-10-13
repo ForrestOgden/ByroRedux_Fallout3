@@ -296,6 +296,14 @@ dialogue caller resolves to the NPC saying the line
 latent tail (a wait, a 3D-loaded poll, a provider barrier) declines: the
 speaker is a live entity a saved continuation could not name.
 
+Fragment `If`s lower when their condition is a conjunction of
+`FragmentGuard`s — `GetStageDone` / FO4 `IsStageDone`, `IsRunning`, `GetStage`
+compared with a literal, `IsObjectiveDisplayed` / `IsObjectiveCompleted`, a
+global's `GetValue()` / `GetValueInt()` / `.Value`, or a quest-script
+variable — each optionally negated, the literal on either side. A guard whose
+quest or global does not resolve declines the whole conditional at runtime;
+a quest-variable guard sees a write made earlier in the same fragment.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

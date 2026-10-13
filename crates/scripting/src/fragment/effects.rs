@@ -4,6 +4,7 @@
 //! Split out of `fragment.rs` (#3854).
 
 use super::*;
+use crate::translate::effects::FragmentGuard;
 
 /// Resolve an effect's [`QuestRef`] to a concrete quest FormID.
 /// `Self`/`GetOwningQuest` resolve to the advancing quest; a
@@ -2055,6 +2056,80 @@ fn apply_quest_scoped_effect(
     }
 }
 
+/// Evaluate one [`FragmentGuard`] (M47.2) against live quest, objective,
+/// global and quest-variable state. `None` when its quest or global does not
+/// resolve — the caller then declines the whole `Conditional`.
+///
+/// A quest-variable read sees a write queued earlier in the same fragment
+/// (`deferred.quest_variables`, applied only once the quest guards drop) —
+/// Papyrus assignments are immediate. `Globals` and the quest-variable
+/// resources are read under the quest-state guards, the same nested reads
+/// `apply_global_effect` already takes.
+fn evaluate_guard(
+    guard: &FragmentGuard,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    stages: &QuestStageState,
+    objectives: &QuestObjectiveState,
+    deferred: &DeferredFragmentEffects,
+) -> Option<bool> {
+    let quest = |via: &QuestRef| resolve_quest_logged(via, context, vmad);
+    Some(match guard {
+        FragmentGuard::StageDone { quest: via, stage, done } => {
+            stages.get_stage_done(quest(via)?, *stage) == *done
+        }
+        FragmentGuard::QuestRunning { quest: via, running } => {
+            stages.is_running(quest(via)?) == *running
+        }
+        FragmentGuard::Stage {
+            quest: via,
+            comparison,
+            value,
+        } => comparison.apply(f32::from(stages.get_stage(quest(via)?)), *value),
+        FragmentGuard::ObjectiveDisplayed {
+            quest: via,
+            objective,
+            expected,
+        } => objectives.get(quest(via)?, *objective).displayed == *expected,
+        FragmentGuard::ObjectiveCompleted {
+            quest: via,
+            objective,
+            expected,
+        } => objectives.get(quest(via)?, *objective).completed == *expected,
+        FragmentGuard::Global {
+            global,
+            comparison,
+            value,
+        } => {
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            let reading = world
+                .try_resource::<crate::Globals>()
+                .and_then(|globals| globals.get(form_id))?;
+            comparison.apply(reading, *value)
+        }
+        FragmentGuard::QuestVariable {
+            quest: via,
+            variable,
+            comparison,
+            value,
+        } => {
+            let quest = quest(via)?;
+            let key = crate::QuestScriptVariables::property_key(variable);
+            let pending = deferred
+                .quest_variables
+                .iter()
+                .rev()
+                .find(|(q, k, _)| *q == quest && *k == key)
+                .map(|(_, _, value)| *value);
+            let reading = pending
+                .or_else(|| crate::quest_variable(world, quest, key))
+                .unwrap_or(0.0);
+            comparison.apply(reading, *value)
+        }
+    })
+}
+
 /// Apply a whole fragment's effects, returning the chained
 /// [`QuestStageAdvanced`]s its `SetStage`s produced. Resource reads use the
 /// pre-lock snapshot in `deferred`; queued mutations must be applied only after
@@ -2110,8 +2185,8 @@ pub fn apply_effects(
                 // invariant every other site already follows.
                 let mut resolved = true;
                 let passes = guards.iter().all(|guard| {
-                    match resolve_quest_logged(&guard.quest, context, vmad) {
-                        Some(quest) => stages.get_stage_done(quest, guard.stage) == guard.done,
+                    match evaluate_guard(guard, context, vmad, world, stages, objectives, deferred) {
+                        Some(pass) => pass,
                         None => {
                             resolved = false;
                             false
