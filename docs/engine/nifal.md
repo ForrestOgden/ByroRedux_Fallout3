@@ -942,7 +942,7 @@ The material slice was executed this session as the template. Mechanics:
   | 1 — base lowering | `translate_material` | the `Material` literal: scalars, colours, flags, glass classification, `resolve_pbr` clamping |
   | 2 — post-texture | `resolve_normal_alpha_spec_roughness` | `Material::roughness` for the normal-alpha-as-spec convention (#1480) |
   | 2 — post-texture | `resolve_msn_z_source` | `MAT_FLAG_MSN_HAS_AUTHORED_Z` for model-space normals (#2826) |
-  | 2 — post-texture | `resolve_unresolved_gloss_neutral_roughness` | `Material::roughness`, when a gloss/smoothness map resolved with no authored BGSM PBR scalars to interpret it (#3905) |
+  | 2 — post-texture | `resolve_unresolved_gloss_neutral_roughness` | `Material::roughness`, when authored BGSM PBR scalars sit at the near-mirror floor and no gloss map *resolved* to modulate them (#3905; the glass classifier's forced mirror panes are exempt, #5230) |
 
   All three Phase-2 resolvers run at **every `translate_material` caller that
   attaches `MaterialTextureHandles`**, immediately after that attachment
