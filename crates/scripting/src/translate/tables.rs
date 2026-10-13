@@ -68,7 +68,9 @@ pub enum CanonicalEvent {
     /// `OnEquip` → [`crate::events::EquipmentEventBatch`] entries whose
     /// `equipped` flag is true.
     Equip,
-    /// `OnTimer` → [`crate::events::TimerExpired`].
+    /// `OnTimer` — maps for catalog completeness, but nothing dispatches on
+    /// it (#5608): FO4 `OnTimer` delivery rides the update-registration
+    /// registry (`fragment/updates.rs`), not [`crate::events::TimerExpired`].
     Timer,
     /// An event name outside the recognized catalog (the long tail of
     /// ~130 Papyrus events — added as real content needs them).

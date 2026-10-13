@@ -4,7 +4,17 @@
 //! reaches zero, the timer system inserts a `TimerExpired` marker
 //! component on the same entity and removes the timer.
 //!
-//! This replaces Papyrus's `StartTimer(time, id)` → `OnTimer(id)` flow.
+//! **No producer, no consumer** (#5608, honest since 2026-10-13): nothing
+//! in production inserts a `ScriptTimer` or reads the `TimerExpired` it
+//! fires — the only constructions are this module's own tests. The
+//! M47.0-era plan was to lower Papyrus's `StartTimer(time, id)` →
+//! `OnTimer(id)` onto this pair, but the FO4 timers that actually shipped
+//! (2026-10-13) ride the update-registration registry instead
+//! (`fragment/updates.rs`: `ScriptUpdates` + `UpdateRegistration`,
+//! real-time and game-time clocks, saved) — a second ECS lowering would
+//! duplicate that path. The pair stays registered and round-trip-tested
+//! as the one-shot shape beside `RecurringUpdate`; retire it if no
+//! consumer ever lands.
 
 use crate::events::TimerExpired;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;

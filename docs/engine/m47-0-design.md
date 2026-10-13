@@ -96,7 +96,7 @@ Today in `crates/scripting/src/events.rs`:
 |--------|--------|------------|
 | `ActivateEvent { activator }` | ✅ defined | ✅ shared gameplay/diagnostic interaction path |
 | `HitEvent { aggressor, source, … }` | ✅ defined | ✅ combat runtime |
-| `TimerExpired { timer_id }` | ✅ defined | ✅ `timer_tick_system` |
+| `TimerExpired { timer_id }` | ✅ defined | ⚠️ `timer_tick_system` fires it, but nothing starts a `ScriptTimer` (#5608) — FO4 `OnTimer` ships via the M47.2 update-registration registry |
 | `AnimationTextKeyEvents` | ✅ defined | ✅ `animation_system` |
 | `OnTriggerEnterEvent` | ✅ defined | ✅ `trigger_detection_system` |
 | `OnCellLoadEvent` | ✅ defined | ✅ REFR script attachment |

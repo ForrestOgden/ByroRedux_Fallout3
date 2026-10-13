@@ -80,8 +80,10 @@ impl Component for RippleEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Fired when a timer expires. Added by the timer tick system.
-/// Replaces Papyrus `OnTimer`.
+/// Fired when a `ScriptTimer` expires. Added by the timer tick system.
+/// No producer/consumer in production (#5608): FO4 `OnTimer` ships through
+/// the update-registration registry (`fragment/updates.rs`), not this
+/// marker.
 #[derive(Debug, Clone, Copy)]
 pub struct TimerExpired {
     pub timer_id: u32,

@@ -233,7 +233,7 @@ Bars are eyeballed weight, not a computed metric — read the rows, not the bars
 | `[x]` | `.pex` decompiler | — | Champollion port, 99.996 % of shipping corpus |
 | `[x]` | Event-hook dispatcher | Papyrus events | Marker components: `OnActivate`, `OnHit`, `OnTriggerEnter`, `OnCellLoad`, … |
 | `[x]` | **CTDA condition evaluator** | ~300 condition functions | OR-precedence quirk reproduced exactly (`A AND (B OR C) AND D`) |
-| `[x]` | Script timers | `Utility.Wait` / `RegisterForSingleUpdate` | dt-driven `ScriptTimer` + `TimerExpired` |
+| `[x]` | Script timers | `Utility.Wait` / `RegisterForSingleUpdate` / FO4 `StartTimer` | `Utility.Wait` rides the fragment continuation queue; updates and timers ride the saved `ScriptUpdates` registry (the `ScriptTimer` component pair is dormant, #5608) |
 | `[x]` | Global variables (GLOB) | — | |
 | `[x]` | VMAD script attachment | — | Per-REFR resolution from `--scripts-bsa` at attach time |
 | `[~]` | Quest-stage advance recognizer | `SetStage` | Trigger families plus compiled QUST/SCEN fragment dispatch; arbitrary Papyrus remains decline-by-default |

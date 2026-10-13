@@ -113,7 +113,10 @@ scripting systems in this order:
 
 1. **Tick systems** (Update stage): `timer_tick_system`,
    `recurring_update_tick_system` count down their components and emit
-   `TimerExpired` / `OnUpdateEvent` markers.
+   `TimerExpired` / `OnUpdateEvent` markers. (Only the `RecurringUpdate`
+   half has producers today — see [Timers and recurring
+   updates](#timers-and-recurring-updates); the M47.2 VM's update
+   registrations tick in `script_update_system` instead.)
 2. **Handler systems** (exclusive, Update stage): the `papyrus_demo` dispatchers
    — `rumble_on_activate_system`, `quest_advance_system`,
    `dlc2_ttr4a_on_init_system`, `dlc2_ttr4a_on_update_system`,
@@ -138,7 +141,7 @@ in the design narrative.
 | `ActivateEvent` | `activator: EntityId` | `OnActivate` | shared interaction path used by gameplay input and diagnostics |
 | `HitEvent` | `aggressor`, `source`, `projectile: EntityId` + damage/attack flags | `OnHit` | combat runtime |
 | `EquipmentEventBatch` | `Vec<EquipmentChange>` (`item_form_id`, `equipped`), keyed by the wearer entity | actor `OnObjectEquipped` / `OnObjectUnequipped` | **live** — [`emit_equipment_changes`](../../crates/scripting/src/equipment.rs) appends to the wearer's one-frame batch (`get_mut`-then-`extend`); callers are [`byroredux/src/inventory.rs`](../../byroredux/src/inventory.rs) and the `EquipItem` fragment effect |
-| `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` |
+| `TimerExpired` | `timer_id: u32` | `OnTimer` | `timer_tick_system` — **dormant** (#5608): nothing starts a `ScriptTimer`; FO4 `OnTimer` ships via the update-registration registry |
 | `AnimationTextKeyEvents` | `Vec<AnimationTextKeyEvent { label: FixedString, time: f32 }>` | KF text keys | `byroredux::systems::animation` (live — fires on every clip) |
 | `OnUpdateEvent` | (unit) | `OnUpdate` | `recurring_update_tick_system` |
 | `OnInitEvent` | (unit) | `OnInit` for translated provider handlers | `attach_papyrus_provider_program`; drained after one frame |
@@ -156,8 +159,13 @@ the animation system fires it on every clip whose `.kf` carries text keys (`hit`
 
 - **`ScriptTimer { id, remaining }`** — one-shot countdown. `timer_tick_system`
   decrements `remaining` by `dt`; at ≤ 0 it removes the timer and inserts a
-  `TimerExpired { timer_id: id }` marker on the same entity. This is the ECS
-  replacement for Papyrus `StartTimer(time, id)` → `OnTimer(id)`.
+  `TimerExpired { timer_id: id }` marker on the same entity. **Dormant**
+  (#5608): nothing in production starts a `ScriptTimer` or reads the marker —
+  the shipped Papyrus timer paths (`RegisterForSingleUpdate`, FO4
+  `StartTimer`/`OnTimer` real- and game-time) ride the update-registration
+  registry below, and `Utility.Wait` rides the fragment continuation queue.
+  The pair stays registered and round-trip-tested as the one-shot shape beside
+  `RecurringUpdate`.
 - **`RecurringUpdate { interval_secs, seconds_until_next }`** — periodic
   subscription, the substrate for Papyrus's `RegisterForUpdate(N)` /
   `UnregisterForUpdate()` / `Event OnUpdate()` triad. Construct via
@@ -1362,14 +1370,15 @@ watch.)
 ### Mechanism 3: Timer/Condition Components (scheduled events)
 
 Components with countdown or condition data, checked by systems each tick.
-Covers ~15 events. `ScriptTimer` and `RecurringUpdate` are **shipped**; the rest
-are planned.
+Covers ~15 events. `RecurringUpdate` is **shipped** (the recognizer path);
+the Papyrus timer events ship through the update-registration registry
+(§[Update registrations](#update-registrations-m472)). The rest are planned.
 
 | Papyrus Event | Component | System Behavior |
 |---|---|---|
-| `OnTimer(aiTimerID)` | `ScriptTimer { id, remaining }` ✓ shipped | Tick down, fire `TimerExpired` when zero |
-| `OnUpdate` (`RegisterForUpdate`) | `RecurringUpdate { interval_secs, seconds_until_next }` ✓ shipped | Tick, fire `OnUpdateEvent`, re-arm |
-| `OnTimerGameTime` | `ScriptTimer` (game-time variant, planned) | Tick by game hours |
+| `OnTimer(aiTimerID)` | `UpdateRegistration { timer: Some(id) }` ✓ shipped | `script_update_system` delivers `OnTimer` when due; the dormant `ScriptTimer`/`TimerExpired` pair is not on this path (#5608) |
+| `OnUpdate` (`RegisterForUpdate`) | `RecurringUpdate { interval_secs, seconds_until_next }` ✓ shipped (recognizer path); `UpdateRegistration` ✓ shipped (VM path) | Tick, fire `OnUpdateEvent` / deliver `OnUpdate`, re-arm |
+| `OnTimerGameTime` | `UpdateRegistration { clock: GameTime, timer }` ✓ shipped | Game-hours due check in `script_update_system` |
 | `OnDistanceLessThan` / `GreaterThan` | `DistanceWatch { target, threshold }` (planned) | Check distance each frame |
 | `OnGainLOS` / `OnLostLOS` | `LOSWatch { target, had_los }` (planned) | Raycast check |
 | `OnTranslationComplete` | `TranslationMove { target_pos, speed }` (planned) | Movement system, fire on arrival |
@@ -1649,7 +1658,7 @@ approach:
 
 | Bethesda's Fix | The Problem | ECS Solution |
 |---|---|---|
-| Replaced `OnUpdate` with per-script timers | Global per-frame callback too expensive | `ScriptTimer` / `RecurringUpdate` component, ticked by system (shipped) |
+| Replaced `OnUpdate` with per-script timers | Global per-frame callback too expensive | `RecurringUpdate` component + the saved `ScriptUpdates` registry (`UpdateRegistration` timers), ticked by system (shipped) |
 | `OnHit`/`OnMagicEffectApply` require registration | Too many scripts receiving unwanted events | Only entities with marker participate |
 | `OnItemAdded`/`Removed` requires filters | Player dumps 100 items → VM floods | Query-based, zero cost for non-participants |
 | `Const` properties | Save bloat from storing values that never change | Component field defaults, skip in serialization |
@@ -1716,8 +1725,9 @@ made this concrete: `RumbleOnActivate.state == Busy { wait_remaining_secs:
 
 - **Properties** → component fields → serialized as regular data
 - **Const properties** → skipped (value comes from the plugin, not the save)
-- **Timers** → `ScriptTimer` / `RecurringUpdate` components → serialized as a
-  remaining-time float
+- **Timers** → `RecurringUpdate` components and the `ScriptUpdates`
+  registration registry (the dormant `ScriptTimer` aside) → serialized as a
+  remaining-time float / a due timestamp
 - **States** → enum field on component → serialized as an integer
 - **Quest stages** → `QuestStageState` resource → serialized as `current_stage`
   + the `stages_done` set (sorted by FormID before writing)

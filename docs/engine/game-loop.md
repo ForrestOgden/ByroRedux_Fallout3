@@ -139,7 +139,7 @@ The live schedule built in `App::new` is:
 |---|---|---|---|
 | `Early` | `player_controller_system` | declared | Dispatches to `fly_camera_system` **or** `character_controller_system` by `PlayerMode`; access is the union of both inner systems (M28.5 + M27 Phase 3) |
 | `Early` | `weather_system` | exclusive + declared | Weather/TOD/sky/cloud sim; serialized after the player-controller batch so `WindField` has one stable writer/reader order |
-| `Early` | `timer_tick_system` | declared | Advances `ScriptTimer`, fires `TimerExpired` |
+| `Early` | `timer_tick_system` | declared | Advances `ScriptTimer`, fires `TimerExpired` — dormant: no producer starts a timer today (#5608); the M47.2 update registrations tick in `script_update_system` |
 | `Update` | `restoration_system` | exclusive + declared | Applies `TimedRestorations` to `ActorValues`; first Update exclusive |
 | `Update` | activation producers (`interaction_system`, `fragment_activation_flush_system`, `container_loot_system`) | exclusive | Emits canonical activation/loot state before scripting consumers; the flush delivers fragment-queued `Activate` targets the following frame (#2654) |
 | `Update` | combat chain (`combat_input_system` → `make_faction_hostility_system` → `make_npc_combat_ai_system` → `combat_damage_system`) | exclusive | Player attack input, then ambient faction hostility (#4414), then NPC combat-AI chase/strike, then HitEvent health/death resolution — the producer-before-consumer HitEvent contract |
