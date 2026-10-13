@@ -4796,6 +4796,34 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("AnyFails"), Some(-1.0));
 }
 
+/// M47.2 — `BlockActivation` records the reference in the activation-block
+/// ledger once the quest-state guards drop, and an unblock clears it.
+#[test]
+fn block_activation_records_the_reference() {
+    const DOOR: u32 = 0x0000_6800;
+    let mut world = fixture();
+    let door = spawn_with_form_id(&mut world, DOOR);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("SomeDoor", DOOR)]),
+        vec![Effect::BlockActivation {
+            object: ObjectRef::Property("SomeDoor".into()),
+            blocked: true,
+        }],
+    );
+    assert!(crate::default_activation_blocked(&world, door));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("SomeDoor", DOOR)]),
+        vec![Effect::BlockActivation {
+            object: ObjectRef::Property("SomeDoor".into()),
+            blocked: false,
+        }],
+    );
+    assert!(!crate::default_activation_blocked(&world, door));
+}
+
 /// M47.2 — Skyrim's `SetAV("Name", v)` resolves the AVIF through the
 /// editor-ID table and sets the base value; an unknown name skips.
 #[test]

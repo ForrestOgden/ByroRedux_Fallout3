@@ -586,7 +586,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::PlayerLocation>()
             // M47.2 — a spoken line's ForceRefTo / Clear records an alias
             // override (after the quest-state guards drop).
-            .writes_resource::<byroredux_scripting::AliasOverrides>(),
+            .writes_resource::<byroredux_scripting::AliasOverrides>()
+            // M47.2 — a spoken line's BlockActivation, and the activation
+            // gate that reads it.
+            .reads_resource::<byroredux_scripting::ReferenceActivationBlocks>()
+            .writes_resource::<byroredux_scripting::ReferenceActivationBlocks>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

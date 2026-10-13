@@ -344,6 +344,9 @@ pub struct DeferredFragmentEffects {
     /// [`crate::AliasOverrides`] after the quest-state guards drop (the alias
     /// refresh takes `SceneActorBindings` before `QuestStageState`).
     alias_overrides: Vec<(QuestFormId, i32, crate::AliasOverride)>,
+    /// M47.2 — `Effect::BlockActivation` changes, recorded in
+    /// [`super::ReferenceActivationBlocks`] after the guards drop.
+    activation_blocks: Vec<(u32, bool)>,
     /// M47.2 — the scenes playing when the fragment started, for
     /// `FragmentGuard::ScenePlaying`: snapshotted before the quest-state
     /// guards (scene playback takes `ScenePlayer` before `QuestStageState`).
@@ -392,6 +395,7 @@ impl DeferredFragmentEffects {
             quest_variables: Vec::new(),
             faction_changes: Vec::new(),
             alias_overrides: Vec::new(),
+            activation_blocks: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
                 .map(|players| {
@@ -428,6 +432,13 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.activation_blocks.is_empty() {
+            if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
+                for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
+                    blocks.set_blocked(reference, blocked);
+                }
+            }
+        }
         if !self.alias_overrides.is_empty() {
             if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
                 for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
@@ -889,6 +900,14 @@ pub(crate) fn apply_effect(
         | Effect::SetMotionType { .. }
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::BlockActivation { object, blocked } => {
+            let Some(reference) = object_form_id(vmad, world, context, object, deferred) else {
+                log::debug!("fragment BlockActivation skipped: the reference does not resolve");
+                return None;
+            };
+            deferred.activation_blocks.push((reference, *blocked));
+            None
         }
         Effect::ForceAlias { alias, target } => {
             let name = alias.property_name();
@@ -2285,6 +2304,7 @@ fn apply_quest_scoped_effect(
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }
+        | Effect::BlockActivation { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }

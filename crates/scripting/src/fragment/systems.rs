@@ -151,6 +151,7 @@ pub fn register(world: &mut World) {
     world.insert_resource(crate::ReferenceScriptState::default());
     world.insert_resource(QuestObjectiveState::default());
     world.insert_resource(PlayerMoveRequest::default());
+    world.insert_resource(ReferenceActivationBlocks::default());
 }
 
 /// Execute the lowered Papyrus fragments emitted by scene playback this

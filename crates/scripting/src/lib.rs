@@ -98,7 +98,8 @@ pub use fragment::{
     populate_scene_fragments_from_pex_detailed, quest_fragment_dispatch_system,
     scene_fragment_dispatch_system, DeferredFragmentEffects, DialogueInfoFragments,
     FragmentExecutionQueue, FragmentPexTranslation, LockOverride, OwnedFragmentProviders,
-    PendingFragmentActivations, PlayerMoveRequest, QuestStageFragments, ReferenceEnableState,
+    PendingFragmentActivations, PlayerMoveRequest, QuestStageFragments, ReferenceActivationBlocks,
+    ReferenceEnableState, default_activation_blocked,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
 };
 pub use faction_changes::{

@@ -598,6 +598,10 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — scripted ForceRefTo / Clear alias overrides, by reference
         // FormID; dropped when their quest stops.
         .register_resource::<byroredux_scripting::AliasOverrides>("AliasOverrides")
+        // M47.2 — script BlockActivation, by reference FormID (outlives cells).
+        .register_resource::<byroredux_scripting::ReferenceActivationBlocks>(
+            "ReferenceActivationBlocks",
+        )
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

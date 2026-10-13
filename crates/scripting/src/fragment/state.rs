@@ -28,6 +28,45 @@ pub struct ReferenceEnableState {
 
 impl Resource for ReferenceEnableState {}
 
+/// References whose default activation a script blocked (M47.2): the CK's
+/// `BlockActivation` — "blocks, or unblocks, normal activation processing for
+/// this reference. References with blocked activation will still send
+/// OnActivate events to scripts attached to them." Keyed by reference FormID
+/// so the block outlives the cell; saved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ReferenceActivationBlocks {
+    blocked: HashSet<u32>,
+}
+
+impl Resource for ReferenceActivationBlocks {}
+
+impl ReferenceActivationBlocks {
+    pub fn set_blocked(&mut self, reference: u32, blocked: bool) {
+        if blocked {
+            self.blocked.insert(reference);
+        } else {
+            self.blocked.remove(&reference);
+        }
+    }
+
+    pub fn is_blocked(&self, reference: u32) -> bool {
+        self.blocked.contains(&reference)
+    }
+}
+
+/// Whether `entity`'s default activation (a door's transition, a pickup, a
+/// container, a conversation) is script-blocked. Its `OnActivate` handlers
+/// still run.
+pub fn default_activation_blocked(world: &World, entity: EntityId) -> bool {
+    let Some(reference) = crate::condition::entity_global_form_id(world, entity) else {
+        return false;
+    };
+    world
+        .try_resource::<ReferenceActivationBlocks>()
+        .is_some_and(|blocks| blocks.is_blocked(reference))
+}
+
 /// A fragment's `Game.GetPlayer().MoveTo(<reference>)` (M47.2): the
 /// destination reference's global FormID. The engine drains it each frame —
 /// moving the player in place when the reference is resident, otherwise

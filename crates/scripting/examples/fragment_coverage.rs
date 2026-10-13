@@ -275,6 +275,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::ForceAlias { .. } => "ForceAlias",
         Effect::ModQuestVariable { .. } => "ModQuestVariable",
         Effect::SetActorValueNamed { .. } => "SetActorValueNamed",
+        Effect::BlockActivation { .. } => "BlockActivation",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

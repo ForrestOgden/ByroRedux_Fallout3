@@ -379,6 +379,13 @@ evicted actor's state); and the FO4 / Starfield spellings `EnableNoWait`,
 `DisableNoWait`, `TryToEnable`, `TryToDisable` and `Unlock` reuse the existing
 enable and lock effects.
 
+`BlockActivation([abBlocked])` (FO4 adds a prompt flag) records the
+reference in the saved `ReferenceActivationBlocks` by FormID. The CK says a
+blocked reference "will still send OnActivate events", so the
+`ActivateEvent` still fires for scripts. The engine's default handlers skip
+the reference: the door transition, pickup and container looting, and the
+activation conversation.
+
 `<alias>.ForceRefTo(akRef)` and `<alias>.Clear()` lower to
 `Effect::ForceAlias`. The runtime resolves the alias property to its quest and
 alias index (another quest's alias included) and records the override in the
@@ -1164,7 +1171,7 @@ original `.swf` files. See
 | **M30.2** | Papyrus statement + item parser (full `.psc` parse) | **Closed 2026-05-23** (`ab0eee96`). All four R5 scripts round-trip with zero recovered errors. Unblocks M47.2. |
 | **M47.0** | Event-hooks runtime | **Closed 2026-05-23** (6 phases, `6c51af55..03837739`). `ScriptRegistry`, marker catalog, `script.activate` console command, e2e tests. |
 | **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + OR-precedence evaluator; the initial 7-function catalog has since grown to 19 modeled variants and multiple quest/scene/package consumers. |
-| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (57.0% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
+| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (57.2% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
 | **M43** | Quests & dialogue | **Quest/scene core shipped; broader integration open** — lifecycle, stages, objectives, aliases, fragments and scene phases are live. Story Manager search/payloads and full dialogue/UI integration remain open; see ROADMAP. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).

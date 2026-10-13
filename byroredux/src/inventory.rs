@@ -1147,7 +1147,12 @@ pub(crate) fn container_loot_system(world: &World, _dt: f32) {
         })
         .unwrap_or_default();
     for (target, activator) in events {
-        if activator != player || target == player {
+        // M47.2 — a script-blocked reference keeps its OnActivate but not
+        // its default pickup / container processing.
+        if activator != player
+            || target == player
+            || byroredux_scripting::default_activation_blocked(world, target)
+        {
             continue;
         }
         if is_loot_source(world, target) {

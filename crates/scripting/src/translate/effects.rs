@@ -820,6 +820,10 @@ pub enum Effect {
         actor_value: ObjectRef,
         value: f32,
     },
+    /// M47.2 — `<object>.BlockActivation([abBlocked = true][,
+    /// abHideActivateText])`: blocks or unblocks the reference's default
+    /// activation, recorded in [`crate::ReferenceActivationBlocks`].
+    BlockActivation { object: ObjectRef, blocked: bool },
     /// M47.2 — Skyrim's `<actor>.SetAV("Name", value)` /
     /// `SetActorValue("Name", value)`: [`Self::SetActorValue`] with the actor
     /// value named as Papyrus spells it, resolved through
@@ -1626,6 +1630,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_set_actor_value,
     prim_change_perk,
     prim_force_alias,
+    prim_block_activation,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2147,6 +2152,21 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
 /// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
 /// value setter (`GlobalVariable.SetValue` takes one argument and is
 /// [`prim_set_global_value`]'s). The value must be a numeric literal.
+/// `BlockActivation(abBlocked = true)` (Skyrim); FO4 / Starfield add
+/// `abHideActivateText = false`, a prompt flag accepted as a literal. The
+/// receiver is the reference (an alias getter resolves through it).
+fn prim_block_activation(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "BlockActivation")?;
+    if args.len() > 2 {
+        return None;
+    }
+    bool_arg(args, 1)?;
+    Some(Effect::BlockActivation {
+        object: receiver_object(object, scope)?,
+        blocked: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
 /// `<alias>.ForceRefTo(akRef)` / `<alias>.Clear()` — the CK's *ReferenceAlias*
 /// (and *Alias*) script functions. The receiver is the alias property itself.
 fn prim_force_alias(e: &Expr, scope: &Scope) -> Option<Effect> {
@@ -3677,6 +3697,37 @@ mod tests {
                 "{call}"
             );
         }
+    }
+
+    /// M47.2 — `BlockActivation` with its default, an explicit unblock, and
+    /// FO4's prompt flag.
+    #[test]
+    fn block_activation_lowers() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             SomeDoor.BlockActivation()\n\
+             Alias_Gate.GetRef().BlockActivation(false)\n\
+             SomeDoor.BlockActivation(true, true)\n EndFunction\n",
+        );
+        let door = || ObjectRef::Property("SomeDoor".into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::BlockActivation {
+                    object: door(),
+                    blocked: true
+                },
+                Effect::BlockActivation {
+                    object: ObjectRef::Property("Alias_Gate".into()),
+                    blocked: false
+                },
+                Effect::BlockActivation {
+                    object: door(),
+                    blocked: true
+                },
+            ])
+        );
     }
 
     /// M47.2 — FO4's alias `TryToSetActorValue` and Skyrim's named `SetAV` /

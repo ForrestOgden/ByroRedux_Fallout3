@@ -338,7 +338,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v46 -> v47 (M47.2): a new resource column, `AliasOverrides` (scripted
 /// `ForceRefTo` / `Clear`). A pre-v47 save has none, so a forced alias would
 /// fall back to its authored fill; rejected like the other column additions.
-pub const FORMAT_MAJOR: u16 = 47;
+///
+/// v47 -> v48 (M47.2): a new resource column, `ReferenceActivationBlocks`
+/// (script `BlockActivation`). A pre-v48 save has none, so a blocked door
+/// would open again; rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 48;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

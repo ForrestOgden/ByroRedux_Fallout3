@@ -1504,7 +1504,12 @@ fn activate_target(world: &World, target: InteractionTarget) {
         }
     };
 
-    let outcome = if target.kind == InteractionKind::Door {
+    // M47.2 — a script-blocked reference still sent `OnActivate` above; its
+    // default processing (the door's transition) does not run.
+    let blocked = byroredux_scripting::default_activation_blocked(world, target.entity);
+    let outcome = if blocked {
+        format!("{event_outcome}; default activation blocked by script")
+    } else if target.kind == InteractionKind::Door {
         match crate::cell_loader::queue_door_transition(world, target.entity) {
             Ok(queued) => {
                 log::info!(
@@ -1898,6 +1903,47 @@ mod tests {
         let trace = world.resource::<InteractionTrace>();
         assert_eq!(trace.activation_count, 1);
         assert!(trace.last.as_ref().unwrap().event_emitted);
+    }
+
+    /// M47.2 — a script-blocked door still sends its `OnActivate` (the
+    /// `ActivateEvent`) but does not run its default transition.
+    #[test]
+    fn a_script_blocked_door_emits_activate_but_does_not_transition() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert_resource(ActiveCamera(camera));
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(
+            camera,
+        ));
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Skyrim.esm"),
+            local: LocalFormId(0x0001_2345),
+        });
+        world.insert_resource(pool);
+        world.insert(door, FormIdComponent(form));
+        let mut blocks = byroredux_scripting::ReferenceActivationBlocks::default();
+        blocks.set_blocked(0x0001_2345, true);
+        world.insert_resource(blocks);
+        world
+            .resource_mut::<InputState>()
+            .keys_held
+            .insert(KeyCode::KeyE);
+
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+
+        let events = world.query::<byroredux_scripting::ActivateEvent>().unwrap();
+        assert!(events.get(door).is_some(), "OnActivate still fires");
+        drop(events);
+        let trace = world.resource::<InteractionTrace>();
+        let outcome = &trace.last.as_ref().unwrap().outcome;
+        assert!(outcome.contains("default activation blocked"), "{outcome}");
     }
 
     #[test]

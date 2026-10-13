@@ -731,7 +731,12 @@ fn npc_dialogue_selection_system_inner(world: &World, scratch: &mut NpcDialogueS
     for (npc, activator) in events {
         // The player activates; the player is never its own dialogue target;
         // the dead and the fighting are not conversation partners (#5043).
-        if activator != player || npc == player || npc_refuses_dialogue(world, npc).is_some() {
+        if activator != player
+            || npc == player
+            || npc_refuses_dialogue(world, npc).is_some()
+            // M47.2 — script-blocked activation opens no conversation.
+            || byroredux_scripting::default_activation_blocked(world, npc)
+        {
             continue;
         }
         // The actor identity the alias fill stamped — also what INFO speaker
