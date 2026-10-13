@@ -846,6 +846,36 @@ pub(crate) fn apply_effect(
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
         }
+        Effect::SetActorValue {
+            actor,
+            actor_value,
+            value,
+        } => {
+            let actor = resolve_actor(
+                vmad,
+                world,
+                context,
+                actor,
+                &deferred.scene_actor_bindings,
+                deferred.speaker,
+            )?;
+            let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
+            // `ActorValues` is direct component storage — written in place,
+            // the same nested-acquisition exception the inventory arms take.
+            let Some(mut values) =
+                world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+            else {
+                return None;
+            };
+            if values.get_mut(actor).is_none() {
+                values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+            }
+            values
+                .get_mut(actor)
+                .expect("present or inserted")
+                .set_base(avif, *value);
+            None
+        }
         Effect::ChangeFaction {
             actor,
             faction,
@@ -2091,6 +2121,7 @@ fn apply_quest_scoped_effect(
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
         | Effect::ChangeFaction { .. }
+        | Effect::SetActorValue { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }

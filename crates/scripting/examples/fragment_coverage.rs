@@ -168,6 +168,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::RemoveItem { .. } => "RemoveItem",
         Effect::SetQuestVariable { .. } => "SetQuestVariable",
         Effect::ChangeFaction { .. } => "ChangeFaction",
+        Effect::SetActorValue { .. } => "SetActorValue",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::StartScene { .. } => "StartScene",

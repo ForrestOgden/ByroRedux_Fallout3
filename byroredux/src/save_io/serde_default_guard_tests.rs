@@ -833,7 +833,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // contribute their shapes for the first time. Both were registered
     // unchanged since 26b6a779c — no on-disk shape moved, the scan just
     // stopped being blind to them.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2494_ef1b_8971_49f8;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfb7a_0026_439e_820a;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -895,6 +895,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // from an INFO FormID `u32` to a `(speaker reference FormID, INFO
     // FormID)` pair — Say Once is per actor (CK Topic Info). The set's
     // element shape changed, so a v37 save is rejected.
+    //
+    // M47.2 — refreshed WITHOUT a major bump: `Effect::SetActorValue` was
+    // appended to the saved `Effect` enum. Saves serialize enums tagged by
+    // variant name (serde_json), so every v42 document still decodes; no
+    // existing variant or field changed shape.
     //
     // v41 -> v42 (M47.2) — refreshed WITH a major bump:
     // `ScriptedFactionChanges` joined the saved registry as a NEW resource

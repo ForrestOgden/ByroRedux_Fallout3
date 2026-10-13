@@ -650,6 +650,14 @@ pub enum Effect {
         faction: ObjectRef,
         change: crate::FactionChange,
     },
+    /// M47.2 — FO4 / Starfield `<actor>.SetValue(akActorValue, afValue)`:
+    /// sets the actor value's base (CK *SetValue - ObjectReference*). The
+    /// actor value is a VMAD `ActorValue` property (an AVIF FormID).
+    SetActorValue {
+        actor: ActorRef,
+        actor_value: ObjectRef,
+        value: f32,
+    },
     /// A manifest or engine-owned static provider call used as a sequencing
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
     /// released, then resumes the remaining top-level effects in order.
@@ -1237,6 +1245,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_add_item,
     prim_remove_item,
     prim_change_faction,
+    prim_set_actor_value,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -1631,6 +1640,21 @@ fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
         actor: receiver_actor(object, scope)?,
         faction: receiver_object(&args[0].value.node, scope)?,
         change,
+    })
+}
+
+/// `<actor>.SetValue(akAV, afValue)` — the two-argument form is the actor
+/// value setter (`GlobalVariable.SetValue` takes one argument and is
+/// [`prim_set_global_value`]'s). The value must be a numeric literal.
+fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetValue")?;
+    if args.len() != 2 {
+        return None;
+    }
+    Some(Effect::SetActorValue {
+        actor: receiver_actor(object, scope)?,
+        actor_value: receiver_object(&args[0].value.node, scope)?,
+        value: as_num(&args[1].value.node)?,
     })
 }
 
@@ -2348,7 +2372,7 @@ fn object_expr_ref(value: &Expr, scope: &Scope) -> Option<ObjectRef> {
             .cloned();
     }
     let (alias, args) =
-        method_call(value, "GetRef").or_else(|| method_call(value, "GetActorRef"))?;
+        alias_reference_getter(value)?;
     if !args.is_empty() {
         return None;
     }
@@ -2362,6 +2386,15 @@ fn speaker_expr_ref(value: &Expr, scope: &Scope) -> bool {
         Expr::Ident(name) => scope.speaker_locals.contains(&name.0.to_ascii_lowercase()),
         _ => false,
     }
+}
+
+/// `<alias>.GetRef()` / `.GetActorRef()` (Fallout 4 / Starfield) or
+/// `.GetReference()` / `.GetActorReference()` (Skyrim's `ReferenceAlias`
+/// spelling of the same getters, M47.2).
+fn alias_reference_getter(e: &Expr) -> Option<(&Expr, &[byroredux_papyrus::ast::CallArg])> {
+    ["GetRef", "GetActorRef", "GetReference", "GetActorReference"]
+        .into_iter()
+        .find_map(|getter| method_call(e, getter))
 }
 
 fn player_expr_ref(value: &Expr, scope: &Scope) -> bool {
@@ -2382,7 +2415,7 @@ fn receiver_object(object: &Expr, scope: &Scope) -> Option<ObjectRef> {
     if let Expr::Cast { expr, .. } = object {
         return receiver_object(&expr.node, scope);
     }
-    let alias_getter = method_call(object, "GetRef").or_else(|| method_call(object, "GetActorRef"));
+    let alias_getter = alias_reference_getter(object);
     if let Some((alias, args)) = alias_getter {
         if !args.is_empty() {
             return None;
@@ -3249,6 +3282,55 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{call}");
         }
+    }
+
+    /// M47.2 — Skyrim's `ReferenceAlias.GetReference()` /
+    /// `GetActorReference()` resolve like FO4's `GetRef()` / `GetActorRef()`.
+    #[test]
+    fn skyrim_alias_getters_resolve_like_fo4s() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_Treasure.GetReference().Enable(false)\n\
+             Alias_Cicero.GetActorReference().EvaluatePackage()\n EndFunction\n",
+        );
+        let effects = lower_fragment(&body).expect("both lower");
+        assert!(matches!(
+            &effects[0],
+            Effect::Enable { object, .. } if *object == ObjectRef::Property("Alias_Treasure".into())
+        ));
+        assert_eq!(
+            effects[1],
+            Effect::EvaluatePackage { actor: ObjectRef::Property("Alias_Cicero".into()) }
+        );
+    }
+
+    /// M47.2 — FO4 / Starfield two-argument `SetValue(akAV, afValue)` sets an
+    /// actor value; the one-argument form stays `GlobalVariable.SetValue`.
+    #[test]
+    fn lowers_actor_value_set_value() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_SkinnyMalone.GetActorRef().SetValue(pAggression, 2.0)\n\
+             SomeGlobal.SetValue(3.0)\n EndFunction\n",
+        );
+        let effects = lower_fragment(&body).expect("lowers");
+        assert_eq!(
+            effects[0],
+            Effect::SetActorValue {
+                actor: ActorRef::Object(ObjectRef::Property("Alias_SkinnyMalone".into())),
+                actor_value: ObjectRef::Property("pAggression".into()),
+                value: 2.0,
+            }
+        );
+        assert!(matches!(effects[1], Effect::SetGlobalValue { .. }));
+        let computed = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_A.GetActorRef().SetValue(pAggression, fLevel)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&computed), None);
     }
 
     #[test]

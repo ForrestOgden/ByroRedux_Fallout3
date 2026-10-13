@@ -4624,3 +4624,27 @@ fn fragment_idle_forms_collects_play_idle_targets() {
     let forms = crate::fragment_idle_forms(&world);
     assert_eq!(forms, [WAVE, SIT].into_iter().collect());
 }
+
+/// M47.2 — `SetActorValue` sets the base of the VMAD-named AVIF on the
+/// resolved actor.
+#[test]
+fn dispatch_set_actor_value_sets_the_base() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::ActorValues;
+
+    const AGGRESSION: u32 = 0x0000_02BB;
+    let mut world = fixture();
+    world.register::<ActorValues>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("pAggression", AGGRESSION)]),
+        vec![Effect::SetActorValue {
+            actor: ActorRef::Player,
+            actor_value: ObjectRef::Property("pAggression".into()),
+            value: 2.0,
+        }],
+    );
+    assert_eq!(world.get::<ActorValues>(player).unwrap().current(AGGRESSION), 2.0);
+}
