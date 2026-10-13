@@ -62,30 +62,34 @@ pub(crate) fn resolve_property_form_id(
 }
 
 /// The number of items an [`crate::translate::effects::ItemCount`] names: the
-/// literal, or the global's current value truncated toward zero (Papyrus's
-/// `Float` → `Int` cast). `None` — the effect skips — for an unresolved global
+/// literal, or the global's / run-time value truncated toward zero (Papyrus's
+/// `Float` → `Int` cast). `None` — the effect skips — for an unresolved read
 /// or a negative value.
 fn resolve_item_count(
     count: &crate::translate::effects::ItemCount,
+    context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
     world: &World,
+    stages: &QuestStageState,
+    deferred: &DeferredFragmentEffects,
 ) -> Option<u32> {
     use crate::translate::effects::ItemCount;
-    match count {
-        ItemCount::Literal(count) => Some(*count),
+    let value = match count {
+        ItemCount::Literal(count) => return Some(*count),
         ItemCount::Global(global) => {
             let form_id = resolve_property_form_id(vmad, global.property_name())?;
-            let value = world
+            world
                 .try_resource::<crate::Globals>()
-                .and_then(|globals| globals.get(form_id))?;
-            let count = value.trunc();
-            if !(0.0..=u32::MAX as f32).contains(&count) {
-                log::debug!("fragment item count skipped: global {form_id:08X} = {value}");
-                return None;
-            }
-            Some(count as u32)
+                .and_then(|globals| globals.get(form_id))?
         }
+        ItemCount::Value(value) => evaluate_value(value, context, vmad, world, stages, deferred)?,
+    };
+    let count = value.trunc();
+    if !(0.0..=u32::MAX as f32).contains(&count) {
+        log::debug!("fragment item count skipped: {count:?} = {value}");
+        return None;
     }
+    Some(count as u32)
 }
 
 /// Resolve an [`ObjectRef`] all the way to a live entity. Direct VMAD object
@@ -996,7 +1000,7 @@ pub(crate) fn apply_effect(
             apply_global_effect(effect, vmad, world)
         }
         Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
-            apply_inventory_effect(effect, context, vmad, world, deferred)
+            apply_inventory_effect(effect, context, vmad, world, stages, deferred)
         }
         Effect::MoveTo { .. }
         | Effect::MovePlayerTo { .. }
@@ -1122,7 +1126,7 @@ pub(crate) fn apply_effect(
             None
         }
         Effect::RewardPlayerXp { amount, direct } => {
-            let amount = resolve_item_count(amount, vmad, world)?;
+            let amount = resolve_item_count(amount, context, vmad, world, stages, deferred)?;
             deferred.player_xp.push((amount, *direct));
             None
         }
@@ -1585,6 +1589,7 @@ fn apply_inventory_effect(
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
     world: &World,
+    stages: &QuestStageState,
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
@@ -1602,7 +1607,7 @@ fn apply_inventory_effect(
                 deferred.speaker,
             )?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
-            let count = &resolve_item_count(count, vmad, world)?;
+            let count = &resolve_item_count(count, context, vmad, world, stages, deferred)?;
             add_items(world, container_entity, item_form_id, *count);
             None
         }
@@ -1615,7 +1620,7 @@ fn apply_inventory_effect(
             let bindings = &deferred.scene_actor_bindings;
             let source = resolve_actor(vmad, world, context, container, bindings, deferred.speaker)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
-            let count = &resolve_item_count(count, vmad, world)?;
+            let count = &resolve_item_count(count, context, vmad, world, stages, deferred)?;
             let destination = match destination {
                 Some(via) => Some(resolve_actor(vmad, world, context, via, bindings, deferred.speaker)?),
                 None => None,
@@ -2434,8 +2439,8 @@ fn apply_ai_combat_effect(
             None
         }
         Effect::EvaluatePackage { actor } => {
-            let actor =
-                resolve_object(vmad, world, context, actor, &deferred.scene_actor_bindings)?;
+            let bindings = &deferred.scene_actor_bindings;
+            let actor = resolve_actor(vmad, world, context, actor, bindings, deferred.speaker)?;
             if let Some(mut requests) = world.query_mut::<crate::EvaluatePackageRequest>() {
                 requests.insert(actor, crate::EvaluatePackageRequest);
             }

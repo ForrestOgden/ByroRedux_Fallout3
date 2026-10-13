@@ -35,7 +35,7 @@ use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::{
-    lower_fragment_with_quest_properties, Effect, FragmentGuard,
+    lower_fragment_with_quest_properties, ActorRef, Effect, FragmentGuard,
 };
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
@@ -1759,8 +1759,8 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                             Some([
                                 Effect::Disable { object, fade_out: false },
                                 Effect::SetStage { quest: QuestRef::SelfRef, stage: 27 },
-                                Effect::EvaluatePackage { actor: horse_1 },
-                                Effect::EvaluatePackage { actor: horse_2 },
+                                Effect::EvaluatePackage { actor: ActorRef::Object(horse_1) },
+                                Effect::EvaluatePackage { actor: ActorRef::Object(horse_2) },
                             ]) if object.property_name().eq_ignore_ascii_case("CiviliansOutsideHelgenMarker")
                                 && horse_1.property_name().eq_ignore_ascii_case("Alias_CartHorse1")
                                 && horse_2.property_name().eq_ignore_ascii_case("Alias_CartHorse2")

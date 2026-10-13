@@ -295,6 +295,16 @@ fn classify_value(e: &Expr, scope: &Scope) -> Option<ValueExpr> {
         if scope.runtime_locals.contains(&key) {
             return Some(ValueExpr::Local(local_slot(scope, &key)));
         }
+        // M47.2 — a number held by the quest's own script: a property's
+        // `::X_var` backing variable, or an inlined quest script's variable.
+        // Against the quest's VMAD that is the quest script variable
+        // `GetVMQuestVariable` reads (its authored value until written).
+        if scope.vmad_is_quest
+            && !scope.fragment_properties_off
+            && (key.starts_with("::") || scope.script_variables.contains(&key))
+        {
+            return Some(ValueExpr::QuestVariable(QuestRef::SelfRef, name.0.clone()));
+        }
     }
     if let Expr::BinaryOp { op, left, right } = e {
         let op = match op {
@@ -1126,7 +1136,8 @@ pub enum Effect {
     RegisterPlayerAnimationEvent { event: CinematicAnimationEvent },
     /// `<actor>.EvaluatePackage()` — queues the actor's active scene package
     /// for condition re-selection and command restart on the next package tick.
-    EvaluatePackage { actor: ObjectRef },
+    /// An [`ActorRef`] since M47.2, so a dialogue line's speaker re-evaluates.
+    EvaluatePackage { actor: ActorRef },
     /// Latent `Utility.Wait(seconds)`. Production dispatch pauses here and
     /// resumes the remaining effects through `FragmentExecutionQueue`.
     Wait { seconds: f32 },
@@ -2841,6 +2852,9 @@ fn prim_fail_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
 pub enum ItemCount {
     Literal(u32),
     Global(ObjectRef),
+    /// M47.2 — a number computed at run time (`aiCount * 2`,
+    /// `Amount.GetValueInt() * Reward.GetValueInt()`).
+    Value(ValueExpr),
 }
 
 /// Positional count argument `idx` (default `default` when absent). See
@@ -2858,7 +2872,13 @@ fn item_count_arg(
         // A negative literal declines.
         return u32::try_from(value).ok().map(ItemCount::Literal);
     }
-    global_value_read(&arg.value.node, scope).map(ItemCount::Global)
+    if as_num(&arg.value.node).is_some() {
+        // A fractional or negative literal is not a count.
+        return None;
+    }
+    global_value_read(&arg.value.node, scope)
+        .map(ItemCount::Global)
+        .or_else(|| classify_value(&arg.value.node, scope).map(ItemCount::Value))
 }
 
 /// A GlobalVariable named directly (`Global`) or through a property of the
@@ -2903,9 +2923,48 @@ fn global_value_read(expr: &Expr, scope: &Scope) -> Option<ObjectRef> {
     }
 }
 
+/// M47.2 — `Game.GetCaps()` (FO4's `Game.psc`: `Return GetForm(15) as
+/// MiscObject`), cast or not.
+fn is_get_caps(e: &Expr) -> bool {
+    let mut e = e;
+    while let Expr::Cast { expr, .. } = e {
+        e = &expr.node;
+    }
+    static_call(e, "Game", "GetCaps").is_some_and(|args| args.is_empty())
+}
+
+/// M47.2 — the player gaining or losing a literal count of `Game.GetCaps()`
+/// is [`Effect::PlayerCaps`], the effect `GivePlayerCaps` /
+/// `RemovePlayerCaps` lower to.
+fn player_caps_transfer(
+    container: &ActorRef,
+    item: &Expr,
+    count: &ItemCount,
+    sign: i32,
+) -> Option<Effect> {
+    if !matches!(container, ActorRef::Player) || !is_get_caps(item) {
+        return None;
+    }
+    let ItemCount::Literal(count) = count else {
+        return None;
+    };
+    Some(Effect::PlayerCaps {
+        delta: sign * i32::try_from(*count).ok()?,
+    })
+}
+
 fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "AddItem")?;
+    if args.is_empty() || args.len() > 3 {
+        return None;
+    }
     let container = receiver_actor(object, scope)?;
+    if let Some(caps) = item_count_arg(args, 1, 1, scope).and_then(|count| {
+        player_caps_transfer(&container, &args[0].value.node, &count, 1)
+    }) {
+        bool_arg(args, 2)?;
+        return Some(caps);
+    }
     let item = receiver_object(&args.first()?.value.node, scope)?;
     let count = item_count_arg(args, 1, 1, scope)?;
     // Optional 3rd arg (`abSilent`) — accepted only as a literal (parsed,
@@ -2932,6 +2991,14 @@ fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     let container = receiver_actor(object, scope)?;
+    let no_destination = matches!(args.get(3).map(|arg| &arg.value.node), None | Some(Expr::NoneLit));
+    if let Some(caps) = item_count_arg(args, 1, 1, scope)
+        .filter(|_| no_destination)
+        .and_then(|count| player_caps_transfer(&container, &args[0].value.node, &count, -1))
+    {
+        bool_arg(args, 2)?;
+        return Some(caps);
+    }
     let item = receiver_object(&args[0].value.node, scope)?;
     let count = item_count_arg(args, 1, 1, scope)?;
     bool_arg(args, 2)?;
@@ -3977,7 +4044,9 @@ fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
     // empty alias resolves to nothing and is skipped at run time.
     if let Some((object, args)) = method_call(e, "TryToEvaluatePackage") {
         return args.is_empty().then(|| {
-            receiver_object(object, scope).map(|actor| Effect::EvaluatePackage { actor })
+            receiver_object(object, scope).map(|actor| Effect::EvaluatePackage {
+                actor: ActorRef::Object(actor),
+            })
         })?;
     }
     let (object, args) = method_call(e, "EvaluatePackage")?;
@@ -3985,7 +4054,7 @@ fn prim_evaluate_package(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     Some(Effect::EvaluatePackage {
-        actor: receiver_object(object, scope)?,
+        actor: receiver_actor(object, scope)?,
     })
 }
 
@@ -5109,7 +5178,7 @@ mod tests {
                     killer: Some(ActorRef::Player),
                 },
                 Effect::EvaluatePackage {
-                    actor: alias("Alias_Spectator1"),
+                    actor: ActorRef::Object(alias("Alias_Spectator1")),
                 },
             ])
         );
@@ -5481,7 +5550,7 @@ mod tests {
     fn remove_item_declines_what_it_cannot_read() {
         for call in [
             "Game.GetPlayer().RemoveItem(Gold001, GetRansom(), false, None)",
-            "Game.GetPlayer().RemoveItem(Game.GetCaps(), 50, false, None)",
+            "Game.GetPlayer().RemoveItem(Game.GetCaps(), GetRansom(), false, None)",
             "Game.GetPlayer().RemoveItem(Gold001, 5, bQuiet, None)",
             "Game.GetPlayer().RemoveItem(Gold001, -5)",
             "Game.GetPlayer().RemoveItem(Gold001, 5, false, None, 1)",
@@ -5492,6 +5561,25 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{call}");
         }
+    }
+
+    /// M47.2 — the player gaining or losing a literal count of
+    /// `Game.GetCaps()` is `PlayerCaps`, like `GivePlayerCaps` /
+    /// `RemovePlayerCaps`.
+    #[test]
+    fn get_caps_transfers_are_player_caps() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\nFunction Fragment_8()\n\
+             Game.GetPlayer().RemoveItem(Game.GetCaps() as Form, 75, false, None)\n\
+             Game.GetPlayer().AddItem(Game.GetCaps() as Form, 20, false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::PlayerCaps { delta: -75 },
+                Effect::PlayerCaps { delta: 20 },
+            ])
+        );
     }
 
     /// M47.2 — quest-script property writes: through a quest local bound
@@ -5709,7 +5797,7 @@ mod tests {
         ));
         assert_eq!(
             effects[1],
-            Effect::EvaluatePackage { actor: ObjectRef::Property("Alias_Cicero".into()) }
+            Effect::EvaluatePackage { actor: ActorRef::Object(ObjectRef::Property("Alias_Cicero".into())) }
         );
     }
 
@@ -7311,7 +7399,7 @@ mod tests {
         assert_eq!(
             lower_fragment(&body),
             Some(vec![Effect::EvaluatePackage {
-                actor: ObjectRef::Property("Alias_Hadvar".into()),
+                actor: ActorRef::Object(ObjectRef::Property("Alias_Hadvar".into())),
             }])
         );
     }
@@ -8435,7 +8523,7 @@ mod tests {
         assert_eq!(
             lower_fragment(&body),
             Some(vec![Effect::EvaluatePackage {
-                actor: ObjectRef::Property("Alias_Hadvar".into()),
+                actor: ActorRef::Object(ObjectRef::Property("Alias_Hadvar".into())),
             }])
         );
     }

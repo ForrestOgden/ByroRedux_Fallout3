@@ -2560,10 +2560,10 @@ fn dispatch_disable_then_stage_cascade_and_package_evaluation() {
                     stage: 27,
                 },
                 Effect::EvaluatePackage {
-                    actor: ObjectRef::Property("Horse1".into()),
+                    actor: ActorRef::Object(ObjectRef::Property("Horse1".into())),
                 },
                 Effect::EvaluatePackage {
-                    actor: ObjectRef::Property("Horse2".into()),
+                    actor: ActorRef::Object(ObjectRef::Property("Horse2".into())),
                 },
             ],
         );
@@ -3294,9 +3294,9 @@ fn dispatch_player_control_and_evaluate_package_effects() {
                 Effect::SetPlayerAiDriven { ai_driven: true },
                 Effect::SetHudCartMode { cart_mode: true },
                 Effect::EvaluatePackage {
-                    actor: crate::translate::compose::ObjectRef::Property(
+                    actor: ActorRef::Object(crate::translate::compose::ObjectRef::Property(
                         "::Alias_Hadvar_var".into(),
-                    ),
+                    )),
                 },
             ],
         );
@@ -5609,4 +5609,35 @@ fn show_barter_menu_requests_the_vendor() {
     );
     assert_eq!(crate::menus::take_barter_request(&world), Some(vendor));
     assert_eq!(crate::menus::take_barter_request(&world), None, "consumed once");
+}
+
+/// M47.2 — an item count computed at run time (`Amount * Reward`).
+#[test]
+fn item_counts_evaluate_run_time_values() {
+    use crate::translate::effects::{ArithOp, ItemCount, ValueExpr};
+    use byroredux_core::ecs::components::Inventory;
+    let world = fixture();
+    let player = world.resource::<crate::papyrus_demo::PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Gold001", 0xF)]),
+        vec![Effect::AddItem {
+            container: ActorRef::Player,
+            item: ObjectRef::Property("Gold001".into()),
+            count: ItemCount::Value(ValueExpr::Arith(
+                Box::new(ValueExpr::Literal(3.0)),
+                ArithOp::Mul,
+                Box::new(ValueExpr::Literal(25.0)),
+            )),
+        }],
+    );
+    let gold: u32 = world
+        .get::<Inventory>(player)
+        .unwrap()
+        .items
+        .iter()
+        .filter(|stack| stack.base_form_id == 0xF)
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(gold, 75);
 }
