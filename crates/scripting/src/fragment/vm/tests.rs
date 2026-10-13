@@ -1398,6 +1398,34 @@ fn sound_play_records_a_request() {
     );
 }
 
+/// `EnableLinkChain` / `DisableLinkChain` follow the unkeyworded links from the
+/// reference, enabling (disabling) each, and stop at a loop.
+#[test]
+fn link_chains_are_followed() {
+    const NEXT: u32 = 0x0001_0F7A;
+    const LAST: u32 = 0x0001_0F7B;
+    let script = parsed_source(
+        "ScriptName QF_VmChain extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n Marker.EnableLinkChain()\n EndFunction\n\
+         Function Fragment_2()\n Marker.DisableLinkChain()\n EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    {
+        let mut links = world.resource_mut::<crate::LinkedRefOverrides>();
+        links.set(MARKER, 0, NEXT);
+        links.set(NEXT, 0, LAST);
+        links.set(LAST, 0, MARKER); // a loop back to the start
+        let mut enable = world.resource_mut::<crate::fragment::ReferenceEnableState>();
+        enable.set_enabled(NEXT, false);
+        enable.set_enabled(LAST, false);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, NEXT) && crate::fragment::reference_enabled(&world, LAST));
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]
@@ -2033,7 +2061,7 @@ fn structs_and_array_methods_run() {
          EndFunction\n",
     );
     assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
-    let mut world = world_with_fragment(script);
+    let world = world_with_fragment(script);
     {
         let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
         let mut vmad = vmad();
@@ -2054,7 +2082,6 @@ fn structs_and_array_methods_run() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert!(crate::fragment::reference_enabled(&world, MARKER), "entries[0].Target.Enable()");
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
-    let _ = &mut world;
 }
 
 /// A package's Begin / Change fragments run with `akActor` bound to the

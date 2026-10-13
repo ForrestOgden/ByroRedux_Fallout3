@@ -1174,6 +1174,11 @@ the same store — "returns this value, if any. It otherwise returns 0".
   what let Skyrim's ambient critter spawners (`CritterSpawn`, 3,300 references) run: they
   gate on the game hour, the weather and the player's distance, then `PlaceAtMe` a critter.
 
+- `EnableLinkChain(keyword)` / `DisableLinkChain(keyword)` (CK: the function is script code
+  over `GetLinkedRef`) follow the keyword's links from the reference, enabling (disabling)
+  each, ending at a loop; `GetEditorLocation()` is the reference's editor location
+  (`location::editor_location`).
+
 ### Sound.Play (M47.2)
 
 CK *Play - Sound*: "Plays the sound from the location of the specified object reference"

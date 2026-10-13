@@ -2448,6 +2448,9 @@ impl Vm<'_> {
                     | "getfactionowner"
                     | "getactorowner"
                     | "play"
+                    | "enablelinkchain"
+                    | "disablelinkchain"
+                    | "geteditorlocation"
             );
         if !reads {
             return Ok(None);
@@ -2514,6 +2517,34 @@ impl Vm<'_> {
                         .map_or(Value::None, Value::Form),
                 )
             }
+            // CK *EnableLinkChain* / *DisableLinkChain*: the function is script
+            // code over `GetLinkedRef` — follow the keyword's links from this
+            // reference, enabling (or disabling) each. A chain that loops back
+            // ends there.
+            (Value::Form(start), "enablelinkchain" | "disablelinkchain") if args.len() <= 2 => {
+                let values = self.eval_args(frame, args)?;
+                let keyword = match values.first() {
+                    Some(Value::Form(keyword)) => *keyword,
+                    _ => 0,
+                };
+                let enabled = name == "enablelinkchain";
+                let mut seen = std::collections::HashSet::new();
+                let mut current = self.linked_ref(*start, keyword);
+                while let Some(link) = current {
+                    if !seen.insert(link) || seen.len() > 256 {
+                        break;
+                    }
+                    self.deferred.reference_enable_changes.push((link, enabled));
+                    current = self.linked_ref(link, keyword);
+                }
+                Some(Value::None)
+            }
+            // CK *GetEditorLocation*: the reference's editor location.
+            (Value::Form(reference), "geteditorlocation") if args.is_empty() => Some(
+                self.entity_of(*reference)
+                    .and_then(|entity| crate::location::editor_location(self.world, entity))
+                    .map_or(Value::None, Value::Form),
+            ),
             // CK *Play - Sound*: "Plays the sound from the location of the
             // specified object reference." The call returns an instance id; the
             // check lets only the statement form through, which drops it.
@@ -4155,7 +4186,14 @@ impl<'l> Checker<'l> {
             (Kind::Object, "getsize") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object, "gettriggerobjectcount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
-            (Kind::Object, "getfactionowner" | "getactorowner") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object, "getfactionowner" | "getactorowner" | "geteditorlocation") if arg_kinds.is_empty() => {
+                return Some(Kind::Object);
+            }
+            (Kind::Object | Kind::Player, "enablelinkchain" | "disablelinkchain")
+                if statement && arg_kinds.len() <= 2 && arg_kinds.iter().all(|a| matches!(a, Arg::Kind(Kind::Object | Kind::Bool) | Arg::Literal(Expr::NoneLit | Expr::BoolLit(_)))) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
                 return Some(Kind::Object);
             }
