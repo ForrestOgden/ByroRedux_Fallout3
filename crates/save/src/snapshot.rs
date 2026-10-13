@@ -487,7 +487,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v92 -> v93 (M47.2): `Effect::DamageActorValue` (`DamageValue`,
 /// `RestoreValue`).
-pub const FORMAT_MAJOR: u16 = 93;
+///
+/// v93 -> v94 (M47.2): the `FormListAdditions` resource column
+/// (`FormList.AddForm`).
+pub const FORMAT_MAJOR: u16 = 94;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -5,9 +5,15 @@
 //! "the form at index aiIndex ... none in case of error (such as wrong index
 //! value)", `HasForm` "whether the passed-in form exists in this form list",
 //! `Find` "the index ... or -1 if it's not a member". The lists are the
-//! records' own; forms scripts add (`AddForm`) are not modelled. A list's null
-//! entries (`0xFFFFFFFF`, the sentinel the parser keeps for slot positions)
-//! are no forms and are dropped here. Derived from the records, never saved.
+//! records' own, plus the forms scripts added (`AddForm`: "Adds the given form
+//! to the form list"; `RemoveAddedForm`: "Only forms added to the list via calls
+//! to AddForm can be removed"; `Revert`: "Removes all script added forms from the
+//! list"), kept in the saved [`FormListAdditions`]. The CK does not say whether
+//! adding a form already present adds it again or whether removing takes one
+//! occurrence or all: an add always appends, and a removal takes every added
+//! occurrence. A list's null entries (`0xFFFFFFFF`, the sentinel the parser
+//! keeps for slot positions) are no forms and are dropped here. The records'
+//! lists are derived, never saved.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,6 +35,63 @@ impl FormLists {
     }
 }
 
+/// One script edit of a form list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormListChange {
+    Add { list: u32, form: u32 },
+    RemoveAdded { list: u32, form: u32 },
+    Revert { list: u32 },
+}
+
+/// The forms scripts added to each list, in order. Saved: a script's `AddForm`
+/// must survive a reload.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct FormListAdditions {
+    added: std::collections::BTreeMap<u32, Vec<u32>>,
+}
+
+impl Resource for FormListAdditions {}
+
+impl FormListAdditions {
+    pub fn apply(&mut self, change: FormListChange) {
+        match change {
+            FormListChange::Add { list, form } => self.added.entry(list).or_default().push(form),
+            FormListChange::RemoveAdded { list, form } => {
+                if let Some(forms) = self.added.get_mut(&list) {
+                    forms.retain(|&added| added != form);
+                    if forms.is_empty() {
+                        self.added.remove(&list);
+                    }
+                }
+            }
+            FormListChange::Revert { list } => {
+                self.added.remove(&list);
+            }
+        }
+    }
+
+    /// The forms scripts added to `list`.
+    pub fn of(&self, list: u32) -> &[u32] {
+        self.added.get(&list).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// `list`'s forms as scripts see them: the record's, then the added ones, with
+/// the `pending` edits of a run still in flight applied on top.
+pub fn forms_of(world: &World, list: u32, pending: &[FormListChange]) -> Option<Vec<u32>> {
+    let mut forms = world.try_resource::<FormLists>()?.get(list)?.to_vec();
+    let mut additions = world
+        .try_resource::<FormListAdditions>()
+        .map(|additions| additions.clone())
+        .unwrap_or_default();
+    for &change in pending {
+        additions.apply(change);
+    }
+    forms.extend_from_slice(additions.of(list));
+    Some(forms)
+}
+
 /// Install the load order's form lists; returns how many.
 pub fn install_form_lists(world: &mut World, index: &EsmIndex) -> usize {
     let lists: HashMap<u32, Vec<u32>> = index
@@ -48,6 +111,19 @@ pub fn install_form_lists(world: &mut World, index: &EsmIndex) -> usize {
 mod tests {
     use super::*;
     use byroredux_plugin::esm::records::FlstRecord;
+
+    #[test]
+    fn script_edits_add_remove_and_revert() {
+        let mut additions = FormListAdditions::default();
+        additions.apply(FormListChange::Add { list: 1, form: 0xA });
+        additions.apply(FormListChange::Add { list: 1, form: 0xB });
+        additions.apply(FormListChange::Add { list: 1, form: 0xA });
+        assert_eq!(additions.of(1), &[0xA, 0xB, 0xA]);
+        additions.apply(FormListChange::RemoveAdded { list: 1, form: 0xA });
+        assert_eq!(additions.of(1), &[0xB]);
+        additions.apply(FormListChange::Revert { list: 1 });
+        assert!(additions.of(1).is_empty());
+    }
 
     #[test]
     fn null_entries_are_not_forms() {

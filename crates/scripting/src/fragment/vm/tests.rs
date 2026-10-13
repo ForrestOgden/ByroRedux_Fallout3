@@ -2646,6 +2646,40 @@ fn get_nth_linked_ref_follows_the_chain_under_a_keyword() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// A form list's script edits: `AddForm` appends, `RemoveAddedForm` takes added
+/// forms back, `Revert` drops them all; the run sees its own edits and they
+/// reach the saved additions.
+#[test]
+fn form_list_edits_are_seen_by_the_run_and_kept() {
+    let script = parsed_source(
+        "ScriptName QF_VmFormList extends Quest\n\
+         FormList Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Marker.AddForm(Marker)\n\
+           If Marker.GetSize() == 3 && Marker.HasForm(Marker)\n\
+             Marker.RemoveAddedForm(Marker)\n\
+             If Marker.GetSize() == 2\n\
+               Marker.AddForm(Marker)\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.form_lists.insert(
+        MARKER,
+        byroredux_plugin::esm::records::FlstRecord { form_id: MARKER, entries: vec![0xA, 0xB], ..Default::default() },
+    );
+    crate::install_form_lists(&mut world, &index);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert_eq!(world.resource::<crate::FormListAdditions>().of(MARKER), &[MARKER], "the kept edit");
+    assert_eq!(crate::forms_of(&world, MARKER, &[]), Some(vec![0xA, 0xB, MARKER]));
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

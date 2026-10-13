@@ -143,7 +143,7 @@ pub use alias_collections::{AliasCollections, CollectionAliasKinds};
 pub use editor_location::EditorLocation;
 pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
-pub use form_lists::{install_form_lists, FormLists};
+pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListChange, FormLists};
 pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};
@@ -341,6 +341,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {
         world.insert_resource(LinkedRefOverrides::default());
+    }
+    // M47.2 — forms scripts added to form lists (saved).
+    if world.try_resource::<FormListAdditions>().is_none() {
+        world.insert_resource(FormListAdditions::default());
     }
     // M47.2 — scripted SetLocRefType assignments (saved).
     if world.try_resource::<LocRefTypeOverrides>().is_none() {

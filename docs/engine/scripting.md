@@ -1271,6 +1271,19 @@ winner, a re-selection, a combat suspension), and that report now also keeps
 a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
 it as a value; an actor running none reads None.
 
+### FormList.AddForm / RemoveAddedForm / Revert (M47.2)
+
+CK *FormList Script*: `AddForm` "adds the given form to the form list", `RemoveAddedForm`
+removes a form ("only forms added to the list via calls to AddForm can be removed") and `Revert`
+"removes all script added forms from the list". The records' own lists stay derived; the forms
+scripts added live in the saved `FormListAdditions` (list FormID to added forms, in order), and
+`forms_of` is the one read every `GetSize` / `GetAt` / `HasForm` / `Find` uses: the record's forms,
+then the added ones, with the edits of the run still in flight applied on top (applied to the
+resource when the run's guards drop, so a run sees its own `AddForm`). The CK does not say whether
+adding a present form adds it again or whether removal takes one occurrence or all, so an add
+always appends and a removal takes every added occurrence. Leveled lists' `AddForm(form, level,
+count)` is a different call and stays declined.
+
 ### Terminal fragments (M47.2)
 
 A Fallout 4 / Starfield terminal's `VMAD` binds `Fragment_Terminal_NN(akTerminalRef)` to its

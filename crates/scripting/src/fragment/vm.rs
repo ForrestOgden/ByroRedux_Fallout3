@@ -2594,6 +2594,9 @@ impl Vm<'_> {
                     | "getfactionreaction"
                     | "getlinkedrefchain"
                     | "getlinkedrefchildren"
+                    | "addform"
+                    | "removeaddedform"
+                    | "revert"
             );
         if !reads {
             return Ok(None);
@@ -2851,6 +2854,28 @@ impl Vm<'_> {
                 };
                 Some(self.linked_ref(*form, keyword).map_or(Value::None, Value::Form))
             }
+            // CK *FormList Script*: `AddForm` "adds the given form to the form
+            // list", `RemoveAddedForm` removes "only forms added ... via calls
+            // to AddForm", `Revert` "removes all script added forms".
+            (Value::Form(list), "addform" | "removeaddedform" | "revert")
+                if self.form_list(*list).is_some() && args.len() == usize::from(name != "revert") =>
+            {
+                let change = if name == "revert" {
+                    crate::FormListChange::Revert { list: *list }
+                } else {
+                    let form = match self.eval(frame, &args[0].value.node)? {
+                        Value::Form(form) if form != 0 => form,
+                        _ => return stop(format!("{name} without a form")),
+                    };
+                    if name == "addform" {
+                        crate::FormListChange::Add { list: *list, form }
+                    } else {
+                        crate::FormListChange::RemoveAdded { list: *list, form }
+                    }
+                };
+                self.deferred.form_list_changes.push(change);
+                Some(Value::None)
+            }
             // CK *GetLinkedRefChain*: the references the object is linked to
             // under the keyword, and whatever those are linked to, and so on;
             // "Will stop if it finds a loop", or at `iMaxExpectedLinkedRefs`
@@ -2953,9 +2978,7 @@ impl Vm<'_> {
 
     /// The forms of the `FLST` `list`, if it is one.
     fn form_list(&self, list: u32) -> Option<Vec<u32>> {
-        self.world
-            .try_resource::<crate::FormLists>()
-            .and_then(|lists| lists.get(list).map(<[u32]>::to_vec))
+        crate::forms_of(self.world, list, &self.deferred.form_list_changes)
     }
 
     fn entity_form(&self, entity: EntityId) -> Option<u32> {
@@ -4629,6 +4652,12 @@ impl<'l> Checker<'l> {
             (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
                 return Some(Kind::Object);
             }
+            (Kind::Object, "addform" | "removeaddedform")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Quest)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object, "revert") if statement && arg_kinds.is_empty() => return Some(Kind::None),
             (Kind::Object, "hasform") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Quest)]) => {
                 return Some(Kind::Bool);
             }

@@ -453,6 +453,10 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetLocRefType`s: (reference, ref type or 0), applied to
     /// [`crate::LocRefTypeOverrides`] after the guards drop.
     loc_ref_type_changes: Vec<(u32, u32)>,
+    /// M47.2 — form list edits a run made, applied to
+    /// [`crate::FormListAdditions`] after the guards drop (and visible to the
+    /// run's own later reads).
+    pub(crate) form_list_changes: Vec<crate::FormListChange>,
     /// M47.2 — the handle a run draws `PlaceAtMe` FormIDs through, taken
     /// before the quest-state guards so the VM never locks
     /// [`crate::CreatedReferences`].
@@ -603,6 +607,7 @@ impl DeferredFragmentEffects {
             skill_advances: Vec::new(),
             linked_ref_changes: Vec::new(),
             loc_ref_type_changes: Vec::new(),
+            form_list_changes: Vec::new(),
             scripted_ids: world
                 .try_resource::<crate::CreatedReferences>()
                 .map(|created| created.scripted_ids()),
@@ -798,6 +803,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.linked_ref_changes.clear();
+        }
+        if !self.form_list_changes.is_empty() {
+            if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
+                for change in self.form_list_changes.drain(..) {
+                    additions.apply(change);
+                }
+            }
+            self.form_list_changes.clear();
         }
         if !self.loc_ref_type_changes.is_empty() {
             if let Some(mut types) = world.try_resource_mut::<crate::LocRefTypeOverrides>() {
