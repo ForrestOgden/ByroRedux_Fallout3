@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 95;
+    const BASELINE_MAJOR: u16 = 96;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1009,7 +1009,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // PERK fragments); no saved column holds it.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v94 -> v95):
     // `Effect::StopCombatAlarm`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6f8d_9223_2813_2338;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v95 -> v96):
+    // `Effect::SetCrimeFaction`, the `CrimeFactionOverrides` column.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2be0_0175_cca1_a703;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

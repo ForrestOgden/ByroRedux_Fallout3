@@ -756,6 +756,18 @@ runtime:
   whose target is the receiver (the player included); the CK's alarms are the crime system's,
   which the engine does not have, and the ambient hostility system may start a fresh fight if
   they still see the target.
+- **Crime faction.** `GetCrimeFaction()` ("the faction this actor reports it's crimes to") is a
+  script's `SetCrimeFaction` for that reference, else the base `NPC_`'s `CRIF` (parsed into
+  `NpcRecord.crime_faction_form_id`, installed as the derived `CrimeFactions`). `SetCrimeFaction(
+  akFaction)` records the override in the saved `CrimeFactionOverrides` (`None` clears it) and,
+  as the CK says, adds the actor to the faction if it is not in it; a run sees its own set. An
+  actor with neither has no crime faction: the CK does not say how the engine would pick one
+  from its other factions.
+- **Crime faction.** `GetCrimeFaction()` ("the faction this actor reports its crimes to") reads a
+  script's `SetCrimeFaction` for the reference, else the base `NPC_`'s `CRIF` (`CrimeFactions`,
+  derived); `SetCrimeFaction(faction | None)` also adds the actor to the faction, as the CK says,
+  and is kept in the saved `CrimeFactionOverrides`. An actor with neither has no crime faction:
+  how the engine would choose one from its other factions is not documented.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

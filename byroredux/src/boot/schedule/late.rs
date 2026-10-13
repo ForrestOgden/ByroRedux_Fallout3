@@ -707,6 +707,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's SetLinkedRef / GetLinkedRef.
             .reads_resource::<byroredux_scripting::LinkedRefOverrides>()
             .writes_resource::<byroredux_scripting::LinkedRefOverrides>()
+            // M47.2 — a spoken line's SetCrimeFaction / GetCrimeFaction.
+            .reads_resource::<byroredux_scripting::CrimeFactionOverrides>()
+            .writes_resource::<byroredux_scripting::CrimeFactionOverrides>()
             // M47.2 — a spoken line's FormList.AddForm / GetSize / HasForm.
             .reads_resource::<byroredux_scripting::FormListAdditions>()
             .writes_resource::<byroredux_scripting::FormListAdditions>()

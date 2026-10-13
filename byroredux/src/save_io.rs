@@ -629,6 +629,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::Achievements>("Achievements")
         // M47.2 — ObjectReference.SetLinkedRef links.
         .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
+        // M47.2 — Actor.SetCrimeFaction.
+        .register_resource::<byroredux_scripting::CrimeFactionOverrides>("CrimeFactionOverrides")
         // M47.2 — FormList.AddForm / RemoveAddedForm / Revert.
         .register_resource::<byroredux_scripting::FormListAdditions>("FormListAdditions")
         // M47.2 — ObjectReference.SetLocRefType assignments.

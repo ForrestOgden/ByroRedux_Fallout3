@@ -2860,6 +2860,53 @@ fn stop_combat_alarm_stands_down_those_fighting_the_receiver() {
     assert!(world.get::<crate::AiCombatState>(bystander).is_some(), "another fight is untouched");
 }
 
+/// `GetCrimeFaction` reads the base's `CRIF`, `SetCrimeFaction` overrides it (and
+/// adds the actor to the faction), and `None` clears it.
+#[test]
+fn crime_faction_is_authored_then_scripted() {
+    use byroredux_core::ecs::components::FactionRanks;
+    use byroredux_plugin::esm::records::NpcRecord;
+    const BASE: u32 = 0x0001_3BA0;
+    const AUTHORED: u32 = 0x0002_8170;
+    let script = parsed_source(
+        "ScriptName QF_VmCrime extends Quest\n\
+         Actor Property Marker Auto\n\
+         Faction Property Alias_Guard Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetCrimeFaction()\n\
+             Marker.SetCrimeFaction(None)\n\
+             If !Marker.GetCrimeFaction()\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    world.register::<FactionRanks>();
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.npcs.insert(BASE, NpcRecord { form_id: BASE, crime_faction_form_id: AUTHORED, ..Default::default() });
+    crate::install_crime_factions(&mut world, &index);
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    let base_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(BASE) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.register::<crate::SceneAliasCandidate>();
+    world.insert(
+        marker,
+        crate::SceneAliasCandidate { reference_form_id: MARKER, base_form_id: BASE, ..Default::default() },
+    );
+    let _ = base_id;
+    assert_eq!(crate::crime_faction(&world, marker, MARKER), Some(AUTHORED));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "read, cleared, read again");
+    assert_eq!(crate::crime_faction(&world, marker, MARKER), None, "the override cleared it");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

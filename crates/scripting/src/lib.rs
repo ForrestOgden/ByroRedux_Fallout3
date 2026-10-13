@@ -33,6 +33,7 @@ pub mod alias_collections;
 pub mod followers;
 pub mod form_lists;
 pub mod input_layers;
+pub mod crime_faction;
 pub mod linked_refs;
 pub mod loc_ref_types;
 pub mod reference_flags;
@@ -150,6 +151,7 @@ pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwn
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
+pub use crime_faction::{crime_faction, install_crime_factions, CrimeFactionOverrides, CrimeFactions};
 pub use linked_refs::{linked_ref, linked_ref_children, LinkedRefOverrides};
 pub use loc_ref_types::{has_loc_ref_type, LocRefTypeOverrides};
 pub use skills::{advance_skill, PendingSkillAdvances, SkillProgress, SkillScaling};
@@ -343,6 +345,10 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {
         world.insert_resource(LinkedRefOverrides::default());
+    }
+    // M47.2 — scripted SetCrimeFaction assignments (saved).
+    if world.try_resource::<CrimeFactionOverrides>().is_none() {
+        world.insert_resource(CrimeFactionOverrides::default());
     }
     // M47.2 — forms scripts added to form lists (saved).
     if world.try_resource::<FormListAdditions>().is_none() {

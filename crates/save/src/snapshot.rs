@@ -492,7 +492,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// (`FormList.AddForm`).
 ///
 /// v94 -> v95 (M47.2): `Effect::StopCombatAlarm`.
-pub const FORMAT_MAJOR: u16 = 95;
+///
+/// v95 -> v96 (M47.2): `Effect::SetCrimeFaction` and the
+/// `CrimeFactionOverrides` resource column.
+pub const FORMAT_MAJOR: u16 = 96;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

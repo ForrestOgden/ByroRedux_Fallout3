@@ -1373,6 +1373,13 @@ pub enum Effect {
     /// hostility system may start a fresh one if the actor still sees
     /// someone it attacks, as the original does.
     StopCombat { actor: ActorRef },
+    /// M47.2 — `<actor>.SetCrimeFaction(akFaction)` ([`crate::CrimeFactionOverrides`]);
+    /// `None` clears it. A faction the actor is not in is added (CK *SetCrimeFaction
+    /// - Actor*).
+    SetCrimeFaction {
+        actor: ActorRef,
+        faction: Option<ObjectRef>,
+    },
     /// M47.2 — `<actor>.StopCombatAlarm()` (CK: "Stop all combat and alarms
     /// against this actor"): every actor fighting this one stands down. The CK's
     /// alarms are the crime system's, which the engine does not have.
@@ -3019,6 +3026,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_start_combat,
     prim_stop_combat,
     prim_stop_combat_alarm,
+    prim_set_crime_faction,
     prim_set_unconscious,
     prim_set_ghost,
     prim_add_spell,
@@ -4623,6 +4631,22 @@ fn prim_stop_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
         return None;
     }
     Some(Effect::StopCombat { actor })
+}
+
+/// `<actor>.SetCrimeFaction(akFaction)`, a faction property or `None`.
+fn prim_set_crime_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetCrimeFaction")?;
+    if args.len() != 1 {
+        return None;
+    }
+    let faction = match &args[0].value.node {
+        Expr::NoneLit => None,
+        other => Some(receiver_object(other, scope)?),
+    };
+    Some(Effect::SetCrimeFaction {
+        actor: receiver_actor(object, scope)?,
+        faction,
+    })
 }
 
 /// `<actor>.StopCombatAlarm()`, the player included (a player target is the

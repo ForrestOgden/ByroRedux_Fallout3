@@ -453,6 +453,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetLocRefType`s: (reference, ref type or 0), applied to
     /// [`crate::LocRefTypeOverrides`] after the guards drop.
     loc_ref_type_changes: Vec<(u32, u32)>,
+    /// M47.2 — `Effect::SetCrimeFaction`s: (actor reference, faction or 0),
+    /// applied to [`crate::CrimeFactionOverrides`] after the guards drop.
+    pub(crate) crime_faction_changes: Vec<(u32, u32)>,
     /// M47.2 — form list edits a run made, applied to
     /// [`crate::FormListAdditions`] after the guards drop (and visible to the
     /// run's own later reads).
@@ -607,6 +610,7 @@ impl DeferredFragmentEffects {
             skill_advances: Vec::new(),
             linked_ref_changes: Vec::new(),
             loc_ref_type_changes: Vec::new(),
+            crime_faction_changes: Vec::new(),
             form_list_changes: Vec::new(),
             scripted_ids: world
                 .try_resource::<crate::CreatedReferences>()
@@ -803,6 +807,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.linked_ref_changes.clear();
+        }
+        if !self.crime_faction_changes.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::CrimeFactionOverrides>() {
+                for (actor, faction) in self.crime_faction_changes.drain(..) {
+                    overrides.set(actor, faction);
+                }
+            }
+            self.crime_faction_changes.clear();
         }
         if !self.form_list_changes.is_empty() {
             if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
@@ -1881,6 +1893,7 @@ pub(crate) fn apply_effect(
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
         | Effect::StopCombatAlarm { .. }
+        | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
         | Effect::EvaluatePackage { .. } => {
@@ -2958,6 +2971,28 @@ fn apply_ai_combat_effect(
             }
             None
         }
+        Effect::SetCrimeFaction { actor, faction } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
+            let reference = if world
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                .is_some_and(|player| player.0 == actor)
+            {
+                0x14
+            } else {
+                crate::condition::entity_global_form_id(world, actor)?
+            };
+            let faction = match faction {
+                Some(faction) => resolve_property_form_id(vmad, faction.property_name())?,
+                None => 0,
+            };
+            if faction != 0 {
+                // "If the actor does not currently belong to the crime faction, it
+                // will be added to that faction."
+                deferred.faction_changes.push((actor, faction, crate::FactionChange::Add));
+            }
+            deferred.crime_faction_changes.push((reference, faction));
+            None
+        }
         Effect::StopCombatAlarm { actor } => {
             let target = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
@@ -3227,6 +3262,7 @@ fn apply_quest_scoped_effect(
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
         | Effect::StopCombatAlarm { .. }
+        | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
         | Effect::SetAlly { .. }

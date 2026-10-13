@@ -2618,6 +2618,7 @@ impl Vm<'_> {
                     | "isfurnitureinuse"
                     | "isstarting"
                     | "isstopping"
+                    | "getcrimefaction"
             );
         if !reads {
             return Ok(None);
@@ -2954,6 +2955,19 @@ impl Vm<'_> {
                         .try_resource::<byroredux_core::ecs::components::SeatReservations>()
                         .is_some_and(|seats| seats.0.keys().any(|(held, _)| *held == entity));
                 Some(Value::Bool(seated || reserved))
+            }
+            // CK *GetCrimeFaction - Actor*: the faction this actor reports its
+            // crimes to — a script's `SetCrimeFaction`, else the base's `CRIF`.
+            (Value::Form(actor), "getcrimefaction") if args.is_empty() => {
+                let crime = self.entity_of(*actor).and_then(|entity| {
+                    let reference = if *actor == PLAYER_REF { PLAYER_REF } else { self.entity_form(entity)? };
+                    // A `SetCrimeFaction` earlier in this run is seen.
+                    match self.deferred.crime_faction_changes.iter().rev().find(|(who, _)| *who == reference) {
+                        Some(&(_, faction)) => (faction != 0).then_some(faction),
+                        None => crate::crime_faction(self.world, entity, reference),
+                    }
+                });
+                Some(crime.map_or(Value::None, Value::Form))
             }
             // CK *IsStarting* / *IsStopping - Quest*: "in the process of starting
             // up" / "shutting down". A quest here starts and stops in one step,
@@ -4695,6 +4709,7 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Bool);
             }
+            (Kind::Object | Kind::Player, "getcrimefaction") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Quest, "isstarting" | "isstopping") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "countlinkedrefchain")
                 if arg_kinds.len() <= 2

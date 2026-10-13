@@ -150,6 +150,9 @@ impl NpcFaceGenRecipe {
 #[derive(Debug, Clone, Default)]
 pub struct NpcRecord {
     pub form_id: u32,
+    /// `CRIF` — the faction this actor reports its crimes to (Skyrim+; `0` when
+    /// the record authors none).
+    pub crime_faction_form_id: u32,
     pub editor_id: String,
     pub full_name: String,
     /// TES4 "Starts Dead" base flag (`0x80000`, #5013). True only when this
@@ -446,6 +449,7 @@ pub fn parse_npc(
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut record = NpcRecord {
         form_id,
+        crime_faction_form_id: 0,
         editor_id: common.editor_id,
         full_name: common.full_name,
         // Set by the dispatch layer from the record header's game-gated
@@ -577,6 +581,11 @@ fn parse_npc_core(
         b"CNAM" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.class_form_id = remap_fid(raw, remap);
+        }
+        // CRIF — the faction the actor reports crimes to (Skyrim+ `NPC_`).
+        b"CRIF" if sub.data.len() >= 4 => {
+            let raw = SubReader::new(&sub.data).u32_or_default();
+            record.crime_faction_form_id = remap_fid(raw, remap);
         }
         b"VTCK" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
