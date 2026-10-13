@@ -2443,6 +2443,8 @@ impl Vm<'_> {
                     | "getat"
                     | "hasform"
                     | "find"
+                    | "gettriggerobjectcount"
+                    | "getrace"
             );
         if !reads {
             return Ok(None);
@@ -2493,6 +2495,28 @@ impl Vm<'_> {
                     ),
                 })
             }
+            // CK *GetRace - Actor*: "the Race the actor is" (its record's).
+            (Value::Form(actor), "getrace") if args.is_empty() => {
+                let entity = if *actor == PLAYER_REF {
+                    self.world
+                        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                        .map(|player| player.0)
+                } else {
+                    self.entity_of(*actor)
+                };
+                Some(
+                    entity
+                        .and_then(|entity| self.world.get::<byroredux_core::character::Background>(entity).map(|b| b.race_form_id))
+                        .filter(|race| *race != 0)
+                        .map_or(Value::None, Value::Form),
+                )
+            }
+            // CK *GetTriggerObjectCount*: "the number of objects currently
+            // inside this trigger volume".
+            (Value::Form(trigger), "gettriggerobjectcount") if args.is_empty() => Some(Value::Int(
+                self.entity_of(*trigger)
+                    .map_or(0, |entity| crate::trigger_object_count(self.world, entity)) as i32,
+            )),
             // CK *GetClassification - Weather*: -1 none, 0 Pleasant, 1 Cloudy,
             // 2 Rainy, 3 Snow.
             (Value::Form(weather), "getclassification") if args.is_empty() => Some(Value::Int(
@@ -4073,6 +4097,8 @@ impl<'l> Checker<'l> {
             (Kind::Alias, "trytogetcurrentlocation") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object, "getclassification") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object, "getsize") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object, "gettriggerobjectcount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object, "getat") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]) => {
                 return Some(Kind::Object);
             }

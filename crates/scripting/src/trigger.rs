@@ -142,6 +142,15 @@ struct TriggerOccupancyState {
 
 impl byroredux_core::ecs::resource::Resource for TriggerOccupancyState {}
 
+/// CK *GetTriggerObjectCount - ObjectReference*: "the number of objects
+/// currently inside this trigger volume" — the actors the occupancy pass has
+/// seen inside `volume`.
+pub fn trigger_object_count(world: &World, volume: EntityId) -> usize {
+    world
+        .try_resource::<TriggerOccupancyState>()
+        .map_or(0, |state| state.inside.iter().filter(|(trigger, _)| *trigger == volume).count())
+}
+
 /// Per-frame detection: for every [`TriggerVolume`], test the player's
 /// world position and emit an [`OnTriggerEnterEvent`] on the volume
 /// entity the frame the player transitions from outside to inside. The
@@ -673,6 +682,24 @@ mod tests {
         );
     }
     use super::*;
+
+    /// CK *GetTriggerObjectCount*: the objects inside this volume, none for
+    /// another.
+    #[test]
+    fn trigger_object_count_counts_the_volumes_occupants() {
+        let mut world = World::new();
+        world.insert_resource(TriggerOccupancyState::default());
+        let (volume, other, a, b) = (world.spawn(), world.spawn(), world.spawn(), world.spawn());
+        {
+            let mut state = world.resource_mut::<TriggerOccupancyState>();
+            state.inside.insert((volume, a));
+            state.inside.insert((volume, b));
+            state.inside.insert((other, a));
+        }
+        assert_eq!(trigger_object_count(&world, volume), 2);
+        assert_eq!(trigger_object_count(&world, other), 1);
+        assert_eq!(trigger_object_count(&world, a), 0);
+    }
     use crate::events::OnTriggerEnterEvent;
     use byroredux_core::ecs::components::{GlobalTransform, Transform};
     use byroredux_core::ecs::world::World;

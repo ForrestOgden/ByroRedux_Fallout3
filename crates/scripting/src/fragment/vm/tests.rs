@@ -1254,6 +1254,45 @@ fn form_list_reads() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `GetRace()` reads the actor's race; None for an actor without one.
+#[test]
+fn actor_race_reads_the_background() {
+    const RACE: u32 = 0x0001_3740;
+    let script = parsed_source(
+        "ScriptName QF_VmRace extends Quest\n\
+         Race Property Nord Auto\n\
+         Function Fragment_1()\n\
+           If Game.GetPlayer().GetRace() == Nord\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmRace".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Nord".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: RACE, alias: -1 },
+                }],
+            }],
+        },
+    );
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    world.register::<byroredux_core::character::Background>();
+    world.insert(player, byroredux_core::character::Background { race_form_id: RACE, ..Default::default() });
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

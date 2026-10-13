@@ -1164,7 +1164,10 @@ the same store — "returns this value, if any. It otherwise returns 0".
   (`WeatherClassifications`, first set bit). The weather does not change at run time
   here, so a script sees the worldspace's weather.
 - `FormList.GetSize()` / `GetAt(i)` / `HasForm(f)` / `Find(f)` read the `FLST` record's
-  forms (`FormLists`; null entries dropped); `AddForm` is not modelled. These two sets are
+  forms (`FormLists`; null entries dropped); `AddForm` is not modelled. Also on the VM:
+  `GetTriggerObjectCount()` (CK: "the number of objects currently inside this trigger
+  volume", from the occupancy pass) and `Actor.GetRace()` (the record's race,
+  `Background.race_form_id`). These two sets are
   what let Skyrim's ambient critter spawners (`CritterSpawn`, 3,300 references) run: they
   gate on the game hour, the weather and the player's distance, then `PlaceAtMe` a critter.
 
