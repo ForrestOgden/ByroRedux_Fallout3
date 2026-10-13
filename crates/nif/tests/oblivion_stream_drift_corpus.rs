@@ -20,11 +20,18 @@
 //! non-GOTY install is still a meaningful (if smaller) regression check,
 //! not a misleading one.
 //!
+//! #5439 — the data directory resolves through `common::game_data_dir` (so the
+//! `BYROREDUX_REQUIRE_GAME_DATA` strict lane and the binding-override rule of
+//! #3850 apply), an archive that is present but unopenable panics instead of
+//! reading as absent, and a host without the base `Oblivion - Meshes.bsa` skips
+//! (or fails, strict) rather than running the detector over a DLC alone.
+//!
 //! `#[ignore]` — needs real Oblivion game data on disk; run with:
 //! `cargo test -p byroredux-nif --test oblivion_stream_drift_corpus -- --ignored --nocapture`
 
-use byroredux_bsa::BsaArchive;
-use std::path::PathBuf;
+mod common;
+
+use common::Game;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -61,19 +68,21 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Warn);
 
-    let data_dir = std::env::var("BYROREDUX_OBLIVION_DATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data")
-        });
-    if !data_dir.is_dir() {
-        eprintln!("skipping: Oblivion data dir not found at {data_dir:?}");
+    let Some(data_dir) = common::game_data_dir(Game::Oblivion) else {
+        return;
+    };
+    if !data_dir.join(Game::Oblivion.mesh_archive()).is_file() {
+        // A DLC-only directory is not an install: the drift count over it
+        // would be a smaller, misleading sample (#5439).
+        common::require_game_data(Game::Oblivion.env_var(), &data_dir.join(Game::Oblivion.mesh_archive()));
+        eprintln!("skipping: no base {} under {data_dir:?}", Game::Oblivion.mesh_archive());
         return;
     }
 
     // Base game + all eight DLC archives that carry meshes. Each opened
-    // independently — a missing DLC archive (non-GOTY install) just
-    // contributes zero files rather than skipping the whole test.
+    // independently — a DLC archive that is absent (non-GOTY install) just
+    // contributes zero files rather than skipping the whole test; one that is
+    // present but unopenable panics (#5439).
     const ARCHIVE_NAMES: &[&str] = &[
         "Oblivion - Meshes.bsa",
         "Knights.bsa",
@@ -91,10 +100,10 @@ fn no_block_sizes_drift_detector_has_zero_false_positives_on_real_corpus() {
 
     for name in ARCHIVE_NAMES {
         let path = data_dir.join(name);
-        let archive = match BsaArchive::open(&path) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
+        if !path.is_file() {
+            continue;
+        }
+        let archive = common::open_present_archive(Game::Oblivion.label(), &path, common::ArchiveKind::Bsa);
         archives_opened += 1;
         let files: Vec<String> = archive
             .list_files()

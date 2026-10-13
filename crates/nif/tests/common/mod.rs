@@ -375,8 +375,24 @@ pub fn game_data_dir(game: Game) -> Option<PathBuf> {
     None
 }
 
+/// Open an archive that is known to be PRESENT, as `kind`. A reader that
+/// rejects it panics (#5232, the #4660 sibling rule, #5439): every caller
+/// treats `None` as "not on this host" and skips green, so reporting an open
+/// failure as `None` would turn a BSA/BA2 reader regression into a passing
+/// no-op for every gate that goes through it.
+#[track_caller]
+pub fn open_present_archive(label: &str, path: &std::path::Path, kind: ArchiveKind) -> MeshArchive {
+    let result = match kind {
+        ArchiveKind::Bsa => BsaArchive::open(path).map(MeshArchive::Bsa),
+        ArchiveKind::Ba2 => Ba2Archive::open(path).map(MeshArchive::Ba2),
+    };
+    result.unwrap_or_else(|e| panic!("[{label}] archive {path:?} is present but failed to open: {e}"))
+}
+
 /// Open the primary mesh archive for a game if present. Picks BSA or BA2
 /// based on the game's `archive_kind`.
+///
+/// `None` means absent only; present-but-unopenable panics ([`open_present_archive`]).
 pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
     let data = game_data_dir(game)?;
     let archive_path = data.join(game.mesh_archive());
@@ -384,22 +400,7 @@ pub fn open_mesh_archive(game: Game) -> Option<MeshArchive> {
         eprintln!("[{}] skipping: {:?} not found", game.label(), archive_path);
         return None;
     }
-    let result = match game.archive_kind() {
-        ArchiveKind::Bsa => BsaArchive::open(&archive_path).map(MeshArchive::Bsa),
-        ArchiveKind::Ba2 => Ba2Archive::open(&archive_path).map(MeshArchive::Ba2),
-    };
-    match result {
-        Ok(a) => Some(a),
-        Err(e) => {
-            eprintln!(
-                "[{}] skipping: failed to open {:?}: {}",
-                game.label(),
-                archive_path,
-                e
-            );
-            None
-        }
-    }
+    Some(open_present_archive(game.label(), &archive_path, game.archive_kind()))
 }
 
 /// Open **every** archive in [`Game::mesh_archives`], or `None` if any of
@@ -432,19 +433,7 @@ pub fn open_all_mesh_archives(game: Game) -> Option<Vec<(&'static str, MeshArchi
             );
             return None;
         }
-        let result = match game.archive_kind() {
-            ArchiveKind::Bsa => BsaArchive::open(&path).map(MeshArchive::Bsa),
-            ArchiveKind::Ba2 => Ba2Archive::open(&path).map(MeshArchive::Ba2),
-        };
-        match result {
-            Ok(a) => opened.push((*name, a)),
-            Err(e) => panic!(
-                "[{}] archive {:?} is present but failed to open: {}",
-                game.label(),
-                path,
-                e
-            ),
-        }
+        opened.push((*name, open_present_archive(game.label(), &path, game.archive_kind())));
     }
     Some(opened)
 }
@@ -499,15 +488,7 @@ pub fn open_ba2_by_name(game: Game, archive_name: &str) -> Option<MeshArchive> {
         eprintln!("[{}] skipping: {:?} not found", game.label(), archive_path);
         return None;
     }
-    match Ba2Archive::open(&archive_path).map(MeshArchive::Ba2) {
-        Ok(a) => Some(a),
-        Err(e) => panic!(
-            "[{}] archive {:?} is present but failed to open: {}",
-            game.label(),
-            archive_path,
-            e
-        ),
-    }
+    Some(open_present_archive(game.label(), &archive_path, ArchiveKind::Ba2))
 }
 
 /// Per-file parse outcome: a parse that returned `Err`, or a parse
@@ -1076,6 +1057,26 @@ mod tests {
         assert!((stats.success_rate() - 0.5).abs() < 1e-6);
         // recoverable = (clean + truncated) / total = 3/4 = 0.75
         assert!((stats.recoverable_rate() - 0.75).abs() < 1e-6);
+    }
+
+    /// #5439 — present-but-unopenable is a panic, not an absent skip. Pre-fix
+    /// `open_mesh_archive` printed "skipping" and returned `None`, so six
+    /// gates and the Oblivion drift corpus passed green over a reader that
+    /// rejected the vanilla archive.
+    #[test]
+    #[should_panic(expected = "is present but failed to open")]
+    fn a_present_archive_the_reader_rejects_panics() {
+        let dir = std::env::temp_dir().join(format!("byro-5439-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Garbage - Meshes.bsa");
+        std::fs::write(&path, b"this is not an archive").unwrap();
+        let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            open_present_archive("test", &path, ArchiveKind::Bsa)
+        }));
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(panic) = opened {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[test]
