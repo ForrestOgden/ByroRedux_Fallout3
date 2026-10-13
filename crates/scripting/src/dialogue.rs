@@ -155,6 +155,12 @@ impl DialogueQuestConditions {
         self.conditions.get(&quest).map(Arc::as_ref)
     }
 
+    /// The quest's list as a shared handle, so a caller can evaluate it
+    /// after releasing this resource's guard.
+    pub fn shared_conditions_of(&self, quest: u32) -> Option<Arc<ConditionList>> {
+        self.conditions.get(&quest).cloned()
+    }
+
     /// How many quests carry a quest-level gate. Diagnostic.
     pub fn len(&self) -> usize {
         self.conditions.len()
@@ -402,13 +408,24 @@ fn select_info<'a>(
     // uncatalogued function cannot be evaluated, so the quest's INFOs
     // decline rather than play ungated — a hijacking greeting gated only
     // by functions we cannot read must not win on priority alone.
-    let quest_gates = world.try_resource::<DialogueQuestConditions>();
+    //
+    // The gate list is cloned out (an `Arc`) and the resource guard dropped
+    // before `evaluate` runs: evaluation reads `QuestStageState` (and more),
+    // and this function already took `QuestStageState` before reaching here,
+    // so holding `DialogueQuestConditions` across it closed a lock-order
+    // cycle the `BYRO_LOCK_ORDER_CHECK` lane reports.
     let mut gate_verdicts: HashMap<u32, bool> = HashMap::new();
     let quest_gate_passes = |quest: u32,
                              context: &ConditionContext,
                              verdicts: &mut HashMap<u32, bool>|
      -> bool {
-        let Some(conditions) = quest_gates.as_deref().and_then(|g| g.conditions_of(quest)) else {
+        if let Some(&verdict) = verdicts.get(&quest) {
+            return verdict;
+        }
+        let conditions = world
+            .try_resource::<DialogueQuestConditions>()
+            .and_then(|gates| gates.shared_conditions_of(quest));
+        let Some(conditions) = conditions else {
             return true;
         };
         *verdicts.entry(quest).or_insert_with(|| {
@@ -422,7 +439,7 @@ fn select_info<'a>(
             }) {
                 return false;
             }
-            evaluate(conditions, world, context)
+            evaluate(&conditions, world, context)
         })
     };
     // filter_map, not find_map: the #5367 Phase L Random pool needs every
