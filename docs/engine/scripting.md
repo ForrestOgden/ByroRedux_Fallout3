@@ -677,6 +677,46 @@ Not modelled yet:
 - update and timer registration (`RegisterForUpdate`, `StartTimer`);
 - INFO and scene fragments, which still use the lowering only.
 
+### Reference scripts on the VM (M47.2)
+
+A script attached to a placed reference — through the reference's own VMAD or
+its base record's — that no recognizer models now runs on the Papyrus VM
+(`crates/scripting/src/fragment/reference.rs`). The cell loader attaches it when
+`check_reference_script` accepts every handler the script has of the delivered
+events, in every state and down its `extends` chain. The check result is cached
+per script name for the session (`VmReferenceScriptChecks`). The
+`PapyrusReferenceScripts` component then names the script and its properties.
+
+The script's `Self` is the reference. Its variables and its state live in the
+saved script-variable stores under the reference's FormID, so they outlive the
+cell unload that despawns the entity. The component itself is re-derived at the
+next attach.
+
+`reference_script_event_system` turns engine markers into Papyrus events,
+following the CK pages *OnInit*, *OnLoad - ObjectReference* and *OnCellLoad -
+ObjectReference*:
+- a cell load delivers `OnInit` the first time the reference loads (a saved
+  per-script flag), then `OnLoad` and `OnCellLoad`;
+- `ActivateEvent` delivers `OnActivate(akActionRef)`;
+- a trigger crossing delivers `OnTriggerEnter(akActionRef)`.
+
+Each event runs as an `Effect::Interpret` that carries its arguments, through
+the fragment runtime. Its natives, waits and stage advances therefore behave as
+a quest fragment's do. An event the script handles only in other states does
+nothing in the current one. The system runs ahead of quest-fragment dispatch, so
+a stage a reference script sets runs its fragment the same frame.
+
+With the VM, 39.7% of Skyrim's 19,412 scripted references run a script, up from
+7.5% with recognizers alone (`refr_script_coverage`; `VM_REASONS=1` lists why
+the VM declines the rest). Bleak Falls Barrow attaches 35, among them ambush
+draugr, pull bars, levers, traps and ore veins.
+
+Not modelled yet:
+- other events (`OnHit`, `OnUpdate`, `OnCombatStateChanged`, `OnOpen`, …);
+- `OnInit` holding back the script's other events while it waits;
+- the variable reset a cell reset brings;
+- calls into another reference's script.
+
 ### Messages and text replacement (M47.2)
 
 `MESG` records parse their "Message Box" flag (DNAM bit 0) and their `ITXT`

@@ -668,6 +668,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("QuestDefinitionRegistry", "populated once from parsed QUST records, only ever read afterward"),
         ("QuestStageAdvancedBatch", "one-shot batch drained every frame by event_cleanup_system"),
         ("QuestStageFragments", "populated once at cell load from decoded VMAD/PEX, only ever read afterward"),
+        ("PapyrusReferenceScripts", "M47.2 — the reference scripts the Papyrus VM runs on an entity, re-derived from the REFR/base VMAD at every cell attach; the scripts' variables and states live in the saved QuestScriptVariables / QuestScriptObjects under the reference's FormID"),
+        ("VmReferenceScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs a reference script, re-checked from the script archive on demand; never gameplay state"),
         ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
         // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no
         // longer allowlisted here.

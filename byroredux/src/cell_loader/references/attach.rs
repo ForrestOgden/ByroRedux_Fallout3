@@ -794,6 +794,7 @@ pub(super) fn attach_vmad_scripts(
                 script.name,
             );
         }
+        let provider_attached = translation.provider_program.is_some();
         if let Some(program) = translation.provider_program {
             log::debug!(
                 "M47.2: attached engine-native provider calls from .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
@@ -815,6 +816,17 @@ pub(super) fn attach_vmad_scripts(
                     script.name,
                 );
                 (recognized.spawn)(world, entity);
+                any = true;
+            }
+            // No recognizer models it: the Papyrus VM runs it, when it can
+            // run every event handler the script has.
+            None if !provider_attached
+                && crate::asset_provider::attach_vm_reference_script(world, entity, script) =>
+            {
+                log::debug!(
+                    "M47.2: the Papyrus VM runs .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
+                    script.name,
+                );
                 any = true;
             }
             None => {

@@ -109,6 +109,8 @@ pub use fragment::{
     reference_enabled, AuthoredDisabledReferences, install_quest_script_instances,
     QuestScriptInstances,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
+    attach_reference_script, check_reference_script, reference_script_event_system,
+    PapyrusReferenceScripts, ReferenceScript, DELIVERED_EVENTS,
 };
 pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,

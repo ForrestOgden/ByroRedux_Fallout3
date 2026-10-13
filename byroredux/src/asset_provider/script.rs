@@ -113,6 +113,64 @@ impl byroredux_scripting::translate::effects::ScriptLibrary for ProviderScriptLi
     }
 }
 
+/// M47.2 — per script name, whether the Papyrus VM runs it as a reference
+/// script: the events it handles and the scripts its runs need, or `None`.
+/// Checked once per session — a script decompiles and checks the same for
+/// every reference that carries it.
+#[derive(Default)]
+pub(crate) struct VmReferenceScriptChecks(
+    std::collections::HashMap<String, Option<(Vec<String>, Vec<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>>)>>,
+);
+
+impl byroredux_core::ecs::resource::Resource for VmReferenceScriptChecks {}
+
+/// Attach `instance` to `entity` as a reference script the Papyrus VM runs,
+/// when the VM runs it ([`byroredux_scripting::check_reference_script`]).
+pub(crate) fn attach_vm_reference_script(
+    world: &mut byroredux_core::ecs::world::World,
+    entity: byroredux_core::ecs::EntityId,
+    instance: &byroredux_plugin::esm::records::script_instance::ScriptInstance,
+) -> bool {
+    let key = instance.name.to_ascii_lowercase();
+    let cached = world
+        .try_resource::<VmReferenceScriptChecks>()
+        .and_then(|checks| checks.0.get(&key).cloned());
+    let checked = match cached {
+        Some(checked) => checked,
+        None => {
+            let checked = {
+                let Some(provider) = world.try_resource::<ScriptProvider>() else {
+                    return false;
+                };
+                let library = ProviderScriptLibrary::new(&provider);
+                use byroredux_scripting::translate::effects::ScriptLibrary as _;
+                library.script(&instance.name).and_then(|script| {
+                    byroredux_scripting::check_reference_script(
+                        script,
+                        &byroredux_scripting::DELIVERED_EVENTS,
+                        Some(&library),
+                    )
+                    .map_err(|why| log::trace!("M47.2: the Papyrus VM declines '{}': {why}", instance.name))
+                    .ok()
+                })
+            };
+            if world.try_resource::<VmReferenceScriptChecks>().is_none() {
+                world.insert_resource(VmReferenceScriptChecks::default());
+            }
+            world
+                .resource_mut::<VmReferenceScriptChecks>()
+                .0
+                .insert(key, checked.clone());
+            checked
+        }
+    };
+    let Some((events, scripts)) = checked else {
+        return false;
+    };
+    byroredux_scripting::attach_reference_script(world, entity, instance, events, scripts);
+    true
+}
+
 /// Normalise a Papyrus script name to its archive key: lowercase,
 /// backslash-separated, under the `scripts\` folder with a `.pex`
 /// extension. A name authored with the folder and/or extension already

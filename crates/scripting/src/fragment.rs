@@ -58,12 +58,14 @@ use crate::translate::effects::{ActorRef, Effect};
 
 mod effects;
 mod populate;
+mod reference;
 mod state;
 mod systems;
 pub mod vm;
 
 pub use effects::*;
 pub use populate::*;
+pub use reference::*;
 pub use state::*;
 pub use systems::*;
 
@@ -87,6 +89,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),
     include_str!("fragment/populate.rs"),
+    include_str!("fragment/reference.rs"),
     include_str!("fragment/systems.rs"),
     include_str!("fragment/vm.rs"),
 );

@@ -89,6 +89,7 @@ mod fragment_activation_order_tests {
             "Stage::Update, quest_advance_dispatch)",
             "byroredux_scripting::two_state_activator_system",
             "Stage::Update, mg07_on_activate_dispatch)",
+            "byroredux_scripting::reference_script_event_system",
         ] {
             assert!(
                 flush < pos(consumer),

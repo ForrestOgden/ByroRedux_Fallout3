@@ -433,6 +433,9 @@ that does not exist yet:
   or interpreted. It keeps object script variables across fragments
   (`QuestScriptObjects`) and suspends at `Utility.Wait` anywhere in a
   statement call chain (`VmResume` frames, saved with the continuation).
+  It follows Papyrus states, and it runs reference scripts no recognizer
+  models (`scripting.md` §Reference scripts on the VM): 39.7% of Skyrim's
+  scripted references run a script, up from 7.5%.
 
   Calls into a quest script's function may now pass arguments: a number
   becomes a run-time local, the player or speaker binds directly, and a

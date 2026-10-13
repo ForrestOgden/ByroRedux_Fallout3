@@ -5,6 +5,11 @@
 //! recognized. The per-family table (script name → references carrying it) is
 //! what the "top-N families" recognizer work is driven by.
 //!
+//! A script no recognizer takes counts as covered by the Papyrus VM when
+//! `check_reference_script` accepts it, as the cell loader would attach it;
+//! `VM_REASONS=1` tallies why the VM declines the rest, weighted by the
+//! references carrying each script.
+//!
 //! ```bash
 //! cargo run --release -p byroredux-scripting --example refr_script_coverage -- \
 //!     "<Skyrim SE>/Data/Skyrim.esm" "<Skyrim SE>/Data/Skyrim - Misc.bsa"
@@ -12,37 +17,35 @@
 
 use std::collections::HashMap;
 
-use byroredux_bsa::{Ba2Archive, BsaArchive};
+#[path = "common/archives.rs"]
+mod archives;
+use archives::{Archive, ArchiveLibrary};
 use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::records::script_instance::ScriptInstanceData;
+use byroredux_scripting::translate::effects::ScriptLibrary;
 use byroredux_scripting::translate_pex;
-
-enum Archive {
-    Bsa(BsaArchive),
-    Ba2(Ba2Archive),
-}
-
-impl Archive {
-    fn open(path: &str) -> std::io::Result<Self> {
-        if path.to_ascii_lowercase().ends_with(".ba2") {
-            Ok(Archive::Ba2(Ba2Archive::open(path)?))
-        } else {
-            Ok(Archive::Bsa(BsaArchive::open(path)?))
-        }
-    }
-    fn extract(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        match self {
-            Archive::Bsa(a) => a.extract(path),
-            Archive::Ba2(a) => a.extract(path),
-        }
-    }
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let esm = args.next().expect("usage: refr_script_coverage <ESM> <scripts archive>");
-    let archive = Archive::open(&args.next().expect("scripts archive"))?;
+    let archives = [Archive::open(&args.next().expect("scripts archive"))?];
+    let archive = &archives[0];
+    let library = ArchiveLibrary::new(&archives);
     let index = parse_esm(&std::fs::read(&esm)?)?;
+    // Script name (lowercased) → whether the VM runs it, or why not.
+    let mut vm_checks: HashMap<String, Result<(), String>> = HashMap::new();
+    let mut vm_check = |name: &str| -> Result<(), String> {
+        vm_checks
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(|| {
+                let script = library.script(name).ok_or_else(|| "no .pex".to_owned())?;
+                byroredux_scripting::check_reference_script(script, &byroredux_scripting::DELIVERED_EVENTS, Some(&library))
+                    .map(|_| ())
+            })
+            .clone()
+    };
+    let mut vm_covered = 0usize;
+    let mut vm_reasons: HashMap<String, usize> = HashMap::new();
 
     // Script name (lowercased) → (references carrying it, recognized?).
     let mut families: HashMap<String, (usize, Option<bool>)> = HashMap::new();
@@ -78,25 +81,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             scripted += 1;
             let mut any = false;
+            let mut by_vm = false;
             for vmad in vmads {
                 for script in &vmad.scripts {
                     let hit = recognize(&script.name, vmad);
                     any |= hit;
+                    if !hit {
+                        match vm_check(&script.name) {
+                            Ok(()) => by_vm = true,
+                            Err(why) => *vm_reasons.entry(why).or_default() += 1,
+                        }
+                    }
                     let family = families.entry(script.name.to_ascii_lowercase()).or_default();
                     family.0 += 1;
                     family.1 = Some(hit);
                 }
             }
             covered += usize::from(any);
+            vm_covered += usize::from(any || by_vm);
         }
     }
     let pct = 100.0 * covered as f64 / scripted.max(1) as f64;
     println!("scripted references: {scripted}; covered by a recognizer: {covered} ({pct:.1}%)");
+    let vm_pct = 100.0 * vm_covered as f64 / scripted.max(1) as f64;
+    println!("  with the Papyrus VM: {vm_covered} ({vm_pct:.1}%)");
+    if std::env::var("VM_REASONS").is_ok() {
+        let mut reasons: Vec<_> = vm_reasons.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1));
+        for (reason, count) in reasons.into_iter().take(40) {
+            println!("    vm: {reason:60} {count}");
+        }
+    }
     let mut ranked: Vec<_> = families.into_iter().collect();
     ranked.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
     println!("top script families (references, recognized):");
     for (name, (count, hit)) in ranked.iter().take(40) {
-        println!("  {count:>6}  {}  {name}", if *hit == Some(true) { "yes" } else { " no" });
+        let how = if *hit == Some(true) {
+            "yes"
+        } else if vm_checks.get(name).is_some_and(Result::is_ok) {
+            " vm"
+        } else {
+            " no"
+        };
+        println!("  {count:>6}  {how}  {name}");
     }
     Ok(())
 }

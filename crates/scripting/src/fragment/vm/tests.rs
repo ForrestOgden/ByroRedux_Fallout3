@@ -451,3 +451,94 @@ fn script_variables_read_their_declared_values_and_hold_strings() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert!(crate::fragment::reference_enabled(&world, MARKER));
 }
+
+/// A reference script the VM runs: `OnInit` once, `OnLoad` on every cell
+/// load, `OnTriggerEnter` only in its auto state (the crossing moves it to
+/// `Done`), and `OnActivate` — each through the event markers.
+#[test]
+fn reference_scripts_run_their_events() {
+    const REF: u32 = 0x0001_0F10;
+    let script = parsed_source(
+        "ScriptName VmTriggerScript extends ObjectReference\n\
+         ObjectReference Property Marker Auto\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count = 10\n EndEvent\n\
+         Event OnLoad()\n Count += 1\n EndEvent\n\
+         Event OnActivate(ObjectReference akActionRef)\n Self.Disable()\n EndEvent\n\
+         Auto State Waiting\n\
+           Event OnTriggerEnter(ObjectReference akActionRef)\n\
+             If akActionRef == Game.GetPlayer()\n GotoState(\"Done\")\n Marker.Enable()\n EndIf\n\
+           EndEvent\n\
+         EndState\n\
+         State Done\n EndState\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("the VM runs it");
+    assert_eq!(events, ["OnInit", "OnLoad", "OnActivate", "OnTriggerEnter"]);
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(REF),
+    });
+    world.insert_resource(pool);
+    let reference = world.spawn();
+    world.insert(reference, FormIdComponent(id));
+    world
+        .resource_mut::<crate::fragment::ReferenceEnableState>()
+        .set_enabled(MARKER, false);
+    let instance = ScriptInstance {
+        name: "VmTriggerScript".into(),
+        status: 0,
+        properties: vec![ScriptProperty {
+            name: "Marker".into(),
+            status: 1,
+            value: PropertyValue::Object {
+                form_id: MARKER,
+                alias: -1,
+            },
+        }],
+    };
+    crate::attach_reference_script(&mut world, reference, &instance, events, scripts);
+
+    let count = |world: &World| {
+        world
+            .resource::<crate::QuestScriptVariables>()
+            .get(QuestFormId(REF), crate::QuestScriptVariables::property_key("Count"))
+    };
+    for expected in [11.0, 12.0] {
+        world.insert(reference, crate::OnCellLoadEvent);
+        crate::reference_script_event_system(&world, 0.0);
+        world.remove::<crate::OnCellLoadEvent>(reference);
+        assert_eq!(count(&world), Some(expected), "OnInit once, OnLoad each load");
+    }
+
+    for crossing in 0..2 {
+        world.insert(
+            reference,
+            crate::OnTriggerEnterEvent {
+                triggerers: vec![player],
+            },
+        );
+        crate::reference_script_event_system(&world, 0.0);
+        world.remove::<crate::OnTriggerEnterEvent>(reference);
+        assert_eq!(
+            crate::fragment::reference_enabled(&world, MARKER),
+            crossing == 0,
+            "only the auto state handles the crossing"
+        );
+        world
+            .resource_mut::<crate::fragment::ReferenceEnableState>()
+            .set_enabled(MARKER, false);
+    }
+
+    world.insert(reference, crate::ActivateEvent { activator: player });
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, REF), "OnActivate disabled itself");
+}

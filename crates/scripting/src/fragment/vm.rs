@@ -327,8 +327,9 @@ pub(super) fn run_fragment(
     let run = match resume.and_then(|state| state.frames.split_first()) {
         Some((top, inner)) => vm.resume_frame(frame, top, inner),
         None => match vm.resolve(&script, context, function) {
-            // An event the script does not handle in its state: nothing runs.
-            None if !args.is_empty() => Ok(Flow::Normal),
+            // An event the script does not handle in its current state:
+            // nothing runs.
+            None if super::reference::is_delivered_event(function) => Ok(Flow::Normal),
             None => stop(format!("no function {function}")),
             Some(code) => {
                 let args = args.iter().map(restore).collect();
@@ -1766,14 +1767,31 @@ pub fn check_function_reason(
     check_reason(script, function, library, Kind::Quest)
 }
 
-/// Whether a reference script's handler for `event` runs whole on this VM
-/// (with the reason it does not); `Ok` carries every script the run needs.
-pub fn check_reference_event_reason(
+/// Whether a reference script runs on this VM: it handles at least one of
+/// `events`, and every handler of them — in any state, down the `extends`
+/// chain — runs whole. `Ok` carries the events it handles and every script
+/// the runs need; `Err` the first reason it does not run.
+pub fn check_reference_script(
     script: Arc<Script>,
-    event: &str,
+    events: &[&str],
     library: Option<&dyn CheckLibrary>,
-) -> Result<Vec<Arc<Script>>, String> {
-    check_reason(script, event, library, Kind::Object)
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    let mut checker = Checker::new(library, &script);
+    let mut handled = Vec::new();
+    for event in events {
+        if checker.versions(&script, event).is_empty() {
+            continue;
+        }
+        if checker.check_call_into(&script, event, true, Kind::Object).is_none() {
+            let reason = checker.reason.take().unwrap_or_else(|| "unsupported".into());
+            return Err(format!("{event}: {reason}"));
+        }
+        handled.push((*event).to_owned());
+    }
+    if handled.is_empty() {
+        return Err("handles no delivered event".into());
+    }
+    Ok((handled, checker.scripts.into_values().collect()))
 }
 
 fn check_reason(
@@ -1782,17 +1800,7 @@ fn check_reason(
     library: Option<&dyn CheckLibrary>,
     self_kind: Kind,
 ) -> Result<Vec<Arc<Script>>, String> {
-    let mut checker = Checker {
-        library,
-        reason: None,
-        waits: false,
-        waiting: HashSet::new(),
-        scripts: HashMap::new(),
-        visiting: HashSet::new(),
-    };
-    checker
-        .scripts
-        .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
+    let mut checker = Checker::new(library, &script);
     match checker.check_call_into(&script, function, true, self_kind) {
         Some(_) => Ok(checker.scripts.into_values().collect()),
         None => Err(checker.reason.unwrap_or_else(|| "unsupported".into())),
@@ -1833,7 +1841,22 @@ fn extends_quest(library: &dyn CheckLibrary, name: &str, depth: usize) -> bool {
     }
 }
 
-impl Checker<'_> {
+impl<'l> Checker<'l> {
+    fn new(library: Option<&'l dyn CheckLibrary>, script: &Arc<Script>) -> Self {
+        let mut checker = Checker {
+            library,
+            reason: None,
+            waits: false,
+            waiting: HashSet::new(),
+            scripts: HashMap::new(),
+            visiting: HashSet::new(),
+        };
+        checker
+            .scripts
+            .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(script));
+        checker
+    }
+
     /// `name`'s declared type in `script` or its parents (registering the
     /// parents the run will need).
     fn member_type(&mut self, script: &Script, name: &str) -> Option<Type> {

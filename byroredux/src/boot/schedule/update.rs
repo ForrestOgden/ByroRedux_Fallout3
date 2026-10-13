@@ -512,6 +512,14 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // exposes authored INFO subtitle/presentation state for the rest of the
     // frame, and queues completions for scene playback's next tick.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::scene_dialogue_system);
+    // M47.2 — reference scripts the Papyrus VM runs receive this frame's
+    // cell-load, activation and trigger events (all produced above). Ahead
+    // of quest fragment dispatch, so a stage they set runs its fragment
+    // this frame.
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::reference_script_event_system,
+    );
     // Dispatch quest fragments right after the advance that emits the
     // `QuestStageAdvanced` markers, before end-of-frame cleanup drains
     // them (populated live from parsed QUST VMAD fragments, #1739 / `8a70b81a`).
