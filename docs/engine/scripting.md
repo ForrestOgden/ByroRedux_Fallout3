@@ -1239,12 +1239,6 @@ archives and plays it one-shot from the source's `GlobalTransform` through the s
 `SoundCache`. A looping descriptor is not played (a one-shot cannot loop). Not modelled:
 the instance id, `PlayAndWait`, `SetInstanceVolume`/`StopInstance`.
 
-A help-message helper that forwards its own parameters (Starfield's shape:
-`Help(asEvent, afDuration, asContext)` calling `ShowAsHelpMessage`) passes the check
-with the run-time context treated as the unrestricted `""`; if a menu name arrives at
-run time the lowering declines it and the run stops (the context only restricts the
-message to a menu, which this engine does not model).
-
 ### MusicType.Add / Remove (M47.2)
 
 CK *Add - MusicType*: "Adds this music type to the music stack, causing it to start
@@ -1329,7 +1323,13 @@ display names and global editor IDs that text replacement reads.
 Fragments lower three calls:
 - `Message.Show(n1…n9)`, with literal arguments.
 - `Message.ShowAsHelpMessage`, shown as a plain message.
+
 - `Debug.Notification("text")`.
+- A help-message helper that forwards its own parameters (Starfield's shape:
+  `Help(asEvent, afDuration, asContext)` calling `ShowAsHelpMessage`) passes the check
+  with the run-time context treated as the unrestricted `""`; if a menu name arrives at
+  run time the lowering declines it and the run stops (the context only restricts the
+  message to a menu, which this engine does not model).
 
 *Show - Message* substitutes "the passed-in numbers into the appropriate
 spots", meaning the `printf` conversions `%[.N]f`, `%d`/`%i` and `%%`.
