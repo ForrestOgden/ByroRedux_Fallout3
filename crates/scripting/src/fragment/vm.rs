@@ -2990,7 +2990,12 @@ fn is_trace(callee: &Expr) -> bool {
     let Expr::MemberAccess { object, member } = callee else {
         return false;
     };
-    static_class(&object.node) == Some("debug") && member.node.0.to_ascii_lowercase().starts_with("trace")
+    let name = member.node.0.to_ascii_lowercase();
+    // `Debug.Trace…` write the script log; `OpenUserLog` / `CloseUserLog` (CK:
+    // "Opens a new user log on disk") open and close a file of the same kind.
+    // Nothing else reads either, so a statement call has no game effect.
+    static_class(&object.node) == Some("debug")
+        && (name.starts_with("trace") || name == "openuserlog" || name == "closeuserlog")
 }
 
 fn callee_name(callee: &Expr) -> String {
@@ -3989,7 +3994,7 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Object);
             }
-            if class == "debug" && name.starts_with("trace") {
+            if class == "debug" && (name.starts_with("trace") || name == "openuserlog" || name == "closeuserlog") && statement {
                 return Some(Kind::None);
             }
             if class == "game"

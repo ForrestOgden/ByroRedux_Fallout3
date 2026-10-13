@@ -3544,14 +3544,34 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 /// `Message.Show(float afArg1 = 0.0, … afArg9 = 0.0)` (nine literal
 /// numbers at most) and `Message.ShowAsHelpMessage(string asEvent, float
-/// afDuration, float afInterval, int aiMaxTimes)` with literal arguments.
+/// afDuration, float afInterval, int aiMaxTimes[, string asContext = "", int
+/// aiPriority = 0, Message GamepadMsg = None])` with literal arguments. The context restricts a message
+/// to a menu ("Pass 'NoMenu' for this message only to appear when the game is
+/// not in menu mode"); only the unrestricted `""` and `"NoMenu"` are shown
+/// here, any menu name declines. The priority only orders competing messages.
 fn prim_show_message(e: &Expr, scope: &Scope) -> Option<Effect> {
     if let Some((object, args)) = method_call(e, "ShowAsHelpMessage") {
-        if args.len() != 4 || !matches!(args[0].value.node, Expr::StringLit(_)) {
+        if !(4..=7).contains(&args.len()) || !matches!(args[0].value.node, Expr::StringLit(_)) {
             return None;
         }
         for arg in &args[1..4] {
             as_num(&arg.value.node)?;
+        }
+        if let Some(context) = args.get(4) {
+            match &context.value.node {
+                Expr::StringLit(text) if text.is_empty() || text.eq_ignore_ascii_case("NoMenu") => {}
+                _ => return None,
+            }
+        }
+        if let Some(priority) = args.get(5) {
+            as_num(&priority.value.node)?;
+        }
+        // Starfield's `GamepadMsg`: the text shown instead on a gamepad. The
+        // keyboard message is the one shown here.
+        if let Some(gamepad) = args.get(6) {
+            if !matches!(gamepad.value.node, Expr::NoneLit) {
+                receiver_object(&gamepad.value.node, scope)?;
+            }
         }
         return Some(Effect::ShowHelpMessage {
             message: receiver_object(object, scope)?,
@@ -8812,6 +8832,28 @@ mod tests {
             ));
             assert_eq!(lower_fragment(&body), None, "{condition}");
         }
+    }
+
+    /// M47.2 — `ShowAsHelpMessage` lowers with its Fallout 4 context and
+    /// priority and Starfield's gamepad message; a menu context declines.
+    #[test]
+    fn help_message_lowers_with_context_priority_and_gamepad_message() {
+        let lowered = |call: &str| {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nMessage Property Help Auto\nMessage Property PadHelp Auto\n\
+                 Function Fragment_1()\n {call}\n EndFunction\n"
+            ));
+            lower_fragment(&body)
+        };
+        for call in [
+            "Help.ShowAsHelpMessage(\"Jump\", 5.0, 30.0, 3)",
+            "Help.ShowAsHelpMessage(\"Jump\", 5.0, 30.0, 3, \"NoMenu\", 2)",
+            "Help.ShowAsHelpMessage(\"Jump\", 5.0, 30.0, 3, \"\", 0, PadHelp)",
+            "Help.ShowAsHelpMessage(\"Jump\", 5.0, 30.0, 3, \"\", 0, None)",
+        ] {
+            assert!(lowered(call).is_some(), "{call}");
+        }
+        assert!(lowered("Help.ShowAsHelpMessage(\"Jump\", 5.0, 30.0, 3, \"ContainerMenu\", 0)").is_none());
     }
 
     /// M47.2 — `IsInCombat()` is a guard on the actor's combat state.
