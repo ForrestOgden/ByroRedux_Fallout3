@@ -1682,6 +1682,7 @@ mod tests {
                 activator_gate: ActivatorGate::BaseForm(0x654E5),
                 disable_after_advance: true,
                 disable_reference_after_advance: false,
+                start_if_stopped: false,
             },
         );
         byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
@@ -1695,6 +1696,7 @@ mod tests {
                 activator_gate: ActivatorGate::BaseForm(0x654E5),
                 disable_after_advance: true,
                 disable_reference_after_advance: false,
+                start_if_stopped: false,
             },
         );
         byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
@@ -1708,6 +1710,7 @@ mod tests {
                 activator_gate: ActivatorGate::BaseForm(0x654E5),
                 disable_after_advance: true,
                 disable_reference_after_advance: false,
+                start_if_stopped: false,
             },
         );
         byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
@@ -1721,6 +1724,7 @@ mod tests {
                 activator_gate: ActivatorGate::BaseForm(0x654E5),
                 disable_after_advance: true,
                 disable_reference_after_advance: false,
+                start_if_stopped: false,
             },
         );
         byroredux_scripting::papyrus_demo::quest_advance::install_quest_trigger_approach(
@@ -1734,6 +1738,7 @@ mod tests {
                 activator_gate: ActivatorGate::BaseForm(0xB9E1D),
                 disable_after_advance: true,
                 disable_reference_after_advance: false,
+                start_if_stopped: false,
             },
         );
 

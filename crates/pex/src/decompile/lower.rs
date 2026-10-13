@@ -99,6 +99,19 @@ fn node_type_name(node: &Node) -> String {
     }
 }
 
+/// The source initializer a variable's stored default stands for: a
+/// numeric / Bool / String literal. `None` for an object default (always
+/// `None` in the table) and for an identifier, which no initializer spells.
+fn default_literal(value: &Value) -> Option<Spanned<Expr>> {
+    Some(sp(match value {
+        Value::Integer(n) => Expr::IntLit(*n as i64),
+        Value::Float(f) => Expr::FloatLit(*f as f64),
+        Value::Bool(b) => Expr::BoolLit(*b),
+        Value::Str(s) => Expr::StringLit(s.clone()),
+        Value::None | Value::Identifier(_) => return None,
+    }))
+}
+
 /// Lower a node used as an expression.
 fn lower_expr(node: &Node) -> Spanned<Expr> {
     let expr = match &node.kind {
@@ -442,7 +455,15 @@ fn lower_property(
         ty: sp(lower_type(&prop.type_name)),
         name: ident(&prop.name),
         flags,
-        initial_value: None,
+        // M47.2 — an auto property's initializer is its backing variable's
+        // stored default (`Int Property prereqStageOPT = -1 Auto` keeps the
+        // `-1` on `::prereqStageOPT_var`). Dropping it made every compiled
+        // script's property defaults read as absent.
+        initial_value: prop
+            .auto_var_name
+            .as_deref()
+            .and_then(|var| object.variables.iter().find(|v| v.name.eq_ignore_ascii_case(var)))
+            .and_then(|v| default_literal(&v.default_value)),
         getter,
         setter,
         doc_comment: None,
@@ -533,7 +554,8 @@ pub fn decompile_script(pex: &Pex) -> Result<Script, DecompileError> {
         body.push(sp(ScriptItem::Variable(Variable {
             ty: sp(lower_type(&v.type_name)),
             name: ident(&v.name),
-            initial_value: None,
+            // M47.2 — the table's stored default is the source initializer.
+            initial_value: default_literal(&v.default_value),
             // #5398 — `Int x Conditional` round-trips through the same
             // user-flag table as the object's own flags.
             is_conditional: v.user_flags & masks.conditional != 0,
@@ -1236,6 +1258,63 @@ mod tests {
         assert_eq!(p.name.node.0, "MyQuest");
         assert_eq!(p.ty.node, Type::Object(past::Identifier::new("Quest")));
         assert!(p.flags.contains(PropertyFlags::AUTO));
+    }
+
+    /// M47.2 — an auto property's initializer is its backing variable's
+    /// stored default, and a plain variable keeps its own; an object default
+    /// (`None`) stays without an initializer.
+    #[test]
+    fn variable_defaults_become_source_initializers() {
+        let auto_property = |name: &str, ty: &str| crate::model::Property {
+            name: name.into(),
+            type_name: ty.into(),
+            flags: crate::model::property_flag::READ
+                | crate::model::property_flag::WRITE
+                | crate::model::property_flag::AUTOVAR,
+            auto_var_name: Some(format!("::{name}_var")),
+            ..crate::model::Property::default()
+        };
+        let variable = |name: &str, ty: &str, default_value| crate::model::Variable {
+            name: name.into(),
+            type_name: ty.into(),
+            default_value,
+            ..Default::default()
+        };
+        let pex = Pex {
+            script_type: crate::ScriptType::Skyrim,
+            header: Default::default(),
+            string_table: Vec::new(),
+            debug_info: Default::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "defaultSetStageTrigScript".into(),
+                variables: vec![
+                    variable("::prereqStageOPT_var", "Int", Value::Integer(-1)),
+                    variable("::myQuest_var", "Quest", Value::None),
+                    variable("count", "Float", Value::Float(2.5)),
+                ],
+                properties: vec![
+                    auto_property("prereqStageOPT", "Int"),
+                    auto_property("myQuest", "Quest"),
+                ],
+                ..Object::default()
+            }],
+        };
+        let script = decompile_script(&pex).unwrap();
+        let initial = |wanted: &str| {
+            script.body.iter().find_map(|item| match &item.node {
+                ScriptItem::Property(p) if p.name.node.0 == wanted => {
+                    Some(p.initial_value.as_ref().map(|v| format!("{:?}", v.node)))
+                }
+                ScriptItem::Variable(v) if v.name.node.0 == wanted => {
+                    Some(v.initial_value.as_ref().map(|v| format!("{:?}", v.node)))
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(initial("prereqStageOPT"), Some(Some("IntLit(-1)".into())));
+        assert_eq!(initial("myQuest"), Some(None));
+        assert_eq!(initial("count"), Some(Some("FloatLit(2.5)".into())));
     }
 
     /// #3933 — the two shapes #3783's per-call depth ledger could not see.

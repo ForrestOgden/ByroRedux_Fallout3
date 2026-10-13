@@ -70,7 +70,17 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
         .0
         .eq_ignore_ascii_case("defaultSetStageTRIGSpecificActor")
     {
-        return recognize_specific_actor_trigger(ctx, script);
+        return recognize_set_stage_trigger(ctx, script, SetStageTrigger::SpecificActor);
+    }
+    // M47.2 — the player-entering sibling, the most-placed quest trigger in
+    // Skyrim.esm (603 references).
+    if script
+        .name
+        .node
+        .0
+        .eq_ignore_ascii_case("defaultSetStageTrigScript")
+    {
+        return recognize_set_stage_trigger(ctx, script, SetStageTrigger::Player);
     }
     let event = find_advance_event(script)?;
     let gate = extract_stage_gate(event)?;
@@ -118,6 +128,7 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
         },
         disable_after_advance: false,
         disable_reference_after_advance: false,
+        start_if_stopped: false,
     };
 
     Some(Recognized::new(
@@ -135,7 +146,26 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
 /// `TriggerActor`, checks an optional prerequisite stage, sets `stage`, then
 /// optionally disables itself. The script name selects this exact shipped
 /// contract; every gameplay value still comes from the attached instance.
-fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> Option<Recognized> {
+/// The two vanilla `defaultSetStageTrig*` scripts this recognizer reads off
+/// their VMAD. Both set `stage` on `myQuest` when the gating actor enters,
+/// behind an optional `prereqStageOPT` stage-done test, and stop on
+/// `disableWhenDone` (`Disable(false)`) or their once-only option.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetStageTrigger {
+    /// `defaultSetStageTRIGSpecificActor` — gated on `TriggerActor`'s base
+    /// record; once-only option `onlyOnce`.
+    SpecificActor,
+    /// `defaultSetStageTrigScript` — gated on the player
+    /// (`triggerRef == Game.GetPlayer()`); once-only option `doOnce`; starts
+    /// `myQuest` first when it is not running.
+    Player,
+}
+
+fn recognize_set_stage_trigger(
+    ctx: &RecognizeCtx<'_>,
+    script: &Script,
+    variant: SetStageTrigger,
+) -> Option<Recognized> {
     // Require the canonical event to exist so a corrupt/replaced PEX with the
     // same name does not gain behavior solely from its property table.
     let event = find_advance_event(script)?;
@@ -193,9 +223,28 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     };
 
     let owning_quest = object_property("myQuest")?;
-    let trigger_actor = object_property("TriggerActor")?;
+    let activator_gate = match variant {
+        SetStageTrigger::SpecificActor => ActivatorGate::BaseForm(object_property("TriggerActor")?),
+        SetStageTrigger::Player => ActivatorGate::PlayerOnly,
+    };
     let target_stage = u16::try_from(int_property("stage")?).ok()?;
-    let prerequisite = opt_int_property("prereqStageOPT")?.unwrap_or(-1);
+    // An absent VMAD value falls back to the script's own initializer (the
+    // decompiler restores it from the backing variable: `-1`, "no
+    // prerequisite", on the vanilla script), then to `-1`.
+    let script_int = |name: &str| -> Option<i32> {
+        script.body.iter().find_map(|item| match &item.node {
+            ScriptItem::Property(p) if p.name.node.0.eq_ignore_ascii_case(name) => {
+                match p.initial_value.as_ref().map(|v| &v.node) {
+                    Some(byroredux_papyrus::ast::Expr::IntLit(n)) => i32::try_from(*n).ok(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+    };
+    let prerequisite = opt_int_property("prereqStageOPT")?
+        .or_else(|| script_int("prereqStageOPT"))
+        .unwrap_or(-1);
     let conditions = if prerequisite >= 0 {
         vec![Condition {
             function_index: 59,
@@ -216,13 +265,18 @@ fn recognize_specific_actor_trigger(ctx: &RecognizeCtx<'_>, script: &Script) -> 
     // `self.Disable(false)`, `onlyOnce` calls `GotoState("hasBeenTriggered")`.
     // Both stop the trigger in-session; only the first disables the reference.
     let disable_when_done = opt_bool_property("disableWhenDone")?.unwrap_or(false);
+    let once_only = match variant {
+        SetStageTrigger::SpecificActor => "onlyOnce",
+        SetStageTrigger::Player => "doOnce",
+    };
     let component = QuestAdvanceOnActivate {
         owning_quest: QuestFormId(owning_quest),
         conditions,
         target_stage,
-        activator_gate: ActivatorGate::BaseForm(trigger_actor),
-        disable_after_advance: disable_when_done || opt_bool_property("onlyOnce")?.unwrap_or(false),
+        activator_gate,
+        disable_after_advance: disable_when_done || opt_bool_property(once_only)?.unwrap_or(false),
         disable_reference_after_advance: disable_when_done,
+        start_if_stopped: variant == SetStageTrigger::Player,
     };
     Some(Recognized::new(
         format!("quest_stage_gate@{}", script.name.node),
@@ -676,6 +730,141 @@ mod tests {
             component.disable_reference_after_advance,
             "disableWhenDone is the shipped script's self.Disable(false) (#4326)"
         );
+    }
+
+    /// The vanilla `defaultSetStageTrigScript` property shape, defaults as
+    /// the decompiler restores them from the backing variables.
+    const PLAYER_TRIGGER_SRC: &str = "ScriptName defaultSetStageTrigScript extends ObjectReference\n\
+        Bool Property doOnce = True Auto\n\
+        Bool Property disableWhenDone = False Auto\n\
+        Int Property prereqStageOPT = -1 Auto\n\
+        Quest Property myQuest Auto\n\
+        Int Property stage Auto\n\
+        Auto State waitingForPlayer\n\
+        Event OnTriggerEnter(ObjectReference triggerRef)\n\
+        EndEvent\n\
+        EndState\n";
+
+    fn player_trigger_instance(extra: Vec<ScriptProperty>) -> ScriptInstanceData {
+        let mut properties = vec![
+            ScriptProperty {
+                name: "myQuest".into(),
+                status: 1,
+                value: PropertyValue::Object {
+                    form_id: 0x0001_F251,
+                    alias: -1,
+                },
+            },
+            ScriptProperty {
+                name: "stage".into(),
+                status: 1,
+                value: PropertyValue::Int32(10),
+            },
+        ];
+        properties.extend(extra);
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "defaultSetStageTrigScript".into(),
+                status: 1,
+                properties,
+            }],
+        }
+    }
+
+    /// M47.2 — `defaultSetStageTrigScript` (603 Skyrim.esm references):
+    /// player-gated, the prerequisite defaulting to the script's own `-1`
+    /// ("none") when the VMAD omits it, `doOnce` stopping the trigger, and
+    /// the quest started first when it is not running.
+    #[test]
+    fn recognizes_the_player_set_stage_trigger() {
+        let (script, errors) = parse_script(PLAYER_TRIGGER_SRC).expect("parses");
+        assert!(errors.is_empty(), "{errors:?}");
+        let source = ScriptSource::PapyrusSource(&script);
+        let recognized = translate_script(
+            &source,
+            GameKind::Skyrim,
+            Some(&player_trigger_instance(vec![])),
+            None,
+        )
+        .expect("recognized");
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        let entity = world.spawn();
+        (recognized.spawn)(&mut world, entity);
+        let component = world.get::<QuestAdvanceOnActivate>(entity).unwrap().clone();
+        assert_eq!(component.owning_quest, QuestFormId(0x0001_F251));
+        assert_eq!(component.target_stage, 10);
+        assert!(component.conditions.is_empty(), "prereq -1: no prerequisite");
+        assert!(matches!(component.activator_gate, ActivatorGate::PlayerOnly));
+        assert!(component.start_if_stopped);
+        assert!(!component.disable_after_advance, "doOnce comes from the VMAD, not the source");
+
+        // A VMAD prerequisite and doOnce.
+        let recognized = translate_script(
+            &source,
+            GameKind::Skyrim,
+            Some(&player_trigger_instance(vec![
+                ScriptProperty {
+                    name: "prereqStageOPT".into(),
+                    status: 1,
+                    value: PropertyValue::Int32(5),
+                },
+                ScriptProperty {
+                    name: "doOnce".into(),
+                    status: 1,
+                    value: PropertyValue::Bool(true),
+                },
+            ])),
+            None,
+        )
+        .expect("recognized");
+        let other = world.spawn();
+        (recognized.spawn)(&mut world, other);
+        let component = world.get::<QuestAdvanceOnActivate>(other).unwrap().clone();
+        assert_eq!(component.conditions[0].param_2, 5);
+        assert!(component.disable_after_advance);
+        assert!(!component.disable_reference_after_advance);
+    }
+
+    /// M47.2 — the player entering starts the stopped quest and sets the
+    /// stage; another actor entering does nothing.
+    #[test]
+    fn the_player_set_stage_trigger_starts_and_advances_its_quest() {
+        use crate::quest_stages::QuestStageState;
+        let (script, _) = parse_script(PLAYER_TRIGGER_SRC).expect("parses");
+        let recognized = translate_script(
+            &ScriptSource::PapyrusSource(&script),
+            GameKind::Skyrim,
+            Some(&player_trigger_instance(vec![])),
+            None,
+        )
+        .expect("recognized");
+        let mut world = byroredux_core::ecs::world::World::new();
+        crate::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let player = world.spawn();
+        world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+        let npc = world.spawn();
+        let trigger = world.spawn();
+        (recognized.spawn)(&mut world, trigger);
+        let quest = QuestFormId(0x0001_F251);
+
+        let enter = |world: &byroredux_core::ecs::world::World, who| {
+            world
+                .query_mut::<crate::OnTriggerEnterEvent>()
+                .unwrap()
+                .insert(trigger, crate::OnTriggerEnterEvent { triggerers: vec![who] });
+            crate::papyrus_demo::quest_advance::quest_advance_system(world);
+            world.query_mut::<crate::OnTriggerEnterEvent>().unwrap().remove(trigger);
+        };
+        enter(&world, npc);
+        assert!(!world.resource::<QuestStageState>().is_running(quest));
+        enter(&world, player);
+        let stages = world.resource::<QuestStageState>();
+        assert!(stages.is_running(quest), "started first");
+        assert_eq!(stages.get_stage(quest), 10);
     }
 
     /// #4326 — `onlyOnce` stops the trigger (the shipped script's

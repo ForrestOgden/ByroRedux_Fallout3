@@ -365,7 +365,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 - [x] `quest_stage_gate` + `rumble` fire on decompiled vanilla content (`pex_recognize_e2e`: DA10, `defaultRumbleOnActivate`)
 
 **Phase 3**
-- [ ] top-N script families by corpus frequency have generic recognizers
+- [x] top-N script families by corpus frequency have generic recognizers — measured by `refr_script_coverage` (Skyrim.esm: 19,412 scripted references, 7.2% covered after `defaultSetStageTrigScript` joined `default2StateActivator` / `defaultSetStageTRIGSpecificActor` / the quest-stage-gate family). The rest of the top 40 are bespoke subsystems — critter spawners, ambushes, ore veins, physics traps, weapon racks — each its own runtime, not a recognizer
 - [x] condition-function catalog expanded to cover recognized scripts' CTDAs (25 functions, incl. `GetVMQuestVariable`)
 - [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 51.5% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 

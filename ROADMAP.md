@@ -99,11 +99,9 @@ top-of-frame all-slots fence wait that dominates GPU-bound frames
   the `BhkSystemBinary` blob decoder.
 - Dialogue: Skyrim+ `.fuz` voice. The greeting, line-lifetime, force-greet
   and FO3/FNV voice layers are live (#5367,
-  [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Perk entry-point
-  composition shipped with M47.2 (strike damage; the other hooks wait on
-  their consuming systems). Story Manager producer breadth (#5366 —
-  `SCPT` awaits the `SendStoryEvent` Papyrus native, `LEVL`/`SKIL` a
-  leveling transition) is open.
+  [`dialogue-trees.md`](docs/engine/dialogue-trees.md)). Story Manager
+  producer breadth is open (#5366 — `SCPT` awaits the `SendStoryEvent`
+  native, `LEVL`/`SKIL` a leveling transition).
 - Starfield CDB materials: `.mat` texture slots merge from the streaming CDB
   index (`224a19372`, `18fce7e43`); #3398 stays open until its definition of
   done is checked.
@@ -548,8 +546,7 @@ M30 Phase 1 Papyrus parser (logos lexer + Pratt expression parser,
 full AST) · M30.2 Papyrus Phases 2–4 (2026-05-23) ·
 R5 Papyrus quest prototype — verdict "go ECS-native" (2026-05-16) ·
 M47.0 event hooks runtime and M47.1 condition evaluator (2026-05-23) ·
-M47.2 full scripting runtime (2026-10-12: `.pex` fragments 51.5% lowered across
-Skyrim/FO4/Starfield, perk entry points, quest-script variables) ·
+M47.2 full scripting runtime (2026-10-12) ·
 M20 Scaleform/SWF UI via Ruffle · R4 SWF/GFx decision — pinned Ruffle with
 ByroRedux-owned host profiles (2026-07-25) ·
 M44 spatial audio (2026-05-06) ·

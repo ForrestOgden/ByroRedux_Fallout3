@@ -88,7 +88,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_core::ecs::Resource;
 use byroredux_core::math::Vec3;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use byroredux_plugin::esm::records::condition::{
     ComparisonOp, Condition, ConditionList, ConditionValue, RunOn,
@@ -140,6 +140,11 @@ pub struct QuestAdvanceOnActivate {
     /// instead calls `GotoState("hasBeenTriggered")` (an empty state) and
     /// leaves the reference enabled, so it must not set this.
     pub disable_reference_after_advance: bool,
+    /// M47.2 — start the quest first when it is not running, the way
+    /// vanilla `defaultSetStageTrigScript` does (`If !myQuest.IsRunning()
+    /// → myQuest.Start()` before the `SetStage`). Through the canonical
+    /// lifecycle, with the quest's authored start-up stage.
+    pub start_if_stopped: bool,
 }
 
 impl Component for QuestAdvanceOnActivate {
@@ -268,6 +273,7 @@ pub fn da10_main_door(owning_quest: QuestFormId) -> QuestAdvanceOnActivate {
         activator_gate: ActivatorGate::Any,
         disable_after_advance: false,
         disable_reference_after_advance: false,
+        start_if_stopped: false,
     }
 }
 
@@ -377,6 +383,7 @@ pub fn quest_advance_system(world: &World) {
         target_stage: u16,
         disable_after_advance: bool,
         disable_reference_after_advance: bool,
+        start_if_stopped: bool,
     }
     let mut pending: Vec<PendingAdvance> = Vec::new();
     for (entity, triggerer) in triggered {
@@ -424,6 +431,7 @@ pub fn quest_advance_system(world: &World) {
                 target_stage: comp.target_stage,
                 disable_after_advance: comp.disable_after_advance,
                 disable_reference_after_advance: comp.disable_reference_after_advance,
+                start_if_stopped: comp.start_if_stopped,
             });
         }
     }
@@ -441,9 +449,32 @@ pub fn quest_advance_system(world: &World) {
     // and the future fragment dispatcher.
     let mut advances_emitted: Vec<QuestStageAdvanced> = Vec::with_capacity(pending.len());
     let mut disable_sources = Vec::new();
+    // M47.2 — the start-up stages a `start_if_stopped` advance needs, read
+    // before the stage-state write guard is taken.
+    let start_up_stages: HashMap<QuestFormId, Option<u16>> = {
+        let definitions = world.try_resource::<crate::QuestDefinitionRegistry>();
+        pending
+            .iter()
+            .filter(|p| p.start_if_stopped)
+            .map(|p| {
+                let stage = definitions
+                    .as_deref()
+                    .and_then(|definitions| definitions.start_up_stage(p.quest));
+                (p.quest, stage)
+            })
+            .collect()
+    };
+    let mut started_any = false;
     {
         let mut stage_state = world.resource_mut::<QuestStageState>();
         for p in pending {
+            if p.start_if_stopped && !stage_state.is_running(p.quest) {
+                let start_up_stage = start_up_stages.get(&p.quest).copied().flatten();
+                if let Some(event) = stage_state.start_quest(p.quest, start_up_stage) {
+                    advances_emitted.push(event);
+                    started_any = true;
+                }
+            }
             let prev = stage_state.set_stage(p.quest, p.target_stage);
             advances_emitted.push(QuestStageAdvanced {
                 quest: p.quest,
@@ -454,6 +485,10 @@ pub fn quest_advance_system(world: &World) {
                 disable_sources.push((p.source, p.disable_reference_after_advance));
             }
         }
+    }
+    if started_any {
+        // A started quest's aliases fill on the next refresh.
+        crate::mark_scene_actor_bindings_dirty(world);
     }
     if !disable_sources.is_empty() {
         if let Some(mut components) = world.query_mut::<QuestAdvanceOnActivate>() {
