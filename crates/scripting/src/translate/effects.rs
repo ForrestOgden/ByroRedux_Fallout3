@@ -1308,6 +1308,16 @@ pub enum Effect {
         target: Option<ObjectRef>,
         keyword: Option<ObjectRef>,
     },
+    /// M47.2 — `<actor>.DamageValue(av, amount)` / `RestoreValue(av, amount)`
+    /// (Skyrim: `DamageActorValue` / `RestoreActorValue("Name", amount)`): the
+    /// actor value's damage layer grows by `amount`, or `restore` takes up to
+    /// `amount` of it back (CK *DamageValue* / *RestoreValue - ObjectReference*).
+    DamageActorValue {
+        actor: ActorRef,
+        actor_value: ActorValueArg,
+        amount: ValueExpr,
+        restore: bool,
+    },
     /// M47.2 — `<reference>.SetLocRefType(akLoc, akRefType)`
     /// ([`crate::LocRefTypeOverrides`]); a `None` ref type clears what scripts
     /// assigned. The location is not part of the key.
@@ -2961,6 +2971,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_add_achievement,
     prim_set_linked_ref,
     prim_set_loc_ref_type,
+    prim_damage_actor_value,
     prim_advance_skill,
     prim_set_player_teammate,
     prim_set_doing_favor,
@@ -4129,6 +4140,26 @@ fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
             value,
         },
         ActorValueArg::Named(name) => Effect::SetActorValueNamed { actor, name, value },
+    })
+}
+
+/// `DamageValue` / `DamageActorValue` / `DamageAV` and `RestoreValue` /
+/// `RestoreActorValue` / `RestoreAV` with an actor value and an amount.
+fn prim_damage_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args, restore) = method_call_any(e, &["DamageValue", "DamageActorValue", "DamageAV"])
+        .map(|(object, args)| (object, args, false))
+        .or_else(|| {
+            method_call_any(e, &["RestoreValue", "RestoreActorValue", "RestoreAV"])
+                .map(|(object, args)| (object, args, true))
+        })?;
+    if args.len() != 2 {
+        return None;
+    }
+    Some(Effect::DamageActorValue {
+        actor: receiver_actor(object, scope)?,
+        actor_value: actor_value_arg(&args[0].value.node, scope)?,
+        amount: classify_value(&args[1].value.node, scope)?,
+        restore,
     })
 }
 

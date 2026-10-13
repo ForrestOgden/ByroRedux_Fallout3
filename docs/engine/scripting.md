@@ -471,7 +471,12 @@ and Skyrim's `SetAV` / `SetActorValue("Name", v)` lower to
 `Effect::SetActorValueNamed`. The name resolves through `ActorValueNames`,
 the AVIF editor IDs with their `AV` prefix stripped (`AVVariable06`); a
 legacy editor ID such as Illusion's `AVMysticism` does not resolve, and that
-write skips. The reads beyond the current value are `ValueExpr::ActorValueReading`:
+write skips. `DamageValue` / `RestoreValue` (Skyrim `DamageActorValue` / `DamageAV`, `RestoreActorValue` /
+`RestoreAV`) lower to `Effect::DamageActorValue`: the amount (a literal or a run-time number) grows
+the actor value's damage layer, or takes up to that much of it back (CK *DamageValue* /
+*RestoreValue - ObjectReference*: "Applies damage to"; "Restores (or heals) damage done to").
+`ModValue` is not modelled: the CK says only "Modifies the specified Actor Value", without
+which modifier layer. The reads beyond the current value are `ValueExpr::ActorValueReading`:
 `GetBaseValue(av)` / `GetBaseActorValue("Name")` is the base with the
 modifiers and damage dropped (a derived stat takes its formula value), and
 `GetValuePercentage(av)` / `GetActorValuePercentage("Name")` is the current value

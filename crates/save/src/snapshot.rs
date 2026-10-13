@@ -484,7 +484,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v91 -> v92 (M47.2): `Effect::SetLocRefType` and the `LocRefTypeOverrides`
 /// resource column.
-pub const FORMAT_MAJOR: u16 = 92;
+///
+/// v92 -> v93 (M47.2): `Effect::DamageActorValue` (`DamageValue`,
+/// `RestoreValue`).
+pub const FORMAT_MAJOR: u16 = 93;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

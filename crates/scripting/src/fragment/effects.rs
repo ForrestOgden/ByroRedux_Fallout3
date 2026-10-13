@@ -1298,8 +1298,8 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `AiCombatState` guard drops), `PlayerMoveRequest` (write,
 ///     `Effect::MovePlayerTo` — M47.2; taken alone, the engine drains it),
 ///     `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
-///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` —
-///     M47.2), `SceneAliasCandidate` (read, `Effect::SetBaseProtection`'s
+///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` and
+///     `Effect::DamageActorValue` — M47.2), `SceneAliasCandidate` (read, `Effect::SetBaseProtection`'s
 ///     actor base — M47.2), `EditorLocation` (read,
 ///     `Effect::MoveToEditorLocation` — M47.2; copied out and released
 ///     before the `Transform` write)
@@ -1734,6 +1734,41 @@ pub(crate) fn apply_effect(
             };
             let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
             set_actor_value_base(world, actor, avif, value);
+            None
+        }
+        Effect::DamageActorValue {
+            actor,
+            actor_value,
+            amount,
+            restore,
+        } => {
+            let actor = resolve_actor(
+                vmad,
+                world,
+                context,
+                actor,
+                &deferred.scene_actor_bindings,
+                deferred.speaker,
+            )?;
+            let avif = match actor_value {
+                crate::translate::effects::ActorValueArg::Form(form) => {
+                    resolve_property_form_id(vmad, form.property_name())?
+                }
+                crate::translate::effects::ActorValueArg::Named(name) => world
+                    .try_resource::<crate::ActorValueNames>()
+                    .and_then(|names| names.resolve(name))?,
+            };
+            let amount = evaluate_value(amount, context, vmad, world, stages, deferred)?;
+            let mut values = world.query_mut::<byroredux_core::ecs::components::ActorValues>()?;
+            if values.get_mut(actor).is_none() {
+                values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+            }
+            let values = values.get_mut(actor).expect("present or inserted");
+            if *restore {
+                values.restore(avif, amount);
+            } else {
+                values.apply_damage(avif, amount);
+            }
             None
         }
         Effect::ChangePerk { actor, perk, add } => {
@@ -3128,6 +3163,7 @@ fn apply_quest_scoped_effect(
         | Effect::ModQuestVariable { .. }
         | Effect::CopyQuestVariable { .. }
         | Effect::SetActorValueNamed { .. }
+        | Effect::DamageActorValue { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }

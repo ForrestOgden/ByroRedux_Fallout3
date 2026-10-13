@@ -2527,6 +2527,47 @@ fn terminal_selection_runs_the_items_fragment() {
     assert!(crate::fragment::reference_enabled(&world, MARKER), "no fragment for item 3");
 }
 
+/// `DamageActorValue` grows the damage layer and `RestoreActorValue` takes it
+/// back, never past zero (CK *DamageValue* / *RestoreValue*).
+#[test]
+fn damage_and_restore_actor_value_move_the_damage_layer() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::records::AvifRecord;
+    const AV: u32 = 0x0000_05F0;
+    let script = parsed_source(
+        "ScriptName QF_VmDamage extends Quest\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           Float amount = 4.0\n\
+           player.DamageActorValue(\"Variable06\", amount)\n\
+           player.DamageAV(\"Variable06\", 3.0)\n\
+           player.RestoreActorValue(\"Variable06\", 5.0)\n\
+           If player.GetActorValue(\"Variable06\") == 8.0\n\
+             player.RestoreAV(\"Variable06\", 99.0)\n\
+             If player.GetActorValue(\"Variable06\") == 10.0\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<ActorValues>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.actor_values.insert(
+        AV,
+        AvifRecord { form_id: AV, editor_id: "AVVariable06".into(), ..Default::default() },
+    );
+    crate::install_actor_value_names(&mut world, &index);
+    let mut values = ActorValues::new();
+    values.set_base(AV, 10.0);
+    world.insert(player, values);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

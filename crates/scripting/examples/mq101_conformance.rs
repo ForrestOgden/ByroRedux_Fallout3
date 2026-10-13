@@ -141,6 +141,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::ForceAlias { .. } => "ForceAlias",
         Effect::ModQuestVariable { .. } => "ModQuestVariable",
         Effect::SetActorValueNamed { .. } => "SetActorValueNamed",
+        Effect::DamageActorValue { .. } => "DamageActorValue",
         Effect::BlockActivation { .. } => "BlockActivation",
         Effect::SendStoryEvent { .. } => "SendStoryEvent",
         Effect::AddToMap { .. } => "AddToMap",
