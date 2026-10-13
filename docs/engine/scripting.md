@@ -456,7 +456,11 @@ A fragment's `Game.GetPlayer().MoveTo(<marker>)` lowers to
 in `PlayerMoveRequest`, and the app's `step_player_move_request` moves the
 player in place when the reference is resident (camera, then the body grounded
 under it) or queues the door-transition machinery to the reference's cell at
-its placement. `AddItem` / `RemoveItem` counts may read a global
+its placement. `<ref>.MoveTo(target, x, y, z, matchRotation)` lowers to
+`Effect::MoveTo` carrying the literal offset (Gamebryo's Z-up world axes, converted
+to Y-up on apply) and the rotation flag (CK *MoveTo - ObjectReference*; the default
+matches the target's rotation); a variable offset, Starfield's `abRotateOffset` and
+a player teleport with an offset still decline. `AddItem` / `RemoveItem` counts may read a global
 (`ItemCount::Global`, truncated toward zero when applied); `G.Mod(x)` and
 `G.SetValue(S.GetValue() ± c)` lower to `Effect::SetGlobalRelative`, and so
 do assignments to a global's `.Value` (directly or through the quest

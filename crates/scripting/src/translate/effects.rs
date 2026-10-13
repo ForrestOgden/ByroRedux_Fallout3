@@ -1096,14 +1096,16 @@ pub enum Effect {
         item: ObjectRef,
         silent: bool,
     },
-    /// `<moved>.MoveTo(<destination>)` — destination only. The trailing
-    /// offset/rotation parameters are accepted only at their Papyrus
-    /// defaults (see [`prim_move_to`], #3487); a real offset declines the
-    /// whole fragment rather than being silently dropped, which would
-    /// misplace the object.
+    /// `<moved>.MoveTo(<destination>[, x, y, z, matchRotation])` (CK *MoveTo -
+    /// ObjectReference*): the destination's position plus the offset (Gamebryo
+    /// Z-up world axes), with the destination's rotation when `match_rotation`
+    /// (the default). Starfield's `abRotateOffset` is not modelled and declines
+    /// (see [`prim_move_to`]).
     MoveTo {
         moved: ObjectRef,
         destination: ObjectRef,
+        offset: [f32; 3],
+        match_rotation: bool,
     },
     /// `Game.GetPlayer().MoveTo(<destination>)` (M47.2) — the player's
     /// teleport, with [`Self::MoveTo`]'s default-offsets rule. The player
@@ -4151,24 +4153,28 @@ fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     if args.is_empty() || args.len() > MOVE_TO_MAX_ARGS {
         return None;
     }
-    // args[1..=3] — the three float offsets, each defaulting to `0.0`.
-    for offset in args.iter().take(4).skip(1) {
-        if as_num(&offset.value.node)? != 0.0 {
-            return None;
-        }
+    // args[1..=3] — the three float offsets, each defaulting to `0.0`; they
+    // must be literals, since a variable's run-time value is unknown here.
+    let mut offset = [0.0f32; 3];
+    for (slot, arg) in offset.iter_mut().zip(args.iter().skip(1)) {
+        *slot = as_num(&arg.value.node)?;
     }
     // args[4] `abMatchRotation` (default `true`) and Starfield's args[5]
-    // `abRotateOffset` (default `false`). `Effect::MoveTo` models neither,
-    // so anything but the default declines.
-    if !bool_arg(args, 4)?.unwrap_or(true) || bool_arg(args, 5)?.unwrap_or(false) {
+    // `abRotateOffset` (default `false`), which is not modelled.
+    let match_rotation = bool_arg(args, 4)?.unwrap_or(true);
+    if bool_arg(args, 5)?.unwrap_or(false) {
         return None;
     }
     let destination = receiver_object(&args[0].value.node, scope)?;
     if player_expr_ref(object, scope) {
+        // The player's teleport (a cell transition) carries neither.
+        if offset != [0.0; 3] || !match_rotation {
+            return None;
+        }
         return Some(Effect::MovePlayerTo { destination });
     }
     let moved = receiver_object(object, scope)?;
-    Some(Effect::MoveTo { moved, destination })
+    Some(Effect::MoveTo { moved, destination, offset, match_rotation })
 }
 
 /// `<location>.SetKeywordData(akKeyword, afData)` (CK *SetKeywordData - Location*).
@@ -7181,6 +7187,8 @@ mod tests {
             Some(vec![Effect::MoveTo {
                 moved: ObjectRef::Property("SomeRef".into()),
                 destination: ObjectRef::Property("SomeMarker".into()),
+                offset: [0.0; 3],
+                match_rotation: true,
             }])
         );
     }
@@ -7244,17 +7252,31 @@ mod tests {
         );
     }
 
+    /// CK *MoveTo - ObjectReference*: the offsets and `abMatchRotation` are
+    /// part of the instruction, and lower with it.
     #[test]
-    fn move_to_declines_with_offset_args() {
-        // A real offset declines rather than silently misplacing the
-        // object — the reasoning #3487 kept, now applied to the compiled
-        // call shape instead of the authored one.
+    fn move_to_carries_its_offset_and_rotation_flag() {
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_12()\n\
-             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 10.0)\n EndFunction\n",
+             SomeRef.MoveTo(SomeMarker, 1.0, -2.0, 10.0, false)\n EndFunction\n",
         );
-        assert_eq!(lower_fragment(&body), None);
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::MoveTo {
+                moved: ObjectRef::Property("SomeRef".into()),
+                destination: ObjectRef::Property("SomeMarker".into()),
+                offset: [1.0, -2.0, 10.0],
+                match_rotation: false,
+            }])
+        );
+        // The player's teleport carries neither, so a real one declines.
+        let player = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_12()\n\
+             Game.GetPlayer().MoveTo(SomeMarker, 0.0, 0.0, 10.0, true)\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&player), None);
     }
 
     /// Regression for #3487. The Papyrus compiler emits every parameter
@@ -7270,6 +7292,8 @@ mod tests {
         let expected = Some(vec![Effect::MoveTo {
             moved: ObjectRef::Property("SomeRef".into()),
             destination: ObjectRef::Property("SomeMarker".into()),
+            offset: [0.0; 3],
+            match_rotation: true,
         }]);
 
         // Skyrim / Fallout 4: akTarget + 3 offsets + abMatchRotation.
@@ -7292,17 +7316,8 @@ mod tests {
     /// #3487 — the acceptance above is exactly "every trailing argument
     /// is a literal at its Papyrus default", not "ignore the tail".
     #[test]
-    fn move_to_declines_non_default_and_over_long_tails() {
-        // `abMatchRotation = false` is a real instruction the effect does
-        // not model.
-        let no_match_rotation = first_fn_body(
-            "ScriptName QF extends Quest\n\
-             Function Fragment_12()\n\
-             SomeRef.MoveTo(SomeMarker, 0.0, 0.0, 0.0, false)\n EndFunction\n",
-        );
-        assert_eq!(lower_fragment(&no_match_rotation), None);
-
-        // Starfield's `abRotateOffset = true`, likewise.
+    fn move_to_declines_rotate_offset_variables_and_over_long_tails() {
+        // Starfield's `abRotateOffset = true` is not modelled.
         let rotate_offset = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_12()\n\

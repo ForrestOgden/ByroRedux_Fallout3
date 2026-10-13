@@ -2058,8 +2058,9 @@ fn dispatch_add_item_pushes_onto_an_existing_inventory() {
     assert_eq!(inv.items[1].count, 3);
 }
 
-#[test]
-fn dispatch_move_to_via_registered_vmad() {
+/// Run one `MoveTo` fragment from the origin to a marker at (10, 20, 30)
+/// rotated a quarter turn about Y, and return where the moved reference ends up.
+fn run_move_to(offset: [f32; 3], match_rotation: bool) -> (byroredux_core::math::Vec3, byroredux_core::math::Quat) {
     use byroredux_core::ecs::components::{GlobalTransform, Transform};
     use byroredux_core::math::{Quat, Vec3};
     use byroredux_plugin::esm::records::script_instance::{
@@ -2077,7 +2078,7 @@ fn dispatch_move_to_via_registered_vmad() {
     let destination = spawn_with_form_id(&mut world, DEST_FORM);
     world.insert(
         destination,
-        GlobalTransform::new(Vec3::new(10.0, 20.0, 30.0), Quat::IDENTITY, 1.0),
+        GlobalTransform::new(Vec3::new(10.0, 20.0, 30.0), Quat::from_rotation_y(1.0), 1.0),
     );
 
     {
@@ -2117,6 +2118,8 @@ fn dispatch_move_to_via_registered_vmad() {
             vec![Effect::MoveTo {
                 moved: crate::translate::compose::ObjectRef::Property("SomeRef".into()),
                 destination: crate::translate::compose::ObjectRef::Property("SomeMarker".into()),
+                offset,
+                match_rotation,
             }],
         );
     }
@@ -2125,7 +2128,25 @@ fn dispatch_move_to_via_registered_vmad() {
     quest_fragment_dispatch_system(&world);
 
     let transform = world.get::<Transform>(moved).expect("still present");
-    assert_eq!(transform.translation, Vec3::new(10.0, 20.0, 30.0));
+    (transform.translation, transform.rotation)
+}
+
+#[test]
+fn dispatch_move_to_via_registered_vmad() {
+    use byroredux_core::math::{Quat, Vec3};
+    let (translation, rotation) = run_move_to([0.0; 3], true);
+    assert_eq!(translation, Vec3::new(10.0, 20.0, 30.0));
+    assert_eq!(rotation, Quat::from_rotation_y(1.0), "the default matches the marker's rotation");
+}
+
+/// CK *MoveTo*: the offset is in Gamebryo's Z-up world axes (engine Y-up
+/// `(x, z, -y)`), and `abMatchRotation = False` leaves the rotation alone.
+#[test]
+fn move_to_applies_its_offset_and_rotation_flag() {
+    use byroredux_core::math::{Quat, Vec3};
+    let (translation, rotation) = run_move_to([1.0, 2.0, 3.0], false);
+    assert_eq!(translation, Vec3::new(10.0 + 1.0, 20.0 + 3.0, 30.0 - 2.0));
+    assert_eq!(rotation, Quat::IDENTITY);
 }
 
 /// M47.2 — an item count read from a global applies the global's value when

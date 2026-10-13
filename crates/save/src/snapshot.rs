@@ -479,7 +479,9 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v89 -> v90 (M47.2): `ValueExpr::ActorValueReading` (`GetBaseValue`,
 /// `GetValuePercentage`).
-pub const FORMAT_MAJOR: u16 = 90;
+///
+/// v90 -> v91 (M47.2): `Effect::MoveTo` gained `offset` and `match_rotation`.
+pub const FORMAT_MAJOR: u16 = 91;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

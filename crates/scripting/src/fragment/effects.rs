@@ -2146,7 +2146,12 @@ fn apply_placement_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
-        Effect::MoveTo { moved, destination } => {
+        Effect::MoveTo {
+            moved,
+            destination,
+            offset,
+            match_rotation,
+        } => {
             let moved_entity =
                 resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
             let destination_entity = resolve_object(
@@ -2156,13 +2161,15 @@ fn apply_placement_effect(
                 destination,
                 &deferred.scene_actor_bindings,
             )?;
-            let Some(translation) = world
+            let Some((translation, rotation)) = world
                 .get::<GlobalTransform>(destination_entity)
-                .map(|gt| gt.translation)
+                .map(|gt| (gt.translation, gt.rotation))
             else {
                 log::debug!("fragment MoveTo skipped: destination entity has no GlobalTransform");
                 return None;
             };
+            // The offset is in Gamebryo's Z-up world axes.
+            let translation = translation + byroredux_core::math::Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(*offset));
             let Some(mut transforms) = world.query_mut::<Transform>() else {
                 log::debug!("fragment MoveTo skipped: Transform component never registered");
                 return None;
@@ -2179,6 +2186,9 @@ fn apply_placement_effect(
                 context.0
             );
             transform.translation = translation;
+            if *match_rotation {
+                transform.rotation = rotation;
+            }
             None
         }
         Effect::MoveToEditorLocation { moved } => {
