@@ -504,6 +504,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── Story Manager (#5366) ───────────────────────────────────
         ("StoryEvent", "one-frame Pattern-B marker drained by story_manager_dispatch_system at its head; carries session-local EntityIds only (#2672)"),
         ("InventoryItemForms", "the load order's inventory item base FormIDs (ALCH/AMMO/ARMO/BOOK/INGR/KEYM/MISC/NOTE/SLGM/WEAP); rebuilt from record_types at load-order install every boot. The created-object grants it gates are saved through QuestAliasInjectionState's inventory_grants ledger"),
+        ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
         ("ExperienceRules", "Fallout kill-experience bands and health share; rebuilt from the load order's GMSTs by install_experience_rules every boot"),
         ("PlayerDamageDealt", "the player's damage on each actor still standing, for the kill-experience share; mid-fight session state"),
         ("DamageThresholdRules", "New Vegas DT rules (the DT actor value, fMinDamMultiplier, armor DT); rebuilt from the load order by install_damage_threshold_rules every boot"),

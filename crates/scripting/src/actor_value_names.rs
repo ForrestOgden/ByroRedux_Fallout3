@@ -1,0 +1,73 @@
+//! Actor values by their Papyrus names (M47.2).
+//!
+//! Skyrim's Papyrus names an actor value by string (`SetAV("Variable06", 3)`)
+//! where Fallout 4 passes the `ActorValue` form. Skyrim's `AVIF` editor IDs
+//! are the Papyrus name with an `AV` prefix (`AVVariable06`, `AVHealth`), so
+//! the table maps both spellings, case-insensitively, to the AVIF FormID. A
+//! name whose AVIF uses a legacy editor ID (Illusion is `AVMysticism`) does
+//! not resolve, and the effect skips. `NOT_SAVED_BY_DESIGN`: rebuilt from the
+//! load order every boot.
+
+use std::collections::HashMap;
+
+use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::records::EsmIndex;
+
+#[derive(Debug, Default, Clone)]
+pub struct ActorValueNames(HashMap<String, u32>);
+
+impl Resource for ActorValueNames {}
+
+impl ActorValueNames {
+    pub fn from_index(index: &EsmIndex) -> Self {
+        let mut names = HashMap::new();
+        for avif in index.actor_values.values() {
+            let editor_id = avif.editor_id.to_ascii_lowercase();
+            if let Some(name) = editor_id.strip_prefix("av") {
+                names.entry(name.to_string()).or_insert(avif.form_id);
+            }
+            names.insert(editor_id, avif.form_id);
+        }
+        Self(names)
+    }
+
+    /// The AVIF FormID `name` spells, if any.
+    pub fn resolve(&self, name: &str) -> Option<u32> {
+        self.0.get(&name.to_ascii_lowercase()).copied()
+    }
+}
+
+/// Install the load order's [`ActorValueNames`]. Returns how many names map.
+pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
+    let names = ActorValueNames::from_index(index);
+    let count = names.0.len();
+    world.insert_resource(names);
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_plugin::esm::records::AvifRecord;
+
+    #[test]
+    fn papyrus_names_and_editor_ids_both_resolve() {
+        let mut index = EsmIndex::default();
+        for (form_id, editor_id) in [(0x5F0, "AVVariable06"), (0x3E8, "AVHealth")] {
+            index.actor_values.insert(
+                form_id,
+                AvifRecord {
+                    form_id,
+                    editor_id: editor_id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let names = ActorValueNames::from_index(&index);
+        assert_eq!(names.resolve("Variable06"), Some(0x5F0));
+        assert_eq!(names.resolve("health"), Some(0x3E8));
+        assert_eq!(names.resolve("AVHealth"), Some(0x3E8));
+        assert_eq!(names.resolve("Illusion"), None);
+    }
+}

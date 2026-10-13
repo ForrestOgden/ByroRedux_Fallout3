@@ -856,7 +856,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
     // `Effect::ModQuestVariable` variant (name-tagged; no older save carries
     // it, every older one still reads).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb826_ae6d_44be_38e0;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::SetActorValueNamed` variant.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1029_4fb6_34c4_f042;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

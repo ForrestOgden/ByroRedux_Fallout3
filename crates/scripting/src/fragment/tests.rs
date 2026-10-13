@@ -4796,6 +4796,48 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("AnyFails"), Some(-1.0));
 }
 
+/// M47.2 — Skyrim's `SetAV("Name", v)` resolves the AVIF through the
+/// editor-ID table and sets the base value; an unknown name skips.
+#[test]
+fn named_actor_value_writes_resolve_through_the_avif_names() {
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::records::AvifRecord;
+    let mut world = fixture();
+    world.register::<ActorValues>();
+    let player = world.spawn();
+    world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.actor_values.insert(
+        0x5F0,
+        AvifRecord {
+            form_id: 0x5F0,
+            editor_id: "AVVariable06".into(),
+            ..Default::default()
+        },
+    );
+    crate::install_actor_value_names(&mut world, &index);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[]),
+        vec![
+            Effect::SetActorValueNamed {
+                actor: ActorRef::Player,
+                name: "Variable06".into(),
+                value: 3.0,
+            },
+            Effect::SetActorValueNamed {
+                actor: ActorRef::Player,
+                name: "NoSuchValue".into(),
+                value: 9.0,
+            },
+        ],
+    );
+    let values = world.get::<ActorValues>(player).expect("created");
+    assert_eq!(values.current(0x5F0), 3.0);
+    assert_eq!(values.len(), 1, "the unknown name wrote nothing");
+}
+
 /// M47.2 — a quest-variable increment builds on the variable's value,
 /// including a write earlier in the same fragment.
 #[test]

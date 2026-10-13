@@ -367,7 +367,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 **Phase 3**
 - [x] top-N script families by corpus frequency have generic recognizers — measured by `refr_script_coverage` (Skyrim.esm: 19,412 scripted references, 7.2% covered after `defaultSetStageTrigScript` joined `default2StateActivator` / `defaultSetStageTRIGSpecificActor` / the quest-stage-gate family). The rest of the top 40 are bespoke subsystems — critter spawners, ambushes, ore veins, physics traps, weapon racks — each its own runtime, not a recognizer
 - [x] condition-function catalog expanded to cover recognized scripts' CTDAs (34 functions, incl. `GetVMQuestVariable` and the location family)
-- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 56.1% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
+- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 57.0% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`

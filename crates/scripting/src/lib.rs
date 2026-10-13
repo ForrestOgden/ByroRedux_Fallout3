@@ -9,6 +9,7 @@
 //! The core lifecycle: event marker appears → systems process it →
 //! cleanup removes it at end of frame.
 
+pub mod actor_value_names;
 pub mod alias_overrides;
 pub mod cinematic;
 pub mod cleanup;
@@ -104,6 +105,7 @@ pub use faction_changes::{
     reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
+pub use actor_value_names::{install_actor_value_names, ActorValueNames};
 pub use alias_overrides::{AliasOverride, AliasOverrides};
 pub use created_references::{
     CreatedCell, CreatedPlacement, CreatedReference, CreatedReferences, CREATED_FORM_ID_BASE,

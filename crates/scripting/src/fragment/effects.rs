@@ -786,7 +786,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     ownership of an ambient fight — #5046; taken after the
 ///     `AiCombatState` guard drops), `PlayerMoveRequest` (write,
 ///     `Effect::MovePlayerTo` — M47.2; taken alone, the engine drains it),
-///     `Perks` (write, `Effect::ChangePerk` — M47.2)
+///     `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
+///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` —
+///     M47.2)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -933,20 +935,26 @@ pub(crate) fn apply_effect(
                 deferred.speaker,
             )?;
             let avif = resolve_property_form_id(vmad, actor_value.property_name())?;
-            // `ActorValues` is direct component storage — written in place,
-            // the same nested-acquisition exception the inventory arms take.
-            let Some(mut values) =
-                world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+            set_actor_value_base(world, actor, avif, *value);
+            None
+        }
+        Effect::SetActorValueNamed { actor, name, value } => {
+            let actor = resolve_actor(
+                vmad,
+                world,
+                context,
+                actor,
+                &deferred.scene_actor_bindings,
+                deferred.speaker,
+            )?;
+            let Some(avif) = world
+                .try_resource::<crate::ActorValueNames>()
+                .and_then(|names| names.resolve(name))
             else {
+                log::debug!("fragment SetAV skipped: no actor value named '{name}'");
                 return None;
             };
-            if values.get_mut(actor).is_none() {
-                values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
-            }
-            values
-                .get_mut(actor)
-                .expect("present or inserted")
-                .set_base(avif, *value);
+            set_actor_value_base(world, actor, avif, *value);
             None
         }
         Effect::ChangePerk { actor, perk, add } => {
@@ -2273,6 +2281,7 @@ fn apply_quest_scoped_effect(
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
         | Effect::ModQuestVariable { .. }
+        | Effect::SetActorValueNamed { .. }
         | Effect::ChangeFaction { .. }
         | Effect::SetActorValue { .. }
         | Effect::ForceAlias { .. }
@@ -2470,6 +2479,23 @@ fn actor_reference_form_id(
             .get::<crate::scene::SceneAliasCandidate>(entity)
             .map(|candidate| candidate.reference_form_id)
     })
+}
+
+/// Set `actor`'s base `avif`, creating `ActorValues` if it has none.
+/// `ActorValues` is direct component storage — written in place, the same
+/// nested-acquisition exception the inventory arms take.
+fn set_actor_value_base(world: &World, actor: EntityId, avif: u32, value: f32) {
+    let Some(mut values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+    else {
+        return;
+    };
+    if values.get_mut(actor).is_none() {
+        values.insert(actor, byroredux_core::ecs::components::ActorValues::new());
+    }
+    values
+        .get_mut(actor)
+        .expect("present or inserted")
+        .set_base(avif, value);
 }
 
 /// The actor a guard reads, resolved like an effect's receiver.

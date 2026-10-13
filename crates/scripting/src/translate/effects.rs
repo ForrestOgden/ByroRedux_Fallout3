@@ -820,6 +820,15 @@ pub enum Effect {
         actor_value: ObjectRef,
         value: f32,
     },
+    /// M47.2 — Skyrim's `<actor>.SetAV("Name", value)` /
+    /// `SetActorValue("Name", value)`: [`Self::SetActorValue`] with the actor
+    /// value named as Papyrus spells it, resolved through
+    /// [`crate::ActorValueNames`].
+    SetActorValueNamed {
+        actor: ActorRef,
+        name: String,
+        value: f32,
+    },
     /// M47.2 — `<alias>.ForceRefTo(akRef)` (`target` = the reference) or
     /// `<alias>.Clear()` (`target` = `None`): a scripted alias override,
     /// recorded in [`crate::AliasOverrides`] for the alias refresh.
@@ -2187,8 +2196,25 @@ fn prim_change_perk(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// FO4's `<actor>.SetValue(akAV, afValue)` and its alias spelling
+/// `<alias>.TryToSetActorValue(akAV, afValue)` ("sets the actor value on the
+/// reference in this alias, if any" — an empty alias is a runtime no-op), and
+/// — M47.2 — Skyrim's `SetAV` / `SetActorValue("Name", afValue)`.
 fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
-    let (object, args) = method_call(e, "SetValue")?;
+    if let Some((object, args)) = method_call_any(e, &["SetAV", "SetActorValue"]) {
+        if args.len() != 2 {
+            return None;
+        }
+        let Expr::StringLit(name) = &args[0].value.node else {
+            return None;
+        };
+        return Some(Effect::SetActorValueNamed {
+            actor: receiver_actor(object, scope)?,
+            name: name.clone(),
+            value: as_num(&args[1].value.node)?,
+        });
+    }
+    let (object, args) = method_call_any(e, &["SetValue", "TryToSetActorValue"])?;
     if args.len() != 2 {
         return None;
     }
@@ -3651,6 +3677,39 @@ mod tests {
                 "{call}"
             );
         }
+    }
+
+    /// M47.2 — FO4's alias `TryToSetActorValue` and Skyrim's named `SetAV` /
+    /// `SetActorValue`.
+    #[test]
+    fn actor_value_writes_lower_in_each_spelling() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_Danse.TryToSetActorValue(CA_WantsToTalk, 2.0)\n\
+             Game.GetPlayer().SetAV(\"Variable06\", 3 as Float)\n\
+             Alias_Saadia.GetActorRef().SetActorValue(\"Aggression\", 0.0)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetActorValue {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Danse".into())),
+                    actor_value: ObjectRef::Property("CA_WantsToTalk".into()),
+                    value: 2.0,
+                },
+                Effect::SetActorValueNamed {
+                    actor: ActorRef::Player,
+                    name: "Variable06".into(),
+                    value: 3.0,
+                },
+                Effect::SetActorValueNamed {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Saadia".into())),
+                    name: "Aggression".into(),
+                    value: 0.0,
+                },
+            ])
+        );
     }
 
     /// M47.2 — writes to a global's `.Value` (directly or through the quest
