@@ -367,7 +367,7 @@ recognizer family. `SCDA` disassembly deferred (filed).
 **Phase 3**
 - [x] top-N script families by corpus frequency have generic recognizers — measured by `refr_script_coverage` (Skyrim.esm: 19,412 scripted references, 7.2% covered after `defaultSetStageTrigScript` joined `default2StateActivator` / `defaultSetStageTRIGSpecificActor` / the quest-stage-gate family). The rest of the top 40 are bespoke subsystems — critter spawners, ambushes, ore veins, physics traps, weapon racks — each its own runtime, not a recognizer
 - [x] condition-function catalog expanded to cover recognized scripts' CTDAs (34 functions, incl. `GetVMQuestVariable` and the location family)
-- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 54.7% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
+- [x] coverage metric reported — over fragments rather than REFRs: `fragment_coverage` lowers 55.3% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments (2026-10-12)
 
 **Phase 4**
 - [x] `EquipmentEventBatch` / `OnTriggerEnterEvent` / `HitEvent` have real emit sites — `emit_equipment_changes`, `trigger_detection_system`, `byroredux/src/combat.rs`
@@ -392,7 +392,9 @@ created-object "In" alias grants, and `PlayIdle` on any content-named IDLE.
 What remains is outside this milestone's shape, each owned by a subsystem
 that does not exist yet:
 
-- **The fragment long tail** (~45% of fragments): bespoke script functions,
+- **The fragment long tail** (~45% of fragments; `fragment_coverage` now
+  reports a failing `If` by its branch statement, `If>shape`, or as
+  `If(condition)`): bespoke script functions,
   `If`s over unmodelled reads, map markers (`AddToMap`), barter/UI menus,
   alias overrides (`ForceRefTo` / `Clear`), and script-filled reference
   collections (FO4's 554 `ALCS` aliases carry no fill data; scripts `AddRef`

@@ -44,8 +44,8 @@ use crate::cinematic::CinematicAnimationEvent;
 use crate::papyrus_provider::{lower_provider_call, PapyrusProviderCatalog};
 use crate::player_control::PlayerControlSelection;
 use crate::translate::compose::{
-    as_num, int_arg, is_game_get_player, method_call, method_call_any, quest_via, split_and,
-    ObjectRef, QuestRef,
+    as_num, int_arg, is_game_get_player, method_call, method_call_any, quest_via, ObjectRef,
+    QuestRef,
 };
 
 /// A comparison operator of a fragment guard, applied as
@@ -156,6 +156,35 @@ pub enum FragmentGuard {
         comparison: GuardComparison,
         value: f32,
     },
+    /// M47.2 — a disjunction: holds when every guard of at least one
+    /// alternative holds (`A || (B && C)`).
+    Any(Vec<Vec<FragmentGuard>>),
+    /// `<actor>.IsDead()` is `dead`.
+    ActorDead { actor: ActorRef, dead: bool },
+    /// `<actor>.HasPerk(perk)` is `expected`.
+    HasPerk {
+        actor: ActorRef,
+        perk: ObjectRef,
+        expected: bool,
+    },
+    /// `<container>.GetItemCount(item) <op> value`.
+    ItemCount {
+        container: ActorRef,
+        item: ObjectRef,
+        comparison: GuardComparison,
+        value: f32,
+    },
+    /// `<quest>.IsCompleted()` is `completed`.
+    QuestCompleted { quest: QuestRef, completed: bool },
+    /// `<scene>.IsPlaying()` is `playing`.
+    ScenePlaying { scene: ObjectRef, playing: bool },
+    /// `<actor>.GetCurrentLocation().HasKeyword(keyword)` is `expected` — the
+    /// actor's current location itself (the M47.2 location runtime).
+    LocationKeyword {
+        actor: ActorRef,
+        keyword: ObjectRef,
+        expected: bool,
+    },
 }
 
 /// What a guard atom reads, before its comparison is attached.
@@ -167,22 +196,65 @@ enum GuardReading {
     ObjectiveCompleted(QuestRef, i32),
     Global(ObjectRef),
     QuestVariable(QuestRef, String),
+    ActorDead(ActorRef),
+    HasPerk(ActorRef, ObjectRef),
+    ItemCount(ActorRef, ObjectRef),
+    QuestCompleted(QuestRef),
+    ScenePlaying(ObjectRef),
+    LocationKeyword(ActorRef, ObjectRef),
 }
 
-/// Classify one guard atom (a conjunct of an `If` condition).
-fn classify_fragment_guard(atom: &Expr, scope: &Scope) -> Option<FragmentGuard> {
+/// Classify a whole `If` condition as a conjunction of guards: `&&` joins,
+/// `||` becomes a [`FragmentGuard::Any`] of its alternatives, and `Not` is
+/// pushed down to the atoms by De Morgan (`!(A || B)` is `!A && !B`,
+/// `!(A && B)` is `!A || !B`). Any atom that does not classify declines.
+fn classify_condition(
+    condition: &Expr,
+    scope: &Scope,
+    negated: bool,
+    out: &mut Vec<FragmentGuard>,
+) -> Option<()> {
     use byroredux_papyrus::ast::UnaryOp;
-    match atom {
+    match condition {
         Expr::UnaryOp {
             op: UnaryOp::Not,
             operand,
+        } => classify_condition(&operand.node, scope, !negated, out),
+        Expr::BinaryOp {
+            op: op @ (BinaryOp::And | BinaryOp::Or),
+            left,
+            right,
         } => {
-            let (reading, comparison, value) = classify_comparison(&operand.node, scope)?;
-            guard_from(reading, comparison.negated(), value)
+            // `&&`, or a negated `||`, is a conjunction; the other two are
+            // disjunctions.
+            let conjunction = (*op == BinaryOp::And) != negated;
+            if conjunction {
+                classify_condition(&left.node, scope, negated, out)?;
+                classify_condition(&right.node, scope, negated, out)
+            } else {
+                let mut alternatives = Vec::new();
+                for side in [&left.node, &right.node] {
+                    let mut conjunct = Vec::new();
+                    classify_condition(side, scope, negated, &mut conjunct)?;
+                    // Flatten a nested disjunction into this one.
+                    match conjunct.as_slice() {
+                        [FragmentGuard::Any(inner)] => alternatives.extend(inner.iter().cloned()),
+                        _ => alternatives.push(conjunct),
+                    }
+                }
+                out.push(FragmentGuard::Any(alternatives));
+                Some(())
+            }
         }
-        _ => {
+        atom => {
             let (reading, comparison, value) = classify_comparison(atom, scope)?;
-            guard_from(reading, comparison, value)
+            let comparison = if negated {
+                comparison.negated()
+            } else {
+                comparison
+            };
+            out.push(guard_from(reading, comparison, value)?);
+            Some(())
         }
     }
 }
@@ -256,6 +328,46 @@ fn guard_reading(e: &Expr, scope: &Scope) -> Option<GuardReading> {
             }
             return global_receiver(object, scope).map(GuardReading::Global);
         }
+    }
+    // M47.2 — actor, quest, scene and location reads.
+    let one_object = |args: &[byroredux_papyrus::ast::CallArg]| {
+        (args.len() == 1)
+            .then(|| receiver_object(&args[0].value.node, scope))
+            .flatten()
+    };
+    if let Some((object, args)) = method_call(e, "HasKeyword") {
+        let (location_of, location_args) = method_call(object, "GetCurrentLocation")?;
+        if !location_args.is_empty() {
+            return None;
+        }
+        return Some(GuardReading::LocationKeyword(
+            receiver_actor(location_of, scope)?,
+            one_object(args)?,
+        ));
+    }
+    if let Some((object, args)) = method_call(e, "IsDead") {
+        return args
+            .is_empty()
+            .then(|| receiver_actor(object, scope).map(GuardReading::ActorDead))
+            .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "HasPerk") {
+        return Some(GuardReading::HasPerk(receiver_actor(object, scope)?, one_object(args)?));
+    }
+    if let Some((object, args)) = method_call(e, "GetItemCount") {
+        return Some(GuardReading::ItemCount(receiver_actor(object, scope)?, one_object(args)?));
+    }
+    if let Some((object, args)) = method_call(e, "IsCompleted") {
+        return args
+            .is_empty()
+            .then(|| quest(object).map(GuardReading::QuestCompleted))
+            .flatten();
+    }
+    if let Some((object, args)) = method_call(e, "IsPlaying") {
+        return args
+            .is_empty()
+            .then(|| receiver_object(object, scope).map(GuardReading::ScenePlaying))
+            .flatten();
     }
     if let Expr::MemberAccess { object, member } = e {
         // `<global>.Value` — the GlobalVariable property spelling.
@@ -337,6 +449,34 @@ fn guard_from(reading: GuardReading, comparison: GuardComparison, value: f32) ->
             variable,
             comparison,
             value,
+        },
+        GuardReading::ActorDead(actor) => FragmentGuard::ActorDead {
+            actor,
+            dead: bool_expectation(comparison, value)?,
+        },
+        GuardReading::HasPerk(actor, perk) => FragmentGuard::HasPerk {
+            actor,
+            perk,
+            expected: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ItemCount(container, item) => FragmentGuard::ItemCount {
+            container,
+            item,
+            comparison,
+            value,
+        },
+        GuardReading::QuestCompleted(quest) => FragmentGuard::QuestCompleted {
+            quest,
+            completed: bool_expectation(comparison, value)?,
+        },
+        GuardReading::ScenePlaying(scene) => FragmentGuard::ScenePlaying {
+            scene,
+            playing: bool_expectation(comparison, value)?,
+        },
+        GuardReading::LocationKeyword(actor, keyword) => FragmentGuard::LocationKeyword {
+            actor,
+            keyword,
+            expected: bool_expectation(comparison, value)?,
         },
     })
 }
@@ -1178,12 +1318,8 @@ fn lower_statements(
                 if !elseif_clauses.is_empty() {
                     return None;
                 }
-                let mut atoms = Vec::new();
-                split_and(&condition.node, &mut atoms);
-                let guards = atoms
-                    .into_iter()
-                    .map(|atom| classify_fragment_guard(atom, scope))
-                    .collect::<Option<Vec<_>>>()?;
+                let mut guards = Vec::new();
+                classify_condition(&condition.node, scope, false, &mut guards)?;
                 let mut then_scope = scope.clone();
                 let then_effects = lower_statements(body, &mut then_scope, providers, depth + 1)?;
                 let mut else_scope = scope.clone();
@@ -5435,12 +5571,12 @@ mod tests {
 
     #[test]
     fn declines_unmodeled_conditional_guard() {
-        // `GetStage() >= 5` lowers since M47.2; a faction test, a disjunction,
-        // a fragment-script variable (`Self.x`) and a stage compared with a
-        // non-literal still decline.
+        // `GetStage() >= 5` and disjunctions lower since M47.2; a faction
+        // test (alone or inside a disjunction), a fragment-script variable
+        // (`Self.x`) and a stage compared with a non-literal still decline.
         for condition in [
             "Game.GetPlayer().IsInFaction(SomeFaction)",
-            "Self.GetStageDone(5) || Self.GetStageDone(6)",
+            "Self.GetStageDone(5) || Game.GetPlayer().IsInFaction(SomeFaction)",
             "Self.bDone",
             "Self.GetStage() >= Self.GetStage()",
         ] {
@@ -5450,6 +5586,141 @@ mod tests {
                  If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
             ));
             assert_eq!(lower_fragment(&body), None, "{condition}");
+        }
+    }
+
+    /// M47.2 — actor, quest, scene and location guard atoms.
+    #[test]
+    fn actor_quest_scene_and_location_guards_lower() {
+        let property = |name: &str| ObjectRef::Property(name.into());
+        for (condition, guard) in [
+            (
+                "Victim.IsDead()",
+                FragmentGuard::ActorDead {
+                    actor: ActorRef::Object(property("Victim")),
+                    dead: true,
+                },
+            ),
+            (
+                "!Game.GetPlayer().HasPerk(SomePerk)",
+                FragmentGuard::HasPerk {
+                    actor: ActorRef::Player,
+                    perk: property("SomePerk"),
+                    expected: false,
+                },
+            ),
+            (
+                "Game.GetPlayer().GetItemCount(Gold001) >= 100",
+                FragmentGuard::ItemCount {
+                    container: ActorRef::Player,
+                    item: property("Gold001"),
+                    comparison: GuardComparison::Ge,
+                    value: 100.0,
+                },
+            ),
+            (
+                "Self.IsCompleted()",
+                FragmentGuard::QuestCompleted {
+                    quest: QuestRef::SelfRef,
+                    completed: true,
+                },
+            ),
+            (
+                "SomeScene.IsPlaying() == False",
+                FragmentGuard::ScenePlaying {
+                    scene: property("SomeScene"),
+                    playing: false,
+                },
+            ),
+            (
+                "Game.GetPlayer().GetCurrentLocation().HasKeyword(LocTypeCity)",
+                FragmentGuard::LocationKeyword {
+                    actor: ActorRef::Player,
+                    keyword: property("LocTypeCity"),
+                    expected: true,
+                },
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_5()\n\
+                 If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                Some(vec![Effect::Conditional {
+                    guards: vec![guard],
+                    then_effects: vec![Effect::SetStage {
+                        quest: QuestRef::SelfRef,
+                        stage: 10
+                    }],
+                    else_effects: vec![],
+                }]),
+                "{condition}"
+            );
+        }
+        // An actor's own keywords are not modelled.
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_5()\n\
+             If Game.GetPlayer().HasKeyword(SomeKeyword)\n Self.SetStage(10)\n EndIf\n EndFunction\n",
+        );
+        assert_eq!(lower_fragment(&body), None);
+    }
+
+    /// M47.2 — disjunctions: `||` becomes [`FragmentGuard::Any`], nested ones
+    /// flatten, and negation distributes by De Morgan.
+    #[test]
+    fn disjunctive_guards_lower() {
+        let done = |stage, done| FragmentGuard::StageDone {
+            quest: QuestRef::SelfRef,
+            stage,
+            done,
+        };
+        for (condition, guards) in [
+            (
+                "Self.GetStageDone(5) || Self.GetStageDone(6) || Self.GetStageDone(7)",
+                vec![FragmentGuard::Any(vec![
+                    vec![done(5, true)],
+                    vec![done(6, true)],
+                    vec![done(7, true)],
+                ])],
+            ),
+            (
+                "Self.GetStageDone(1) && (Self.GetStageDone(5) || !Self.GetStageDone(6))",
+                vec![
+                    done(1, true),
+                    FragmentGuard::Any(vec![vec![done(5, true)], vec![done(6, false)]]),
+                ],
+            ),
+            (
+                // !(A || B) is !A && !B.
+                "!(Self.GetStageDone(5) || Self.GetStageDone(6))",
+                vec![done(5, false), done(6, false)],
+            ),
+            (
+                // !(A && B) is !A || !B.
+                "!(Self.GetStageDone(5) && Self.GetStageDone(6))",
+                vec![FragmentGuard::Any(vec![vec![done(5, false)], vec![done(6, false)]])],
+            ),
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\n\
+                 Function Fragment_5()\n\
+                 If {condition}\n Self.SetStage(10)\n EndIf\n EndFunction\n"
+            ));
+            assert_eq!(
+                lower_fragment(&body),
+                Some(vec![Effect::Conditional {
+                    guards,
+                    then_effects: vec![Effect::SetStage {
+                        quest: QuestRef::SelfRef,
+                        stage: 10
+                    }],
+                    else_effects: vec![],
+                }]),
+                "{condition}"
+            );
         }
     }
 

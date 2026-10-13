@@ -195,7 +195,7 @@ fn decline_shape(
 ) -> String {
     for i in 0..body.len() {
         if lower_as_production(params, &body[..=i], quest_properties, quest_library).is_none() {
-            return stmt_shape(&body[i].node);
+            return if_aware_shape(params, &body[..i], &body[i].node, quest_properties, quest_library);
         }
     }
     // Every prefix lowered but the whole body still declined — not
@@ -203,6 +203,46 @@ fn decline_shape(
     // keep the histogram honest instead of panicking on a future
     // control-flow shape (e.g. a decline keyed on total effect count).
     "(no single failing statement found)".into()
+}
+
+/// The failing statement's shape, looking inside a plain `If` (no `elseif`):
+/// its branches are re-lowered inline after the same prefix, so a branch
+/// statement that fails reports as `If>shape`; when every branch lowers, the
+/// condition is what failed — `If(condition)`. An `If` is otherwise one
+/// opaque bucket hiding which statement the effect table is missing.
+fn if_aware_shape(
+    params: &[Param],
+    prefix: &[byroredux_papyrus::span::Spanned<Stmt>],
+    stmt: &Stmt,
+    quest_properties: &HashSet<String>,
+    quest_library: Option<&dyn ScriptLibrary>,
+) -> String {
+    let Stmt::If {
+        body,
+        elseif_clauses,
+        else_body,
+        ..
+    } = stmt
+    else {
+        return stmt_shape(stmt);
+    };
+    if !elseif_clauses.is_empty() {
+        return stmt_shape(stmt);
+    }
+    for branch in std::iter::once(body).chain(else_body.iter()) {
+        let mut inlined = prefix.to_vec();
+        for (j, inner) in branch.iter().enumerate() {
+            inlined.push(inner.clone());
+            if lower_as_production(params, &inlined, quest_properties, quest_library).is_none() {
+                let mut before = prefix.to_vec();
+                before.extend(branch[..j].iter().cloned());
+                let inner_shape =
+                    if_aware_shape(params, &before, &inner.node, quest_properties, quest_library);
+                return format!("If>{inner_shape}");
+            }
+        }
+    }
+    "If(condition)".into()
 }
 
 fn effect_kind(e: &Effect) -> &'static str {

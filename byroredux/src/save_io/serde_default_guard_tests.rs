@@ -846,7 +846,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `CreatedReferences` resource column.
     // 2026-10-12 (M47.2) — refreshed WITH a major bump (v45 -> v46): the
     // `CharacterLevel` component column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xd725_d2a9_f66a_1af1;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: `FragmentGuard` gained
+    // appended variants (`Any`, `ActorDead`, `HasPerk`, `ItemCount`,
+    // `QuestCompleted`, `ScenePlaying`, `LocationKeyword`). Enums serialize
+    // tagged by name, so no older save can carry them and every older one
+    // still reads.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x04f5_198a_2923_e108;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

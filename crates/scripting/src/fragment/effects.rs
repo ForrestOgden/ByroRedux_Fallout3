@@ -2293,7 +2293,102 @@ fn evaluate_guard(
                 .unwrap_or(0.0);
             comparison.apply(reading, *value)
         }
+        FragmentGuard::ActorDead { actor, dead } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            world.has::<byroredux_core::ecs::components::Dead>(actor) == *dead
+        }
+        FragmentGuard::HasPerk {
+            actor,
+            perk,
+            expected,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let perk = resolve_property_form_id(vmad, perk.property_name())?;
+            let owned = world
+                .get::<byroredux_core::character::Perks>(actor)
+                .is_some_and(|perks| perks.rank(perk) > 0);
+            owned == *expected
+        }
+        FragmentGuard::ItemCount {
+            container,
+            item,
+            comparison,
+            value,
+        } => {
+            let container = guard_actor(container, context, vmad, world, deferred)?;
+            let item = resolve_property_form_id(vmad, item.property_name())?;
+            let count: u32 = world
+                .get::<Inventory>(container)
+                .map(|inventory| {
+                    inventory
+                        .items
+                        .iter()
+                        .filter(|stack| stack.base_form_id == item)
+                        .map(|stack| stack.count)
+                        .sum()
+                })
+                .unwrap_or(0);
+            comparison.apply(count as f32, *value)
+        }
+        FragmentGuard::QuestCompleted { quest: via, completed } => {
+            stages.is_completed(quest(via)?) == *completed
+        }
+        FragmentGuard::ScenePlaying { scene, playing } => {
+            let scene = resolve_property_form_id(vmad, scene.property_name())?;
+            let entity = world
+                .try_resource::<crate::SceneRegistry>()
+                .and_then(|registry| registry.scene_entity(scene))?;
+            let running = world
+                .get::<crate::scene::ScenePlayer>(entity)
+                .is_some_and(|player| player.is_running());
+            running == *playing
+        }
+        FragmentGuard::LocationKeyword {
+            actor,
+            keyword,
+            expected,
+        } => {
+            let actor = guard_actor(actor, context, vmad, world, deferred)?;
+            let keyword = resolve_property_form_id(vmad, keyword.property_name())?;
+            let location = crate::location::current_location(world, actor)?;
+            let has = world
+                .try_resource::<crate::location::LocationTable>()
+                .is_some_and(|table| table.has_keyword(location, keyword));
+            has == *expected
+        }
+        FragmentGuard::Any(alternatives) => {
+            // Every guard is evaluated (no short-circuit), so an unresolvable
+            // one declines the conditional exactly as it does in a
+            // conjunction.
+            let mut any = false;
+            for alternative in alternatives {
+                let mut all = true;
+                for guard in alternative {
+                    all &= evaluate_guard(guard, context, vmad, world, stages, objectives, deferred)?;
+                }
+                any |= all;
+            }
+            any
+        }
     })
+}
+
+/// The actor a guard reads, resolved like an effect's receiver.
+fn guard_actor(
+    actor: &ActorRef,
+    context: QuestFormId,
+    vmad: Option<&ScriptInstanceData>,
+    world: &World,
+    deferred: &DeferredFragmentEffects,
+) -> Option<EntityId> {
+    resolve_actor(
+        vmad,
+        world,
+        context,
+        actor,
+        &deferred.scene_actor_bindings,
+        deferred.speaker,
+    )
 }
 
 /// Apply a whole fragment's effects, returning the chained

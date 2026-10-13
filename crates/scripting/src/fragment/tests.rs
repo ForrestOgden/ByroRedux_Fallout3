@@ -4750,6 +4750,36 @@ fn widened_fragment_guards_read_live_state() {
                     value: 2.0,
                 },
             ),
+            // M47.2 — a disjunction holds when one alternative does.
+            probe(
+                "AnyHolds",
+                FragmentGuard::Any(vec![
+                    vec![FragmentGuard::ObjectiveCompleted {
+                        quest: QuestRef::SelfRef,
+                        objective: 10,
+                        expected: true,
+                    }],
+                    vec![
+                        FragmentGuard::QuestRunning { quest: QuestRef::SelfRef, running: true },
+                        FragmentGuard::ObjectiveDisplayed {
+                            quest: QuestRef::SelfRef,
+                            objective: 10,
+                            expected: true,
+                        },
+                    ],
+                ]),
+            ),
+            probe(
+                "AnyFails",
+                FragmentGuard::Any(vec![
+                    vec![FragmentGuard::ObjectiveCompleted {
+                        quest: QuestRef::SelfRef,
+                        objective: 10,
+                        expected: true,
+                    }],
+                    vec![FragmentGuard::QuestRunning { quest: QuestRef::SelfRef, running: false }],
+                ]),
+            ),
         ],
     );
     let vars = world.resource::<QuestScriptVariables>();
@@ -4762,6 +4792,138 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("Completed"), Some(-1.0));
     assert_eq!(read("Global"), Some(1.0));
     assert_eq!(read("SameFragmentWrite"), Some(1.0));
+    assert_eq!(read("AnyHolds"), Some(1.0));
+    assert_eq!(read("AnyFails"), Some(-1.0));
+}
+
+/// M47.2 — guards over actor state (death, perks, items), scene playback
+/// and the player's current location read the live world.
+#[test]
+fn actor_scene_and_location_guards_read_the_world() {
+    use crate::translate::effects::{ActorRef, GuardComparison};
+    use crate::QuestScriptVariables;
+    use byroredux_core::character::Perks;
+    use byroredux_core::ecs::components::{Dead, ItemStack};
+    const VICTIM: u32 = 0x0000_6600;
+    const PERK: u32 = 0x0000_6601;
+    const GOLD: u32 = 0x0000_000F;
+    const CITY: u32 = 0x0001_3168;
+    const WHITERUN: u32 = 0x0001_8A56;
+    let mut world = fixture();
+    world.insert_resource(QuestScriptVariables::default());
+    world.register::<Perks>();
+    world.register::<Dead>();
+    let victim = spawn_with_form_id(&mut world, VICTIM);
+    world.insert(victim, Dead);
+    let player = world.spawn();
+    world.insert_resource(crate::papyrus_demo::PapyrusPlayerEntity(player));
+    let mut perks = Perks::default();
+    perks.set_rank(PERK, 1);
+    world.insert(player, perks);
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(GOLD, 60));
+    inventory.push(ItemStack::new(GOLD, 50));
+    world.insert(player, inventory);
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.locations.insert(
+        WHITERUN,
+        byroredux_plugin::esm::records::LctnRecord {
+            form_id: WHITERUN,
+            keywords: vec![CITY],
+            ..Default::default()
+        },
+    );
+    crate::location::install_location_table(&mut world, &index);
+    world.resource_mut::<crate::location::PlayerLocation>().0 = Some(WHITERUN);
+    const SCENE: u32 = 0x0000_6700;
+    crate::install_scene_records(
+        &mut world,
+        [byroredux_plugin::esm::records::ScenRecord {
+            form_id: SCENE,
+            ..Default::default()
+        }],
+    );
+
+    let probe = |name: &str, guard: FragmentGuard| Effect::Conditional {
+        guards: vec![guard],
+        then_effects: vec![Effect::SetQuestVariable {
+            quest: QuestRef::SelfRef,
+            variable: name.into(),
+            value: 1.0,
+        }],
+        else_effects: vec![Effect::SetQuestVariable {
+            quest: QuestRef::SelfRef,
+            variable: name.into(),
+            value: -1.0,
+        }],
+    };
+    let property = |name: &str| ObjectRef::Property(name.into());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[
+            ("Victim", VICTIM),
+            ("SomePerk", PERK),
+            ("Gold001", GOLD),
+            ("LocTypeCity", CITY),
+            ("SomeScene", SCENE),
+        ]),
+        vec![
+            probe(
+                "Dead",
+                FragmentGuard::ActorDead {
+                    actor: ActorRef::Object(property("Victim")),
+                    dead: true,
+                },
+            ),
+            probe(
+                "Perk",
+                FragmentGuard::HasPerk {
+                    actor: ActorRef::Player,
+                    perk: property("SomePerk"),
+                    expected: true,
+                },
+            ),
+            probe(
+                "Rich",
+                FragmentGuard::ItemCount {
+                    container: ActorRef::Player,
+                    item: property("Gold001"),
+                    comparison: GuardComparison::Ge,
+                    value: 100.0,
+                },
+            ),
+            probe(
+                "InCity",
+                FragmentGuard::LocationKeyword {
+                    actor: ActorRef::Player,
+                    keyword: property("LocTypeCity"),
+                    expected: true,
+                },
+            ),
+            probe(
+                "SceneIdle",
+                FragmentGuard::ScenePlaying {
+                    scene: property("SomeScene"),
+                    playing: false,
+                },
+            ),
+            probe(
+                "NotCompleted",
+                FragmentGuard::QuestCompleted {
+                    quest: QuestRef::SelfRef,
+                    completed: true,
+                },
+            ),
+        ],
+    );
+    let vars = world.resource::<QuestScriptVariables>();
+    let read = |name| vars.get(Q, QuestScriptVariables::property_key(name));
+    assert_eq!(read("Dead"), Some(1.0));
+    assert_eq!(read("Perk"), Some(1.0));
+    assert_eq!(read("Rich"), Some(1.0), "60 + 50 gold across two stacks");
+    assert_eq!(read("InCity"), Some(1.0));
+    assert_eq!(read("SceneIdle"), Some(1.0), "a scene nobody started");
+    assert_eq!(read("NotCompleted"), Some(-1.0));
 }
 
 /// M47.2 — a faction change edits the live `FactionRanks` and lands in the

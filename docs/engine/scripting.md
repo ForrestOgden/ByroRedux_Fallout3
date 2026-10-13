@@ -326,13 +326,18 @@ dialogue caller resolves to the NPC saying the line
 latent tail (a wait, a 3D-loaded poll, a provider barrier) declines: the
 speaker is a live entity a saved continuation could not name.
 
-Fragment `If`s lower when their condition is a conjunction of
-`FragmentGuard`s — `GetStageDone` / FO4 `IsStageDone`, `IsRunning`, `GetStage`
-compared with a literal, `IsObjectiveDisplayed` / `IsObjectiveCompleted`, a
-global's `GetValue()` / `GetValueInt()` / `.Value`, or a quest-script
-variable — each optionally negated, the literal on either side. A guard whose
-quest or global does not resolve declines the whole conditional at runtime;
-a quest-variable guard sees a write made earlier in the same fragment.
+Fragment `If`s lower when their condition is built from `FragmentGuard`s
+with `&&`, `||` (`FragmentGuard::Any`) and `!`. Negation is pushed to the
+atoms by De Morgan. The atoms: `GetStageDone` / FO4 `IsStageDone`,
+`IsRunning`, `IsCompleted`, `GetStage` compared with a literal,
+`IsObjectiveDisplayed` / `IsObjectiveCompleted`, a global's `GetValue()` /
+`GetValueInt()` / `.Value`, a quest-script variable, an actor's `IsDead`,
+`HasPerk` and `GetItemCount`, a scene's `IsPlaying`, and
+`<actor>.GetCurrentLocation().HasKeyword(kw)` (the location runtime). Each
+compares with a literal on either side. A guard whose quest, global or actor
+does not resolve declines the whole conditional at runtime; a quest-variable
+guard sees a write made earlier in the same fragment. An actor's own
+keywords are not modelled (`NPC_` keywords are not parsed).
 
 `AddToFaction` / `RemoveFromFaction` / `SetFactionRank` (CK semantics: join
 at rank 0 unless already a member; leave; set, joining if needed) lower to
@@ -1142,7 +1147,7 @@ original `.swf` files. See
 | **M30.2** | Papyrus statement + item parser (full `.psc` parse) | **Closed 2026-05-23** (`ab0eee96`). All four R5 scripts round-trip with zero recovered errors. Unblocks M47.2. |
 | **M47.0** | Event-hooks runtime | **Closed 2026-05-23** (6 phases, `6c51af55..03837739`). `ScriptRegistry`, marker catalog, `script.activate` console command, e2e tests. |
 | **M47.1** | Condition eval | **Closed 2026-05-23** (`ea9d0cfa`, `0a835e3e`). CTDA parser + OR-precedence evaluator; the initial 7-function catalog has since grown to 19 modeled variants and multiple quest/scene/package consumers. |
-| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (54.7% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
+| **M47.2** | Full scripting runtime | **Closed 2026-10-12** — `.pex` decompilation, QUST/SCEN/INFO fragment lowering (55.3% of the 43,818 behavioral Skyrim + FO4 + Starfield fragments), VMAD binding, quest aliases, quest-script variables, saved faction membership, quest-script call inlining, perk entry-point composition, deferred waits/cascades. It intentionally does not promise exhaustive arbitrary-Papyrus execution; the follow-ups are listed in [`m47-2-design.md` §M47.2 closeout](m47-2-design.md). |
 | **M43** | Quests & dialogue | **Quest/scene core shipped; broader integration open** — lifecycle, stages, objectives, aliases, fragments and scene phases are live. Story Manager search/payloads and full dialogue/UI integration remain open; see ROADMAP. |
 
 Design doc for the event runtime: [`docs/engine/m47-0-design.md`](m47-0-design.md).
