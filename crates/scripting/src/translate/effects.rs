@@ -1023,6 +1023,14 @@ pub enum Effect {
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
+    /// M47.2 — `<reference>.<Variable> = literal` on a script attached to a
+    /// reference (`::MQ203PlateTrapMarker_var.plateTriggered = False`): the
+    /// reference's `ScriptVariables`, which `GetVMScriptVariable` reads.
+    SetReferenceVariable {
+        object: ObjectRef,
+        variable: String,
+        value: f32,
+    },
     /// M47.2 — a local assigned a number computed at run time
     /// (`int n = Utility.RandomInt(0, 3)`), read by later [`ValueExpr::Local`]s
     /// in the same run. A fragment holding one never suspends.
@@ -1660,16 +1668,7 @@ fn quest_vmad_statement(
     scope: &Scope,
     providers: Option<&PapyrusProviderCatalog>,
 ) -> Option<Effect> {
-    if scope.vmad_is_quest || scope.library.is_none() {
-        return None;
-    }
-    let quest_scope = Scope {
-        vmad_is_quest: true,
-        fragment_properties_off: true,
-        object_locals: HashMap::new(),
-        known_quest_properties: HashSet::new(),
-        ..scope.clone()
-    };
+    let quest_scope = quest_vmad_scope(scope)?;
     let effect = classify_effect_with_providers(e, &quest_scope, providers)?;
     if has_latent_tail(&effect) {
         return None;
@@ -1677,6 +1676,94 @@ fn quest_vmad_statement(
     Some(Effect::QuestScope {
         quest: QuestRef::OwningQuest,
         effects: vec![effect],
+    })
+}
+
+/// The scope an INFO / scene statement re-lowers in against its quest's VMAD:
+/// the fragment's own properties, the locals bound from them and its Quest
+/// properties forbidden. `None` where the VMAD already is the quest's, or
+/// without a script library.
+fn quest_vmad_scope<'lib>(scope: &Scope<'lib>) -> Option<Scope<'lib>> {
+    if scope.vmad_is_quest || scope.library.is_none() {
+        return None;
+    }
+    Some(Scope {
+        vmad_is_quest: true,
+        fragment_properties_off: true,
+        object_locals: HashMap::new(),
+        known_quest_properties: HashSet::new(),
+        ..scope.clone()
+    })
+}
+
+/// M47.2 — `(<reference> as Script).<Variable> = literal`, a variable of a
+/// script attached to a reference. Stored under the `::Name_var` spelling the
+/// CTDA `GetVMScriptVariable` names it by.
+fn lower_reference_variable_write(
+    target: &Expr,
+    op: byroredux_papyrus::ast::AssignOp,
+    value: &Expr,
+    scope: &Scope,
+) -> Option<Effect> {
+    if op != byroredux_papyrus::ast::AssignOp::Eq {
+        return None;
+    }
+    let Expr::MemberAccess { object, member } = target else {
+        return None;
+    };
+    let value = as_num(value)?;
+    // The receiver must be cast to a script the library knows, that is no
+    // quest (#2538) and that declares the variable (on it or an ancestor) —
+    // an untyped property could be a quest, whose variables live elsewhere.
+    let Expr::Cast { target_type, .. } = &object.node else {
+        return None;
+    };
+    let byroredux_papyrus::ast::Type::Object(script_type) = &target_type.node else {
+        return None;
+    };
+    let library = scope.library?;
+    if crate::fragment::extends_quest(&script_type.0, library) {
+        return None;
+    }
+    let name = &member.node.0;
+    let declared = |script: &byroredux_papyrus::ast::Script| {
+        script.body.iter().any(|item| match &item.node {
+            byroredux_papyrus::ast::ScriptItem::Property(p) => {
+                p.name.node.0.eq_ignore_ascii_case(name)
+            }
+            byroredux_papyrus::ast::ScriptItem::Variable(v) => {
+                v.name.node.0.eq_ignore_ascii_case(name)
+            }
+            _ => false,
+        })
+    };
+    let mut script_name = script_type.0.clone();
+    let mut found = false;
+    for _ in 0..8 {
+        let Some(script) = library.script(&script_name) else {
+            break;
+        };
+        if declared(&script) {
+            found = true;
+            break;
+        }
+        let Some(parent) = script.parent.as_ref() else {
+            break;
+        };
+        script_name = parent.node.0.clone();
+    }
+    if !found {
+        return None;
+    }
+    let variable = if is_backing_variable(name) {
+        name.clone()
+    } else {
+        format!("::{name}_var")
+    };
+    Some(Effect::SetReferenceVariable {
+        object: receiver_object(&object.node, scope)?,
+        variable,
+        value,
     })
 }
 
@@ -1884,7 +1971,20 @@ fn lower_statements(
             }
             // M47.2 — `quest.Property = literal`, a quest-script variable.
             Stmt::Assign { target, op, value } if matches!(target.node, Expr::MemberAccess { .. }) => {
-                effects.push(lower_quest_variable_write(&target.node, *op, &value.node, scope)?);
+                let write = lower_quest_variable_write(&target.node, *op, &value.node, scope)
+                    .or_else(|| lower_reference_variable_write(&target.node, *op, &value.node, scope))
+                    .or_else(|| {
+                        // M47.2 — an INFO / scene write through the quest
+                        // script's own properties, against the quest's VMAD.
+                        let quest_scope = quest_vmad_scope(scope)?;
+                        let write =
+                            lower_quest_variable_write(&target.node, *op, &value.node, &quest_scope)?;
+                        Some(Effect::QuestScope {
+                            quest: QuestRef::OwningQuest,
+                            effects: vec![write],
+                        })
+                    })?;
+                effects.push(write);
             }
             // Re-assignment to an existing local: same binding rule.
             Stmt::Assign { target, op, value } => {
@@ -5787,6 +5887,35 @@ mod tests {
             ])
         );
         assert_eq!(lower_fragment(&body), None, "no quest VMAD");
+    }
+
+    /// M47.2 — a reference script's variable, written through a cast to its
+    /// script type; a quest-script cast, an undeclared variable and an
+    /// untyped receiver decline.
+    #[test]
+    fn reference_script_variable_writes_lower_through_a_typed_cast() {
+        let library = PscLibrary::new(&[
+            "ScriptName MiraakBattleBase extends Actor\nBool fireMiraakKill\n",
+            "ScriptName MiraakBattleScript extends MiraakBattleBase\n",
+            "ScriptName SomeQuestScript extends Quest\nBool fireMiraakKill\n",
+        ]);
+        let lowered = |statement: &str| {
+            let body = first_fn_body(&format!(
+                "ScriptName QF_Test extends Quest\nFunction Fragment_1()\n{statement}\nEndFunction\n"
+            ));
+            lower_quest_fragment(&body, &HashSet::new(), &HashSet::new(), None, Some(&library))
+        };
+        assert_eq!(
+            lowered("(Alias_Miraak.GetReference() as MiraakBattleScript).fireMiraakKill = True"),
+            Some(vec![Effect::SetReferenceVariable {
+                object: ObjectRef::Property("Alias_Miraak".into()),
+                variable: "::fireMiraakKill_var".into(),
+                value: 1.0,
+            }])
+        );
+        assert_eq!(lowered("(Alias_Miraak.GetReference() as MiraakBattleScript).Missing = True"), None);
+        assert_eq!(lowered("(Alias_Miraak.GetReference() as SomeQuestScript).fireMiraakKill = True"), None);
+        assert_eq!(lowered("SomeProperty.fireMiraakKill = True"), None);
     }
 
     /// M47.2 — a quest reached through the fragment quest's own typed

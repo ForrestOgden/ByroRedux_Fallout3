@@ -4980,6 +4980,41 @@ fn player_caps_and_reward_xp_reach_the_player() {
     );
 }
 
+/// M47.2 — `SetReferenceVariable` writes the loaded reference's
+/// `ScriptVariables`, which the `GetVMScriptVariable` condition reads.
+#[test]
+fn set_reference_variable_reaches_get_vm_script_variable() {
+    use byroredux_plugin::esm::records::condition::{
+        ComparisonOp, Condition, ConditionStringId, ConditionValue, RunOn,
+    };
+    const TRAP_FORM: u32 = 0x0009_0C23;
+    let mut world = fixture();
+    let trap = spawn_with_form_id(&mut world, TRAP_FORM);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("PlateTrap", TRAP_FORM)]),
+        vec![Effect::SetReferenceVariable {
+            object: ObjectRef::Property("::PlateTrap_var".into()),
+            variable: "::plateTriggered_var".into(),
+            value: 1.0,
+        }],
+    );
+    let condition = Condition {
+        function_index: 630,
+        comparator: ComparisonOp::Eq,
+        comparand: ConditionValue::Literal(1.0),
+        param_1: TRAP_FORM,
+        param_2_text: Some(ConditionStringId::from_text("::plateTriggered_var")),
+        run_on: RunOn::Subject,
+        ..Default::default()
+    };
+    assert!(crate::condition::evaluate(
+        &vec![condition],
+        &world,
+        &crate::condition::ConditionContext::for_subject(trap),
+    ));
+}
+
 /// M47.2 — a `SetLocal` value feeds a later `Compare` guard in the same run.
 #[test]
 fn set_local_feeds_a_compare_guard() {

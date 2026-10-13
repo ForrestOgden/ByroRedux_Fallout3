@@ -656,6 +656,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::AuthoredDisabledReferences>()
             // M47.2 — quest VMADs for quest-script bodies inlined into lines.
             .reads_resource::<byroredux_scripting::QuestScriptInstances>()
+            // M47.2 — a spoken line's reference script-variable writes.
+            .writes::<byroredux_scripting::ScriptVariables>()
             // M47.2 — a spoken line's SetRelationshipRank and its guard.
             .reads_resource::<byroredux_scripting::AuthoredRelationships>()
             .reads_resource::<byroredux_scripting::ScriptedRelationships>()

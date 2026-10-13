@@ -893,7 +893,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `FragmentGuard::Compare` with `ValueExpr` / `ArithOp`.
     // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
     // `Effect::SetLocal` and `ValueExpr::Local`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5bc3_82fa_e0cc_8aba;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::SetReferenceVariable`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x6328_d631_34bc_4525;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

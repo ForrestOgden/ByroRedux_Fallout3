@@ -154,6 +154,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::RewardPlayerXp { .. } => "RewardPlayerXP",
         Effect::PlayerCaps { .. } => "PlayerCaps",
         Effect::SetLocal { .. } => "SetLocal",
+        Effect::SetReferenceVariable { .. } => "SetReferenceVariable",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

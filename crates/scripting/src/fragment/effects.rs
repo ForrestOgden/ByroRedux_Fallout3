@@ -358,6 +358,9 @@ pub struct DeferredFragmentEffects {
     player_xp: Vec<(u32, bool)>,
     /// M47.2 — `Effect::SetLocal` values for this fragment run.
     locals: HashMap<String, f32>,
+    /// M47.2 — `Effect::SetReferenceVariable` writes, applied to the
+    /// references' `ScriptVariables` after the guards drop.
+    reference_variables: Vec<(EntityId, String, f32)>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     map_markers: Vec<(u32, bool)>,
@@ -434,6 +437,7 @@ impl DeferredFragmentEffects {
             kills: Vec::new(),
             player_xp: Vec::new(),
             locals: HashMap::new(),
+            reference_variables: Vec::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
                 .map(|instances| instances.0.clone())
@@ -474,6 +478,19 @@ impl DeferredFragmentEffects {
             depth < MAX_PROVIDER_FRAGMENT_BARRIERS,
             "recursion is gated before descending; depth {depth} should be unreachable"
         );
+        if !self.reference_variables.is_empty() {
+            if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
+                for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
+                    if variables.get_mut(entity).is_none() {
+                        variables.insert(entity, crate::vm_state::ScriptVariables::default());
+                    }
+                    variables
+                        .get_mut(entity)
+                        .expect("present or inserted")
+                        .set_by_name(&variable, value);
+                }
+            }
+        }
         if !self.player_xp.is_empty() {
             if let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
@@ -1042,6 +1059,22 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::SetReferenceVariable {
+            object,
+            variable,
+            value,
+        } => {
+            let Some(entity) =
+                resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)
+            else {
+                log::debug!("fragment reference variable write skipped: the reference is not loaded");
+                return None;
+            };
+            deferred
+                .reference_variables
+                .push((entity, variable.clone(), *value));
             None
         }
         Effect::SetLocal { local, value } => {
@@ -2555,6 +2588,7 @@ fn apply_quest_scoped_effect(
         | Effect::RewardPlayerXp { .. }
         | Effect::PlayerCaps { .. }
         | Effect::SetLocal { .. }
+        | Effect::SetReferenceVariable { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }
