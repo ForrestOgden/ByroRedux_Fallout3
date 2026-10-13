@@ -55,6 +55,60 @@ impl ActorProtection {
     }
 }
 
+/// Script `ActorBase.SetEssential` / `SetProtected` overrides, by actor
+/// base FormID. Each flag is `None` until a script sets it; setting one flag
+/// clears the other (CK *SetEssential - ActorBase*: "If the actor is protected
+/// and you set the essential flag, the protected flag will be removed").
+/// Saved.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ActorBaseProtectionOverrides(
+    pub std::collections::HashMap<u32, (Option<bool>, Option<bool>)>,
+);
+
+impl Resource for ActorBaseProtectionOverrides {}
+
+impl ActorBaseProtectionOverrides {
+    /// `SetEssential(value)` (`protected == false`) or `SetProtected(value)`.
+    pub fn set(&mut self, base: u32, protected: bool, value: bool) {
+        let (essential, protect) = self.0.entry(base).or_default();
+        let (flag, other) = if protected {
+            (protect, essential)
+        } else {
+            (essential, protect)
+        };
+        *flag = Some(value);
+        if value {
+            *other = Some(false);
+        }
+    }
+}
+
+/// `entity`'s base flags: its spawn stamp under any script override of its
+/// base (`SceneAliasCandidate::base_form_id`).
+fn base_protection(world: &World, entity: EntityId) -> ActorProtection {
+    let stamp = world
+        .get::<ActorProtection>(entity)
+        .map(|protection| *protection)
+        .unwrap_or_default();
+    let Some(base) = world
+        .get::<crate::scene::SceneAliasCandidate>(entity)
+        .map(|candidate| candidate.base_form_id)
+    else {
+        return stamp;
+    };
+    let Some((essential, protected)) = world
+        .try_resource::<ActorBaseProtectionOverrides>()
+        .and_then(|overrides| overrides.0.get(&base).copied())
+    else {
+        return stamp;
+    };
+    ActorProtection {
+        essential: essential.unwrap_or(stamp.essential),
+        protected: protected.unwrap_or(stamp.protected),
+    }
+}
+
 /// An actor in bleedout: down, and back up when `remaining_secs` runs out.
 /// Saved, so a save taken mid-bleedout reloads the actor still down.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,21 +170,17 @@ pub fn install_bleedout_rules(world: &mut World, index: &EsmIndex) {
     }
 }
 
-/// Whether `entity` is essential: its base record, or a running quest's
-/// Essential alias holding it.
+/// Whether `entity` is essential: its base record (under any script
+/// override), or a running quest's Essential alias holding it.
 pub fn is_essential(world: &World, entity: EntityId) -> bool {
-    world
-        .get::<ActorProtection>(entity)
-        .is_some_and(|protection| protection.essential)
+    base_protection(world, entity).essential
         || crate::scene::running_alias_flags_of_entity(world, entity, ALIAS_FLAG_ESSENTIAL) != 0
 }
 
 /// Whether `entity` is protected: its base record, or a running quest's
 /// Protected alias holding it.
 pub fn is_protected(world: &World, entity: EntityId) -> bool {
-    world
-        .get::<ActorProtection>(entity)
-        .is_some_and(|protection| protection.protected)
+    base_protection(world, entity).protected
         || crate::scene::running_alias_flags_of_entity(world, entity, ALIAS_FLAG_PROTECTED) != 0
 }
 
@@ -217,6 +267,9 @@ pub fn bleedout_system(world: &World, dt: f32) {
 pub fn register(world: &mut World) {
     world.register::<ActorProtection>();
     world.register::<Bleedout>();
+    if world.try_resource::<ActorBaseProtectionOverrides>().is_none() {
+        world.insert_resource(ActorBaseProtectionOverrides::default());
+    }
 }
 
 #[cfg(test)]

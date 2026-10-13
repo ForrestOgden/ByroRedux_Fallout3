@@ -182,7 +182,8 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   column (kill XP ended #2947's exemption), v47 M47.2 new saved `AliasOverrides` (ForceRefTo / Clear), v48 M47.2 new saved
   `ReferenceActivationBlocks` (BlockActivation), v49 M47.2 new saved `MapMarkers` (AddToMap), v50 M47.2
   new saved `LocationClearState` (cleared locations), v51 M47.2 new saved
-  `Bleedout` component (essential actors' bleedout);
+  `Bleedout` component (essential actors' bleedout), v52 M47.2 new saved
+  `ActorBaseProtectionOverrides` (SetEssential / SetProtected);
   do not hardcode the number elsewhere): intra-type shape changes need a bump because `schema_fingerprint` hashes
   only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
   type bumps; `#[serde(default)]` is forbidden as a compatibility mechanism (guard) — even where the default

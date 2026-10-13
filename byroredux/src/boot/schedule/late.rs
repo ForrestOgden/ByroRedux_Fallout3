@@ -213,6 +213,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::ActorValues>()
             // M47.2 — spare_from_death: essential / protected actors bleed out.
             .reads::<byroredux_scripting::ActorProtection>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             .writes::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::BleedoutRules>()
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
@@ -609,7 +611,13 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::MapMarkers>()
             // M47.2 — a spoken line's SetCleared, and the IsCleared guard.
             .reads_resource::<byroredux_scripting::LocationClearState>()
-            .writes_resource::<byroredux_scripting::LocationClearState>(),
+            .writes_resource::<byroredux_scripting::LocationClearState>()
+            // M47.2 — a spoken line's SetEssential / SetProtected, and the
+            // IsEssential / IsBleedingOut guards.
+            .reads::<byroredux_scripting::ActorProtection>()
+            .reads::<byroredux_scripting::Bleedout>()
+            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
+            .writes_resource::<byroredux_scripting::ActorBaseProtectionOverrides>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

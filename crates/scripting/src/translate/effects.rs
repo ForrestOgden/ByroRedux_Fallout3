@@ -890,6 +890,14 @@ pub enum Effect {
     /// M47.2 — `<location>.SetCleared([abCleared = true])`: a location
     /// property, or a location alias's `GetLocation()`.
     SetLocationCleared { location: ObjectRef, cleared: bool },
+    /// M47.2 — `<base>.SetEssential([abEssential = true])` (`protected:
+    /// false`) or `SetProtected([abProtected = true])`. Setting one flag
+    /// clears the other (CK *SetEssential* / *SetProtected - ActorBase*).
+    SetBaseProtection {
+        base: ActorBaseRef,
+        protected: bool,
+        value: bool,
+    },
     /// M47.2 — `<keyword>.SendStoryEvent(akLoc, akRef1, akRef2, aiValue1,
     /// aiValue2)`: raises a script (`SCPT`) Story Manager event carrying the
     /// keyword, the location, the two references and the two integers.
@@ -931,6 +939,15 @@ pub enum Effect {
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
     /// released, then resumes the remaining top-level effects in order.
     ProviderCall(FragmentProviderCall),
+}
+
+/// M47.2 — an `ActorBase` receiver: an actor's `GetActorBase()`, or an
+/// ActorBase property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum ActorBaseRef {
+    OfActor(ActorRef),
+    Form(ObjectRef),
 }
 
 /// An actor receiver is either the canonical player or a VMAD-resolved
@@ -1713,6 +1730,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_send_story_event,
     prim_add_to_map,
     prim_set_location_cleared,
+    prim_set_base_protection,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -2246,6 +2264,34 @@ fn prim_add_to_map(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `ActorBase.SetEssential(bool abEssential = true)` /
+/// `SetProtected(bool abProtected = true)`, on `<actor>.GetActorBase()` or an
+/// ActorBase property.
+fn prim_set_base_protection(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args, protected) = match method_call(e, "SetEssential") {
+        Some((object, args)) => (object, args, false),
+        None => {
+            let (object, args) = method_call(e, "SetProtected")?;
+            (object, args, true)
+        }
+    };
+    if args.len() > 1 {
+        return None;
+    }
+    let base = match method_call(object, "GetActorBase") {
+        Some((actor, getter_args)) if getter_args.is_empty() => {
+            ActorBaseRef::OfActor(receiver_actor(actor, scope)?)
+        }
+        Some(_) => return None,
+        None => ActorBaseRef::Form(receiver_object(object, scope)?),
+    };
+    Some(Effect::SetBaseProtection {
+        base,
+        protected,
+        value: bool_arg(args, 0)?.unwrap_or(true),
+    })
+}
+
 /// `Location.SetCleared(bool abCleared = true)`.
 fn prim_set_location_cleared(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "SetCleared")?;
@@ -2738,8 +2784,14 @@ fn prim_set_enemy(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 fn prim_start_combat(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "StartCombat")?;
-    if args.len() != 1 {
-        return None;
+    // FO4 / Starfield add `abPreferredTarget`, a literal flag: the combat
+    // runtime holds a single target, so preferring it changes nothing.
+    match args.len() {
+        1 => {}
+        2 => {
+            bool_arg(args, 1)??;
+        }
+        _ => return None,
     }
     let actor = receiver_actor(object, scope)?;
     // #4323 — the runtime this arms is an NPC chase-and-strike: it steers the
@@ -3920,6 +3972,40 @@ mod tests {
                 Effect::SetLocationCleared {
                     location: ObjectRef::Property("BleakFallsLocation".into()),
                     cleared: false
+                },
+            ])
+        );
+    }
+
+    /// M47.2 — `SetEssential` / `SetProtected` on an actor's base and on an
+    /// ActorBase property; FO4's two-argument `StartCombat`.
+    #[test]
+    fn base_protection_and_preferred_target_combat_lower() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_Thonar.GetActorRef().GetActorBase().SetEssential(false)\n\
+             EmperorBase.SetProtected()\n\
+             Alias_Guard.GetActorRef().StartCombat(Game.GetPlayer(), false)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::SetBaseProtection {
+                    base: ActorBaseRef::OfActor(ActorRef::Object(ObjectRef::Property(
+                        "Alias_Thonar".into()
+                    ))),
+                    protected: false,
+                    value: false,
+                },
+                Effect::SetBaseProtection {
+                    base: ActorBaseRef::Form(ObjectRef::Property("EmperorBase".into())),
+                    protected: true,
+                    value: true,
+                },
+                Effect::StartCombat {
+                    actor: ActorRef::Object(ObjectRef::Property("Alias_Guard".into())),
+                    target: ActorRef::Player,
                 },
             ])
         );

@@ -353,6 +353,10 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetLocationCleared` changes, recorded in
     /// [`crate::LocationClearState`] after the guards drop.
     location_clears: Vec<(u32, bool)>,
+    /// M47.2 — `Effect::SetBaseProtection` writes `(base, protected,
+    /// value)`, recorded in [`crate::ActorBaseProtectionOverrides`] after
+    /// the guards drop.
+    base_protection: Vec<(u32, bool, bool)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
@@ -407,6 +411,7 @@ impl DeferredFragmentEffects {
             activation_blocks: Vec::new(),
             map_markers: Vec::new(),
             location_clears: Vec::new(),
+            base_protection: Vec::new(),
             story_events: Vec::new(),
             running_scenes: world
                 .query::<crate::scene::ScenePlayer>()
@@ -455,6 +460,14 @@ impl DeferredFragmentEffects {
             if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
                     markers.add(marker, fast_travel);
+                }
+            }
+        }
+        if !self.base_protection.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
+            {
+                for (base, protected, value) in std::mem::take(&mut self.base_protection) {
+                    overrides.set(base, protected, value);
                 }
             }
         }
@@ -832,7 +845,8 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `Effect::MovePlayerTo` — M47.2; taken alone, the engine drains it),
 ///     `Perks` (write, `Effect::ChangePerk` — M47.2), `ActorValueNames`
 ///     (read, released before `ActorValues`, `Effect::SetActorValueNamed` —
-///     M47.2)
+///     M47.2), `SceneAliasCandidate` (read, `Effect::SetBaseProtection`'s
+///     actor base — M47.2)
 ///   - **via [`resolve_actor`]** — `PapyrusPlayerEntity` (read)
 ///   - **via [`crate::condition::entity_global_form_id`]** — `FormIdPool` (read)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
@@ -982,6 +996,29 @@ pub(crate) fn apply_effect(
                 return None;
             };
             deferred.map_markers.push((reference, *fast_travel));
+            None
+        }
+        Effect::SetBaseProtection {
+            base,
+            protected,
+            value,
+        } => {
+            let base = match base {
+                crate::translate::effects::ActorBaseRef::OfActor(actor) => {
+                    let actor = guard_actor(actor, context, vmad, world, deferred)?;
+                    world
+                        .get::<crate::scene::SceneAliasCandidate>(actor)
+                        .map(|candidate| candidate.base_form_id)
+                }
+                crate::translate::effects::ActorBaseRef::Form(form) => {
+                    resolve_property_form_id(vmad, form.property_name())
+                }
+            };
+            let Some(base) = base else {
+                log::debug!("fragment SetEssential / SetProtected skipped: no actor base");
+                return None;
+            };
+            deferred.base_protection.push((base, *protected, *value));
             None
         }
         Effect::SetLocationCleared { location, cleared } => {
@@ -2398,6 +2435,7 @@ fn apply_quest_scoped_effect(
         | Effect::BlockActivation { .. }
         | Effect::AddToMap { .. }
         | Effect::SetLocationCleared { .. }
+        | Effect::SetBaseProtection { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }
         | Effect::SetEnemy { .. }

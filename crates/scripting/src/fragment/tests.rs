@@ -4908,6 +4908,29 @@ fn set_cleared_clears_the_location() {
     );
 }
 
+/// M47.2 — `SetEssential` on an ActorBase property records the override
+/// once the guards drop, clearing the protected flag.
+#[test]
+fn set_essential_records_the_base_override() {
+    const BASE: u32 = 0x0001_3478;
+    let world = fixture();
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("EmperorBase", BASE)]),
+        vec![Effect::SetBaseProtection {
+            base: crate::translate::effects::ActorBaseRef::Form(ObjectRef::Property(
+                "EmperorBase".into(),
+            )),
+            protected: false,
+            value: true,
+        }],
+    );
+    assert_eq!(
+        world.resource::<crate::ActorBaseProtectionOverrides>().0.get(&BASE),
+        Some(&(Some(true), Some(false)))
+    );
+}
+
 /// M47.2 — `BlockActivation` records the reference in the activation-block
 /// ledger once the quest-state guards drop, and an unblock clears it.
 #[test]

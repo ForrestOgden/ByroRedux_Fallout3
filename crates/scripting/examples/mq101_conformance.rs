@@ -146,6 +146,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::SendStoryEvent { .. } => "SendStoryEvent",
         Effect::AddToMap { .. } => "AddToMap",
         Effect::SetLocationCleared { .. } => "SetCleared",
+        Effect::SetBaseProtection { .. } => "SetEssential",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

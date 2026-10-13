@@ -355,7 +355,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// down at zero health). A pre-v51 save has none, so an actor saved
 /// mid-bleedout would stand at zero health; rejected like the other column
 /// additions.
-pub const FORMAT_MAJOR: u16 = 51;
+///
+/// v51 -> v52 (M47.2): a new resource column, `ActorBaseProtectionOverrides`
+/// (script `ActorBase.SetEssential` / `SetProtected`). A pre-v52 save has
+/// none, so a scripted essential flag would revert to the authored one;
+/// rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 52;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

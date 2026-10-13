@@ -400,6 +400,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::Dead>()
             // M47.2 — spare_from_death: essential / protected actors bleed out.
             .reads::<byroredux_scripting::ActorProtection>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
             .writes::<byroredux_scripting::Bleedout>()
             .reads_resource::<byroredux_scripting::BleedoutRules>()
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()

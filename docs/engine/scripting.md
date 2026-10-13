@@ -521,7 +521,11 @@ on Skyrim and FO4, and 0.3 everywhere. Starfield has no such setting and
 does not recover. The player is never spared.
 Conditions `IsEssential` (354), `IsProtected` (476) and `IsBleedingOut` (580)
 read the state, and fragments lower `IsEssential()` / `IsBleedingOut()`
-guards. Live (Skyrim, Riverwood's Sleeping Giant Inn): Delphine, essential,
+guards. `<actor>.GetActorBase().SetEssential([b])` / `SetProtected([b])` (or
+an ActorBase property's) record a per-base override in the saved
+`ActorBaseProtectionOverrides`. Setting one flag clears the other (CK
+*SetEssential / SetProtected - ActorBase*), and the override wins over the
+base's stamp for every actor of that base. Live (Skyrim, Riverwood's Sleeping Giant Inn): Delphine, essential,
 went down at −4 health instead of dying and got back up 20 s later at 30
 health. Orgnar, not essential, died to the same blows.
 

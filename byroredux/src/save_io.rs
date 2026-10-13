@@ -611,6 +611,10 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::MapMarkers>("MapMarkers")
         // M47.2 — cleared locations (dead bosses, script SetCleared).
         .register_resource::<byroredux_scripting::LocationClearState>("LocationClearState")
+        // M47.2 — script ActorBase.SetEssential / SetProtected.
+        .register_resource::<byroredux_scripting::ActorBaseProtectionOverrides>(
+            "ActorBaseProtectionOverrides",
+        )
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.

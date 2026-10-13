@@ -159,7 +159,7 @@ pub use papyrus_provider::{
 };
 pub use bleedout::{
     bleedout_system, install_bleedout_rules, is_bleeding_out, is_essential, is_protected,
-    spare_from_death, ActorProtection, Bleedout, BleedoutRules,
+    spare_from_death, ActorBaseProtectionOverrides, ActorProtection, Bleedout, BleedoutRules,
 };
 pub use player_control::{
     collect_unconscious, is_unconscious, update_actor_control, ActorControlState, PlayerControlSelection,

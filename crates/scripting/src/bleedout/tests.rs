@@ -192,3 +192,40 @@ fn rules_read_the_load_order_settings_else_the_engine_defaults() {
     install_bleedout_rules(&mut world, &index);
     assert!(world.try_resource::<BleedoutRules>().is_none());
 }
+
+/// CK *SetEssential / SetProtected - ActorBase*: a script override of the
+/// actor's base wins over its stamp, and setting one flag clears the other.
+#[test]
+fn script_overrides_of_the_actor_base_win() {
+    const BASE: u32 = 0x0001_3478;
+    let (mut world, _player, actor) = world();
+    world.insert(
+        actor,
+        crate::scene::SceneAliasCandidate {
+            reference_form_id: 0x0001_9DC7,
+            base_form_id: BASE,
+            linked_refs: Vec::new(),
+            location_ref_types: Vec::new(),
+        },
+    );
+    world.insert(
+        actor,
+        ActorProtection {
+            essential: true,
+            protected: false,
+        },
+    );
+    world
+        .resource_mut::<ActorBaseProtectionOverrides>()
+        .set(BASE, false, false);
+    assert!(!is_essential(&world, actor), "SetEssential(false)");
+    world
+        .resource_mut::<ActorBaseProtectionOverrides>()
+        .set(BASE, true, true);
+    assert!(is_protected(&world, actor));
+    world
+        .resource_mut::<ActorBaseProtectionOverrides>()
+        .set(BASE, false, true);
+    assert!(is_essential(&world, actor));
+    assert!(!is_protected(&world, actor), "SetEssential clears protected");
+}
