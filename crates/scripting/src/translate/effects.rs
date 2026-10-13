@@ -3931,7 +3931,7 @@ fn actor_value_arg(e: &Expr, scope: &Scope) -> Option<ActorValueArg> {
 
 fn prim_set_actor_value(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) =
-        method_call_any(e, &["SetAV", "SetActorValue", "SetValue", "TryToSetActorValue"])?;
+        method_call_any(e, &["SetAV", "SetActorValue", "SetValue", "TryToSetActorValue", "TryToSetValue"])?;
     if args.len() != 2 {
         return None;
     }

@@ -731,9 +731,13 @@ fn from_stored(object: &crate::ScriptObject) -> Value {
 }
 
 /// The `RefCollectionAlias` natives the VM runs.
-const COLLECTION_NATIVES: [&str; 8] = [
+const COLLECTION_NATIVES: [&str; 12] = [
     "getcount",
     "getat",
+    "getarray",
+    "getactorarray",
+    "enableall",
+    "disableall",
     "find",
     "addref",
     "addarray",
@@ -1602,6 +1606,18 @@ impl Vm<'_> {
                     .ok()
                     .and_then(|index| members.get(index))
                     .map_or(Value::None, |form| Value::Form(*form))
+            }
+            "getarray" | "getactorarray" => Value::Array(Rc::new(RefCell::new(
+                members.iter().map(|form| Value::Form(*form)).collect(),
+            ))),
+            // CK: "Calls EnableNoWait / DisableNoWait on all the references in
+            // the collection."
+            "enableall" | "disableall" => {
+                let enabled = name == "enableall";
+                for form in members.iter() {
+                    self.deferred.reference_enable_changes.push((*form, enabled));
+                }
+                Value::None
             }
             "find" => Value::Int(match form_of(values.first()) {
                 Some(form) => members.iter().position(|member| *member == form).map_or(-1, |i| i as i32),
@@ -3621,7 +3637,10 @@ impl<'l> Checker<'l> {
             if collection {
                 let object = |arg: &Arg| matches!(arg, Arg::Kind(Kind::Object | Kind::Player | Kind::Alias));
                 let ok = match name.as_str() {
-                    "getcount" => arg_kinds.is_empty(),
+                    "getcount" | "getarray" | "getactorarray" => arg_kinds.is_empty(),
+                    "enableall" | "disableall" => {
+                        statement && matches!(arg_kinds.as_slice(), [] | [Arg::Literal(Expr::BoolLit(_))])
+                    }
                     "getat" => matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)]),
                     "find" => arg_kinds.len() == 1 && object(&arg_kinds[0]),
                     "addref" | "removeref" => statement && arg_kinds.len() == 1 && object(&arg_kinds[0]),
@@ -3636,6 +3655,7 @@ impl<'l> Checker<'l> {
                 return Some(match name.as_str() {
                     "getcount" | "find" => Kind::Num,
                     "getat" => Kind::Object,
+                    "getarray" | "getactorarray" => Kind::Array,
                     _ => Kind::None,
                 });
             }

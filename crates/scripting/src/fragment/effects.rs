@@ -406,7 +406,7 @@ pub struct DeferredFragmentEffects {
     /// [`PendingFragmentActivations`] so they are delivered at the head of
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
-    reference_enable_changes: Vec<(u32, bool)>,
+    pub(super) reference_enable_changes: Vec<(u32, bool)>,
     /// #4136 — scripted lock changes, FormID-keyed for the same reason
     /// `reference_enable_changes` above is: the state has to outlive the
     /// reference's cell, and a component cannot survive its own entity's

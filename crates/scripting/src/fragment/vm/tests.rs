@@ -2151,8 +2151,12 @@ fn script_filled_collection_aliases() {
          EndFunction\n\
          Function Fragment_2()\n\
            If Crowd.GetCount() == 2 && Crowd.Find(B) == 1 && Crowd.GetAt(0) == A\n\
-             Crowd.RemoveRef(A)\n\
-             Self.SetStage(30)\n\
+             ObjectReference[] all = Crowd.GetArray()\n\
+             If all.Length == 2\n\
+               Crowd.DisableAll()\n\
+               Crowd.RemoveRef(A)\n\
+               Self.SetStage(30)\n\
+             EndIf\n\
            EndIf\n\
          EndFunction\n\
          Function Fragment_3()\n\
@@ -2229,6 +2233,7 @@ fn script_filled_collection_aliases() {
     }
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "the count, find and get-at read");
     assert_eq!(world.resource::<crate::AliasCollections>().members((Q.0, 3)), [SECOND]);
+    assert!(!crate::fragment::reference_enabled(&world, FIRST) && !crate::fragment::reference_enabled(&world, SECOND), "DisableAll");
     world.resource_mut::<QuestStageState>().set_stage(Q, 22);
     crate::fragment::quest_fragment_dispatch_system(&world);
     // RemoveAll emptied it; the conditions-filled one was refused, not read as

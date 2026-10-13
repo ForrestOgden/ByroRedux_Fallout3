@@ -692,9 +692,10 @@ runtime:
   (`ScriptObject::Array` / `Struct` in the saved `QuestScriptObjects`). A later
   run therefore sees the elements an earlier one added. An array local across
   a `Utility.Wait` still can't be saved.
-- **Reference collections (Fallout 4).** `RefCollectionAlias` natives
-  `GetCount`, `GetAt`, `Find`, `AddRef`, `AddArray`, `AddRefCollection`,
-  `RemoveRef` and `RemoveAll` work on a collection alias the quest leaves to
+- **Reference collections (Fallout 4, Starfield).** `RefCollectionAlias`
+  natives `GetCount`, `GetAt`, `GetArray`, `GetActorArray`, `Find`, `AddRef`,
+  `AddArray`, `AddRefCollection`, `RemoveRef`, `RemoveAll`, and `EnableAll` /
+  `DisableAll` (the CK: `EnableNoWait` / `DisableNoWait` on every member) work on a collection alias the quest leaves to
   its scripts. The members are in the saved `AliasCollections`, by FormID. A
   collection the quest fills by conditions or a fill type has no fill runtime
   (`m47-3-quest-alias-design.md`), so the VM refuses it rather than read it as
@@ -760,8 +761,8 @@ schedules and doesn't model a procedure completing, so every switch is a
 preemption: End fragments are installed but don't run until procedure
 completion lands.
 
-With the VM, 81.3% of the Skyrim corpus runs (Fallout 4: 76.6%, Starfield
-71.9%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
+With the VM, 81.3% of the Skyrim corpus runs (Fallout 4: 76.9%, Starfield
+73.8%) (lowered + interpreted; `fragment_coverage`, `VM_REASONS=1` lists why
 the check rejects the rest). The front-end feeding both paths — `.pex` parse
 + decompile over the vanilla script archives — is at 100.0% on all four
 games (Skyrim 14 026, FO4 7 875, FO76 7 233, Starfield 4 740 scripts; the
