@@ -572,7 +572,7 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **Papyrus interpreter cost is unbudgeted** (measured 2026-10-13,
+- [ ] **Papyrus interpreter cost is unbudgeted** (#5763, measured 2026-10-13,
   `docs/audits/BENCH_vm-cost_a3a7a43b0.txt`). Real cells are cheap: its
   systems total ~70 µs/frame on Bleak Falls Barrow and single digits on the
   Bannered Mare, and a scripted-scene A/B adds 0.16 ms (+1.0%). But all four
