@@ -2259,38 +2259,15 @@ fn lower_statements(
                 elseif_clauses,
                 else_body,
             } => {
-                if !elseif_clauses.is_empty() {
-                    return None;
-                }
-                let mut guards = Vec::new();
-                classify_condition(&condition.node, scope, false, &mut guards)?;
-                let mut then_scope = scope.clone();
-                let then_effects = lower_statements(body, &mut then_scope, providers, depth + 1)?;
-                let mut else_scope = scope.clone();
-                let else_effects = match else_body.as_deref() {
-                    Some(body) => lower_statements(body, &mut else_scope, providers, depth + 1)?,
-                    None => Vec::new(),
-                };
-                // The branches lowered against clones, so a declaration inside
-                // one correctly stays inside it. But Papyrus locals are
-                // function-scoped: an assignment in a branch to a local
-                // declared BEFORE the `If` changes what that name means after
-                // `EndIf`, and the clone is dropped. Decline rather than lower
-                // the tail against the pre-branch binding (#5632).
-                if scope.rebound_by(&then_scope) || scope.rebound_by(&else_scope) {
-                    return None;
-                }
-                // M47.2 — a branch may wait: `apply_effects`' cursor stack
-                // (#3935) suspends with the rest of the branch followed by the
-                // rest of the program, so the resume continues exactly there.
-                // The callers still refuse a latent effect where it cannot
-                // suspend (a quest scope, a speaker line, run-time locals) —
-                // `has_latent_tail` looks into branches.
-                effects.push(Effect::Conditional {
-                    guards,
-                    then_effects,
-                    else_effects,
-                });
+                effects.push(lower_if(
+                    &condition.node,
+                    body,
+                    elseif_clauses,
+                    else_body.as_deref(),
+                    scope,
+                    providers,
+                    depth,
+                )?);
             }
             // Other control flow / valued return remain outside this
             // increment's conservative sequence model — decline.
@@ -2298,6 +2275,63 @@ fn lower_statements(
         }
     }
     Some(effects)
+}
+
+/// `If` / `ElseIf` / `Else` as an [`Effect::Conditional`]; each `ElseIf`
+/// (M47.2) is the else branch of the one before it — exactly Papyrus's
+/// first-true-wins order.
+fn lower_if(
+    condition: &Expr,
+    body: &[Spanned<Stmt>],
+    elseif_clauses: &[(Spanned<Expr>, Vec<Spanned<Stmt>>)],
+    else_body: Option<&[Spanned<Stmt>]>,
+    scope: &mut Scope,
+    providers: Option<&PapyrusProviderCatalog>,
+    depth: u32,
+) -> Option<Effect> {
+    // An `ElseIf` chain nests one level per clause without passing through
+    // `lower_statements`, so it is bounded here by the same cap.
+    if depth >= MAX_CONDITIONAL_DEPTH {
+        return None;
+    }
+    let mut guards = Vec::new();
+    classify_condition(condition, scope, false, &mut guards)?;
+    let mut then_scope = scope.clone();
+    let then_effects = lower_statements(body, &mut then_scope, providers, depth + 1)?;
+    let mut else_scope = scope.clone();
+    let else_effects = match elseif_clauses.split_first() {
+        Some(((condition, body), rest)) => vec![lower_if(
+            &condition.node,
+            body,
+            rest,
+            else_body,
+            &mut else_scope,
+            providers,
+            depth + 1,
+        )?],
+        None => match else_body {
+            Some(body) => lower_statements(body, &mut else_scope, providers, depth + 1)?,
+            None => Vec::new(),
+        },
+    };
+    // The branches lowered against clones, so a declaration inside one
+    // correctly stays inside it. But Papyrus locals are function-scoped: an
+    // assignment in a branch to a local declared BEFORE the `If` changes what
+    // that name means after `EndIf`, and the clone is dropped. Decline rather
+    // than lower the tail against the pre-branch binding (#5632).
+    if scope.rebound_by(&then_scope) || scope.rebound_by(&else_scope) {
+        return None;
+    }
+    // M47.2 — a branch may wait: `apply_effects`' cursor stack (#3935)
+    // suspends with the rest of the branch followed by the rest of the
+    // program, so the resume continues exactly there. The callers still
+    // refuse a latent effect where it cannot suspend (a quest scope, a
+    // speaker line, run-time locals) — `has_latent_tail` looks into branches.
+    Some(Effect::Conditional {
+        guards,
+        then_effects,
+        else_effects,
+    })
 }
 
 /// `<quest>.<Property> = <literal>` (M47.2). The receiver must be a quest the
@@ -7955,6 +7989,38 @@ mod tests {
                     silent: true,
                 },
             ])
+        );
+    }
+
+    /// M47.2 — `ElseIf` is the else branch of the clause before it.
+    #[test]
+    fn else_if_chains_lower_as_nested_conditionals() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\nFunction Fragment_1()\n\
+             If Self.GetStageDone(10)\n Self.SetStage(20)\n\
+             ElseIf Self.GetStageDone(5)\n Self.SetStage(15)\n\
+             Else\n Self.SetStage(1)\n EndIf\n EndFunction\n",
+        );
+        let stage = |stage| Effect::SetStage {
+            quest: QuestRef::SelfRef,
+            stage,
+        };
+        let done = |stage| FragmentGuard::StageDone {
+            quest: QuestRef::SelfRef,
+            stage,
+            done: true,
+        };
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Conditional {
+                guards: vec![done(10)],
+                then_effects: vec![stage(20)],
+                else_effects: vec![Effect::Conditional {
+                    guards: vec![done(5)],
+                    then_effects: vec![stage(15)],
+                    else_effects: vec![stage(1)],
+                }],
+            }])
         );
     }
 
