@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 38;
+    const BASELINE_MAJOR: u16 = 39;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -833,7 +833,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // contribute their shapes for the first time. Both were registered
     // unchanged since 26b6a779c — no on-disk shape moved, the scan just
     // stopped being blind to them.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0a2c_75cb_fd40_fc57;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x02bf_af32_94ea_3f10;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -895,6 +895,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // from an INFO FormID `u32` to a `(speaker reference FormID, INFO
     // FormID)` pair — Say Once is per actor (CK Topic Info). The set's
     // element shape changed, so a v37 save is rejected.
+    //
+    // v38 -> v39 (M47.2) — refreshed WITH a major bump: the fragment
+    // `Effect::AddItem` container widened `ObjectRef` -> `ActorRef` (the
+    // `Game.GetPlayer().AddItem` reward shape) and `Effect::RemoveItem`
+    // joined the enum; queued fragment tails serialize `Effect`s.
     //
     // v25 -> v26 (#4282/#4334) — refreshed WITH a major bump, both
     // directions at once: `Material` gained the optional capture-only

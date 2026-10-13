@@ -292,7 +292,13 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// per actor (CK Topic Info: "can only be said once by any given Actor …
 /// a different actor that qualifies may say it"). The set's element shape
 /// changed, so a v37 save cannot be re-read and is rejected.
-pub const FORMAT_MAJOR: u16 = 38;
+///
+/// v38 -> v39 (M47.2): the fragment `Effect::AddItem` container widened from
+/// an `ObjectRef` to an `ActorRef` (so `Game.GetPlayer().AddItem(..)` lowers),
+/// and `Effect::RemoveItem` joined the enum. Pending fragment tails
+/// (`FragmentExecutionQueue`) serialize `Effect`s, so a v38 save carrying a
+/// queued `AddItem` cannot be re-read as v39 and is rejected.
+pub const FORMAT_MAJOR: u16 = 39;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

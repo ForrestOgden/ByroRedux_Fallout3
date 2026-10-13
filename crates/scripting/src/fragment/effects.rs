@@ -721,7 +721,7 @@ pub(crate) fn apply_effect(
 ) -> Option<QuestStageAdvanced> {
     match effect {
         Effect::SetGlobalValue { .. } => apply_global_effect(effect, vmad, world),
-        Effect::AddItem { .. } | Effect::EquipItem { .. } => {
+        Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
             apply_inventory_effect(effect, context, vmad, world, deferred)
         }
         Effect::MoveTo { .. } | Effect::Disable { .. } | Effect::Enable { .. } => {
@@ -838,6 +838,117 @@ fn apply_global_effect(
     }
 }
 
+/// `RemoveItem`'s runtime (M47.2): take up to `count` of `item_form_id` from
+/// `source`'s stacks, first-authored first, and move them to `destination` or
+/// drop them.
+///
+/// Rows are zeroed in place, never removed, so the inventory indices that
+/// `EquipmentSlots` holds stay valid (the `consume_item` / `transfer_loot`
+/// discipline); an emptied row's equipment is released. A fully drained
+/// stack that carries a per-instance identity travels whole to the
+/// destination, or returns its instance to the [`ItemInstancePool`] when the
+/// items vanish. Script `OnItemRemoved` / `OnItemAdded` see the move. Every
+/// guard is scoped: the inventory write, then equipment, then the pool, then
+/// the event batches — none is held across another.
+fn remove_items(
+    world: &World,
+    source: EntityId,
+    item_form_id: u32,
+    count: u32,
+    destination: Option<EntityId>,
+) {
+    use byroredux_core::ecs::components::InventoryIndex;
+    if count == 0 || destination == Some(source) {
+        return;
+    }
+    let mut removed = 0u32;
+    let mut emptied: Vec<InventoryIndex> = Vec::new();
+    let mut freed_instances = Vec::new();
+    {
+        let Some(mut inventories) = world.query_mut::<Inventory>() else {
+            return;
+        };
+        if let Some(destination) = destination {
+            // Validate the destination before taking anything: a missing
+            // destination loses no items.
+            if inventories.get_mut(destination).is_none() {
+                inventories.insert(destination, Inventory::new());
+            }
+        }
+        let Some(inventory) = inventories.get_mut(source) else {
+            log::debug!("fragment RemoveItem skipped: container has no Inventory");
+            return;
+        };
+        let mut moved: Vec<ItemStack> = Vec::new();
+        for (index, stack) in inventory.items.iter_mut().enumerate() {
+            if removed == count {
+                break;
+            }
+            if stack.base_form_id != item_form_id || stack.count == 0 {
+                continue;
+            }
+            let take = stack.count.min(count - removed);
+            removed += take;
+            if take == stack.count {
+                // The whole row goes: its instance identity moves with it
+                // (or is freed), and its equipment is released below.
+                let whole = std::mem::replace(stack, ItemStack::new(item_form_id, 0));
+                if let Ok(index) = u32::try_from(index) {
+                    emptied.push(InventoryIndex(index));
+                }
+                if destination.is_some() {
+                    moved.push(whole);
+                } else if let Some(instance) = whole.instance {
+                    freed_instances.push(instance);
+                }
+            } else {
+                stack.count -= take;
+                if destination.is_some() {
+                    moved.push(ItemStack::new(item_form_id, take));
+                }
+            }
+        }
+        if let Some(destination) = destination {
+            inventories
+                .get_mut(destination)
+                .expect("validated under the same guard")
+                .items
+                .extend(moved);
+        }
+    }
+    if removed == 0 {
+        return;
+    }
+    if !emptied.is_empty() {
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
+            if let Some(slots) = equipment.get_mut(source) {
+                for index in &emptied {
+                    slots.release(*index);
+                }
+            }
+        }
+    }
+    if !freed_instances.is_empty() {
+        if let Some(mut pool) =
+            world.try_resource_mut::<byroredux_core::ecs::resources::ItemInstancePool>()
+        {
+            for instance in freed_instances {
+                pool.release(instance);
+            }
+        }
+    }
+    let transfer = |added| crate::ItemTransfer {
+        item_form_id,
+        count: removed,
+        added,
+        stolen: false,
+    };
+    crate::emit_item_transfers(world, source, [transfer(false)]);
+    if let Some(destination) = destination {
+        crate::emit_item_transfers(world, destination, [transfer(true)]);
+    }
+}
+
 /// `AddItem` / `EquipItem` — the `Inventory` + `EquipmentSlots` arms.
 ///
 /// #4340 — split out of [`apply_effect`], whose arms are now one-line
@@ -857,7 +968,7 @@ fn apply_inventory_effect(
             item,
             count,
         } => {
-            let container_entity = resolve_object(
+            let container_entity = resolve_actor(
                 vmad,
                 world,
                 context,
@@ -881,6 +992,34 @@ fn apply_inventory_effect(
                 .get_mut(container_entity)
                 .expect("just present or inserted above")
                 .push(ItemStack::new(item_form_id, *count));
+            drop(inventories);
+            // `OnItemAdded` sees a scripted add like any other (M47.2).
+            crate::emit_item_transfers(
+                world,
+                container_entity,
+                [crate::ItemTransfer {
+                    item_form_id,
+                    count: *count,
+                    added: true,
+                    stolen: false,
+                }],
+            );
+            None
+        }
+        Effect::RemoveItem {
+            container,
+            item,
+            count,
+            destination,
+        } => {
+            let bindings = &deferred.scene_actor_bindings;
+            let source = resolve_actor(vmad, world, context, container, bindings)?;
+            let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
+            let destination = match destination {
+                Some(via) => Some(resolve_actor(vmad, world, context, via, bindings)?),
+                None => None,
+            };
+            remove_items(world, source, item_form_id, *count, destination);
             None
         }
         Effect::EquipItem {
@@ -1809,6 +1948,7 @@ fn apply_quest_scoped_effect(
         Effect::Conditional { .. }
         | Effect::SetGlobalValue { .. }
         | Effect::AddItem { .. }
+        | Effect::RemoveItem { .. }
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
         | Effect::Disable { .. }

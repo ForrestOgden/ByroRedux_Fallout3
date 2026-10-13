@@ -8,7 +8,8 @@
 //! example measures the *current* table's real claim rate end-to-end:
 //! decompile every `.pex`, lower every fragment, tally claimed vs
 //! declined (with the decline reasons, so the next primitives to add are
-//! obvious).
+//! obvious). `SAMPLE_SHAPE=<shape>` prints example statements behind one
+//! decline shape.
 //!
 //! It is the b2 analog of `pex_corpus_shapes` and doubles as a
 //! coverage-regression gate as the effect table grows.
@@ -139,6 +140,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
+        Effect::RemoveItem { .. } => "RemoveItem",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::StartScene { .. } => "StartScene",
@@ -174,6 +176,40 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::AddRaceSpells { .. } => "AddRaceSpells",
         Effect::RemoveRaceSpells { .. } => "RemoveRaceSpells",
     }
+}
+
+/// `SAMPLE_SHAPE=<shape>` (e.g. `additem/3`) prints the failing statement of
+/// every `SAMPLE_EVERY`-th (default 150) fragment declined on that shape, so
+/// the receiver/argument forms behind a decline count can be read directly.
+fn sample_decline(
+    file: &str,
+    body: &[byroredux_papyrus::span::Spanned<Stmt>],
+    quest_properties: &HashSet<String>,
+    shape: &str,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEEN: AtomicUsize = AtomicUsize::new(0);
+    if std::env::var("SAMPLE_SHAPE").ok().as_deref() != Some(shape) {
+        return;
+    }
+    let every: usize = std::env::var("SAMPLE_EVERY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(150)
+        .max(1);
+    if SEEN.fetch_add(1, Ordering::Relaxed) % every != 0 {
+        return;
+    }
+    let Some(stmt) = (0..body.len())
+        .find(|&i| lower_fragment_with_quest_properties(&body[..=i], quest_properties).is_none())
+        .map(|i| &body[i].node)
+    else {
+        return;
+    };
+    let text = format!("{stmt:?}")
+        .replace("Spanned { node: ", "")
+        .replace(", span: Span { start: 0, end: 0 } }", "");
+    eprintln!("SAMPLE {file}: {}", &text[..text.len().min(900)]);
 }
 
 fn main() {
@@ -252,9 +288,9 @@ fn main() {
                         }
                     }
                     None => {
-                        *decline_hist
-                            .entry(decline_shape(&func.body, &quest_properties))
-                            .or_default() += 1;
+                        let shape = decline_shape(&func.body, &quest_properties);
+                        sample_decline(&f, &func.body, &quest_properties, &shape);
+                        *decline_hist.entry(shape).or_default() += 1;
                     }
                 }
             }

@@ -130,6 +130,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::CompleteAllObjectives { .. } => "CompleteAllObjectives",
         Effect::FailAllObjectives { .. } => "FailAllObjectives",
         Effect::AddItem { .. } => "AddItem",
+        Effect::RemoveItem { .. } => "RemoveItem",
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::Disable { .. } => "Disable",

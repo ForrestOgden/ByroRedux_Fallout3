@@ -146,15 +146,17 @@ pub enum Effect {
     CompleteAllObjectives { quest: QuestRef },
     /// `<quest>.FailAllObjectives()`.
     FailAllObjectives { quest: QuestRef },
-    /// `<container>.AddItem(<item>, <count>)`. The optional 3rd
+    /// `<container>.AddItem(<item>, <count = 1>)`. The optional 3rd
     /// (`abSilent`) argument is accepted (parsed, not applied — no pickup
     /// notification UI exists to suppress) but only as a literal; a
     /// non-literal 3rd arg, or a 4th, declines the whole fragment (the
     /// `bool_arg` discipline `SetObjectiveDisplayed` already uses).
     /// `item` resolves only to a FormID at dispatch, never to an entity —
     /// it names a *base record* (the item type), not a placed reference.
+    /// The container is an [`ActorRef`] so `Game.GetPlayer().AddItem(..)` —
+    /// the corpus's commonest reward shape — lowers (M47.2).
     AddItem {
-        container: ObjectRef,
+        container: ActorRef,
         item: ObjectRef,
         count: u32,
     },
@@ -337,6 +339,17 @@ pub enum Effect {
     WaitForActors3DLoaded {
         actors: Vec<ActorRef>,
         poll_seconds: f32,
+    },
+    /// `<container>.RemoveItem(<item>, <count = 1>, <silent = false>,
+    /// <other container = None>)` (M47.2). Removes up to `count` of the base
+    /// item (Papyrus removes what is there when there is less); with an
+    /// other container the removed items move there instead of vanishing.
+    /// `abSilent` is accepted as a literal and not applied, as for `AddItem`.
+    RemoveItem {
+        container: ActorRef,
+        item: ObjectRef,
+        count: u32,
+        destination: Option<ActorRef>,
     },
     /// A manifest or engine-owned static provider call used as a sequencing
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
@@ -815,6 +828,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_complete_all_objectives,
     prim_fail_all_objectives,
     prim_add_item,
+    prim_remove_item,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -1140,9 +1154,9 @@ fn prim_fail_all_objectives(e: &Expr, scope: &Scope) -> Option<Effect> {
 
 fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
     let (object, args) = method_call(e, "AddItem")?;
-    let container = receiver_object(object, scope)?;
+    let container = receiver_actor(object, scope)?;
     let item = receiver_object(&args.first()?.value.node, scope)?;
-    let count = u32::try_from(int_arg(args, 1)?).ok()?;
+    let count = u32::try_from(optional_int_arg(args, 1, 1)?).ok()?;
     // Optional 3rd arg (`abSilent`) — accepted only as a literal (parsed,
     // not applied; see the `Effect::AddItem` doc). A present-but-
     // non-literal 3rd arg declines via `bool_arg`'s `None`; a 4th arg
@@ -1155,6 +1169,30 @@ fn prim_add_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         container,
         item,
         count,
+    })
+}
+
+/// `RemoveItem(akItemToRemove, aiCount = 1, abSilent = false,
+/// akOtherContainer = None)`. The count must be a non-negative literal; the
+/// other container a literal `None` or a resolvable reference.
+fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "RemoveItem")?;
+    if args.is_empty() || args.len() > 4 {
+        return None;
+    }
+    let container = receiver_actor(object, scope)?;
+    let item = receiver_object(&args[0].value.node, scope)?;
+    let count = u32::try_from(optional_int_arg(args, 1, 1)?).ok()?;
+    bool_arg(args, 2)?;
+    let destination = match args.get(3).map(|arg| &arg.value.node) {
+        None | Some(Expr::NoneLit) => None,
+        Some(other) => Some(receiver_actor(other, scope)?),
+    };
+    Some(Effect::RemoveItem {
+        container,
+        item,
+        count,
+        destination,
     })
 }
 
@@ -2453,7 +2491,7 @@ mod tests {
         assert_eq!(
             lower_fragment(&body),
             Some(vec![Effect::AddItem {
-                container: ObjectRef::Property("SomeContainer".into()),
+                container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
                 item: ObjectRef::Property("SomeItem".into()),
                 count: 5,
             }])
@@ -2470,11 +2508,97 @@ mod tests {
         assert_eq!(
             lower_fragment(&body),
             Some(vec![Effect::AddItem {
-                container: ObjectRef::Property("SomeContainer".into()),
+                container: ActorRef::Object(ObjectRef::Property("SomeContainer".into())),
                 item: ObjectRef::Property("SomeItem".into()),
                 count: 5,
             }])
         );
+    }
+
+    /// M47.2 — the corpus's commonest reward shape: the player as the
+    /// container, the count defaulting to 1 when omitted.
+    #[test]
+    fn lowers_add_item_on_the_player_with_a_default_count() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Game.GetPlayer().AddItem(Reward as Form, 1, false)\n\
+             Game.GetPlayer().AddItem(Gold001)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::AddItem {
+                    container: ActorRef::Player,
+                    item: ObjectRef::Property("Reward".into()),
+                    count: 1,
+                },
+                Effect::AddItem {
+                    container: ActorRef::Player,
+                    item: ObjectRef::Property("Gold001".into()),
+                    count: 1,
+                },
+            ])
+        );
+    }
+
+    /// M47.2 — `RemoveItem(item, count = 1, silent = false, other = None)`:
+    /// the vanilla `Game.GetPlayer().RemoveItem(Gold, n, false, None)` shape,
+    /// the defaulted forms, and a move into another container.
+    #[test]
+    fn lowers_remove_item_shapes() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Game.GetPlayer().RemoveItem(Gold001 as Form, 50, false, None)\n\
+             SomeChest.RemoveItem(SomeItem)\n\
+             Game.GetPlayer().RemoveItem(SomeItem, 2, true, SomeChest)\n EndFunction\n",
+        );
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::RemoveItem {
+                    container: ActorRef::Player,
+                    item: ObjectRef::Property("Gold001".into()),
+                    count: 50,
+                    destination: None,
+                },
+                Effect::RemoveItem {
+                    container: ActorRef::Object(ObjectRef::Property("SomeChest".into())),
+                    item: ObjectRef::Property("SomeItem".into()),
+                    count: 1,
+                    destination: None,
+                },
+                Effect::RemoveItem {
+                    container: ActorRef::Player,
+                    item: ObjectRef::Property("SomeItem".into()),
+                    count: 2,
+                    destination: Some(ActorRef::Object(ObjectRef::Property(
+                        "SomeChest".into()
+                    ))),
+                },
+            ])
+        );
+    }
+
+    /// A count the lowerer cannot read (a global's live value), a computed
+    /// item (`Game.GetCaps()`), a non-literal silent flag, a negative count or
+    /// a fifth argument all decline rather than guess.
+    #[test]
+    fn remove_item_declines_what_it_cannot_read() {
+        for call in [
+            "Game.GetPlayer().RemoveItem(Gold001, Ransom.GetValueInt(), false, None)",
+            "Game.GetPlayer().RemoveItem(Game.GetCaps(), 50, false, None)",
+            "Game.GetPlayer().RemoveItem(Gold001, 5, bQuiet, None)",
+            "Game.GetPlayer().RemoveItem(Gold001, -5)",
+            "Game.GetPlayer().RemoveItem(Gold001, 5, false, None, 1)",
+            "Game.GetPlayer().RemoveItem()",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{call}");
+        }
     }
 
     #[test]

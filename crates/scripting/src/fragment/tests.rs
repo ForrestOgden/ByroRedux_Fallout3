@@ -1951,7 +1951,7 @@ fn dispatch_add_item_via_registered_vmad() {
             Q,
             10,
             vec![Effect::AddItem {
-                container: crate::translate::compose::ObjectRef::Property("SomeContainer".into()),
+                container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
                 count: 3,
             }],
@@ -2024,7 +2024,7 @@ fn dispatch_add_item_pushes_onto_an_existing_inventory() {
             Q,
             10,
             vec![Effect::AddItem {
-                container: crate::translate::compose::ObjectRef::Property("SomeContainer".into()),
+                container: crate::translate::effects::ActorRef::Object(crate::translate::compose::ObjectRef::Property("SomeContainer".into())),
                 item: crate::translate::compose::ObjectRef::Property("SomeItem".into()),
                 count: 3,
             }],
@@ -4198,4 +4198,183 @@ fn reference_enable_state_scripted_calls_override_the_authored_default() {
     assert_eq!(state.override_for(0x10), Some(false));
     assert!(!state.is_enabled_with_default(0x10, false));
     assert!(!state.is_enabled(0x10));
+}
+
+/// A VMAD whose object properties bind `(name, form id)` pairs, for the
+/// inventory-effect dispatch tests below.
+fn object_property_vmad(
+    properties: &[(&str, u32)],
+) -> byroredux_plugin::esm::records::script_instance::ScriptInstanceData {
+    use byroredux_plugin::esm::records::script_instance::{
+        PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
+    };
+    ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_Test".into(),
+            status: 0,
+            properties: properties
+                .iter()
+                .map(|&(name, form_id)| ScriptProperty {
+                    name: name.into(),
+                    status: 1,
+                    value: PropertyValue::Object {
+                        form_id,
+                        alias: -1,
+                    },
+                })
+                .collect(),
+        }],
+    }
+}
+
+fn run_stage_effects(
+    world: &World,
+    vmad: byroredux_plugin::esm::records::script_instance::ScriptInstanceData,
+    effects: Vec<Effect>,
+) {
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(Q, vmad);
+        frags.insert(Q, 10, effects);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    emit_advance(world, Q, 10);
+    quest_fragment_dispatch_system(world);
+}
+
+/// M47.2 — `Game.GetPlayer().AddItem(..)` reaches the player's inventory and
+/// is seen by `OnItemAdded`.
+#[test]
+fn dispatch_add_item_on_the_player() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::Inventory;
+
+    const GOLD: u32 = 0x0000_000F;
+    let mut world = fixture();
+    world.register::<Inventory>();
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Gold001", GOLD)]),
+        vec![Effect::AddItem {
+            container: ActorRef::Player,
+            item: ObjectRef::Property("Gold001".into()),
+            count: 25,
+        }],
+    );
+    let inventory = world.get::<Inventory>(player).expect("created on demand");
+    assert_eq!(
+        inventory.items.iter().map(|s| (s.base_form_id, s.count)).collect::<Vec<_>>(),
+        vec![(GOLD, 25)]
+    );
+    let events = world.get::<crate::ItemEventBatch>(player).expect("OnItemAdded batch");
+    assert_eq!(events.0.len(), 1);
+    assert!(events.0[0].added);
+    assert_eq!((events.0[0].item_form_id, events.0[0].count), (GOLD, 25));
+}
+
+/// M47.2 — `RemoveItem` takes across stacks first-authored first, zeroes
+/// drained rows in place (equipment indices stay valid), releases a drained
+/// row's equipment and instance, moves items to an other container when one
+/// is named, and reports each side to the item-event batches.
+#[test]
+fn dispatch_remove_item_drains_releases_and_moves() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+
+    const GOLD: u32 = 0x0000_000F;
+    const SWORD: u32 = 0x0001_2EB7;
+    const CHEST_FORM: u32 = 0x0000_8000;
+
+    let mut world = fixture();
+    world.register::<Inventory>();
+    world.register::<EquipmentSlots>();
+    let mut pool = ItemInstancePool::new();
+    let sword_instance = pool.allocate(ItemInstance::default());
+    world.insert_resource(pool);
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let chest = spawn_with_form_id(&mut world, CHEST_FORM);
+    let mut sword = ItemStack::new(SWORD, 1);
+    sword.instance = Some(sword_instance);
+    world.insert(
+        player,
+        Inventory {
+            items: vec![ItemStack::new(GOLD, 100), sword, ItemStack::new(GOLD, 30)],
+        },
+    );
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(1));
+    world.insert(player, slots);
+
+    let item = |name: &str| ObjectRef::Property(name.into());
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Gold001", GOLD), ("Sword", SWORD), ("Chest", CHEST_FORM)]),
+        vec![
+            // 100 from the first stack (drained), 20 from the third.
+            Effect::RemoveItem {
+                container: ActorRef::Player,
+                item: item("Gold001"),
+                count: 120,
+                destination: None,
+            },
+            Effect::RemoveItem {
+                container: ActorRef::Player,
+                item: item("Sword"),
+                count: 1,
+                destination: None,
+            },
+            // More than is left: the remaining 10 move, no more.
+            Effect::RemoveItem {
+                container: ActorRef::Player,
+                item: item("Gold001"),
+                count: 50,
+                destination: Some(ActorRef::Object(item("Chest"))),
+            },
+        ],
+    );
+
+    let inventory = world.get::<Inventory>(player).unwrap();
+    assert_eq!(
+        inventory.items.iter().map(|s| (s.base_form_id, s.count)).collect::<Vec<_>>(),
+        vec![(GOLD, 0), (SWORD, 0), (GOLD, 0)],
+        "rows are zeroed in place, never removed"
+    );
+    drop(inventory);
+    assert_eq!(
+        world.get::<EquipmentSlots>(player).unwrap().equipped_indices().count(),
+        0,
+        "the drained sword row's equipment is released"
+    );
+    assert!(
+        world.resource::<ItemInstancePool>().get(sword_instance).is_none(),
+        "the drained row's instance returns to the pool"
+    );
+    let chest_items = world.get::<Inventory>(chest).expect("destination created on demand");
+    assert_eq!(
+        chest_items.items.iter().map(|s| (s.base_form_id, s.count)).collect::<Vec<_>>(),
+        vec![(GOLD, 10)]
+    );
+    drop(chest_items);
+    let removed: Vec<(u32, u32, bool)> = world
+        .get::<crate::ItemEventBatch>(player)
+        .unwrap()
+        .0
+        .iter()
+        .map(|t| (t.item_form_id, t.count, t.added))
+        .collect();
+    assert_eq!(removed, vec![(GOLD, 120, false), (SWORD, 1, false), (GOLD, 10, false)]);
+    let added: Vec<(u32, u32, bool)> = world
+        .get::<crate::ItemEventBatch>(chest)
+        .unwrap()
+        .0
+        .iter()
+        .map(|t| (t.item_form_id, t.count, t.added))
+        .collect();
+    assert_eq!(added, vec![(GOLD, 10, true)]);
 }
