@@ -148,19 +148,22 @@ pub fn install_quest_script_variables<'a>(
     count
 }
 
-/// The object a quest script variable holds (M47.2, the Papyrus VM).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The non-numeric value a script variable holds (M47.2, the Papyrus VM).
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScriptObject {
     None,
     /// A form by FormID (a reference, a base object, a quest).
     Form(u32),
     Alias { quest: u32, alias: i16 },
+    /// A string — a `String` variable, or a script's state name.
+    Str(String),
 }
 
-/// Object-valued quest script variables scripts wrote this playthrough
-/// (`myActor = Alias.GetActorRef()`), keyed like [`QuestScriptVariables`].
-/// Saved.
+/// Non-numeric script variables scripts wrote this playthrough
+/// (`myActor = Alias.GetActorRef()`, a script's state), keyed like
+/// [`QuestScriptVariables`] by the object the script is attached to — a
+/// quest, or a reference for a reference script. Saved.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestScriptObjects {
@@ -171,7 +174,7 @@ impl Resource for QuestScriptObjects {}
 
 impl QuestScriptObjects {
     pub fn get(&self, quest: QuestFormId, variable: ConditionStringId) -> Option<ScriptObject> {
-        self.written.get(&quest)?.get(&variable).copied()
+        self.written.get(&quest)?.get(&variable).cloned()
     }
 
     pub fn set(&mut self, quest: QuestFormId, variable: ConditionStringId, value: ScriptObject) {

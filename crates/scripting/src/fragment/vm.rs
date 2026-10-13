@@ -22,16 +22,27 @@
 //! A call into a quest's script (`kmyQuest.Startup()`, or one returning a
 //! value) runs that function here too, against the quest's own VMAD.
 //!
+//! Script state follows the CK's *States (Papyrus)*: a call runs the version
+//! in the instance's current state down the `extends` chain, then the empty
+//! state's; an instance starts in its `Auto State`. The compiler's generated
+//! `GotoState` / `GetState` keep the state in `::State`, stored per script
+//! among its owner's script variables. Script variables — numbers in
+//! [`crate::QuestScriptVariables`], objects and strings in
+//! [`crate::QuestScriptObjects`] — are keyed by the object the script is
+//! attached to; an unwritten one reads what the script declares.
+//!
+//! `Utility.Wait` suspends the run anywhere in a statement call chain; the
+//! frames ride an `Effect::Interpret` resume on the continuation queue.
+//!
 //! [`check_function`] decides ahead of time, against typed placeholders,
 //! whether every statement and call of a fragment (and of the script
-//! functions it reaches) is one this VM runs, so populate installs
-//! `Effect::Interpret` only for fragments that run whole. A run that still
-//! meets something it cannot do — a native that declines its actual values —
-//! stops there and logs it.
+//! functions it reaches, in every state they have) is one this VM runs, so
+//! populate installs `Effect::Interpret` only for fragments that run whole.
+//! A run that still meets something it cannot do — a native that declines
+//! its actual values — stops there and logs it.
 //!
-//! Not modelled: latent calls (`Utility.Wait` declines the fragment), object
-//! script variables that outlive one run, structs, and calls into
-//! non-quest scripts.
+//! Not modelled: structs, and calls into scripts attached to other
+//! references.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -41,9 +52,10 @@ use std::sync::Arc;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
 use byroredux_papyrus::ast::{
-    AssignOp, BinaryOp, CallArg, Expr, Function, Identifier, Script, ScriptItem, Stmt, Type,
+    AssignOp, BinaryOp, CallArg, Expr, Identifier, Param, Script, ScriptItem, StateItem, Stmt, Type,
     UnaryOp,
 };
+use byroredux_plugin::esm::records::condition::ConditionStringId;
 use byroredux_papyrus::span::{Span, Spanned};
 use byroredux_plugin::esm::records::script_instance::{
     PropertyValue, ScriptInstance, ScriptInstanceData, ScriptProperty,
@@ -177,8 +189,10 @@ fn stop<T>(why: impl Into<String>) -> Run<T> {
 /// One function activation.
 struct Frame {
     script: Arc<Script>,
-    /// The quest the script is attached to (`Self`).
-    quest: QuestFormId,
+    /// The object the script is attached to (`Self`): a quest, or a
+    /// reference for a reference script. Its script variables are keyed by
+    /// it.
+    owner: QuestFormId,
     vmad: Option<ScriptInstanceData>,
     locals: HashMap<String, Value>,
 }
@@ -201,8 +215,8 @@ fn suspend_at(step: VmStep, flow: Flow) -> Flow {
     }
 }
 
-/// `frame`'s state at `path` for a [`VmResume`].
-fn frame_state(frame: &Frame, function: &str, path: Vec<VmStep>) -> Run<VmFrame> {
+/// `frame`'s state at `path` in `code` for a [`VmResume`].
+fn frame_state(frame: &Frame, code: &Code, function: &str, path: Vec<VmStep>) -> Run<VmFrame> {
     let mut locals = Vec::with_capacity(frame.locals.len());
     for (name, value) in &frame.locals {
         let Some(value) = store(value) else {
@@ -213,7 +227,9 @@ fn frame_state(frame: &Frame, function: &str, path: Vec<VmStep>) -> Run<VmFrame>
     Ok(VmFrame {
         script: frame.script.name.node.0.clone(),
         function: function.to_owned(),
-        quest: frame.quest.0,
+        owner: frame.owner.0,
+        defined_in: code.script.name.node.0.clone(),
+        state: code.state.clone(),
         path,
         locals,
     })
@@ -270,14 +286,16 @@ struct Vm<'a> {
     advances: Vec<QuestStageAdvanced>,
 }
 
-/// Run `script`'s `function` as a fragment of the quest `context`, its
-/// properties bound by `vmad` — from the start, or from where `resume` says a
-/// `Utility.Wait` suspended it. Returns the quest-stage advances its natives
-/// produced, and the wait and resume point when it suspends again.
+/// Run `script`'s `function` attached to `context` — a quest's fragment, or
+/// a reference script's event with its `args` — its properties bound by
+/// `vmad`, from the start or from where `resume` says a `Utility.Wait`
+/// suspended it. Returns the quest-stage advances its natives produced, and
+/// the wait and resume point when it suspends again.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_fragment(
     script: &str,
     function: &str,
+    args: &[VmStored],
     resume: Option<&VmResume>,
     context: QuestFormId,
     vmad: Option<&ScriptInstanceData>,
@@ -300,31 +318,36 @@ pub(super) fn run_fragment(
         depth: 0,
         advances: Vec::new(),
     };
-    let (top, inner) = match resume.and_then(|state| state.frames.split_first()) {
-        Some((top, inner)) => (Some(top), inner),
-        None => (None, &[][..]),
-    };
-    let mut frame = Frame {
+    let frame = Frame {
         script: Arc::clone(&script),
-        quest: context,
+        owner: context,
         vmad: vmad.cloned(),
-        locals: top.map(restore_locals).unwrap_or_default(),
+        locals: HashMap::new(),
     };
-    let run = vm
-        .run_frame(&mut frame, function, top.map(|top| top.path.as_slice()), inner)
-        .and_then(|flow| match flow {
-            Flow::Suspend(seconds, path, inner) => {
-                let mut frames = vec![frame_state(&frame, function, path)?];
-                frames.extend(inner);
-                Ok(Some((seconds, VmResume { frames })))
+    let run = match resume.and_then(|state| state.frames.split_first()) {
+        Some((top, inner)) => vm.resume_frame(frame, top, inner),
+        None => match vm.resolve(&script, context, function) {
+            // An event the script does not handle in its state: nothing runs.
+            None if !args.is_empty() => Ok(Flow::Normal),
+            None => stop(format!("no function {function}")),
+            Some(code) => {
+                let args = args.iter().map(restore).collect();
+                vm.enter(frame, &code, function, args).and_then(|mut frame| {
+                    let flow = vm.run_frame(&mut frame, &code, function, None, &[])?;
+                    vm.callee_flow(flow, &frame, &code, function)
+                })
             }
-            _ => Ok(None),
-        });
+        },
+    }
+    .map(|flow| match flow {
+        Flow::Suspend(seconds, _, frames) => Some((seconds, VmResume { frames })),
+        _ => None,
+    });
     let suspended = match run {
         Ok(suspended) => suspended,
         Err(Stop(why)) => {
             log::warn!(
-                "Papyrus VM: {}.{function} for quest {:08X} stopped: {why}",
+                "Papyrus VM: {}.{function} on {:08X} stopped: {why}",
                 script.name.node.0,
                 context.0
             );
@@ -334,10 +357,159 @@ pub(super) fn run_fragment(
     (vm.advances, suspended)
 }
 
-fn find_function<'s>(script: &'s Script, name: &str) -> Option<&'s Function> {
-    script.body.iter().find_map(|item| match &item.node {
-        ScriptItem::Function(f) if f.name.node.0.eq_ignore_ascii_case(name) => Some(f),
+/// What a call runs: a function's or an event's parameters and body.
+struct Callable<'s> {
+    params: &'s [Param],
+    body: &'s [Spanned<Stmt>],
+    /// A function's declared return type; an event returns nothing.
+    returns: Option<&'s Spanned<Type>>,
+}
+
+/// `name` defined in `script` — in the state block `state`, or in the empty
+/// state for `None` — as a function or an event.
+fn callable_in<'s>(script: &'s Script, state: Option<&str>, name: &str) -> Option<Callable<'s>> {
+    let named = |n: &Identifier| n.0.eq_ignore_ascii_case(name);
+    match state {
+        None => script.body.iter().find_map(|item| match &item.node {
+            ScriptItem::Function(f) if named(&f.name.node) => Some(Callable {
+                params: &f.params,
+                body: &f.body,
+                returns: f.return_type.as_ref(),
+            }),
+            ScriptItem::Event(e) if named(&e.name.node) => Some(Callable {
+                params: &e.params,
+                body: &e.body,
+                returns: None,
+            }),
+            _ => None,
+        }),
+        Some(state) => script.body.iter().find_map(|item| match &item.node {
+            ScriptItem::State(block) if block.name.node.0.eq_ignore_ascii_case(state) => {
+                block.body.iter().find_map(|item| match &item.node {
+                    StateItem::Function(f) if named(&f.name.node) => Some(Callable {
+                        params: &f.params,
+                        body: &f.body,
+                        returns: f.return_type.as_ref(),
+                    }),
+                    StateItem::Event(e) if named(&e.name.node) => Some(Callable {
+                        params: &e.params,
+                        body: &e.body,
+                        returns: None,
+                    }),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }),
+    }
+}
+
+/// Where a running body is: the script that defines it and its state block
+/// (`None`: the empty state).
+#[derive(Clone)]
+struct Code {
+    script: Arc<Script>,
+    state: Option<String>,
+}
+
+impl Code {
+    fn callable(&self, name: &str) -> Run<Callable<'_>> {
+        match callable_in(&self.script, self.state.as_deref(), name) {
+            Some(callable) => Ok(callable),
+            None => stop(format!("no function {name}")),
+        }
+    }
+}
+
+/// `script` and the scripts it extends that `scripts` carries, most derived
+/// first.
+fn script_chain(script: &Arc<Script>, scripts: &HashMap<String, Arc<Script>>) -> Vec<Arc<Script>> {
+    let mut chain = vec![Arc::clone(script)];
+    while chain.len() < 16 {
+        let Some(parent) = chain.last().and_then(|last| last.parent.as_ref()) else {
+            break;
+        };
+        match scripts.get(&parent.node.0.to_ascii_lowercase()) {
+            Some(parent) => chain.push(Arc::clone(parent)),
+            None => break,
+        }
+    }
+    chain
+}
+
+/// The body a call of `name` runs on an instance of `script` in `state`.
+/// CK *States (Papyrus)*: the current state down the `extends` chain, then
+/// the empty state down the chain.
+fn resolve_in(script: &Arc<Script>, state: &str, name: &str, scripts: &HashMap<String, Arc<Script>>) -> Option<Code> {
+    let chain = script_chain(script, scripts);
+    let in_state = (!state.is_empty())
+        .then(|| {
+            chain.iter().find(|s| callable_in(s, Some(state), name).is_some()).map(|s| Code {
+                script: Arc::clone(s),
+                state: Some(state.to_owned()),
+            })
+        })
+        .flatten();
+    in_state.or_else(|| {
+        chain.iter().find(|s| callable_in(s, None, name).is_some()).map(|s| Code {
+            script: Arc::clone(s),
+            state: None,
+        })
+    })
+}
+
+/// The state an instance of `script` starts in: its `Auto State`, or one a
+/// script it extends declares; else the empty state.
+fn auto_state(script: &Arc<Script>, scripts: &HashMap<String, Arc<Script>>) -> String {
+    script_chain(script, scripts)
+        .iter()
+        .find_map(|s| {
+            s.body.iter().find_map(|item| match &item.node {
+                ScriptItem::State(block) if block.is_auto => Some(block.name.node.0.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// The names of `script`'s state blocks.
+fn state_names(script: &Script) -> impl Iterator<Item = &str> {
+    script.body.iter().filter_map(|item| match &item.node {
+        ScriptItem::State(block) => Some(block.name.node.0.as_str()),
         _ => None,
+    })
+}
+
+/// The decompiled `GotoState` / `GetState` keep a script's state in the
+/// `::State` variable.
+fn is_state_variable(name: &str) -> bool {
+    name.eq_ignore_ascii_case("::state")
+}
+
+/// Where `script`'s state is kept among its owner's script variables — per
+/// script, since one reference may carry several.
+fn state_key(script: &Script) -> ConditionStringId {
+    ConditionStringId::from_text(&format!("::state::{}", script.name.node.0.to_ascii_lowercase()))
+}
+
+/// The value a script variable or property declares (`Int n = 5`,
+/// `Bool Property P = True Auto`), when it is a literal.
+fn declared_default(script: &Script, name: &str) -> Option<Value> {
+    let bare = vmad_property_name(name);
+    let named = |n: &Identifier| n.0.eq_ignore_ascii_case(name) || n.0.eq_ignore_ascii_case(bare);
+    script.body.iter().find_map(|item| {
+        let initial = match &item.node {
+            ScriptItem::Variable(v) if named(&v.name.node) => v.initial_value.as_ref(),
+            ScriptItem::Property(p) if named(&p.name.node) => p.initial_value.as_ref(),
+            _ => return None,
+        };
+        Some(match literal_of(&initial?.node)? {
+            Expr::IntLit(i) => Value::Int(i as i32),
+            Expr::FloatLit(f) => Value::Float(f as f32),
+            Expr::BoolLit(b) => Value::Bool(b),
+            Expr::StringLit(text) => Value::Str(text),
+            _ => Value::None,
+        })
     })
 }
 
@@ -482,30 +654,69 @@ impl Vm<'_> {
         Ok(())
     }
 
-    /// Run `function` in `frame` — from the start, or along `path`, with
-    /// `inner` the suspended frames of the call the path ends in.
-    fn run_frame(&mut self, frame: &mut Frame, function: &str, path: Option<&[VmStep]>, inner: &[VmFrame]) -> Run<Flow> {
+    /// The body a call of `name` on `owner`'s instance of `script` runs, in
+    /// the instance's current state.
+    fn resolve(&self, script: &Arc<Script>, owner: QuestFormId, name: &str) -> Option<Code> {
+        let state = self.script_state(owner, script);
+        resolve_in(script, &state, name, &self.deferred.vm_scripts)
+    }
+
+    /// `GotoState(state)` for a script without the compiler's generated
+    /// one: `OnEndState` in the old state, the switch, `OnBeginState` in the
+    /// new one (CK *OnBeginState*: also when re-entering the same state).
+    fn goto_state(&mut self, frame: &Frame, state: String) -> Run<()> {
+        for (event, switch) in [("OnEndState", false), ("OnBeginState", true)] {
+            if switch {
+                let key = state_key(&frame.script);
+                self.write_object(frame.owner, key, &Value::Str(state.clone()))?;
+            }
+            if let Some(code) = self.resolve(&frame.script, frame.owner, event) {
+                let handler = Frame {
+                    script: Arc::clone(&frame.script),
+                    owner: frame.owner,
+                    vmad: frame.vmad.clone(),
+                    locals: HashMap::new(),
+                };
+                self.call_function(handler, &code, event, Vec::new())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `owner`'s instance of `script`'s state: the one `GotoState` last set,
+    /// else the auto state.
+    fn script_state(&self, owner: QuestFormId, script: &Arc<Script>) -> String {
+        match self.written_object(owner, state_key(script)) {
+            Some(Value::Str(state)) => state,
+            _ => auto_state(script, &self.deferred.vm_scripts),
+        }
+    }
+
+    /// Run `function`'s body `code` in `frame` — from the start, or along
+    /// `path`, with `inner` the suspended frames of the call the path ends in.
+    fn run_frame(
+        &mut self,
+        frame: &mut Frame,
+        code: &Code,
+        function: &str,
+        path: Option<&[VmStep]>,
+        inner: &[VmFrame],
+    ) -> Run<Flow> {
         if self.depth >= MAX_DEPTH {
             return stop("call depth");
         }
-        let script = Arc::clone(&frame.script);
-        let Some(function) = find_function(&script, function) else {
-            return stop(format!("no function {function}"));
-        };
+        let callable = code.callable(function)?;
         self.depth += 1;
-        let flow = self.exec_block(frame, &function.body, path, inner);
+        let flow = self.exec_block(frame, callable.body, path, inner);
         self.depth -= 1;
         flow
     }
 
-    /// `frame` with `name`'s parameters bound to `args`.
-    fn enter(&mut self, mut frame: Frame, name: &str, args: Vec<Value>) -> Run<Frame> {
-        let script = Arc::clone(&frame.script);
-        let Some(function) = find_function(&script, name) else {
-            return stop(format!("no function {name}"));
-        };
+    /// `frame` with the parameters of `name` (in `code`) bound to `args`.
+    fn enter(&mut self, mut frame: Frame, code: &Code, name: &str, args: Vec<Value>) -> Run<Frame> {
+        let callable = code.callable(name)?;
         let mut args = args.into_iter();
-        for param in &function.params {
+        for param in callable.params {
             let value = match args.next() {
                 Some(value) => value,
                 None => match &param.default {
@@ -521,9 +732,9 @@ impl Vm<'_> {
     }
 
     /// A function called for its value; it may not wait.
-    fn call_function(&mut self, frame: Frame, name: &str, args: Vec<Value>) -> Run<Value> {
-        let mut frame = self.enter(frame, name, args)?;
-        Ok(match self.run_frame(&mut frame, name, None, &[])? {
+    fn call_function(&mut self, frame: Frame, code: &Code, name: &str, args: Vec<Value>) -> Run<Value> {
+        let mut frame = self.enter(frame, code, name, args)?;
+        Ok(match self.run_frame(&mut frame, code, name, None, &[])? {
             Flow::Return(value) => value,
             Flow::Normal => Value::None,
             Flow::Suspend(..) => return stop("a wait in a function called for its value"),
@@ -532,15 +743,35 @@ impl Vm<'_> {
 
     /// A called function's flow as its call statement's: a suspension adds
     /// the callee's frame to the chain.
-    fn callee_flow(&mut self, flow: Flow, frame: &Frame, function: &str) -> Run<Flow> {
+    fn callee_flow(&mut self, flow: Flow, frame: &Frame, code: &Code, function: &str) -> Run<Flow> {
         Ok(match flow {
             Flow::Suspend(seconds, path, deeper) => {
-                let mut frames = vec![frame_state(frame, function, path)?];
+                let mut frames = vec![frame_state(frame, code, function, path)?];
                 frames.extend(deeper);
                 Flow::Suspend(seconds, Vec::new(), frames)
             }
             _ => Flow::Normal,
         })
+    }
+
+    /// Continue the suspended frame `state` as `frame` (its script, owner
+    /// and properties), with `inner` the frames of the call it waits in.
+    fn resume_frame(&mut self, mut frame: Frame, state: &VmFrame, inner: &[VmFrame]) -> Run<Flow> {
+        let Some(defined_in) = self
+            .deferred
+            .vm_scripts
+            .get(&state.defined_in.to_ascii_lowercase())
+            .cloned()
+        else {
+            return stop(format!("script {} is not installed", state.defined_in));
+        };
+        let code = Code {
+            script: defined_in,
+            state: state.state.clone(),
+        };
+        frame.locals = restore_locals(state);
+        let flow = self.run_frame(&mut frame, &code, &state.function, Some(&state.path), inner)?;
+        self.callee_flow(flow, &frame, &code, &state.function)
     }
 
     /// Continue the suspended callee chain `inner` (outermost first) — none
@@ -557,22 +788,21 @@ impl Vm<'_> {
         else {
             return stop(format!("script {} is not installed", callee.script));
         };
-        let quest = QuestFormId(callee.quest);
+        let owner = QuestFormId(callee.owner);
         // The properties the call bound (`script_call_target`): the caller's
         // own for a call into its own script, else the quest's.
-        let vmad = if quest == caller.quest && Arc::ptr_eq(&script, &caller.script) {
+        let vmad = if owner == caller.owner && Arc::ptr_eq(&script, &caller.script) {
             caller.vmad.clone()
         } else {
-            self.deferred.quest_scripts.get(&quest).cloned()
+            self.deferred.quest_scripts.get(&owner).cloned()
         };
-        let mut frame = Frame {
+        let frame = Frame {
             script,
-            quest,
+            owner,
             vmad,
-            locals: restore_locals(callee),
+            locals: HashMap::new(),
         };
-        let flow = self.run_frame(&mut frame, &callee.function, Some(&callee.path), deeper)?;
-        self.callee_flow(flow, &frame, &callee.function)
+        self.resume_frame(frame, callee, deeper)
     }
 
     /// Run `body`, or — `resume` — continue it from the position a wait
@@ -744,8 +974,12 @@ impl Vm<'_> {
                     *slot = value;
                     return Ok(());
                 }
+                if is_state_variable(&name.0) {
+                    let key = state_key(&frame.script);
+                    return self.write_object(frame.owner, key, &value);
+                }
                 // A script variable or property of the frame's quest script.
-                self.write_quest_variable(frame.quest, &name.0, &value)
+                self.write_quest_variable(frame.owner, &name.0, &value)
             }
             Expr::MemberAccess { object, member } => {
                 let owner = self.eval(frame, &object.node)?;
@@ -789,6 +1023,11 @@ impl Vm<'_> {
             self.deferred.quest_variables.push((quest, key, number));
             return Ok(());
         }
+        self.write_object(quest, key, value)
+    }
+
+    /// A non-numeric script variable write under `key`.
+    fn write_object(&mut self, owner: QuestFormId, key: ConditionStringId, value: &Value) -> Run<()> {
         let object = match value {
             Value::None => crate::ScriptObject::None,
             Value::Form(form) => crate::ScriptObject::Form(*form),
@@ -796,34 +1035,36 @@ impl Vm<'_> {
                 quest: *quest,
                 alias: *alias,
             },
-            other => return stop(format!("a {} write to script variable {name}", other.text())),
+            Value::Str(text) => crate::ScriptObject::Str(text.clone()),
+            other => return stop(format!("a {} write to a script variable", other.text())),
         };
-        self.deferred.quest_objects.push((quest, key, object));
+        self.deferred.quest_objects.push((owner, key, object));
         Ok(())
     }
 
-    fn read_quest_object(&self, quest: QuestFormId, name: &str) -> Value {
-        self.written_quest_object(quest, name).unwrap_or(Value::None)
+    /// An object or string a script wrote to `quest`'s variable `name`, if
+    /// any.
+    fn written_quest_object(&self, quest: QuestFormId, name: &str) -> Option<Value> {
+        self.written_object(quest, crate::QuestScriptVariables::property_key(name))
     }
 
-    /// An object a script wrote to `quest`'s variable `name`, if any.
-    fn written_quest_object(&self, quest: QuestFormId, name: &str) -> Option<Value> {
-        let key = crate::QuestScriptVariables::property_key(name);
+    fn written_object(&self, owner: QuestFormId, key: ConditionStringId) -> Option<Value> {
         let pending = self
             .deferred
             .quest_objects
             .iter()
             .rev()
-            .find(|(q, k, _)| *q == quest && *k == key)
-            .map(|(_, _, value)| *value);
+            .find(|(q, k, _)| *q == owner && *k == key)
+            .map(|(_, _, value)| value.clone());
         let stored = pending.or_else(|| {
             self.world
                 .try_resource::<crate::QuestScriptObjects>()
-                .and_then(|objects| objects.get(quest, key))
+                .and_then(|objects| objects.get(owner, key))
         });
         Some(match stored? {
             crate::ScriptObject::Form(form) => Value::Form(form),
             crate::ScriptObject::Alias { quest, alias } => Value::Alias { quest, alias },
+            crate::ScriptObject::Str(text) => Value::Str(text),
             crate::ScriptObject::None => Value::None,
         })
     }
@@ -938,12 +1179,16 @@ impl Vm<'_> {
             return Ok(value.clone());
         }
         if key == "self" {
-            return Ok(Value::Form(frame.quest.0));
+            return Ok(Value::Form(frame.owner.0));
+        }
+        if is_state_variable(name) {
+            let script = Arc::clone(&frame.script);
+            return Ok(Value::Str(self.script_state(frame.owner, &script)));
         }
         if let Some(value) = Self::property(frame.vmad.as_ref(), name) {
             // A numeric property a script wrote reads the written value.
             if value.number().is_some() {
-                if let Some(written) = self.read_quest_variable(frame.quest, name) {
+                if let Some(written) = self.read_quest_variable(frame.owner, name) {
                     return Ok(if value.is_float() {
                         Value::Float(written)
                     } else {
@@ -952,21 +1197,35 @@ impl Vm<'_> {
                 }
             }
             // An object property a script re-pointed reads the new object.
-            if let Some(written) = self.written_quest_object(frame.quest, name) {
+            if let Some(written) = self.written_quest_object(frame.owner, name) {
                 return Ok(written);
             }
             return Ok(value);
         }
+        // A script variable (or a property no VMAD sets): what a script
+        // wrote, else what the script declares.
+        let declared = || {
+            script_chain(&frame.script, &self.deferred.vm_scripts)
+                .iter()
+                .find_map(|script| declared_default(script, name))
+        };
         match member_type_in(&frame.script, name, &self.deferred.vm_scripts) {
             Some(ty @ (Type::Int | Type::Float | Type::Bool)) => {
-                let value = self.read_quest_variable(frame.quest, name).unwrap_or(0.0);
+                let value = match self.read_quest_variable(frame.owner, name) {
+                    Some(value) => value,
+                    None => declared().and_then(|value| value.number()).unwrap_or(0.0),
+                };
                 Ok(match ty {
                     Type::Int => Value::Int(value as i32),
                     Type::Bool => Value::Bool(value != 0.0),
                     _ => Value::Float(value),
                 })
             }
-            Some(Type::Object(_) | Type::Var) => Ok(self.read_quest_object(frame.quest, name)),
+            Some(Type::String) => Ok(self
+                .written_quest_object(frame.owner, name)
+                .or_else(declared)
+                .unwrap_or_else(|| Value::Str(String::new()))),
+            Some(Type::Object(_) | Type::Var) => Ok(self.written_quest_object(frame.owner, name).unwrap_or(Value::None)),
             Some(_) => stop(format!("script variable {name} of an unsupported type")),
             None => stop(format!("unknown name {name}")),
         }
@@ -996,12 +1255,14 @@ impl Vm<'_> {
         }
     }
 
-    /// The quest script that defines `function` for the quest `quest`, if any.
-    fn quest_script_with(&self, quest: QuestFormId, function: &str) -> Option<Arc<Script>> {
+    /// The quest script that defines `function` for the quest `quest`, if
+    /// any, and the body it runs.
+    fn quest_script_with(&self, quest: QuestFormId, function: &str) -> Option<(Arc<Script>, Code)> {
         let vmad = self.deferred.quest_scripts.get(&quest)?;
         vmad.scripts.iter().find_map(|attached| {
             let script = self.deferred.vm_scripts.get(&attached.name.to_ascii_lowercase())?;
-            find_function(script, function).map(|_| Arc::clone(script))
+            let code = self.resolve(script, quest, function)?;
+            Some((Arc::clone(script), code))
         })
     }
 
@@ -1016,48 +1277,49 @@ impl Vm<'_> {
     /// A call to a script function, when `callee` names one: the frame's own
     /// script (`Fn()`, `Self.Fn()`) or a quest's attached script.
     fn script_call(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
-        let Some(callee_frame) = self.script_call_target(frame, callee)? else {
+        let Some((callee_frame, code)) = self.script_call_target(frame, callee)? else {
             return Ok(None);
         };
         let values = self.eval_args(frame, args)?;
-        self.call_function(callee_frame, &callee_name(callee), values).map(Some)
+        self.call_function(callee_frame, &code, &callee_name(callee), values).map(Some)
     }
 
-    /// The fresh frame a call to a script function runs in, when `callee`
-    /// names one.
-    fn script_call_target(&mut self, frame: &mut Frame, callee: &Expr) -> Run<Option<Frame>> {
+    /// The fresh frame a call to a script function runs in, and the body it
+    /// runs, when `callee` names one.
+    fn script_call_target(&mut self, frame: &mut Frame, callee: &Expr) -> Run<Option<(Frame, Code)>> {
         let (receiver, name) = match callee {
             Expr::Ident(name) => (None, name.0.as_str()),
             Expr::MemberAccess { object, member } => (Some(&object.node), member.node.0.as_str()),
             _ => return Ok(None),
         };
+        let own = |vm: &Self, frame: &Frame| {
+            vm.resolve(&frame.script, frame.owner, name)
+                .map(|code| (Arc::clone(&frame.script), frame.owner, frame.vmad.clone(), code))
+        };
         let target = match receiver {
-            None => Some((Arc::clone(&frame.script), frame.quest, frame.vmad.clone())),
+            None => own(self, frame),
             Some(object) if static_class(object).is_some() => None,
             Some(object) => match self.eval(frame, object)? {
-                Value::Form(form) if form == frame.quest.0 && find_function(&frame.script, name).is_some() => {
-                    Some((Arc::clone(&frame.script), frame.quest, frame.vmad.clone()))
-                }
-                Value::Form(form) if self.is_quest(form) => self
-                    .quest_script_with(QuestFormId(form), name)
-                    .map(|script| {
+                Value::Form(form) if form == frame.owner.0 && own(self, frame).is_some() => own(self, frame),
+                Value::Form(form) if self.is_quest(form) => {
+                    self.quest_script_with(QuestFormId(form), name).map(|(script, code)| {
                         let vmad = self.deferred.quest_scripts.get(&QuestFormId(form)).cloned();
-                        (script, QuestFormId(form), vmad)
-                    }),
+                        (script, QuestFormId(form), vmad, code)
+                    })
+                }
                 _ => None,
             },
         };
-        let Some((script, quest, vmad)) = target else {
-            return Ok(None);
-        };
-        if find_function(&script, name).is_none() {
-            return Ok(None);
-        }
-        Ok(Some(Frame {
-            script,
-            quest,
-            vmad,
-            locals: HashMap::new(),
+        Ok(target.map(|(script, owner, vmad, code)| {
+            (
+                Frame {
+                    script,
+                    owner,
+                    vmad,
+                    locals: HashMap::new(),
+                },
+                code,
+            )
         }))
     }
 
@@ -1129,7 +1391,7 @@ impl Vm<'_> {
                     _ => Value::None,
                 })
             }
-            (Value::Form(_), "getowningquest") => Some(Value::Form(frame.quest.0)),
+            (Value::Form(_), "getowningquest") => Some(Value::Form(frame.owner.0)),
             (Value::Form(form), "getlinkedref") => {
                 let keyword = match args.first() {
                     Some(arg) => match self.eval(frame, &arg.value.node)? {
@@ -1228,6 +1490,10 @@ impl Vm<'_> {
         if let Some(value) = self.script_call(frame, callee, args)? {
             return Ok(value);
         }
+        if self_call_named(callee, "getstate") {
+            let script = Arc::clone(&frame.script);
+            return Ok(Value::Str(self.script_state(frame.owner, &script)));
+        }
         let (call, bindings, vmad) = self.synthesize(frame, callee, args)?;
         if let Some(value) = classify_native_value(&call, &bindings) {
             let number = evaluate_value(&value, self.context, Some(&vmad), self.world, self.stages, self.deferred);
@@ -1269,12 +1535,25 @@ impl Vm<'_> {
             return Ok(Flow::Normal);
         }
         // A script function called as a statement may wait.
-        if let Some(callee_frame) = self.script_call_target(frame, &callee.node)? {
+        if let Some((callee_frame, code)) = self.script_call_target(frame, &callee.node)? {
             let name = callee_name(&callee.node);
             let values = self.eval_args(frame, args)?;
-            let mut callee_frame = self.enter(callee_frame, &name, values)?;
-            let flow = self.run_frame(&mut callee_frame, &name, None, &[])?;
-            return self.callee_flow(flow, &callee_frame, &name);
+            let mut callee_frame = self.enter(callee_frame, &code, &name, values)?;
+            let flow = self.run_frame(&mut callee_frame, &code, &name, None, &[])?;
+            return self.callee_flow(flow, &callee_frame, &code, &name);
+        }
+        // `GotoState`'s `OnEndState` / `OnBeginState` the script does not
+        // handle: the empty events every script inherits.
+        if is_state_event(&callee.node) {
+            return Ok(Flow::Normal);
+        }
+        if self_call_named(&callee.node, "gotostate") {
+            let state = match args.first() {
+                Some(arg) => self.eval(frame, &arg.value.node)?.text(),
+                None => String::new(),
+            };
+            self.goto_state(frame, state)?;
+            return Ok(Flow::Normal);
         }
         if is_trace(&callee.node) {
             return Ok(Flow::Normal);
@@ -1311,6 +1590,28 @@ fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned
         value: value.clone(),
     }];
     (Box::new(callee), args)
+}
+
+/// A call of `name` (lowercase) on the script itself.
+fn self_call_named(callee: &Expr, name: &str) -> bool {
+    let (receiver, called) = match callee {
+        Expr::Ident(called) => (None, called),
+        Expr::MemberAccess { object, member } => (Some(&object.node), &member.node),
+        _ => return false,
+    };
+    receiver.is_none_or(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))
+        && called.0.eq_ignore_ascii_case(name)
+}
+
+/// `OnBeginState()` / `OnEndState()` on the script itself.
+fn is_state_event(callee: &Expr) -> bool {
+    let (receiver, name) = match callee {
+        Expr::Ident(name) => (None, name),
+        Expr::MemberAccess { object, member } => (Some(&object.node), &member.node),
+        _ => return false,
+    };
+    let on_self = receiver.is_none_or(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")));
+    on_self && (name.0.eq_ignore_ascii_case("onbeginstate") || name.0.eq_ignore_ascii_case("onendstate"))
 }
 
 fn is_trace(callee: &Expr) -> bool {
@@ -1439,6 +1740,8 @@ struct Checker<'l> {
 
 struct CheckFrame {
     script: Arc<Script>,
+    /// What `Self` is: a quest, or a reference for a reference script.
+    self_kind: Kind,
     locals: HashMap<String, Kind>,
     /// Locals' and parameters' declared types (a quest local's script type).
     types: HashMap<String, Type>,
@@ -1460,6 +1763,25 @@ pub fn check_function_reason(
     function: &str,
     library: Option<&dyn CheckLibrary>,
 ) -> Result<Vec<Arc<Script>>, String> {
+    check_reason(script, function, library, Kind::Quest)
+}
+
+/// Whether a reference script's handler for `event` runs whole on this VM
+/// (with the reason it does not); `Ok` carries every script the run needs.
+pub fn check_reference_event_reason(
+    script: Arc<Script>,
+    event: &str,
+    library: Option<&dyn CheckLibrary>,
+) -> Result<Vec<Arc<Script>>, String> {
+    check_reason(script, event, library, Kind::Object)
+}
+
+fn check_reason(
+    script: Arc<Script>,
+    function: &str,
+    library: Option<&dyn CheckLibrary>,
+    self_kind: Kind,
+) -> Result<Vec<Arc<Script>>, String> {
     let mut checker = Checker {
         library,
         reason: None,
@@ -1471,7 +1793,7 @@ pub fn check_function_reason(
     checker
         .scripts
         .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
-    match checker.check_call_into(&script, function, true) {
+    match checker.check_call_into(&script, function, true, self_kind) {
         Some(_) => Ok(checker.scripts.into_values().collect()),
         None => Err(checker.reason.unwrap_or_else(|| "unsupported".into())),
     }
@@ -1542,34 +1864,74 @@ impl Checker<'_> {
         None
     }
 
-    /// `statement`: whether the call is a statement — a function that waits
-    /// may not be called for its value.
-    fn check_call_into(&mut self, script: &Arc<Script>, function: &str, statement: bool) -> Option<Kind> {
+    /// `script` and the scripts it extends, registering each for the run.
+    fn chain(&mut self, script: &Arc<Script>) -> Vec<Arc<Script>> {
+        let mut chain = vec![Arc::clone(script)];
+        while chain.len() < 16 {
+            let Some(parent) = chain.last().and_then(|last| last.parent.as_ref()).map(|p| p.node.0.clone()) else {
+                break;
+            };
+            let Some(parent) = self.library.and_then(|library| library.script(&parent)) else {
+                break;
+            };
+            self.scripts
+                .insert(parent.name.node.0.to_ascii_lowercase(), Arc::clone(&parent));
+            chain.push(parent);
+        }
+        chain
+    }
+
+    /// Every body a call of `name` on an instance of `script` may run — in
+    /// any state, down the `extends` chain — as (script, state).
+    fn versions(&mut self, script: &Arc<Script>, name: &str) -> Vec<(Arc<Script>, Option<String>)> {
+        let mut versions = Vec::new();
+        for script in self.chain(script) {
+            let states = std::iter::once(None).chain(state_names(&script).map(|state| Some(state.to_owned())));
+            for state in states.collect::<Vec<_>>() {
+                if callable_in(&script, state.as_deref(), name).is_some() {
+                    versions.push((Arc::clone(&script), state));
+                }
+            }
+        }
+        versions
+    }
+
+    /// Check a call of `function` on an instance of `script` whose `Self`
+    /// is `self_kind`: every version of it. `statement`: whether the call is
+    /// a statement — a function that waits may not be called for its value.
+    fn check_call_into(&mut self, script: &Arc<Script>, function: &str, statement: bool, self_kind: Kind) -> Option<Kind> {
         let key = (script.name.node.0.to_ascii_lowercase(), function.to_ascii_lowercase());
-        let function_item = find_function(script, function)?;
-        let returns = function_item
-            .return_type
-            .as_ref()
+        let versions = self.versions(script, function);
+        let returns = versions
+            .iter()
+            .find_map(|(defined_in, state)| callable_in(defined_in, state.as_deref(), function)?.returns.cloned())
             .map_or(Kind::None, |ty| kind_of_type(&ty.node, self.library));
+        if versions.is_empty() {
+            return self.fail(|| format!("no function {function}"));
+        }
         if !self.visiting.insert(key.clone()) {
             // Checked already, or recursion: assume the declared return.
             return self.call_waits(self.waiting.contains(&key), statement).map(|_| returns);
         }
-        let mut frame = CheckFrame {
-            script: Arc::clone(script),
-            locals: HashMap::new(),
-            types: HashMap::new(),
-        };
-        for param in &function_item.params {
-            let key = param.name.node.0.to_ascii_lowercase();
-            frame.locals.insert(key.clone(), kind_of_type(&param.ty.node, self.library));
-            frame.types.insert(key, param.ty.node.clone());
-        }
         let outer = std::mem::replace(&mut self.waits, false);
-        function_item
-            .body
-            .iter()
-            .try_for_each(|statement| self.check_stmt(&mut frame, &statement.node))?;
+        for (defined_in, state) in &versions {
+            let callable = callable_in(defined_in, state.as_deref(), function)?;
+            let mut frame = CheckFrame {
+                script: Arc::clone(script),
+                self_kind,
+                locals: HashMap::new(),
+                types: HashMap::new(),
+            };
+            for param in callable.params {
+                let key = param.name.node.0.to_ascii_lowercase();
+                frame.locals.insert(key.clone(), kind_of_type(&param.ty.node, self.library));
+                frame.types.insert(key, param.ty.node.clone());
+            }
+            callable
+                .body
+                .iter()
+                .try_for_each(|statement| self.check_stmt(&mut frame, &statement.node))?;
+        }
         let waits = std::mem::replace(&mut self.waits, outer);
         if waits {
             self.waiting.insert(key);
@@ -1612,9 +1974,7 @@ impl Checker<'_> {
                 match &target.node {
                     Expr::Ident(name) => {
                         let key = name.0.to_ascii_lowercase();
-                        if !frame.locals.contains_key(&key)
-                            && matches!(value_kind, Kind::Str | Kind::Array)
-                        {
+                        if !frame.locals.contains_key(&key) && value_kind == Kind::Array {
                             return self.fail(|| format!("{value_kind:?} write to a script variable"));
                         }
                     }
@@ -1683,7 +2043,9 @@ impl Checker<'_> {
                 if let Some(kind) = frame.locals.get(&key) {
                     *kind
                 } else if key == "self" {
-                    Kind::Quest
+                    frame.self_kind
+                } else if is_state_variable(&name.0) {
+                    Kind::Str
                 } else {
                     let script = Arc::clone(&frame.script);
                     let Some(ty) = self.member_type(&script, &name.0) else {
@@ -1794,9 +2156,24 @@ impl Checker<'_> {
         if receiver.is_none()
             || receiver.is_some_and(|r| matches!(r, Expr::Ident(id) if id.0.eq_ignore_ascii_case("self")))
         {
-            if find_function(&frame.script, &name).is_some() {
-                let script = Arc::clone(&frame.script);
-                return self.check_call_into(&script, &name, statement);
+            let script = Arc::clone(&frame.script);
+            if !self.versions(&script, &name).is_empty() {
+                return self.check_call_into(&script, &name, statement, frame.self_kind);
+            }
+            if is_state_event(callee) {
+                return Some(Kind::None);
+            }
+            if name == "getstate" {
+                return Some(Kind::Str);
+            }
+            if name == "gotostate" && statement {
+                // The switch runs the state events, called for no value.
+                for event in ["onendstate", "onbeginstate"] {
+                    if !self.versions(&script, event).is_empty() {
+                        self.check_call_into(&script, event, false, frame.self_kind)?;
+                    }
+                }
+                return Some(Kind::None);
             }
         }
         let Some(receiver) = receiver else {
@@ -1841,7 +2218,7 @@ impl Checker<'_> {
         // A quest script's function, through a cast or a typed property.
         if receiver_kind == Kind::Quest {
             if let Some(script) = self.quest_script_for(frame, receiver, &name) {
-                return self.check_call_into(&script, &name, statement);
+                return self.check_call_into(&script, &name, statement, Kind::Quest);
             }
         }
         let Some(placeholder) = spanned_placeholder(receiver_kind) else {
@@ -1875,7 +2252,9 @@ impl Checker<'_> {
             _ => return None,
         };
         let script = self.library?.script(&type_name)?;
-        find_function(&script, name)?;
+        if self.versions(&script, name).is_empty() {
+            return None;
+        }
         self.scripts
             .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
         Some(script)

@@ -1149,12 +1149,14 @@ pub enum Effect {
     ShowHelpMessage { message: ObjectRef },
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
-    /// M47.2 — a fragment the lowering declines, run by the Papyrus VM
-    /// ([`crate::fragment::vm`]): `script`'s `function`, installed with the
-    /// scripts it reaches.
+    /// M47.2 — a fragment the lowering declines, or a reference script's
+    /// event, run by the Papyrus VM ([`crate::fragment::vm`]): `script`'s
+    /// `function` (or event), installed with the scripts it reaches.
     Interpret {
         script: String,
         function: String,
+        /// The event's arguments (`akActionRef`); none for a fragment.
+        args: Vec<VmStored>,
         /// Where a run suspended by `Utility.Wait` resumes; `None` to start.
         resume: Option<VmResume>,
     },
@@ -2643,10 +2645,17 @@ pub struct VmResume {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct VmFrame {
+    /// The script attached to `owner` (its variables and properties).
     pub script: String,
     pub function: String,
-    /// The quest the script runs as (`Self`).
-    pub quest: u32,
+    /// The object the script is attached to (`Self`): a quest or a
+    /// reference.
+    pub owner: u32,
+    /// The script that defines the running body — `script` or one it
+    /// extends — and the state block it is in (`None`: the empty state).
+    /// The body is kept across the wait even when the state changes.
+    pub defined_in: String,
+    pub state: Option<String>,
     pub path: Vec<VmStep>,
     pub locals: Vec<(String, VmStored)>,
 }

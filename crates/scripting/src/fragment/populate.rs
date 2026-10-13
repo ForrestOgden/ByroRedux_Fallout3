@@ -398,6 +398,7 @@ fn populate_quest_fragments_from_script_internal(
             Some(vec![Effect::Interpret {
                 script: script.name.node.0.clone(),
                 function: (*fragment_name).to_owned(),
+                args: Vec::new(),
                 resume: None,
             }])
         });

@@ -3406,12 +3406,14 @@ pub fn apply_effects(
             if let Effect::Interpret {
                 script,
                 function,
+                args,
                 resume,
             } = effect
             {
                 let (run, suspended) = super::vm::run_fragment(
                     script,
                     function,
+                    args,
                     resume.as_ref(),
                     context,
                     vmad,
@@ -3427,6 +3429,7 @@ pub fn apply_effects(
                     let mut tail = vec![Effect::Interpret {
                         script: script.clone(),
                         function: function.clone(),
+                        args: Vec::new(),
                         resume: Some(state),
                     }];
                     tail.extend(remaining_program(current, index, &pending));

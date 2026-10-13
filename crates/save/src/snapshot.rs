@@ -398,7 +398,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v62 -> v63 (M47.2): `Effect::Interpret` gained the required `resume`
 /// (a Papyrus VM run suspended by `Utility.Wait`, every frame of its call
 /// chain).
-pub const FORMAT_MAJOR: u16 = 63;
+///
+/// v63 -> v64 (M47.2): `ScriptObject` gained `Str` (string script variables
+/// and script states), `VmFrame` its `owner` / `defined_in` / `state`, and
+/// `Effect::Interpret` its event `args`.
+pub const FORMAT_MAJOR: u16 = 64;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

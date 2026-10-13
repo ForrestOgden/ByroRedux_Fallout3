@@ -636,9 +636,17 @@ runtime:
   and current locations, and `GetDialogueTarget`.
 - **Quest-script calls.** A call into a quest's script runs here against that
   quest's VMAD.
-- **Script variables.** A numeric variable lives in `QuestScriptVariables`; an
-  object variable (a reference, alias, or quest) lives in the saved
-  `QuestScriptObjects`, so it holds from one fragment to the next.
+- **Script variables.** A numeric variable lives in `QuestScriptVariables`.
+  An object or string variable lives in the saved `QuestScriptObjects`, so it
+  holds from one fragment to the next. A variable or property nothing has
+  written reads the literal the script declares (`Int Property Goal = 3`).
+- **States.** These follow the CK's *States (Papyrus)*. A call runs the
+  version in the current state first, searching down the `extends` chain,
+  and falls back to the empty state's version. An instance starts in its
+  `Auto State`. The compiler-generated `GotoState` / `GetState` keep the
+  state in `::State`, which is stored per script. Unhandled `OnBeginState` /
+  `OnEndState` calls are no-ops, and scripts without the generated pair get a
+  native one. The check covers every state's version of a call.
 - **Global values.** `Global.Value = n` (and `+=` and the like) runs as the
   `Global.SetValue(n)` native it stands for.
 - **Waits.** `Utility.Wait(seconds)` suspends the run. This works in the
@@ -659,7 +667,7 @@ are installed as `Effect::Interpret`. A run that still meets something it
 can't do, such as a native that declines its actual values, stops and logs
 it.
 
-With the VM, 75.0% of the Skyrim corpus runs (lowered + interpreted;
+With the VM, 77.0% of the Skyrim corpus runs (lowered + interpreted;
 `fragment_coverage`, `VM_REASONS=1` lists why the check rejects the rest).
 
 Not modelled yet:

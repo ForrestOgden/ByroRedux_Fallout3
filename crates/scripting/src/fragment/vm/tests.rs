@@ -66,7 +66,7 @@ fn vmad() -> ScriptInstanceData {
 #[test]
 fn the_check_takes_what_the_lowering_declines() {
     let script = parsed();
-    let body = find_function(&script, "Fragment_1").unwrap().body.clone();
+    let body = callable_in(&script, None, "Fragment_1").unwrap().body.to_vec();
     assert_eq!(
         crate::translate::effects::lower_fragment(&body),
         None,
@@ -126,6 +126,7 @@ fn an_interpreted_fragment_runs_through_stage_dispatch() {
             vec![Effect::Interpret {
                 script: "QF_VmTest".into(),
                 function: "Fragment_1".into(),
+                args: Vec::new(),
                 resume: None,
             }],
         );
@@ -179,7 +180,8 @@ fn object_script_variables_outlive_the_fragment_that_wrote_them() {
                 vec![Effect::Interpret {
                     script: "QF_VmObjects".into(),
                     function: function.into(),
-                    resume: None,
+                    args: Vec::new(),
+                resume: None,
                 }],
             );
         }
@@ -231,6 +233,7 @@ fn waits_suspend_and_resume_where_they_were() {
             vec![Effect::Interpret {
                 script: "QF_VmWaits".into(),
                 function: "Fragment_1".into(),
+                args: Vec::new(),
                 resume: None,
             }],
         );
@@ -286,6 +289,7 @@ fn a_wait_in_a_called_function_resumes_the_call_chain() {
             vec![Effect::Interpret {
                 script: "QF_VmCallWaits".into(),
                 function: "Fragment_1".into(),
+                args: Vec::new(),
                 resume: None,
             }],
         );
@@ -356,6 +360,7 @@ fn global_value_assignment_writes_the_global() {
             vec![Effect::Interpret {
                 script: "QF_VmGlobals".into(),
                 function: "Fragment_1".into(),
+                args: Vec::new(),
                 resume: None,
             }],
         );
@@ -363,4 +368,86 @@ fn global_value_assignment_writes_the_global() {
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<crate::Globals>().get(COUNT), Some(30.0));
+}
+
+/// A one-quest world with `script` installed for `Q`'s stage-10 fragment
+/// `Fragment_1`, `MARKER` disabled.
+fn world_with_fragment(script: Arc<Script>) -> World {
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world
+        .resource_mut::<crate::fragment::ReferenceEnableState>()
+        .set_enabled(MARKER, false);
+    let name = script.name.node.0.clone();
+    let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+    fragments.insert_vmad(Q, vmad());
+    fragments.insert_vm_script(script);
+    fragments.insert(
+        Q,
+        10,
+        vec![Effect::Interpret {
+            script: name,
+            function: "Fragment_1".into(),
+            args: Vec::new(),
+            resume: None,
+        }],
+    );
+    drop(fragments);
+    world
+}
+
+fn parsed_source(source: &str) -> Arc<Script> {
+    let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    Arc::new(script)
+}
+
+/// A call runs the version of the current state (the auto state at first);
+/// `GotoState` switches it and runs the new state's `OnBeginState`.
+#[test]
+fn calls_run_the_version_of_the_current_state() {
+    let script = parsed_source(
+        "ScriptName QF_VmStates extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n Ping()\n Ping()\n EndFunction\n\
+         Function Ping()\n EndFunction\n\
+         Auto State Waiting\n\
+           Function Ping()\n Self.SetStage(20)\n GotoState(\"Done\")\n EndFunction\n\
+         EndState\n\
+         State Done\n\
+           Event OnBeginState()\n Marker.Enable()\n EndEvent\n\
+           Function Ping()\n If GetState() == \"Done\"\n Self.SetStage(30)\n EndIf\n EndFunction\n\
+         EndState\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "Done's OnBeginState");
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 30, "the second Ping ran Done's version");
+}
+
+/// An unwritten script variable or property reads what the script declares;
+/// a `String` variable holds what a script writes to it.
+#[test]
+fn script_variables_read_their_declared_values_and_hold_strings() {
+    let script = parsed_source(
+        "ScriptName QF_VmDeclared extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Int Property Goal = 3 Auto\n\
+         String Label = \"start\"\n\
+         Function Fragment_1()\n\
+           If Goal == 3 && Label == \"start\"\n Label = \"next\"\n EndIf\n\
+           If Label == \"next\"\n Marker.Enable()\n EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(crate::fragment::reference_enabled(&world, MARKER));
 }
