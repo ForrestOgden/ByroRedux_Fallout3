@@ -674,7 +674,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's DeleteWhenAble.
             .writes_resource::<byroredux_scripting::CreatedReferences>()
             // M47.2 — the Papyrus VM's scripts, snapshotted per fragment run.
-            .reads_resource::<byroredux_scripting::QuestStageFragments>(),
+            .reads_resource::<byroredux_scripting::QuestStageFragments>()
+            .reads_resource::<byroredux_scripting::QuestScriptObjects>()
+            .writes_resource::<byroredux_scripting::QuestScriptObjects>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

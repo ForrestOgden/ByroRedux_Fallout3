@@ -485,6 +485,13 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetQuestVariable` writes, applied to
     /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
     pub(super) quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
+    /// M47.2 — the Papyrus VM's object script-variable writes, applied to
+    /// [`crate::QuestScriptObjects`] after the quest-state guards drop.
+    pub(super) quest_objects: Vec<(
+        QuestFormId,
+        byroredux_plugin::esm::records::condition::ConditionStringId,
+        crate::ScriptObject,
+    )>,
     provider_steps: Vec<DeferredProviderFragmentStep>,
 }
 
@@ -524,6 +531,7 @@ impl DeferredFragmentEffects {
             reference_lock_changes: Vec::new(),
             faction_relations: Vec::new(),
             quest_variables: Vec::new(),
+            quest_objects: Vec::new(),
             faction_changes: Vec::new(),
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
@@ -816,6 +824,19 @@ impl DeferredFragmentEffects {
                         self.quest_variables.len()
                     );
                     self.quest_variables.clear();
+                }
+            }
+        }
+        if !self.quest_objects.is_empty() {
+            match world.try_resource_mut::<crate::QuestScriptObjects>() {
+                Some(mut objects) => {
+                    for (quest, variable, value) in self.quest_objects.drain(..) {
+                        objects.set(quest, variable, value);
+                    }
+                }
+                None => {
+                    log::debug!("object script-variable writes dropped: QuestScriptObjects not installed");
+                    self.quest_objects.clear();
                 }
             }
         }

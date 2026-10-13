@@ -186,7 +186,8 @@ pub use quest_stages::{
     SequencedQuestStageAdvanced, StartGameQuestRegistry, QUEST_EVENT_RETENTION,
 };
 pub use quest_variables::{
-    install_quest_script_variables, quest_variable, QuestScriptVariableDefaults, QuestScriptVariables,
+    install_quest_script_variables, quest_variable, QuestScriptObjects, QuestScriptVariableDefaults,
+    QuestScriptVariables, ScriptObject,
 };
 pub use recurring_update::{recurring_update_tick_system, OnUpdateEvent, RecurringUpdate};
 pub use registry::{ScriptRegistry, ScriptSpawnFn};

@@ -130,3 +130,58 @@ fn an_interpreted_fragment_runs_through_stage_dispatch() {
     assert!(crate::fragment::reference_enabled(&world, MARKER));
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
+
+/// An object script variable holds its reference from one fragment to the
+/// next (`QuestScriptObjects`), as Papyrus script state does.
+#[test]
+fn object_script_variables_outlive_the_fragment_that_wrote_them() {
+    const SOURCE: &str = "ScriptName QF_VmObjects extends Quest\n\
+        ReferenceAlias Property Alias_Guard Auto\n\
+        ObjectReference Stored\n\
+        Function Fragment_1()\n Stored = Alias_Guard.GetReference()\n EndFunction\n\
+        Function Fragment_2()\n Stored.Disable()\n EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        assert!(check_function(Arc::clone(&script), fragment, None).is_some(), "{fragment}");
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(GUARD),
+    });
+    world.insert_resource(pool);
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(id));
+    world.resource_mut::<crate::SceneActorBindings>().bind(Q, 0, guard);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad());
+        fragments.insert_vm_script(Arc::clone(&script));
+        for (stage, function) in [(10, "Fragment_1"), (20, "Fragment_2")] {
+            fragments.insert(
+                Q,
+                stage,
+                vec![Effect::Interpret {
+                    script: "QF_VmObjects".into(),
+                    function: function.into(),
+                }],
+            );
+        }
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    // The alias is cleared before the second fragment: the variable keeps it.
+    *world.resource_mut::<crate::SceneActorBindings>() = Default::default();
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(!crate::fragment::reference_enabled(&world, GUARD));
+}

@@ -391,7 +391,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v60 -> v61 (M47.2): `CreatedReference` gained the required `deletion`
 /// (`DeleteWhenAble`).
-pub const FORMAT_MAJOR: u16 = 61;
+///
+/// v61 -> v62 (M47.2): a new resource column, `QuestScriptObjects` (the
+/// Papyrus VM's object-valued quest script variables).
+pub const FORMAT_MAJOR: u16 = 62;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

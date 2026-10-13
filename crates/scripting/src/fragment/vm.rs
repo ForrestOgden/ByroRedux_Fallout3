@@ -533,15 +533,52 @@ impl Vm<'_> {
         }
     }
 
-    /// A numeric quest script variable — the store `GetVMQuestVariable` and
-    /// the lowered `SetQuestVariable` share.
+    /// A quest script variable: a number in the store `GetVMQuestVariable`
+    /// and the lowered `SetQuestVariable` share, an object in
+    /// [`crate::QuestScriptObjects`].
     fn write_quest_variable(&mut self, quest: QuestFormId, name: &str, value: &Value) -> Run<()> {
-        let Some(number) = value.number() else {
-            return stop(format!("non-numeric write to script variable {name}"));
-        };
         let key = crate::QuestScriptVariables::property_key(name);
-        self.deferred.quest_variables.push((quest, key, number));
+        if let Some(number) = value.number() {
+            self.deferred.quest_variables.push((quest, key, number));
+            return Ok(());
+        }
+        let object = match value {
+            Value::None => crate::ScriptObject::None,
+            Value::Form(form) => crate::ScriptObject::Form(*form),
+            Value::Alias { quest, alias } => crate::ScriptObject::Alias {
+                quest: *quest,
+                alias: *alias,
+            },
+            other => return stop(format!("a {} write to script variable {name}", other.text())),
+        };
+        self.deferred.quest_objects.push((quest, key, object));
         Ok(())
+    }
+
+    fn read_quest_object(&self, quest: QuestFormId, name: &str) -> Value {
+        self.written_quest_object(quest, name).unwrap_or(Value::None)
+    }
+
+    /// An object a script wrote to `quest`'s variable `name`, if any.
+    fn written_quest_object(&self, quest: QuestFormId, name: &str) -> Option<Value> {
+        let key = crate::QuestScriptVariables::property_key(name);
+        let pending = self
+            .deferred
+            .quest_objects
+            .iter()
+            .rev()
+            .find(|(q, k, _)| *q == quest && *k == key)
+            .map(|(_, _, value)| *value);
+        let stored = pending.or_else(|| {
+            self.world
+                .try_resource::<crate::QuestScriptObjects>()
+                .and_then(|objects| objects.get(quest, key))
+        });
+        Some(match stored? {
+            crate::ScriptObject::Form(form) => Value::Form(form),
+            crate::ScriptObject::Alias { quest, alias } => Value::Alias { quest, alias },
+            crate::ScriptObject::None => Value::None,
+        })
     }
 
     fn read_quest_variable(&self, quest: QuestFormId, name: &str) -> Option<f32> {
@@ -667,6 +704,10 @@ impl Vm<'_> {
                     });
                 }
             }
+            // An object property a script re-pointed reads the new object.
+            if let Some(written) = self.written_quest_object(frame.quest, name) {
+                return Ok(written);
+            }
             return Ok(value);
         }
         match member_type_in(&frame.script, name, &self.deferred.vm_scripts) {
@@ -678,7 +719,8 @@ impl Vm<'_> {
                     _ => Value::Float(value),
                 })
             }
-            Some(_) => stop(format!("object script variable {name}")),
+            Some(Type::Object(_) | Type::Var) => Ok(self.read_quest_object(frame.quest, name)),
+            Some(_) => stop(format!("script variable {name} of an unsupported type")),
             None => stop(format!("unknown name {name}")),
         }
     }
@@ -1261,18 +1303,17 @@ impl Checker<'_> {
                 match &target.node {
                     Expr::Ident(name) => {
                         let key = name.0.to_ascii_lowercase();
-                        if !frame.locals.contains_key(&key) {
-                            // A script variable / property write must be numeric.
-                            if !matches!(value_kind, Kind::Num | Kind::Bool) {
-                                return self.fail(|| format!("{value_kind:?} write to a script variable"));
-                            }
+                        if !frame.locals.contains_key(&key)
+                            && matches!(value_kind, Kind::Str | Kind::Array)
+                        {
+                            return self.fail(|| format!("{value_kind:?} write to a script variable"));
                         }
                     }
                     Expr::MemberAccess { object, .. } => {
                         if self.kind(frame, &object.node)? != Kind::Quest
-                            || !matches!(value_kind, Kind::Num | Kind::Bool)
+                            || matches!(value_kind, Kind::Str | Kind::Array)
                         {
-                            return None;
+                            return self.fail(|| "member assignment".into());
                         }
                     }
                     Expr::Index { object, index } => {
