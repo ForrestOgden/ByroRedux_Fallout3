@@ -635,6 +635,8 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations")
         // M47.2 — Location.SetKeywordData data.
         .register_resource::<byroredux_scripting::LocationKeywordData>("LocationKeywordData")
+        // M47.2 — SetNoFavorAllowed / SetActorCause flags.
+        .register_resource::<byroredux_scripting::ReferenceFlags>("ReferenceFlags")
         // M47.2 — Actor.SetPlayerTeammate / SetDoingFavor flags.
         .register_resource::<byroredux_scripting::FollowerState>("FollowerState")
         // M47.2 — Papyrus distance-event registrations.

@@ -467,7 +467,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v85 -> v86 (M47.2): the `LocationKeywordData` resource column,
 /// `Effect::SetLocationKeywordData` and `ValueExpr::LocationKeywordData`.
-pub const FORMAT_MAJOR: u16 = 86;
+///
+/// v86 -> v87 (M47.2): the `ReferenceFlags` resource column
+/// (`SetNoFavorAllowed`, `SetActorCause`).
+pub const FORMAT_MAJOR: u16 = 87;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

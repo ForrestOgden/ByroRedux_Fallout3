@@ -286,6 +286,12 @@ impl StoryManagerRng {
         z ^ (z >> 31)
     }
 
+    /// Uniform `f32` in `[0, 1]`, both ends reachable (24 random bits over
+    /// `2^24 - 1`).
+    pub fn unit_inclusive(&mut self) -> f32 {
+        ((self.next_u64() >> 40) as f32) / ((1u32 << 24) - 1) as f32
+    }
+
     /// Uniform index in `0..len` (widening multiply — unbiased for any
     /// realistic len).
     pub fn pick(&mut self, len: usize) -> usize {

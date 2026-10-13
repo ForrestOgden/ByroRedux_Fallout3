@@ -2385,6 +2385,22 @@ impl Vm<'_> {
                     let values = self.eval_args(frame, args)?;
                     math_native(function, &values)?
                 }
+                // CK *RandomFloat - Utility*: "a random floating point number
+                // between the minimum and maximum values (inclusive)"; the
+                // defaults are 0.0 and 1.0.
+                ("utility", "randomfloat") => {
+                    let values = self.eval_args(frame, args)?;
+                    let bound = |index: usize, default: f32| values.get(index).and_then(Value::number).unwrap_or(default);
+                    let (low, high) = (bound(0, 0.0), bound(1, 1.0));
+                    let Some(draw) = self
+                        .world
+                        .try_resource_mut::<crate::story_manager::StoryManagerRng>()
+                        .map(|mut rng| rng.unit_inclusive())
+                    else {
+                        return stop("Utility.RandomFloat without the random generator");
+                    };
+                    Some(Value::Float(low + draw * (high - low)))
+                }
                 // CK *GetCurrentGameTime - Utility*: "game days passed".
                 ("utility", "getcurrentgametime") => {
                     let hours = self
@@ -2445,6 +2461,9 @@ impl Vm<'_> {
                     | "find"
                     | "gettriggerobjectcount"
                     | "getrace"
+                    | "getscale"
+                    | "setnofavorallowed"
+                    | "setactorcause"
                     | "getfactionowner"
                     | "getactorowner"
                     | "play"
@@ -2500,6 +2519,44 @@ impl Vm<'_> {
                             .map_or(-1, |index| index as i32),
                     ),
                 })
+            }
+            // CK *SetNoFavorAllowed*: whether the player can ask a follower to
+            // operate this object (default True). The state waits for the
+            // follower favor system.
+            (Value::Form(reference), "setnofavorallowed") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                let no_favor = values.first().map_or(true, Value::truthy);
+                self.deferred
+                    .reference_flag_changes
+                    .push(crate::ReferenceFlagChange::NoFavor { reference: *reference, no_favor });
+                Some(Value::None)
+            }
+            // CK *SetActorCause*: the actor responsible for this object; None
+            // clears it.
+            (Value::Form(reference), "setactorcause") if args.len() == 1 => {
+                let actor = match self.eval(frame, &args[0].value.node)? {
+                    Value::Form(actor) if actor != 0 => Some(actor),
+                    _ => None,
+                };
+                self.deferred
+                    .reference_flag_changes
+                    .push(crate::ReferenceFlagChange::ActorCause { reference: *reference, actor });
+                Some(Value::None)
+            }
+            // CK *GetScale*: "the current scale of the reference".
+            (Value::Form(reference), "getscale") if args.is_empty() => {
+                let entity = if *reference == PLAYER_REF {
+                    self.world
+                        .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                        .map(|player| player.0)
+                } else {
+                    self.entity_of(*reference)
+                };
+                Some(Value::Float(
+                    entity
+                        .and_then(|entity| self.world.get::<byroredux_core::ecs::Transform>(entity).map(|t| t.scale))
+                        .unwrap_or(1.0),
+                ))
             }
             // CK *GetRace - Actor*: "the Race the actor is" (its record's).
             (Value::Form(actor), "getrace") if args.is_empty() => {
@@ -4081,6 +4138,13 @@ impl<'l> Checker<'l> {
                 }
                 return self.fail(|| format!("Math.{name} as written"));
             }
+            if class == "utility"
+                && name == "randomfloat"
+                && arg_kinds.len() <= 2
+                && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)))
+            {
+                return Some(Kind::Num);
+            }
             if class == "utility" && name == "getcurrentgametime" && arg_kinds.is_empty() {
                 return Some(Kind::Num);
             }
@@ -4186,6 +4250,17 @@ impl<'l> Checker<'l> {
             (Kind::Object, "getsize") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object, "gettriggerobjectcount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "getscale") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "setnofavorallowed")
+                if statement && arg_kinds.len() <= 1 && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "setactorcause")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit)]) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object, "getfactionowner" | "getactorowner" | "geteditorlocation") if arg_kinds.is_empty() => {
                 return Some(Kind::Object);
             }

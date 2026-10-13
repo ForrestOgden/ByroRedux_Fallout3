@@ -1426,6 +1426,39 @@ fn link_chains_are_followed() {
     assert!(crate::fragment::reference_enabled(&world, NEXT) && crate::fragment::reference_enabled(&world, LAST));
 }
 
+/// `Utility.RandomFloat(min, max)` stays within its bounds, and `GetScale()` reads
+/// the reference's transform.
+#[test]
+fn random_float_and_scale() {
+    let script = parsed_source(
+        "ScriptName QF_VmFloat extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Float roll = Utility.RandomFloat(2.0, 4.0)\n\
+           Float other = Utility.RandomFloat()\n\
+           If roll >= 2.0 && roll <= 4.0 && other >= 0.0 && other <= 1.0 && Game.GetPlayer().GetScale() == 1.5\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::story_manager::StoryManagerRng::default());
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    world.register::<byroredux_core::ecs::Transform>();
+    world.insert(
+        player,
+        byroredux_core::ecs::Transform::new(
+            byroredux_core::math::Vec3::ZERO,
+            byroredux_core::math::Quat::IDENTITY,
+            1.5,
+        ),
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// CK *IsChild - Location*: true when the other location is a child of this one,
 /// false for the same location.
 #[test]

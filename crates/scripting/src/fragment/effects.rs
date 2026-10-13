@@ -474,6 +474,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Sound.Play` calls, queued on [`crate::PendingSoundPlays`] after
     /// the guards drop.
     pub(super) sound_plays: Vec<crate::SoundPlay>,
+    /// M47.2 — `SetNoFavorAllowed` / `SetActorCause` calls, applied to
+    /// [`crate::ReferenceFlags`] after the guards drop.
+    pub(super) reference_flag_changes: Vec<crate::ReferenceFlagChange>,
     /// M47.2 — `Effect::SetLocationKeywordData`s: (location, keyword, data),
     /// applied to [`crate::LocationKeywordData`] after the guards drop.
     location_keyword_changes: Vec<(u32, u32, f32)>,
@@ -608,6 +611,7 @@ impl DeferredFragmentEffects {
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
             sound_plays: Vec::new(),
+            reference_flag_changes: Vec::new(),
             location_keyword_changes: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
@@ -729,6 +733,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.location_keyword_changes.clear();
+        }
+        if !self.reference_flag_changes.is_empty() {
+            if let Some(mut flags) = world.try_resource_mut::<crate::ReferenceFlags>() {
+                for change in self.reference_flag_changes.drain(..) {
+                    flags.apply(change);
+                }
+            }
+            self.reference_flag_changes.clear();
         }
         if !self.sound_plays.is_empty() {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {

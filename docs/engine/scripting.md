@@ -1179,6 +1179,14 @@ the same store — "returns this value, if any. It otherwise returns 0".
   each, ending at a loop; `GetEditorLocation()` is the reference's editor location
   (`location::editor_location`).
 
+- `Utility.RandomFloat(min, max)` (CK: "between the minimum and maximum values
+  (inclusive)", defaults 0.0 and 1.0) draws from the shared `StoryManagerRng`;
+  `GetScale()` reads the reference's `Transform.scale`.
+- `SetNoFavorAllowed(abNoFavor = True)` (CK: whether the player can ask a follower to
+  operate the object) and `SetActorCause(akActor)` (who is responsible for what the object
+  does; None clears) are saved per-reference flags (`ReferenceFlags`) for the follower-favor
+  and trap-damage systems to read; neither has a consumer yet.
+
 ### Sound.Play (M47.2)
 
 CK *Play - Sound*: "Plays the sound from the location of the specified object reference"
