@@ -27,9 +27,11 @@ const ANIMATION_ROOT: &str = r"meshes\actors\character\animations";
 /// stems are creature-only (chicken, bear, canine, …).
 const SKYRIM_WALK_PATH: &str = r"meshes\actors\character\animations\1hm_walkforward.hkx";
 
-/// Decode and register the Skyrim cart IDLE family used by MQ101 startup.
+/// Decode and register the Skyrim IDLE clips the content can play: the cart
+/// family MQ101 startup uses, every IDLE an installed fragment's `PlayIdle`
+/// names, and every IDLE an actor's pending request is waiting on (M47.2).
 ///
-/// This intentionally stops at that live startup surface instead of eagerly
+/// This intentionally stops at what the content plays instead of eagerly
 /// expanding all ~1,400 Skyrim IDLEs into frame keys. Repeated cell/runtime
 /// installation is idempotent through `IdleClipCatalog`.
 pub(crate) fn populate_idle_clip_runtime(
@@ -49,15 +51,24 @@ pub(crate) fn populate_idle_clip_runtime(
         .keys()
         .copied()
         .collect();
+    // M47.2 — beyond MQ101's cart family: every IDLE an installed fragment's
+    // `PlayIdle` names, and every IDLE an actor is still waiting on (a
+    // request whose clip a previous cell load could not decode). Bounded by
+    // what the content actually plays, not the ~1,400 IDLEs of the load order.
+    let mut wanted = byroredux_scripting::fragment_idle_forms(world);
+    if let Some(states) = world.query::<byroredux_scripting::ActorCinematicState>() {
+        wanted.extend(states.iter().filter_map(|(_, state)| state.requested_idle_form_id));
+    }
     let idles: Vec<_> = index
         .idle_animations
         .values()
         .filter(|idle| {
             !already_loaded.contains(&idle.form_id)
-                && idle
-                    .animation_event
-                    .get(..8)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("idlecart"))
+                && (wanted.contains(&idle.form_id)
+                    || idle
+                        .animation_event
+                        .get(..8)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("idlecart")))
         })
         .collect();
     if idles.is_empty() {
@@ -142,7 +153,7 @@ pub(crate) fn populate_idle_clip_runtime(
         installed += 1;
     }
     if installed > 0 {
-        log::info!("Installed {installed} Skyrim cart IDLE HKX clips");
+        log::info!("Installed {installed} Skyrim IDLE HKX clips");
     }
     installed
 }
@@ -1053,6 +1064,77 @@ mod tests {
                 assert!((time - clip.duration).abs() < 1e-6, "{event_name}");
             }
         }
+    }
+
+    /// M47.2 — an IDLE outside the cart family installs once an actor's
+    /// pending `PlayIdle` request names it: the next cell load decodes it, and
+    /// the playback system can then consume the request. Picks the first
+    /// non-cart IDLE whose HKX is in the archive.
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk; ~1 GB resident"]
+    fn a_pending_idle_request_installs_its_clip() {
+        let data_dir = std::env::var_os(byroredux_plugin::esm::test_paths::SKYRIM_SE_ENV)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(
+                    "/mnt/data/SteamLibrary/steamapps/common/Skyrim Special Edition/Data",
+                )
+            });
+        let esm_path = data_dir.join("Skyrim.esm");
+        let animations_path = data_dir.join("Skyrim - Animations.bsa");
+        if !esm_path.is_file() || !animations_path.is_file() {
+            return;
+        }
+        let index = byroredux_plugin::esm::parse_esm(&std::fs::read(esm_path).unwrap()).unwrap();
+        let provider = build_texture_provider(&[
+            "--bsa".to_owned(),
+            animations_path.to_string_lossy().into_owned(),
+        ]);
+        let mut idles: Vec<_> = index
+            .idle_animations
+            .values()
+            .filter(|idle| {
+                !idle
+                    .animation_event
+                    .get(..8)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("idlecart"))
+            })
+            .collect();
+        idles.sort_by_key(|idle| idle.form_id);
+        let wanted = idles
+            .into_iter()
+            .find(|idle| {
+                idle_animation_candidates(&idle.animation_event)
+                    .iter()
+                    .any(|path| provider.extract_mesh(path).is_some())
+            })
+            .expect("Skyrim ships non-cart IDLE clips");
+
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(AnimationClipRegistry::new());
+        world.insert_resource(IdleClipCatalog::default());
+        world.register::<byroredux_scripting::ActorCinematicState>();
+        populate_idle_clip_runtime(&mut world, &index, &provider);
+        assert!(
+            !world.resource::<IdleClipCatalog>().handles.contains_key(&wanted.form_id),
+            "nothing requested it yet"
+        );
+        let actor = world.spawn();
+        world.insert(
+            actor,
+            byroredux_scripting::ActorCinematicState {
+                requested_idle_form_id: Some(wanted.form_id),
+                ..Default::default()
+            },
+        );
+        populate_idle_clip_runtime(&mut world, &index, &provider);
+        assert!(
+            world.resource::<IdleClipCatalog>().handles.contains_key(&wanted.form_id),
+            "IDLE {} ({:08X}) did not install for its pending request",
+            wanted.editor_id,
+            wanted.form_id
+        );
     }
 
     /// P2 combat tail — the Draugr combat family decodes against the real

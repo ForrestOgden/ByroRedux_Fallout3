@@ -84,7 +84,7 @@ pub use events::{
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
 pub use fragment::{
-    apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system,
+    apply_effects, apply_spoken_info_fragment, fragment_activation_flush_system, fragment_idle_forms,
     fragment_continuation_system, populate_owned_info_fragments_from_pex_with_providers,
     populate_owned_quest_fragments_from_pex_detailed_with_providers,
     populate_owned_quest_fragments_from_script_with_providers,

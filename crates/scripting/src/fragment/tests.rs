@@ -4585,3 +4585,42 @@ fn dispatch_change_faction_edits_ranks_and_records_the_ledger() {
     assert_eq!(ledger.changes_for(ACTOR_REF), &[(FACTION, Some(0)), (OTHER, None)]);
     assert_eq!(ledger.changes_for(crate::PLAYER_REFERENCE), &[(FACTION, Some(3))]);
 }
+
+/// M47.2 — the IDLEs installed fragments play, resolved through each
+/// fragment's VMAD, `If` branches included; what the app decodes HKX for.
+#[test]
+fn fragment_idle_forms_collects_play_idle_targets() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+
+    const WAVE: u32 = 0x0001_0F31;
+    const SIT: u32 = 0x0001_0F32;
+    let world = fixture();
+    {
+        let mut frags = world.resource_mut::<QuestStageFragments>();
+        frags.insert_vmad(Q, object_property_vmad(&[("IdleWave", WAVE), ("IdleSit", SIT)]));
+        frags.insert(
+            Q,
+            10,
+            vec![
+                Effect::PlayIdle {
+                    actor: ActorRef::Player,
+                    idle: ObjectRef::Property("IdleWave".into()),
+                },
+                Effect::Conditional {
+                    guards: vec![],
+                    then_effects: vec![Effect::PlayIdle {
+                        actor: ActorRef::Player,
+                        idle: ObjectRef::Property("IdleSit".into()),
+                    }],
+                    else_effects: vec![Effect::PlayIdle {
+                        actor: ActorRef::Player,
+                        idle: ObjectRef::Property("Unbound".into()),
+                    }],
+                },
+            ],
+        );
+    }
+    let forms = crate::fragment_idle_forms(&world);
+    assert_eq!(forms, [WAVE, SIT].into_iter().collect());
+}

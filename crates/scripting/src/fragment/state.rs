@@ -639,3 +639,50 @@ mod reference_lock_state_tests {
         assert_eq!(state.len(), 0);
     }
 }
+
+/// M47.2 — every IDLE FormID an installed fragment's `PlayIdle` names
+/// (quest-stage, scene and topic-info fragments, `If` branches included),
+/// resolved through each fragment's VMAD. The app decodes those IDLEs' HKX
+/// clips at cell load, so a scripted `PlayIdle` is playable without an eager
+/// decode of every IDLE in the load order.
+pub fn fragment_idle_forms(world: &World) -> HashSet<u32> {
+    fn collect(effects: &[Effect], vmad: Option<&ScriptInstanceData>, out: &mut HashSet<u32>) {
+        for effect in effects {
+            match effect {
+                Effect::PlayIdle { idle, .. } => {
+                    if let Some(form_id) = resolve_property_form_id(vmad, idle.property_name()) {
+                        out.insert(form_id);
+                    }
+                }
+                Effect::Conditional {
+                    then_effects,
+                    else_effects,
+                    ..
+                } => {
+                    collect(then_effects, vmad, out);
+                    collect(else_effects, vmad, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    if let Some(quests) = world.try_resource::<QuestStageFragments>() {
+        for ((quest, _stage), effects) in quests.map.iter() {
+            collect(effects, quests.vmad.get(quest), &mut out);
+        }
+    }
+    if let Some(scenes) = world.try_resource::<SceneFragments>() {
+        for fragment in scenes.map.values() {
+            collect(&fragment.effects, fragment.vmad.as_ref(), &mut out);
+        }
+    }
+    if let Some(infos) = world.try_resource::<DialogueInfoFragments>() {
+        for fragment in infos.map.values() {
+            for effects in [&fragment.begin, &fragment.end].into_iter().flatten() {
+                collect(effects, fragment.vmad.as_ref(), &mut out);
+            }
+        }
+    }
+    out
+}
