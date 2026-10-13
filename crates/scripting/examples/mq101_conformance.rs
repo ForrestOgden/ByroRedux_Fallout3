@@ -161,6 +161,7 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::ChangeKeyword { .. } => "ChangeKeyword",
         Effect::SetGhost { .. } => "SetGhost",
         Effect::SetAlly { .. } => "SetAlly",
+        Effect::DeleteWhenAble { .. } => "DeleteWhenAble",
         Effect::Disable { .. } => "Disable",
         Effect::Enable { .. } => "Enable",
         Effect::StartScene { .. } => "StartScene",

@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 60;
+    const BASELINE_MAJOR: u16 = 61;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -921,7 +921,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `ActorValue` / `ActorValueNamed`.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v59 -> v60):
     // `SetGlobalValue.value` became a `ValueExpr`; `SetGlobalRelative` is gone.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb673_2f4a_b054_a3f2;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v60 -> v61):
+    // `CreatedReference.deletion`, and the appended `Effect::DeleteWhenAble`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb97f_9704_ec8a_22c0;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

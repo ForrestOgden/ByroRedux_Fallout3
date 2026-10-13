@@ -1149,6 +1149,10 @@ pub enum Effect {
     ShowHelpMessage { message: ObjectRef },
     /// M47.2 — `Debug.Notification(asText)` with a literal text.
     Notification { text: String },
+    /// M47.2 — `<reference>.DeleteWhenAble()`: a created reference is deleted
+    /// once its cell is gone ([`crate::CreatedDeletion`]); an authored one
+    /// cannot be deleted.
+    DeleteWhenAble { object: ObjectRef },
     /// M47.2 — `<actor>.ShowBarterMenu()`: open the barter menu with the
     /// actor's vendor faction ([`crate::menus`]).
     ShowBarterMenu { vendor: ActorRef },
@@ -2643,6 +2647,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_show_message,
     prim_notification,
     prim_show_barter_menu,
+    prim_delete_when_able,
     prim_change_keyword,
     prim_reward_player_xp,
     prim_player_caps,
@@ -3267,6 +3272,18 @@ fn prim_change_keyword(e: &Expr, scope: &Scope) -> Option<Effect> {
         object: receiver_actor(object, scope)?,
         keyword: receiver_object(&args[0].value.node, scope)?,
         change,
+    })
+}
+
+/// `ObjectReference.DeleteWhenAble()` (Skyrim: a script loop over
+/// `GetParentCell().IsAttached()` then `Delete()`; FO4 / Starfield native).
+fn prim_delete_when_able(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "DeleteWhenAble")?;
+    if !args.is_empty() {
+        return None;
+    }
+    Some(Effect::DeleteWhenAble {
+        object: receiver_object(object, scope)?,
     })
 }
 

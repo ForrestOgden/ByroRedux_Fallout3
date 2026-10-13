@@ -450,6 +450,9 @@ pub struct DeferredFragmentEffects {
     messages: Vec<PendingMessage>,
     /// M47.2 — the vendor an `Effect::ShowBarterMenu` asked to trade with.
     barter: Option<EntityId>,
+    /// M47.2 — `Effect::DeleteWhenAble` references, flagged in
+    /// [`crate::CreatedReferences`] after the guards drop.
+    deletions: Vec<u32>,
     /// M47.2 — `Effect::ChangeKeyword`s, applied to
     /// [`crate::keywords::ScriptedKeywords`] after the guards drop.
     keyword_changes: Vec<(EntityId, u32, crate::keywords::KeywordChange)>,
@@ -532,6 +535,7 @@ impl DeferredFragmentEffects {
             reference_variables: Vec::new(),
             messages: Vec::new(),
             barter: None,
+            deletions: Vec::new(),
             keyword_changes: Vec::new(),
             quest_scripts: world
                 .try_resource::<super::QuestScriptInstances>()
@@ -581,6 +585,16 @@ impl DeferredFragmentEffects {
                     }
                 }
                 PendingMessage::Notify(text) => crate::messages::notify(world, text),
+            }
+        }
+        for form_id in std::mem::take(&mut self.deletions) {
+            let created = world
+                .try_resource_mut::<crate::CreatedReferences>()
+                .is_some_and(|mut created| created.delete_when_able(form_id));
+            if !created {
+                // CK *Delete*: "Only references created in game can actually
+                // be deleted."
+                log::debug!("fragment DeleteWhenAble: {form_id:08X} is not a created reference");
             }
         }
         if let Some(vendor) = self.barter.take() {
@@ -1197,6 +1211,11 @@ pub(crate) fn apply_effect(
         }
         Effect::Notification { text } => {
             deferred.messages.push(PendingMessage::Notify(text.clone()));
+            None
+        }
+        Effect::DeleteWhenAble { object } => {
+            let form_id = object_form_id(vmad, world, context, object, deferred)?;
+            deferred.deletions.push(form_id);
             None
         }
         Effect::ShowBarterMenu { vendor } => {
@@ -2757,6 +2776,7 @@ fn apply_quest_scoped_effect(
         | Effect::ShowHelpMessage { .. }
         | Effect::Notification { .. }
         | Effect::ShowBarterMenu { .. }
+        | Effect::DeleteWhenAble { .. }
         | Effect::ChangeKeyword { .. }
         | Effect::SendStoryEvent { .. }
         | Effect::ChangePerk { .. }

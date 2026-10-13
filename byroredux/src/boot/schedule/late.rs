@@ -670,7 +670,9 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's Add/RemoveKeyword and HasKeyword guard.
             .reads_resource::<byroredux_scripting::keywords::KeywordTable>()
             .reads_resource::<byroredux_scripting::keywords::ScriptedKeywords>()
-            .writes_resource::<byroredux_scripting::keywords::ScriptedKeywords>(),
+            .writes_resource::<byroredux_scripting::keywords::ScriptedKeywords>()
+            // M47.2 — a spoken line's DeleteWhenAble.
+            .writes_resource::<byroredux_scripting::CreatedReferences>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

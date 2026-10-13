@@ -388,7 +388,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v59 -> v60 (M47.2): `Effect::SetGlobalValue` carries a `ValueExpr`, and
 /// `Effect::SetGlobalRelative` folded into it.
-pub const FORMAT_MAJOR: u16 = 60;
+///
+/// v60 -> v61 (M47.2): `CreatedReference` gained the required `deletion`
+/// (`DeleteWhenAble`).
+pub const FORMAT_MAJOR: u16 = 61;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

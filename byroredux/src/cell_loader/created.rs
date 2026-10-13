@@ -127,15 +127,22 @@ pub(crate) fn place_created_references(world: &World) -> usize {
     count
 }
 
-/// The placed records in `cell` whose entity is not alive.
+/// The placed records in `cell` whose entity is not alive. A record its
+/// script asked to `DeleteWhenAble` is deleted here instead: its entity is
+/// gone, so its cell detached (M47.2).
 pub(crate) fn unspawned_in(world: &World, cell: &CreatedCell) -> Vec<PlacedRef> {
+    let mut deleting: Vec<u32> = Vec::new();
     let wanted: Vec<PlacedRef> = {
         let Some(created) = world.try_resource::<CreatedReferences>() else {
             return Vec::new();
         };
         created
             .iter()
+            .filter(|record| record.deletion != byroredux_scripting::CreatedDeletion::Deleted)
             .filter_map(|record| {
+                if record.deletion == byroredux_scripting::CreatedDeletion::WhenAble {
+                    deleting.push(record.form_id);
+                }
                 let placement = record.placement.as_ref()?;
                 let same_cell = match (&placement.cell, cell) {
                     (
@@ -155,7 +162,7 @@ pub(crate) fn unspawned_in(world: &World, cell: &CreatedCell) -> Vec<PlacedRef> 
             })
             .collect()
     };
-    if wanted.is_empty() {
+    if wanted.is_empty() && deleting.is_empty() {
         return wanted;
     }
     let live: HashSet<u32> = world
@@ -169,9 +176,21 @@ pub(crate) fn unspawned_in(world: &World, cell: &CreatedCell) -> Vec<PlacedRef> 
                 .collect()
         })
         .unwrap_or_default();
+    let deleted: HashSet<u32> = deleting
+        .into_iter()
+        .filter(|form_id| !live.contains(form_id))
+        .collect();
+    if !deleted.is_empty() {
+        if let Some(mut created) = world.try_resource_mut::<CreatedReferences>() {
+            for &form_id in &deleted {
+                created.mark_deleted(form_id);
+                log::info!("Deleted created reference {form_id:08X} (DeleteWhenAble)");
+            }
+        }
+    }
     wanted
         .into_iter()
-        .filter(|placed| !live.contains(&placed.form_id))
+        .filter(|placed| !live.contains(&placed.form_id) && !deleted.contains(&placed.form_id))
         .collect()
 }
 
@@ -294,5 +313,30 @@ mod tests {
         assert!(unspawned_in(&world, &here).is_empty());
         world.despawn(entity);
         assert_eq!(unspawned_in(&world, &here).len(), 1);
+
+        // M47.2 — DeleteWhenAble while alive: kept until its cell is gone,
+        // then deleted for good — no respawn, and the tombstone stays so the
+        // alias refresh does not create it again.
+        let entity = world.spawn();
+        world.insert(entity, CellRoot(entity));
+        world.insert_resource(CreatedReferenceEntities(HashMap::from([(form_id, entity)])));
+        assert!(world.resource_mut::<CreatedReferences>().delete_when_able(form_id));
+        assert!(unspawned_in(&world, &here).is_empty());
+        assert_eq!(
+            world.resource::<CreatedReferences>().get(QuestFormId(7), 1).unwrap().deletion,
+            byroredux_scripting::CreatedDeletion::WhenAble,
+            "alive: not yet"
+        );
+        world.despawn(entity);
+        assert!(unspawned_in(&world, &here).is_empty(), "deleted, not respawned");
+        assert_eq!(
+            world.resource::<CreatedReferences>().get(QuestFormId(7), 1).unwrap().deletion,
+            byroredux_scripting::CreatedDeletion::Deleted
+        );
+        assert!(unspawned_in(&world, &here).is_empty());
+        assert!(
+            !world.resource_mut::<CreatedReferences>().delete_when_able(0x0001_2345),
+            "an authored reference cannot be deleted"
+        );
     }
 }

@@ -47,6 +47,22 @@ pub struct CreatedPlacement {
     pub rotation_zup: [f32; 3],
 }
 
+/// A created reference's `DeleteWhenAble` state (M47.2). The CK
+/// *DeleteWhenAble* waits "for this reference to lose its parent cell, or
+/// for its parent cell to become detached, then deletes it", and *Delete*
+/// says "Only references created in game can actually be deleted". A deleted
+/// record stays as a tombstone, so the alias refresh does not create the
+/// reference again while its quest runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub enum CreatedDeletion {
+    #[default]
+    Kept,
+    /// Delete once its cell is no longer loaded.
+    WhenAble,
+    Deleted,
+}
+
 /// One created reference.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
@@ -61,6 +77,7 @@ pub struct CreatedReference {
     pub at_reference: u32,
     /// Resolved by the engine from `at_reference`; `None` until then.
     pub placement: Option<CreatedPlacement>,
+    pub deletion: CreatedDeletion,
 }
 
 /// Every created reference of a running quest, by quest and alias. Saved.
@@ -102,6 +119,7 @@ impl CreatedReferences {
                 level,
                 at_reference,
                 placement: None,
+                deletion: CreatedDeletion::Kept,
             },
         );
         Some(form_id)
@@ -117,14 +135,37 @@ impl CreatedReferences {
         self.by_alias.values().flat_map(|aliases| aliases.values())
     }
 
-    /// Record where `form_id` stands.
-    pub fn place(&mut self, form_id: u32, placement: CreatedPlacement) {
-        if let Some(record) = self
-            .by_alias
+    /// `DeleteWhenAble` on `form_id`; `false` when it is no created
+    /// reference (an authored one cannot be deleted).
+    pub fn delete_when_able(&mut self, form_id: u32) -> bool {
+        match self.record_mut(form_id) {
+            Some(record) => {
+                if record.deletion == CreatedDeletion::Kept {
+                    record.deletion = CreatedDeletion::WhenAble;
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Delete `form_id` (its cell is gone): it never spawns again.
+    pub fn mark_deleted(&mut self, form_id: u32) {
+        if let Some(record) = self.record_mut(form_id) {
+            record.deletion = CreatedDeletion::Deleted;
+        }
+    }
+
+    fn record_mut(&mut self, form_id: u32) -> Option<&mut CreatedReference> {
+        self.by_alias
             .values_mut()
             .flat_map(|aliases| aliases.values_mut())
             .find(|record| record.form_id == form_id)
-        {
+    }
+
+    /// Record where `form_id` stands.
+    pub fn place(&mut self, form_id: u32, placement: CreatedPlacement) {
+        if let Some(record) = self.record_mut(form_id) {
             record.placement = Some(placement);
         }
     }
