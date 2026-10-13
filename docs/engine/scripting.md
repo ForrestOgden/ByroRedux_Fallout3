@@ -747,6 +747,72 @@ Not modelled yet:
   registrations (`RegisterForDistanceLessThanEvent`, `RegisterForCustomEvent`);
 - package End fragments (procedure completion).
 
+### The frame budget (M47.2, #5763)
+
+Every interpreter system is an exclusive `Update` system, so what the VM
+spends in a frame is serial main-thread time. The 100 000-statement cap bounds
+one run, not a frame. `fragment/budget.rs` adds a shared per-frame allowance,
+`VmFrameBudget` (default 10 000 statements, about 1.4 ms at the census rate of
+0.14 µs a statement), renewed by `event_cleanup_system` at the end of every
+frame. A run also pays `RUN_START_COST` (16 statements) when it starts, for
+the fixed work around it. The unit is a statement count, not a clock reading:
+it is deterministic, so the tests assert on it.
+
+When the allowance is gone:
+
+- **A run that has not started is deferred.** It is queued unchanged on the
+  `FragmentExecutionQueue` with no delay and starts on a later frame. This is
+  one check in `apply_effects` (every `Effect::Interpret`), plus an earlier one
+  in the reference-event and update systems so a burst does not pay the
+  scheduler snapshot per delivery just to be deferred. A due `OnUpdate` the
+  allowance cannot start is not queued but left due: a periodic registration
+  re-arms when taken, so queueing would pile runs up behind a budget the demand
+  exceeds. It is delivered once, on the first frame with allowance left.
+- **A run in progress yields.** After the statement that used the last of the
+  allowance, the run suspends between two statements, exactly as a zero-second
+  `Utility.Wait` would: the same `VmResume` frames, resumed innermost-first
+  from the next statement. The resume carries the statements already used
+  (`VmResume.carried_steps`), so the per-run cap bounds the whole logical run.
+  A real wait carries nothing, so a polling loop with a `Wait` is unchanged.
+
+**A handler that never finishes** is neither starved nor immortal. It runs in
+slices, in queue order behind anything raised earlier, and is stopped with a
+`step limit` warning at the same 100 000 cumulative statements the cap always
+allowed: one `While True` handler takes about 11 frames, five of them about
+51, none over the allowance. The work it displaces runs a few frames later.
+
+What a slice cannot split: a statement inside a function called for its value
+(a suspended frame cannot hand a value back) and any run whose frames hold an
+array or struct local (the saved continuation stores scalars only, the limit
+`Utility.Wait` already has). Those finish in the frame they started, capped at
+100 000 statements, and are charged to the allowance so the work queued behind
+them defers (#5764).
+
+**`ReferenceScriptIndex`** answers "is this reference loaded, and which
+scripts does it carry" in one hash lookup. `script_update_system` and the
+VM's cross-reference calls used to scan every attached script (and every
+FormID-tagged entity) for it, each frame. The map is rebuilt once, at the first
+lookup after an attach; the FormID is read then, so a reference whose
+`FormIdComponent` arrives after its scripts is found. An unloaded reference is
+not tracked: `lookup` re-checks the entity it finds, so a despawned or reused
+one reads as not loaded, and a reload attaches again. An idle
+`script_update_system` is now the clock advance plus one pass over the
+registrations (0.07 µs from 0 to 20 000 attached scripts; it was 0.3 µs a
+script).
+
+Measured with `cargo test -p byroredux-scripting --release --lib -- --ignored
+--nocapture vm_cost` (`docs/audits/BENCH_vm-cost_after-5763.txt`):
+
+| Case | Before | After |
+|---|---|---|
+| Idle `script_update_system`, 5 000 / 20 000 attached | 1 579 / 6 874 µs | 0.07 / 0.07 µs |
+| One runaway handler, first frame | 13.8 ms | 1.4 ms (killed after ~11 frames) |
+| Five runaway handlers, first frame | 69 ms | 1.4 ms (~51 frames) |
+| `OnCellLoad` to 5 000 references, first frame | 15.4 ms | 6.9 ms (17 frames to drain) |
+| 5 000 references polling at 1 s, worst frame | 13.1 ms | 2.5 ms |
+
+The save format went to v72 for `carried_steps`.
+
 ### Reference scripts on the VM (M47.2)
 
 A script attached to a placed reference — through the reference's own VMAD or

@@ -112,7 +112,7 @@ pub use fragment::{
     QuestScriptInstances,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
     attach_reference_script, check_reference_script, reference_script_event_system,
-    PapyrusReferenceScripts, ReferenceScript, DELIVERED_EVENTS,
+    PapyrusReferenceScripts, ReferenceScript, ReferenceScriptIndex, VmFrameBudget, VmFrameUse, DELIVERED_EVENTS,
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     package_fragment_system, populate_package_fragments, report_package_transition, PackageFragmentSet,
     PackageFragments, PackageTransition, PendingPackageTransitions,
@@ -275,6 +275,11 @@ pub fn register(world: &mut World) {
     // M47.2 — quest location-alias bindings (saved, like the ledger above).
     if world.try_resource::<LocationAliasBindings>().is_none() {
         world.insert_resource(LocationAliasBindings::default());
+    }
+    // M47.2 — the Papyrus interpreter's per-frame allowance (#5763); transient,
+    // renewed by `event_cleanup_system` at the end of every frame.
+    if world.try_resource::<VmFrameBudget>().is_none() {
+        world.insert_resource(VmFrameBudget::default());
     }
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();

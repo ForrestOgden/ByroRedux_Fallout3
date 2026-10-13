@@ -32,6 +32,18 @@ pub fn fragment_activation_flush_system(world: &World, _dt: f32) {
 /// `Utility.Wait` has elapsed. A resumed tail can encounter another wait and
 /// requeue itself through [`apply_effects`].
 pub fn fragment_continuation_system(world: &World, dt: f32) {
+    // The interpreter's frame budget is already spent (#5763): nothing can
+    // start, so let the clocks run in place and leave the queue as it is —
+    // taking and re-pushing a backlog every frame costs more than it saves.
+    if super::budget::exhausted(world) {
+        if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+            let elapsed = dt.max(0.0);
+            for pending in &mut queue.pending {
+                pending.remaining_seconds -= elapsed;
+            }
+        }
+        return;
+    }
     // #2660 (SCR-D6-NEW11-03) — constructed up front (before the resume-
     // condition loop below, which needs the `SceneActorBindings` snapshot
     // for its own `actors_3d_loaded` check) rather than only once `ready`
@@ -100,7 +112,25 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
     }
 
     let mut emitted = Vec::new();
-    for pending in ready {
+    let mut ready = ready.into_iter();
+    for pending in ready.by_ref() {
+        // The interpreter's frame budget is spent: what is still ready waits
+        // for the next frame, untouched and in order, without paying the
+        // scheduler snapshot each run costs just to be deferred again.
+        if super::budget::exhausted(world) {
+            if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+                let mut waiting = vec![PendingFragmentExecution {
+                    remaining_seconds: 0.0,
+                    ..pending
+                }];
+                waiting.extend(ready.by_ref().map(|rest| PendingFragmentExecution {
+                    remaining_seconds: 0.0,
+                    ..rest
+                }));
+                queue.pending.extend(waiting);
+                break;
+            }
+        }
         emitted.extend(apply_fragment_guard_free(
             world,
             &pending.effects,

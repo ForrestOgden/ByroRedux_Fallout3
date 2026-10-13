@@ -3540,6 +3540,16 @@ pub fn apply_effects(
                 resume,
             } = effect
             {
+                // The frame's interpreter budget is spent: this run, and the
+                // rest of the program behind it, start on a later frame.
+                if super::budget::exhausted(world) {
+                    let mut tail = vec![effect.clone()];
+                    tail.extend(remaining_program(current, index, &pending));
+                    if super::budget::defer(world, context, vmad, tail).is_ok() {
+                        halted = true;
+                        break;
+                    }
+                }
                 let (run, suspended) = super::vm::run_fragment(
                     script,
                     function,

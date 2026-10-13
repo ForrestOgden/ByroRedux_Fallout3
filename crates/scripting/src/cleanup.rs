@@ -84,6 +84,11 @@ use byroredux_core::ecs::world::World;
 /// they outlive individual frames and are removed by the script's own
 /// `UnregisterFor*` logic.
 pub fn event_cleanup_system(world: &World, _dt: f32) {
+    // The frame is over: the Papyrus interpreter's allowance (#5763) is whole
+    // again for the next one.
+    if let Some(mut budget) = world.try_resource_mut::<crate::fragment::VmFrameBudget>() {
+        budget.reset();
+    }
     drain_component::<ActivateEvent>(world);
     drain_component::<HitEvent>(world);
     drain_component::<SplashEvent>(world);

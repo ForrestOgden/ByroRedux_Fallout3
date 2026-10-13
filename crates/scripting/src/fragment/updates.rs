@@ -236,45 +236,79 @@ impl ScriptUpdates {
         &self.registrations
     }
 
-    /// Advance the clocks and take the registrations now due, re-arming the
-    /// periodic ones. `held` keeps a due registration for a later tick.
-    fn take_due(&mut self, dt: f32, game_hours: Option<f64>, held: impl Fn(&UpdateRegistration) -> Hold) -> Vec<UpdateRegistration> {
+    /// Advance the clocks and return the indices of the registrations now due.
+    /// The registrations themselves are untouched (a due one has its first
+    /// deadline fixed), so the caller can decide each one's [`Hold`] without
+    /// this resource locked, then [`settle`](Self::settle) them.
+    fn advance(&mut self, dt: f32, game_hours: Option<f64>) -> Vec<usize> {
         self.seconds += f64::from(dt.max(0.0));
         if let Some(hours) = game_hours.filter(|hours| hours.is_finite()) {
             self.game_hours = Some(hours);
         }
-        let mut due = Vec::new();
         let (seconds, game_hours) = (self.seconds, self.game_hours);
-        self.registrations.retain_mut(|r| {
+        let mut due = Vec::new();
+        for (index, r) in self.registrations.iter_mut().enumerate() {
             let now = match r.clock {
                 UpdateClock::RealTime => seconds,
                 UpdateClock::GameTime => match game_hours {
                     Some(hours) => hours,
-                    None => return true,
+                    None => continue,
                 },
             };
             let due_at = *r.due.get_or_insert(now + f64::from(r.interval));
-            if due_at > now {
-                return true;
+            if due_at <= now {
+                due.push(index);
             }
-            match held(r) {
-                Hold::Drop => return false,
-                Hold::Wait => return true,
-                Hold::Deliver => {}
-            }
-            due.push(r.clone());
-            if !r.recurring {
-                return false;
-            }
-            // One update per tick, however far the clock jumped.
-            r.due = Some(now + f64::from(r.interval.max(f32::EPSILON)));
-            true
-        });
+        }
         due
+    }
+
+    /// Apply each due registration's `hold` (indices from [`advance`](Self::advance),
+    /// ascending): a dropped one is removed, a waiting one stays due for a later
+    /// tick, and a delivered one is returned — removed when one-shot, re-armed
+    /// when periodic.
+    fn settle(&mut self, holds: &[(usize, Hold)]) -> Vec<UpdateRegistration> {
+        let (seconds, game_hours) = (self.seconds, self.game_hours);
+        let mut delivered = Vec::new();
+        let mut removed = std::collections::HashSet::new();
+        for &(index, hold) in holds {
+            let Some(r) = self.registrations.get_mut(index) else {
+                continue;
+            };
+            match hold {
+                Hold::Drop => {
+                    removed.insert(index);
+                }
+                Hold::Wait => {}
+                Hold::Deliver => {
+                    delivered.push(r.clone());
+                    if !r.recurring {
+                        removed.insert(index);
+                        continue;
+                    }
+                    let now = match r.clock {
+                        UpdateClock::RealTime => seconds,
+                        UpdateClock::GameTime => game_hours.unwrap_or(seconds),
+                    };
+                    // One update per tick, however far the clock jumped.
+                    r.due = Some(now + f64::from(r.interval.max(f32::EPSILON)));
+                }
+            }
+        }
+        if !removed.is_empty() {
+            let mut index = 0;
+            self.registrations.retain(|_| {
+                let keep = !removed.contains(&index);
+                index += 1;
+                keep
+            });
+        }
+        delivered
     }
 }
 
 /// What a due registration does this tick.
+#[derive(Debug, Clone, Copy)]
 enum Hold {
     Deliver,
     /// Its reference is unloaded: deliver when it loads.
@@ -293,51 +327,87 @@ impl Resource for UpdateHandlerChecks {}
 
 /// Deliver the update events now due. `game_hours` is the host's absolute
 /// game clock in hours, when it has one.
+///
+/// Idle cost is the clock advance plus one pass over the registrations
+/// (#5763): nothing else is read until a registration is due, and a due one
+/// finds its reference through [`ReferenceScriptIndex`] instead of a map of
+/// every attached script rebuilt each frame.
 pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
+    // The registrations that are due, copied out so no lock on `ScriptUpdates`
+    // is held while their owners are looked up.
+    let due_now: Vec<(usize, UpdateRegistration)> = {
+        let Some(mut updates) = world.try_resource_mut::<ScriptUpdates>() else {
+            return;
+        };
+        let due = updates.advance(dt, game_hours);
+        due.into_iter().map(|index| (index, updates.registrations[index].clone())).collect()
+    };
+    if due_now.is_empty() {
+        return;
+    }
     let quests = world
         .try_resource::<crate::QuestScriptInstances>()
         .map(|instances| Arc::clone(&instances.0))
         .unwrap_or_default();
     let fragments = world.resource::<QuestStageFragments>().clone();
-    // The loaded references' scripts, by FormID.
-    let mut references: HashMap<u32, Vec<ReferenceScript>> = HashMap::new();
-    if let Some(attached) = world.query::<PapyrusReferenceScripts>() {
-        for (entity, scripts) in attached.iter() {
-            if let Some(form) = crate::condition::entity_global_form_id(world, entity) {
-                references.entry(form).or_default().extend(scripts.0.iter().cloned());
-            }
-        }
-    }
-    // Each owner's standing, read before the registrations are written: a
-    // quest delivers while it runs, a reference while it is loaded.
-    let owners: Vec<u32> = match world.try_resource::<ScriptUpdates>() {
-        Some(updates) => updates.registrations.iter().map(|r| r.owner).collect(),
-        None => return,
-    };
-    let holds: HashMap<u32, bool> = {
+    // Each owner's standing: a quest delivers while it runs, a reference while
+    // it is loaded. Quest state is read first and released.
+    let quest_standing: Vec<Option<bool>> = {
         let stages = world.resource::<QuestStageState>();
-        owners
-            .into_iter()
-            .filter_map(|owner| {
-                let quest = QuestFormId(owner);
+        due_now
+            .iter()
+            .map(|(_, r)| {
+                let quest = QuestFormId(r.owner);
                 let is_quest = quests.contains_key(&quest) || fragments.vmad(quest).is_some() || stages.is_started(quest);
-                is_quest.then(|| (owner, stages.is_running(quest)))
+                is_quest.then(|| stages.is_running(quest))
             })
             .collect()
     };
-    let due = world.resource_mut::<ScriptUpdates>().take_due(dt, game_hours, |r| match holds.get(&r.owner) {
-        Some(true) => Hold::Deliver,
-        Some(false) => Hold::Drop,
-        None if references.contains_key(&r.owner) => Hold::Deliver,
-        None => Hold::Wait,
-    });
+    let holds: Vec<(usize, Hold)> = due_now
+        .iter()
+        .zip(&quest_standing)
+        .map(|((index, r), standing)| {
+            let hold = match standing {
+                Some(true) => Hold::Deliver,
+                Some(false) => Hold::Drop,
+                None if ReferenceScriptIndex::lookup(world, r.owner).is_some() => Hold::Deliver,
+                None => Hold::Wait,
+            };
+            (*index, hold)
+        })
+        .collect();
+    // A registration the frame's interpreter budget cannot start stays due
+    // rather than queueing: a periodic one has already re-armed by the time a
+    // queued run would start, so queueing would pile runs up behind a budget
+    // the demand exceeds. Held back, it is delivered on the first frame with
+    // allowance left, once however many ticks passed — the same coalescing a
+    // clock jump gets.
+    let mut starts = super::budget::runs_startable(world);
+    let holds: Vec<(usize, Hold)> = holds
+        .into_iter()
+        .map(|(index, hold)| match hold {
+            Hold::Deliver if starts == 0 => (index, Hold::Wait),
+            Hold::Deliver => {
+                starts -= 1;
+                (index, Hold::Deliver)
+            }
+            other => (index, other),
+        })
+        .collect();
+    let on_quest: std::collections::HashSet<u32> = due_now
+        .iter()
+        .zip(&quest_standing)
+        .filter(|(_, standing)| standing.is_some())
+        .map(|((_, r), _)| r.owner)
+        .collect();
+    let due = world.resource_mut::<ScriptUpdates>().settle(&holds);
     if due.is_empty() {
         return;
     }
     let mut advances = Vec::new();
     for registration in due {
         let owner = QuestFormId(registration.owner);
-        let on_quest = holds.contains_key(&registration.owner);
+        let on_quest = on_quest.contains(&registration.owner);
         let event = registration.clock.event(registration.timer.is_some());
         let key = (registration.script.to_ascii_lowercase(), event, on_quest);
         let cached = world
@@ -360,8 +430,10 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
         }
         let vmad = match quests.get(&owner).or_else(|| fragments.vmad(owner)) {
             Some(vmad) => Some(vmad.clone()),
-            None => references.get(&registration.owner).and_then(|scripts| {
-                scripts
+            None => ReferenceScriptIndex::lookup(world, registration.owner).and_then(|entity| {
+                let attached = world.get::<PapyrusReferenceScripts>(entity)?;
+                attached
+                    .0
                     .iter()
                     .find(|script| script.script.eq_ignore_ascii_case(&registration.script))
                     .map(|script| (*script.vmad).clone())
@@ -377,6 +449,16 @@ pub fn script_update_system(world: &World, dt: f32, game_hours: Option<f64>) {
             resume: None,
         };
         log::debug!("{:08X}: {}.{event}", registration.owner, registration.script);
+        // The interpreter's frame budget is spent: the rest of the due
+        // registrations queue for the next frame, in order, unrun.
+        let effect = if super::budget::exhausted(world) {
+            match super::budget::defer(world, owner, vmad.as_ref(), vec![effect]) {
+                Ok(()) => continue,
+                Err(mut effects) => effects.remove(0),
+            }
+        } else {
+            effect
+        };
         advances.extend(apply_fragment_guard_free(
             world,
             std::slice::from_ref(&effect),

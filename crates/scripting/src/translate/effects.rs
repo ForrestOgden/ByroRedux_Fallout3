@@ -2689,6 +2689,11 @@ pub struct VmResume {
     /// The suspended frames, outermost (the fragment) first; each caller's
     /// path ends at the call statement its callee suspended in.
     pub frames: Vec<VmFrame>,
+    /// Statements the logical run has already executed when the frame budget
+    /// (not a `Utility.Wait`) suspended it, so the per-run statement cap
+    /// still bounds the whole run; 0 after a real wait, which starts the
+    /// count afresh as it always did.
+    pub carried_steps: u32,
 }
 
 /// One suspended function activation of a [`VmResume`].

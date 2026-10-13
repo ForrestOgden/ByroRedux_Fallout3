@@ -56,6 +56,7 @@ use byroredux_papyrus::span::Spanned;
 use crate::translate::compose::{ObjectRef, QuestRef};
 use crate::translate::effects::{ActorRef, Effect};
 
+pub mod budget;
 mod effects;
 mod package;
 mod populate;
@@ -65,6 +66,7 @@ mod systems;
 mod updates;
 pub mod vm;
 
+pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST};
 pub use effects::*;
 pub use package::*;
 pub use populate::*;
@@ -90,6 +92,7 @@ pub use updates::*;
 /// runtime precisely so a test's own source cannot satisfy them.
 #[cfg(test)]
 pub(crate) const SOURCES: &str = concat!(
+    include_str!("fragment/budget.rs"),
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),
     include_str!("fragment/package.rs"),

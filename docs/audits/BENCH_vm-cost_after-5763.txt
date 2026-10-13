@@ -1,0 +1,43 @@
+Papyrus VM per-frame cost census AFTER the frame budget and the reference-script index (#5763)
+Engine: a3a7a43b0 + the #5763 change (statement allowance 10000/frame, RUN_START_COST 16, ReferenceScriptIndex)
+Repro: cargo test -p byroredux-scripting --release --lib -- --ignored --nocapture vm_cost
+Before-the-change numbers for A-D are in BENCH_vm-cost_a3a7a43b0.txt. In B-D below 'unbudgeted' strips the
+allowance (what ran before the budget, but WITH the index), 'budgeted' is production. A, the idle scan, is the
+index's effect: script_update was 0.34 / 32.4 / 314.6 / 1578.6 / 6874.2 us at 0 / 100 / 1000 / 5000 / 20000 refs.
+Same machine, desktop apps resident, not idle. Frame time is the sum of the four interpreter systems plus the
+end-of-frame cleanup that renews the allowance.
+
+A. idle frame (no events), µs per call of each VM system
+    refs     ref_events     quest_frag   continuation  script_update
+       0           0.61           0.13           0.40           0.07
+     100           0.80           0.14           0.53           0.11
+    1000           3.27           0.16           0.43           0.07
+    5000          14.11           0.14           0.43           0.07
+   20000          55.91           0.14           0.42           0.07
+
+B. burst: OnCellLoad to every attached reference in one frame
+    refs       mode      frame1_ms       drain_ms   frames       worst_ms
+    1000 unbudgeted          2.892          2.892        1          2.892
+    1000   budgeted          1.664          3.832        4          1.664
+    5000 unbudgeted         15.422         15.422        1         15.422
+    5000   budgeted          6.924         23.763       17          6.924
+
+C. polling: RegisterForUpdate(interval), 60 fps frames, µs per frame (all VM systems)
+    refs   interval       mode  mean_us/frame   max_us/frame
+     100        1.0 unbudgeted           5.13         250.72
+     100        1.0   budgeted           5.58         278.33
+    1000        1.0 unbudgeted          41.66        2435.04
+    1000        1.0   budgeted          49.01        1782.44
+    1000        0.1 unbudgeted         392.36        3404.53
+    1000        0.1   budgeted         434.58        1703.36
+    5000        1.0 unbudgeted         219.24       13082.22
+    5000        1.0   budgeted         237.80        2473.50
+    5000        0.1 unbudgeted        1918.76       13501.97
+    5000        0.1   budgeted        1732.38        2535.48
+
+D. runaway handlers (100000-statement cap each), OnActivate
+handlers       mode      frame1_ms       total_ms   frames       worst_ms
+       1 unbudgeted         13.809         13.809        1         13.809
+       1   budgeted          1.405         13.792       11          1.405
+       5 unbudgeted         69.263         69.263        1         69.263
+       5   budgeted          1.380         69.092       51          1.648

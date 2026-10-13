@@ -424,7 +424,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v70 -> v71 (M47.2): `Effect::SetPlayerTeammate` / `SetDoingFavor`,
 /// `FragmentGuard::ActorFollower` and the `FollowerState` resource column.
-pub const FORMAT_MAJOR: u16 = 71;
+///
+/// v71 -> v72 (M47.2, #5763): `VmResume` gained the required `carried_steps`
+/// (the statements a frame-budget yield carries so the per-run cap still
+/// bounds the whole run), reachable through a saved continuation.
+pub const FORMAT_MAJOR: u16 = 72;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -32,7 +32,10 @@
 //! attached to; an unwritten one reads what the script declares.
 //!
 //! `Utility.Wait` suspends the run anywhere in a statement call chain; the
-//! frames ride an `Effect::Interpret` resume on the continuation queue.
+//! frames ride an `Effect::Interpret` resume on the continuation queue. The
+//! per-frame statement budget ([`super::budget`], #5763) suspends a run the
+//! same way, between two statements, with a zero delay; see there for what
+//! cannot be split.
 //!
 //! [`check_function`] decides ahead of time, against typed placeholders,
 //! whether every statement and call of a fragment (and of the script
@@ -266,6 +269,14 @@ fn frame_state(frame: &Frame, code: &Code, function: &str, path: Vec<VmStep>) ->
     })
 }
 
+/// Every local of `frame` can be stored in a [`VmFrame`] (no array or struct).
+fn locals_storable(frame: &Frame) -> bool {
+    frame
+        .locals
+        .values()
+        .all(|value| !matches!(value, Value::Array(_) | Value::Struct(_)))
+}
+
 fn restore_locals(frame: &VmFrame) -> HashMap<String, Value> {
     frame
         .locals
@@ -315,6 +326,15 @@ struct Vm<'a> {
     steps: usize,
     depth: usize,
     advances: Vec<QuestStageAdvanced>,
+    /// The frame budget this run may spend (statements), the statements it
+    /// has spent of it, and whether it suspended because that ran out.
+    allowance: usize,
+    spent: usize,
+    yielded: bool,
+    /// Calls for a value in progress, and calling frames holding an array or
+    /// struct local: a run cannot suspend while either is on the stack.
+    value_calls: usize,
+    blocked_callers: usize,
 }
 
 /// Run `script`'s `function` attached to `context` — a quest's fragment, or
@@ -345,9 +365,18 @@ pub(super) fn run_fragment(
         stages,
         objectives,
         deferred,
-        steps: 0,
+        // A run the frame budget suspended counts its earlier statements
+        // against the cap; one a wait suspended starts over.
+        steps: resume.map_or(0, |state| state.carried_steps as usize),
         depth: 0,
         advances: Vec::new(),
+        allowance: world
+            .try_resource::<super::VmFrameBudget>()
+            .map_or(usize::MAX, |budget| budget.remaining()),
+        spent: super::RUN_START_COST,
+        yielded: false,
+        value_calls: 0,
+        blocked_callers: 0,
     };
     let frame = Frame {
         script: Arc::clone(&script),
@@ -387,7 +416,10 @@ pub(super) fn run_fragment(
         },
     }
     .map(|flow| match flow {
-        Flow::Suspend(seconds, _, frames) => Some((seconds, VmResume { frames })),
+        Flow::Suspend(seconds, _, frames) => {
+            let carried_steps = if vm.yielded { vm.steps as u32 } else { 0 };
+            Some((seconds, VmResume { frames, carried_steps }))
+        }
         _ => None,
     });
     let suspended = match run {
@@ -401,6 +433,14 @@ pub(super) fn run_fragment(
             None
         }
     };
+    // Settle with the frame's budget: what this run spent, and whether it was
+    // cut short by it.
+    if let Some(mut budget) = world.try_resource_mut::<super::VmFrameBudget>() {
+        budget.charge(vm.spent);
+        if vm.yielded {
+            budget.note_yielded();
+        }
+    }
     (vm.advances, suspended)
 }
 
@@ -826,10 +866,21 @@ impl Vm<'_> {
 
     fn tick(&mut self) -> Run<()> {
         self.steps += 1;
+        self.spent += 1;
         if self.steps > MAX_STEPS {
             return stop("step limit");
         }
         Ok(())
+    }
+
+    /// The run has used its frame allowance and may stop here, between two
+    /// statements: nothing on the stack needs a value back or holds a local
+    /// the saved continuation cannot store.
+    fn should_yield(&self, frame: &Frame) -> bool {
+        self.spent >= self.allowance
+            && self.value_calls == 0
+            && self.blocked_callers == 0
+            && locals_storable(frame)
     }
 
     /// The body a call of `name` on `owner`'s instance of `script` runs, in
@@ -914,7 +965,7 @@ impl Vm<'_> {
         }
         let callable = code.callable(function)?;
         self.depth += 1;
-        let flow = self.exec_block(frame, callable.body, path, inner);
+        let flow = self.exec_block(frame, callable.body, path, inner, true);
         self.depth -= 1;
         flow
     }
@@ -941,7 +992,10 @@ impl Vm<'_> {
     /// A function called for its value; it may not wait.
     fn call_function(&mut self, frame: Frame, code: &Code, name: &str, args: Vec<Value>) -> Run<Value> {
         let mut frame = self.enter(frame, code, name, args)?;
-        Ok(match self.run_frame(&mut frame, code, name, None, &[])? {
+        self.value_calls += 1;
+        let flow = self.run_frame(&mut frame, code, name, None, &[]);
+        self.value_calls -= 1;
+        Ok(match flow? {
             Flow::Return(value) => value,
             Flow::Normal => Value::None,
             Flow::Suspend(..) => return stop("a wait in a function called for its value"),
@@ -1026,6 +1080,9 @@ impl Vm<'_> {
         body: &[Spanned<Stmt>],
         resume: Option<&[VmStep]>,
         inner: &[VmFrame],
+        // `body` is a function's own body, not a branch inside one: nothing of
+        // this function follows its last statement.
+        ends_function: bool,
     ) -> Run<Flow> {
         let mut start = 0;
         if let Some(path) = resume {
@@ -1050,7 +1107,17 @@ impl Vm<'_> {
         }
         for (index, statement) in body.iter().enumerate().skip(start) {
             match self.exec(frame, &statement.node)? {
-                Flow::Normal => {}
+                Flow::Normal => {
+                    // The frame budget ran out: suspend after this statement,
+                    // as a zero-second `Utility.Wait` here would.
+                    if !(ends_function && index + 1 == body.len()) && self.should_yield(frame) {
+                        self.yielded = true;
+                        return Ok(suspend_at(
+                            VmStep::Statement(index as u32),
+                            Flow::Suspend(0.0, Vec::new(), Vec::new()),
+                        ));
+                    }
+                }
                 flow => return Ok(suspend_at(VmStep::Statement(index as u32), flow)),
             }
         }
@@ -1086,11 +1153,11 @@ impl Vm<'_> {
                         None => return stop("a resume path into a missing ElseIf"),
                     },
                 };
-                let flow = self.exec_block(frame, block, Some(rest), inner)?;
+                let flow = self.exec_block(frame, block, Some(rest), inner, false)?;
                 Ok(suspend_at(VmStep::Branch(*branch), flow))
             }
             Stmt::While { condition, body } => {
-                match self.exec_block(frame, body, Some(rest), inner)? {
+                match self.exec_block(frame, body, Some(rest), inner, false)? {
                     Flow::Normal => self.exec_while(frame, &condition.node, body),
                     flow => Ok(suspend_at(VmStep::Branch(0), flow)),
                 }
@@ -1102,7 +1169,7 @@ impl Vm<'_> {
     fn exec_while(&mut self, frame: &mut Frame, condition: &Expr, body: &[Spanned<Stmt>]) -> Run<Flow> {
         while self.eval(frame, condition)?.truthy() {
             self.tick()?;
-            match self.exec_block(frame, body, None, &[])? {
+            match self.exec_block(frame, body, None, &[], false)? {
                 Flow::Normal => {}
                 flow => return Ok(suspend_at(VmStep::Branch(0), flow)),
             }
@@ -1155,17 +1222,17 @@ impl Vm<'_> {
                 else_body,
             } => {
                 if self.eval(frame, &condition.node)?.truthy() {
-                    let flow = self.exec_block(frame, body, None, &[])?;
+                    let flow = self.exec_block(frame, body, None, &[], false)?;
                     return Ok(suspend_at(VmStep::Branch(0), flow));
                 }
                 for (k, (condition, body)) in elseif_clauses.iter().enumerate() {
                     if self.eval(frame, &condition.node)?.truthy() {
-                        let flow = self.exec_block(frame, body, None, &[])?;
+                        let flow = self.exec_block(frame, body, None, &[], false)?;
                         return Ok(suspend_at(VmStep::Branch(k as u32 + 1), flow));
                     }
                 }
                 if let Some(body) = else_body {
-                    let flow = self.exec_block(frame, body, None, &[])?;
+                    let flow = self.exec_block(frame, body, None, &[], false)?;
                     return Ok(suspend_at(VmStep::Branch(u32::MAX), flow));
                 }
             }
@@ -1491,7 +1558,7 @@ impl Vm<'_> {
     /// The scripts the VM runs on the reference `form`, with their
     /// properties: (script, its VMAD), loaded references only.
     fn reference_scripts(&self, form: u32) -> Vec<(Arc<Script>, Arc<ScriptInstanceData>)> {
-        let Some(entity) = self.entity_of(form) else {
+        let Some(entity) = super::ReferenceScriptIndex::lookup(self.world, form) else {
             return Vec::new();
         };
         let Some(attached) = self.world.get::<super::PapyrusReferenceScripts>(entity) else {
@@ -2061,8 +2128,13 @@ impl Vm<'_> {
             let name = callee_name(&callee.node);
             let values = self.eval_args(frame, args)?;
             let mut callee_frame = self.enter(callee_frame, &code, &name, values)?;
-            let flow = self.run_frame(&mut callee_frame, &code, &name, None, &[])?;
-            return self.callee_flow(flow, &callee_frame, &code, &name);
+            // The caller stays on the stack while the callee runs: if it holds
+            // a local a suspension cannot store, the callee must not suspend.
+            let blocked = !locals_storable(frame);
+            self.blocked_callers += usize::from(blocked);
+            let flow = self.run_frame(&mut callee_frame, &code, &name, None, &[]);
+            self.blocked_callers -= usize::from(blocked);
+            return self.callee_flow(flow?, &callee_frame, &code, &name);
         }
         // `GotoState`'s `OnEndState` / `OnBeginState` the script does not
         // handle: the empty events every script inherits.

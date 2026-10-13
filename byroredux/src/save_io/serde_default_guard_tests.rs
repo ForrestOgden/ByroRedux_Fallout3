@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 71;
+    const BASELINE_MAJOR: u16 = 72;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -952,7 +952,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v70 -> v71):
     // `Effect::SetPlayerTeammate` / `SetDoingFavor`,
     // `FragmentGuard::ActorFollower`, the `FollowerState` column.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1986_06a6_d718_d451;
+    // 2026-10-13 (M47.2, #5763) — refreshed WITH a major bump (v71 -> v72):
+    // `VmResume.carried_steps` (a saved continuation's frame-budget yield).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xfaab_972a_7fc8_26ec;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

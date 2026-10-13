@@ -81,6 +81,67 @@ impl Component for PapyrusReferenceScripts {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// FormID → entity for the references that carry [`PapyrusReferenceScripts`]
+/// (#5763). `script_update_system` and the VM's cross-reference calls used to
+/// find a reference by scanning every attached entity (and `entity_of` scans
+/// every FormID-tagged one) each time; this answers in one hash lookup.
+///
+/// Maintained on attach: [`attach_reference_script`] marks the set changed, and
+/// the next lookup rebuilds the map once from the attached components — the
+/// FormID is read then, so a reference whose `FormIdComponent` lands after its
+/// scripts is still found. Unloading is not tracked: a cell unload despawns
+/// the entity, and [`ReferenceScriptIndex::lookup`] re-checks the entity it
+/// finds, so a despawned or reused one reads as not loaded. A reload attaches
+/// again and the next lookup picks it up. Transient: never saved.
+#[derive(Debug, Default)]
+pub struct ReferenceScriptIndex {
+    by_form: HashMap<u32, EntityId>,
+    /// Bumped by every attach; the map is current when `built == attached`.
+    attached: u64,
+    built: u64,
+}
+
+impl Resource for ReferenceScriptIndex {}
+
+impl ReferenceScriptIndex {
+    fn note_attached(&mut self) {
+        self.attached += 1;
+    }
+
+    /// Rebuild the map when an attach has happened since it was built.
+    fn refresh(world: &World) {
+        let stale = world
+            .try_resource::<ReferenceScriptIndex>()
+            .is_some_and(|index| index.built != index.attached);
+        if !stale {
+            return;
+        }
+        let mut by_form = HashMap::new();
+        if let Some(attached) = world.query::<PapyrusReferenceScripts>() {
+            for (entity, _) in attached.iter() {
+                if let Some(form) = crate::condition::entity_global_form_id(world, entity) {
+                    by_form.insert(form, entity);
+                }
+            }
+        }
+        if let Some(mut index) = world.try_resource_mut::<ReferenceScriptIndex>() {
+            index.by_form = by_form;
+            index.built = index.attached;
+        }
+    }
+
+    /// The loaded reference with FormID `form` that carries VM scripts;
+    /// `None` when there is none (never attached, or its cell unloaded).
+    pub fn lookup(world: &World, form: u32) -> Option<EntityId> {
+        Self::refresh(world);
+        let entity = world.try_resource::<ReferenceScriptIndex>()?.by_form.get(&form).copied()?;
+        // Re-check what the map says: the entity may have been despawned (its
+        // cell unloaded) or its id reused since the map was built.
+        world.get::<PapyrusReferenceScripts>(entity)?;
+        (crate::condition::entity_global_form_id(world, entity) == Some(form)).then_some(entity)
+    }
+}
+
 /// Attach `instance` — a script [`check_reference_script`] accepted, handling
 /// `events`, with the `scripts` its runs need — to `entity`.
 pub fn attach_reference_script(
@@ -113,13 +174,19 @@ pub fn attach_reference_script(
         }),
         events,
     };
-    let mut attached = world.query_mut::<PapyrusReferenceScripts>().expect("registered above");
-    match attached.get_mut(entity) {
-        Some(scripts) => scripts.0.push(script),
-        None => {
-            attached.insert(entity, PapyrusReferenceScripts(vec![script]));
+    {
+        let mut attached = world.query_mut::<PapyrusReferenceScripts>().expect("registered above");
+        match attached.get_mut(entity) {
+            Some(scripts) => scripts.0.push(script),
+            None => {
+                attached.insert(entity, PapyrusReferenceScripts(vec![script]));
+            }
         }
     }
+    if world.try_resource::<ReferenceScriptIndex>().is_none() {
+        world.insert_resource(ReferenceScriptIndex::default());
+    }
+    world.resource_mut::<ReferenceScriptIndex>().note_attached();
 }
 
 /// Where whether `script` has run its `OnInit` on a reference is kept, among
@@ -131,7 +198,10 @@ fn initialized_key(script: &str) -> ConditionStringId {
 /// One event delivery.
 struct Delivery {
     owner: u32,
-    script: ReferenceScript,
+    /// The script's name and properties; its handled-event list stays with the
+    /// component (cloning it per delivery was most of a burst's cost).
+    script: String,
+    vmad: Arc<ScriptInstanceData>,
     event: &'static str,
     args: Vec<VmStored>,
 }
@@ -146,7 +216,7 @@ pub fn reference_script_event_system(world: &World, _dt: f32) {
     for delivery in deliveries {
         let owner = QuestFormId(delivery.owner);
         if delivery.event == "OnInit" {
-            let key = initialized_key(&delivery.script.script);
+            let key = initialized_key(&delivery.script);
             let Some(mut variables) = world.try_resource_mut::<crate::QuestScriptVariables>() else {
                 continue;
             };
@@ -158,20 +228,30 @@ pub fn reference_script_event_system(world: &World, _dt: f32) {
         log::debug!(
             "reference {:08X}: {}.{}",
             delivery.owner,
-            delivery.script.script,
+            delivery.script,
             delivery.event
         );
         let effect = Effect::Interpret {
-            script: delivery.script.script.clone(),
+            script: delivery.script.clone(),
             function: delivery.event.to_owned(),
             args: delivery.args,
             resume: None,
+        };
+        // The interpreter's frame budget is spent: the rest of this frame's
+        // deliveries queue for the next one, in order, unrun.
+        let effect = if super::budget::exhausted(world) {
+            match super::budget::defer(world, owner, Some(&delivery.vmad), vec![effect]) {
+                Ok(()) => continue,
+                Err(mut effects) => effects.remove(0),
+            }
+        } else {
+            effect
         };
         advances.extend(apply_fragment_guard_free(
             world,
             std::slice::from_ref(&effect),
             owner,
-            Some(&delivery.script.vmad),
+            Some(&delivery.vmad),
         ));
     }
     if advances.is_empty() {
@@ -237,7 +317,8 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
                 if script.handles(event) {
                     deliveries.push(Delivery {
                         owner,
-                        script: script.clone(),
+                        script: script.script.clone(),
+                        vmad: Arc::clone(&script.vmad),
                         event,
                         args,
                     });

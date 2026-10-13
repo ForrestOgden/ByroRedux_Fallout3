@@ -673,6 +673,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PackageFragments", "M47.2 — the PF_ package fragments the Papyrus VM runs, populated once from the PACK VMADs and scripts, only read afterward"),
         ("PendingPackageTransitions", "M47.2 — package transitions the AI reports, drained the same frame by package_fragment_system"),
         ("UpdateHandlerChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an OnUpdate / OnUpdateGameTime handler, re-checked against the installed scripts on demand; never gameplay state"),
+        ("VmFrameBudget", "M47.2 (#5763) — the Papyrus interpreter's per-frame statement allowance, renewed by event_cleanup_system at the end of every frame; a save is taken between frames, so nothing of it is live state"),
+        ("ReferenceScriptIndex", "M47.2 (#5763) — FormID → entity for the references carrying PapyrusReferenceScripts, rebuilt from those components on the first lookup after an attach; derived, never gameplay state"),
         ("VmReferenceScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs a reference script, re-checked from the script archive on demand; never gameplay state"),
         ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
         // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no

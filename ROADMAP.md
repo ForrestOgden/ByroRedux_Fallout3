@@ -28,7 +28,7 @@ only.
 bin crate's MSRV since wasmtime 49. On it, the CI form `cargo clippy
 --workspace -- -D warnings` is **clean** (re-run 2026-10-13; `--all-targets`
 is not, Known Issues). The ABBA lock-order lane ran clean locally (9848 tests,
-no cycle). All 9955 tests pass.
+no cycle). All 9963 tests pass.
 The bench-of-record below was taken at
 `a3a7a43b0`, this close's HEAD. Its one open
 regression, **R6a-regress-22**, turned out to be
@@ -417,7 +417,7 @@ rewrite pressure.
 | Coordinate system                            | Z-up→Y-up with CW angle negation                                | Documented in `docs/engine/coordinate-system.md`. Keep.                                                                                                                                                                |
 | Rendering                                    | RT-first, rasterized fallback                                   | Scoped to RTX 4070 Ti target. Correct for this hardware. Keep.                                                                                                                                                         |
 | Legacy compat                                | Parse data, don't emulate engine                                | Better results, clean room, no copyright issues. Keep.                                                                                                                                                                 |
-| Scripting                                    | ECS-native; bounded interpreter fallback, per-frame budget pending | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. R5's one-quest prototype (closed 2026-05-16) confirmed the call; M47.2 builds on it.                             |
+| Scripting                                    | ECS-native; bounded interpreter fallback under a per-frame statement budget | Eliminates Papyrus queue latency, stack serialization, orphaned stacks. R5's one-quest prototype (closed 2026-05-16) confirmed the call; M47.2 builds on it.                             |
 
 ### Risk-reducers (R1–R7, 2026-04-22)
 
@@ -572,17 +572,18 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
 
 ### Performance and measurement
 
-- [ ] **Papyrus interpreter cost is unbudgeted** (#5763, measured 2026-10-13,
-  `docs/audits/BENCH_vm-cost_a3a7a43b0.txt`). Real cells are cheap: its
-  systems total ~70 µs/frame on Bleak Falls Barrow and single digits on the
-  Bannered Mare, and a scripted-scene A/B adds 0.16 ms (+1.0%). But all four
-  run as exclusive `Update` systems and nothing bounds them per frame. (1)
-  `script_update_system` rebuilds a map of every attached reference script
-  each frame, registration or not: ~0.31 µs per script (1.6 ms at 5 000, 6.9
-  ms at 20 000). (2) The 100 000-statement cap is per run: one runaway handler
-  costs 13.7 ms (82% of a 60 fps frame) and several in a frame add up. (3) An
-  `OnCellLoad` burst costs ~1.8 µs per reference (9 ms at 5 000). No per-frame
-  step budget exists. The Scripting keep-list row was reworded to match.
+- [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764;
+  #5763 fixed the three unbounded paths, 2026-10-13). All four interpreter systems run exclusive in `Update`
+  and now share a 10 000-statement frame allowance: a runaway frame fell from
+  13.6 ms to 1.4 ms, and a handler that never ends is killed at the old
+  100 000 statements, spread over ~10 frames. `script_update_system` no longer
+  scans the attached scripts (0.07 µs flat, was 6.9 ms at 20 000). Left: a
+  burst still pays ~0.8 µs a delivery to be deferred (5 000 references: 14.9 →
+  6.9 ms in its first frame, 1 000: 1.7 ms); a function called for its value,
+  or a frame holding an array or struct local, cannot suspend and runs whole
+  (capped at 100 000 statements, charged to the allowance);
+  `reference_script_event_system` still walks the attached scripts, 2.8 ns
+  each. Numbers: `docs/audits/BENCH_vm-cost_after-5763.txt`.
 - [ ] **R6a-regress-22 — residual after the camera move** (filed 2026-09-28,
   re-stated 2026-09-30 by #5128). The original reading ("FO4 frame time
   doubled between `4c9a5b36` and `99933f87b`, content unchanged") was a
@@ -699,16 +700,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-10-13 (session close, HEAD `a3a7a43b0`). Every
+Ground-truth as of 2026-10-13 (session close, HEAD `a3a7a43b0`, refreshed after #5763). Every
 figure in this table was measured at that HEAD, not carried forward.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | ~756 381                      |
-| Rust total lines (all `.rs`, excl. `target/`) | ~809 426                 |
-| Source files (`.rs`, excl. `target/`)   | 1288 total · 1195 outside `tests/` dirs (+44 / +42 since the 2026-10-12 close) |
+| Rust source lines (`src/` dirs)         | ~757 360                      |
+| Rust total lines (all `.rs`, excl. `target/`) | ~810 405                 |
+| Source files (`.rs`, excl. `target/`)   | 1289 total · 1196 outside `tests/` dirs (+45 / +43 since the 2026-10-12 close) |
 | Workspace members                       | 34 (count the `[workspace] members` block only; 29 crates + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **9955 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-13; 311 ignored; the lock-order detector is off in this count — a `BYRO_LOCK_ORDER_CHECK=1` run without `byroredux-ui` passed 9848). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Tests                                   | **9963 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.96.0, 2026-10-13; 312 ignored; the lock-order detector is off in this count — a `BYRO_LOCK_ORDER_CHECK=1` run without `byroredux-ui` passed 9848). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
 | Open issue directories                  | 5724 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 057** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-09-29 re-measure swept 102 968 over 4 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 968 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-09-29). |

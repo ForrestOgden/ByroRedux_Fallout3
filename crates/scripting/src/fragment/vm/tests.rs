@@ -1447,6 +1447,29 @@ fn vm_cost_us<F: FnMut()>(iters: u32, mut f: F) -> f64 {
     t.elapsed().as_secs_f64() * 1e6 / f64::from(iters)
 }
 
+/// Put `world` in the budgeted state production has (the default allowance and
+/// a continuation queue), or strip the budget to measure what ran before it.
+fn census_mode(world: &mut World, budgeted: bool) {
+    if budgeted {
+        world.insert_resource(crate::VmFrameBudget::default());
+        if world.try_resource::<crate::FragmentExecutionQueue>().is_none() {
+            world.insert_resource(crate::FragmentExecutionQueue::default());
+        }
+    } else {
+        world.remove_resource::<crate::VmFrameBudget>();
+    }
+}
+
+fn census_frame(world: &World) -> f64 {
+    let t = std::time::Instant::now();
+    crate::reference_script_event_system(world, 0.0);
+    crate::script_update_system(world, 1.0 / 60.0, Some(1.0));
+    crate::fragment_continuation_system(world, 1.0 / 60.0);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    crate::event_cleanup_system(world, 0.0);
+    ms
+}
+
 #[test]
 #[ignore = "timing census; run with --release --nocapture"]
 fn vm_cost_idle_burst_polling_runaway() {
@@ -1468,73 +1491,370 @@ fn vm_cost_idle_burst_polling_runaway() {
     }
 
     eprintln!("\nB. burst: OnCellLoad to every attached reference in one frame");
-    eprintln!("{:>8} {:>14} {:>14}", "refs", "frame_ms", "us_per_ref");
-    for n in [100usize, 1000, 5000] {
-        let (mut world, refs) = vm_cost_world(n, SRC, "VmCostScript");
-        // first delivery also runs OnInit; time the steady OnLoad after it
-        for r in &refs {
-            world.insert(*r, crate::OnCellLoadEvent);
-        }
-        crate::reference_script_event_system(&world, 0.0);
-        let mut total = 0.0;
-        let reps = 20;
-        for _ in 0..reps {
+    eprintln!("{:>8} {:>10} {:>14} {:>14} {:>8} {:>14}", "refs", "mode", "frame1_ms", "drain_ms", "frames", "worst_ms");
+    for n in [1000usize, 5000] {
+        for budgeted in [false, true] {
+            let (mut world, refs) = vm_cost_world(n, SRC, "VmCostScript");
+            census_mode(&mut world, budgeted);
             for r in &refs {
                 world.insert(*r, crate::OnCellLoadEvent);
             }
-            let t = std::time::Instant::now();
-            crate::reference_script_event_system(&world, 0.0);
-            total += t.elapsed().as_secs_f64() * 1e3;
+            let first = census_frame(&world);
+            for r in &refs {
+                world.remove::<crate::OnCellLoadEvent>(*r);
+            }
+            let (mut drain, mut frames, mut worst) = (first, 1, first);
+            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| q.len() > 0) && frames < 10_000 {
+                let ms = census_frame(&world);
+                drain += ms;
+                worst = worst.max(ms);
+                frames += 1;
+            }
+            let mode = if budgeted { "budgeted" } else { "unbudgeted" };
+            eprintln!("{n:>8} {mode:>10} {first:>14.3} {drain:>14.3} {frames:>8} {worst:>14.3}");
         }
-        let ms = total / f64::from(reps);
-        eprintln!("{n:>8} {ms:>14.3} {:>14.2}", ms * 1e3 / n as f64);
     }
 
-    eprintln!("\nC. polling: RegisterForUpdate(interval), 60 fps frames, µs per frame in script_update_system");
-    eprintln!("{:>8} {:>10} {:>14} {:>14}", "refs", "interval", "mean_us/frame", "max_us/frame");
+    eprintln!("\nC. polling: RegisterForUpdate(interval), 60 fps frames, µs per frame (all VM systems)");
+    eprintln!("{:>8} {:>10} {:>10} {:>14} {:>14}", "refs", "interval", "mode", "mean_us/frame", "max_us/frame");
     for (n, interval) in [(100usize, "1.0"), (1000, "1.0"), (1000, "0.1"), (5000, "1.0"), (5000, "0.1")] {
-        let src = format!(
-            "ScriptName VmPollScript extends ObjectReference\n\
-             Int Property Count Auto\n\
-             Event OnInit()\n RegisterForUpdate({interval})\n EndEvent\n\
-             Event OnUpdate()\n Count += 1\n EndEvent\n"
-        );
-        let (mut world, refs) = vm_cost_world(n, &src, "VmPollScript");
-        for r in &refs {
-            world.insert(*r, crate::OnCellLoadEvent);
+        for budgeted in [false, true] {
+            let src = format!(
+                "ScriptName VmPollScript extends ObjectReference\n\
+                 Int Property Count Auto\n\
+                 Event OnInit()\n RegisterForUpdate({interval})\n EndEvent\n\
+                 Event OnUpdate()\n Count += 1\n EndEvent\n"
+            );
+            let (mut world, refs) = vm_cost_world(n, &src, "VmPollScript");
+            census_mode(&mut world, budgeted);
+            for r in &refs {
+                world.insert(*r, crate::OnCellLoadEvent);
+            }
+            // Settle the start-up burst before measuring steady polling.
+            for _ in 0..200 {
+                census_frame(&world);
+                if world.try_resource::<crate::FragmentExecutionQueue>().is_none_or(|q| q.len() == 0) {
+                    break;
+                }
+            }
+            let frames = 600;
+            let (mut sum, mut max) = (0.0f64, 0.0f64);
+            for _ in 0..frames {
+                let us = census_frame(&world) * 1e3;
+                sum += us;
+                max = max.max(us);
+            }
+            let mode = if budgeted { "budgeted" } else { "unbudgeted" };
+            eprintln!("{n:>8} {interval:>10} {mode:>10} {:>14.2} {max:>14.2}", sum / f64::from(frames));
         }
-        crate::reference_script_event_system(&world, 0.0);
-        for r in &refs {
-            world.remove::<crate::OnCellLoadEvent>(*r);
-        }
-        let frames = 600;
-        let (mut sum, mut max) = (0.0f64, 0.0f64);
-        for _ in 0..frames {
-            let t = std::time::Instant::now();
-            crate::script_update_system(&world, 1.0 / 60.0, Some(1.0));
-            let us = t.elapsed().as_secs_f64() * 1e6;
-            sum += us;
-            max = max.max(us);
-        }
-        eprintln!("{n:>8} {interval:>10} {:>14.2} {max:>14.2}", sum / f64::from(frames));
     }
 
-    eprintln!("\nD. runaway handler (statement cap 100000), one OnActivate");
-    let src = "ScriptName VmRunawayScript extends ObjectReference\n\
+    eprintln!("\nD. runaway handlers (100000-statement cap each), OnActivate");
+    eprintln!("{:>8} {:>10} {:>14} {:>14} {:>8} {:>14}", "handlers", "mode", "frame1_ms", "total_ms", "frames", "worst_ms");
+    for handlers in [1usize, 5] {
+        for budgeted in [false, true] {
+            let (mut world, refs) = vm_cost_world(handlers, RUNAWAY, "VmRunawayScript");
+            census_mode(&mut world, budgeted);
+            activate_all(&mut world, &refs);
+            let first = census_frame(&world);
+            for r in &refs {
+                world.remove::<crate::ActivateEvent>(*r);
+            }
+            let (mut total, mut frames, mut worst) = (first, 1, first);
+            while world.try_resource::<crate::FragmentExecutionQueue>().is_some_and(|q| q.len() > 0) && frames < 10_000 {
+                let ms = census_frame(&world);
+                total += ms;
+                worst = worst.max(ms);
+                frames += 1;
+            }
+            let mode = if budgeted { "budgeted" } else { "unbudgeted" };
+            eprintln!("{handlers:>8} {mode:>10} {first:>14.3} {total:>14.3} {frames:>8} {worst:>14.3}");
+        }
+    }
+}
+
+// ── The frame budget (#5763) ─────────────────────────────────────────────────
+
+fn budgeted(world: &mut World, limit: usize) {
+    world.insert_resource(crate::VmFrameBudget::with_limit(limit));
+    if world.try_resource::<crate::FragmentExecutionQueue>().is_none() {
+        world.insert_resource(crate::FragmentExecutionQueue::default());
+    }
+}
+
+/// A new frame as the schedule sees it: the end-of-frame cleanup renews the
+/// allowance, the continuation system runs what is waiting.
+fn next_frame(world: &World) {
+    crate::event_cleanup_system(world, 0.0);
+    crate::fragment_continuation_system(world, 1.0 / 60.0);
+}
+
+fn count_of(world: &World, index: usize) -> Option<f32> {
+    world
+        .resource::<crate::QuestScriptVariables>()
+        .get(QuestFormId(0x0002_0000 + index as u32), crate::QuestScriptVariables::property_key("Count"))
+}
+
+const RUNAWAY: &str = "ScriptName VmRunawayScript extends ObjectReference\n\
+     Int Property Count Auto\n\
+     Event OnActivate(ObjectReference akActionRef)\n\
+       While Count >= 0\n Count += 1\n EndWhile\n\
+     EndEvent\n";
+
+fn activate_all(world: &mut World, refs: &[byroredux_core::ecs::EntityId]) {
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    for r in refs {
+        world.insert(*r, crate::ActivateEvent { activator: player });
+    }
+}
+
+/// A run the budget cuts short suspends between two statements and resumes at
+/// the next one: the loop runs exactly its iterations, none twice, none lost.
+#[test]
+fn a_run_the_budget_cuts_short_resumes_where_it_stopped() {
+    let (mut world, refs) = vm_cost_world(
+        1,
+        "ScriptName VmCountScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Int Property Done Auto\n\
+         Event OnActivate(ObjectReference akActionRef)\n\
+           While Count < 500\n Count += 1\n EndWhile\n\
+           Done = 1\n\
+         EndEvent\n",
+        "VmCountScript",
+    );
+    budgeted(&mut world, 120);
+    activate_all(&mut world, &refs);
+    crate::reference_script_event_system(&world, 0.0);
+    let after_first = count_of(&world, 0).expect("the loop ran");
+    assert!(after_first > 0.0 && after_first < 500.0, "cut short mid-loop: {after_first}");
+    assert_eq!(world.resource::<crate::FragmentExecutionQueue>().len(), 1, "one continuation queued");
+    assert_eq!(world.resource::<crate::VmFrameBudget>().used().yielded, 1);
+
+    let mut frames = 0;
+    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+        next_frame(&world);
+        frames += 1;
+        assert!(frames < 200, "the run never finished");
+    }
+    assert_eq!(count_of(&world, 0), Some(500.0), "every iteration ran exactly once");
+    let done = world
+        .resource::<crate::QuestScriptVariables>()
+        .get(QuestFormId(0x0002_0000), crate::QuestScriptVariables::property_key("Done"));
+    assert_eq!(done, Some(1.0), "the statement after the loop ran");
+    assert!(frames > 2, "spread over frames, not finished in one: {frames}");
+}
+
+/// Several runaway handlers raised in one frame spend the frame's allowance
+/// once between them: the first yields, the rest queue unstarted, and no frame
+/// afterwards spends more than the allowance either. Each run is then killed at
+/// the per-run cap, counted across its yields.
+#[test]
+fn several_runaway_handlers_stay_inside_the_frame_budget() {
+    const LIMIT: usize = 1_000;
+    const RUNS: usize = 5;
+    let (mut world, refs) = vm_cost_world(RUNS, RUNAWAY, "VmRunawayScript");
+    budgeted(&mut world, LIMIT);
+    activate_all(&mut world, &refs);
+    crate::reference_script_event_system(&world, 0.0);
+
+    let used = world.resource::<crate::VmFrameBudget>().used();
+    assert!(
+        used.spent >= LIMIT && used.spent <= LIMIT + 4,
+        "the frame spent the allowance and no more (one statement of overshoot at most): {}",
+        used.spent
+    );
+    assert_eq!((used.yielded, used.deferred), (1, RUNS as u32 - 1), "one cut short, the rest not started");
+    assert_eq!(world.resource::<crate::FragmentExecutionQueue>().len(), RUNS);
+
+    // Frame after frame: never over the allowance; every run dies at the cap.
+    let mut frames = 0;
+    let mut worst = 0;
+    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+        crate::event_cleanup_system(&world, 0.0);
+        crate::fragment_continuation_system(&world, 1.0 / 60.0);
+        worst = worst.max(world.resource::<crate::VmFrameBudget>().used().spent);
+        frames += 1;
+        assert!(frames < 2_000, "the runaway handlers never ended");
+    }
+    assert!(worst <= LIMIT + RUNS * RUN_START_FUZZ, "a frame went over the allowance: {worst}");
+    // 100 000 statements a run, two per loop iteration, whatever the slicing.
+    for index in 0..RUNS {
+        let count = count_of(&world, index).expect("each ran");
+        assert!(
+            (45_000.0..=50_001.0).contains(&count),
+            "run {index} was killed at the cumulative cap, not per slice: {count}"
+        );
+    }
+}
+
+/// Slack for the run-start cost the first statement of each resumed slice
+/// pays before the allowance is checked.
+const RUN_START_FUZZ: usize = crate::fragment::RUN_START_COST + 4;
+
+/// A wait suspends with no carried steps (the count starts over, as it always
+/// did); a yield carries them.
+#[test]
+fn only_a_yield_carries_the_statement_count() {
+    let (mut world, refs) = vm_cost_world(
+        1,
+        "ScriptName VmWaitScript extends ObjectReference\n\
          Int Property Count Auto\n\
          Event OnActivate(ObjectReference akActionRef)\n\
-           While Count >= 0\n Count += 1\n EndWhile\n\
-         EndEvent\n";
-    let (mut world, refs) = vm_cost_world(1, src, "VmRunawayScript");
-    let player = world.resource::<PapyrusPlayerEntity>().0;
-    let mut samples = Vec::new();
-    for _ in 0..10 {
-        world.insert(refs[0], crate::ActivateEvent { activator: player });
-        let t = std::time::Instant::now();
-        crate::reference_script_event_system(&world, 0.0);
-        samples.push(t.elapsed().as_secs_f64() * 1e3);
-        world.remove::<crate::ActivateEvent>(refs[0]);
+           Count += 1\n Utility.Wait(1.0)\n Count += 1\n\
+         EndEvent\n",
+        "VmWaitScript",
+    );
+    let carried = |world: &World| {
+        let queue = world.resource::<crate::FragmentExecutionQueue>();
+        let pending = queue.pending.first().cloned().expect("a continuation");
+        match pending.effects.first() {
+            Some(Effect::Interpret { resume: Some(resume), .. }) => resume.carried_steps,
+            other => panic!("not a resumed run: {other:?}"),
+        }
+    };
+    budgeted(&mut world, 100_000);
+    activate_all(&mut world, &refs);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(carried(&world), 0, "a wait starts the count afresh");
+
+    // The same handler, the budget gone after its first statement.
+    let (mut world, refs) = vm_cost_world(
+        1,
+        "ScriptName VmWaitScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Event OnActivate(ObjectReference akActionRef)\n\
+           Count += 1\n Count += 1\n Count += 1\n\
+         EndEvent\n",
+        "VmWaitScript",
+    );
+    budgeted(&mut world, crate::fragment::RUN_START_COST + 1);
+    activate_all(&mut world, &refs);
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(carried(&world) > 0, "a yield carries what it has used");
+}
+
+/// A function called for its value cannot hand a value back across a
+/// suspension, and a frame with an array local cannot be stored: the run is
+/// not cut there. It finishes in the frame it started and is charged for it,
+/// so the work behind it defers.
+#[test]
+fn a_run_that_cannot_suspend_finishes_and_is_charged() {
+    let (mut world, refs) = vm_cost_world(
+        2,
+        "ScriptName VmHeavyScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Int Function Heavy()\n\
+           Int i = 0\n While i < 300\n i += 1\n EndWhile\n Return i\n\
+         EndFunction\n\
+         Event OnActivate(ObjectReference akActionRef)\n\
+           Count = Heavy()\n\
+         EndEvent\n",
+        "VmHeavyScript",
+    );
+    budgeted(&mut world, crate::fragment::RUN_START_COST + 20);
+    activate_all(&mut world, &refs);
+    crate::reference_script_event_system(&world, 0.0);
+    assert_eq!(count_of(&world, 0), Some(300.0), "the value call ran whole");
+    let used = world.resource::<crate::VmFrameBudget>().used();
+    assert!(used.spent > 300, "and was charged for it: {}", used.spent);
+    assert_eq!(used.yielded, 0, "never suspended");
+    assert_eq!(used.deferred, 1, "the second reference waits for the next frame");
+    assert_eq!(count_of(&world, 1), None);
+    next_frame(&world);
+    assert_eq!(count_of(&world, 1), Some(300.0), "and runs on it");
+}
+
+/// A reference whose handler cannot start for want of budget is not lost: the
+/// event it was raised for is delivered on a later frame, once.
+#[test]
+fn deferred_deliveries_run_once_on_a_later_frame() {
+    let (mut world, refs) = vm_cost_world(
+        50,
+        "ScriptName VmBurstScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Event OnLoad()\n Count += 1\n EndEvent\n",
+        "VmBurstScript",
+    );
+    budgeted(&mut world, 400);
+    for r in &refs {
+        world.insert(*r, crate::OnCellLoadEvent);
     }
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    eprintln!("  median {:.3} ms, min {:.3} ms, max {:.3} ms (10 runs)", samples[5], samples[0], samples[9]);
+    crate::reference_script_event_system(&world, 0.0);
+    let ran = |world: &World| (0..50).filter(|i| count_of(world, *i).is_some()).count();
+    let first = ran(&world);
+    assert!(first > 0 && first < 50, "a slice of the burst ran: {first}");
+    for r in &refs {
+        world.remove::<crate::OnCellLoadEvent>(*r);
+    }
+    let mut frames = 0;
+    while world.resource::<crate::FragmentExecutionQueue>().len() > 0 {
+        next_frame(&world);
+        frames += 1;
+        assert!(frames < 100);
+    }
+    assert!(frames > 1, "spread over frames");
+    for index in 0..50 {
+        // OnInit, OnCellAttach, OnLoad and OnCellLoad are delivered for a load;
+        // the script handles OnLoad (OnCellLoad is its twin), once each.
+        assert!(count_of(&world, index).is_some_and(|count| count >= 1.0), "reference {index} never ran");
+    }
+}
+
+// ── The reference-script index (#5763) ───────────────────────────────────────
+
+#[test]
+fn the_reference_script_index_follows_attach_and_unload() {
+    const SRC: &str = "ScriptName VmIndexScript extends ObjectReference\n\
+         Int Property Count Auto\n\
+         Event OnLoad()\n Count += 1\n EndEvent\n";
+    let (mut world, refs) = vm_cost_world(3, SRC, "VmIndexScript");
+    let form = |i: usize| 0x0002_0000 + i as u32;
+    for (i, r) in refs.iter().enumerate() {
+        assert_eq!(crate::ReferenceScriptIndex::lookup(&world, form(i)), Some(*r));
+    }
+    assert_eq!(crate::ReferenceScriptIndex::lookup(&world, 0x00FF_FFFF), None, "never attached");
+
+    // The cell unloads: the entity goes, and the reference reads as not loaded
+    // with no map maintenance at all.
+    world.despawn(refs[1]);
+    assert_eq!(crate::ReferenceScriptIndex::lookup(&world, form(1)), None);
+    assert_eq!(crate::ReferenceScriptIndex::lookup(&world, form(0)), Some(refs[0]), "the others stand");
+
+    // It reloads as a new entity with the same FormID and the script attached
+    // again: the next lookup finds that one.
+    let script = parsed_source(SRC);
+    let (events, scripts) = crate::check_reference_script(script, &crate::DELIVERED_EVENTS, None).expect("the VM runs it");
+    let reloaded = world.spawn();
+    let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(form(1)),
+    });
+    world.insert(reloaded, FormIdComponent(id));
+    let instance = ScriptInstance { name: "VmIndexScript".into(), status: 0, properties: Vec::new() };
+    crate::attach_reference_script(&mut world, reloaded, &instance, events, scripts);
+    assert_eq!(crate::ReferenceScriptIndex::lookup(&world, form(1)), Some(reloaded));
+}
+
+/// A reference whose `FormIdComponent` lands after its scripts attach is
+/// still found: the FormID is read when the map is rebuilt, not at attach.
+#[test]
+fn the_index_reads_the_formid_when_it_is_built_not_when_a_script_attaches() {
+    let script = parsed_source(
+        "ScriptName VmLateScript extends ObjectReference\n Event OnLoad()\n EndEvent\n",
+    );
+    let (events, scripts) = crate::check_reference_script(script, &crate::DELIVERED_EVENTS, None).expect("the VM runs it");
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    world.insert_resource(FormIdPool::default());
+    let entity = world.spawn();
+    let instance = ScriptInstance { name: "VmLateScript".into(), status: 0, properties: Vec::new() };
+    crate::attach_reference_script(&mut world, entity, &instance, events, scripts);
+    let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(0x0003_0001),
+    });
+    world.insert(entity, FormIdComponent(id));
+    assert_eq!(crate::ReferenceScriptIndex::lookup(&world, 0x0003_0001), Some(entity));
 }
