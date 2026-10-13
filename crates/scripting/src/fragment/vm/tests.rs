@@ -2789,6 +2789,52 @@ fn perk_entry_run_executes_the_entrys_fragment() {
     assert!(crate::fragment::reference_enabled(&world, MARKER), "no fragment for entry 2");
 }
 
+/// `IsFurnitureInUse` is true while an actor sits on the furniture, or (unless
+/// reservations are ignored) while a seat is claimed; `IsStarting` /
+/// `IsStopping` are false for a quest that starts and stops in one step.
+#[test]
+fn furniture_in_use_and_quest_transition_states() {
+    use byroredux_core::ecs::components::{SeatReservations, Seated};
+    let script = parsed_source(
+        "ScriptName QF_VmFurniture extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If !Self.IsStarting() && !Self.IsStopping()\n\
+             If Marker.IsFurnitureInUse(True)\n\
+               Self.SetStage(30)\n\
+             ElseIf Marker.IsFurnitureInUse()\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    world.register::<Seated>();
+    world.insert_resource(SeatReservations::default());
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let furniture = world.spawn();
+    world.insert(furniture, FormIdComponent(id));
+    let actor = world.spawn();
+    let run = |world: &World| {
+        world.resource_mut::<QuestStageState>().set_stage(Q, 5);
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(&world), 10, "empty furniture");
+    world.resource_mut::<SeatReservations>().0.insert((furniture, 0), actor);
+    assert_eq!(run(&world), 20, "a claimed seat counts unless reservations are ignored");
+    world.insert(
+        actor,
+        Seated { furniture, animation_restore: Default::default() },
+    );
+    assert_eq!(run(&world), 30, "an actor sits on it");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

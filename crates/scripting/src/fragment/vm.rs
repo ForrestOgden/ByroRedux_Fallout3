@@ -2615,6 +2615,9 @@ impl Vm<'_> {
                     | "revert"
                     | "countlinkedrefchain"
                     | "isindialoguewithplayer"
+                    | "isfurnitureinuse"
+                    | "isstarting"
+                    | "isstopping"
             );
         if !reads {
             return Ok(None);
@@ -2930,6 +2933,32 @@ impl Vm<'_> {
                     .and_then(|surface| surface.npc);
                 Some(Value::Bool(partner.is_some() && partner == self.entity_of(*actor)))
             }
+            // CK *IsFurnitureInUse*: "if any marker on the furniture is in use
+            // (or reserved, if we aren't ignoring reservations)". The occupants
+            // here are the actors seated on it and the seats the sandbox AI
+            // has claimed; nothing else uses furniture.
+            (Value::Form(furniture), "isfurnitureinuse") if args.len() <= 1 => {
+                let ignore_reserved = match args.first() {
+                    Some(arg) => self.eval(frame, &arg.value.node)?.truthy(),
+                    None => false,
+                };
+                let Some(entity) = self.entity_of(*furniture) else {
+                    return stop("IsFurnitureInUse on a reference that is not loaded");
+                };
+                let seated = self.world.query::<byroredux_core::ecs::components::Seated>().is_some_and(|seated| {
+                    seated.iter().any(|(_, seat)| seat.furniture == entity)
+                });
+                let reserved = !ignore_reserved
+                    && self
+                        .world
+                        .try_resource::<byroredux_core::ecs::components::SeatReservations>()
+                        .is_some_and(|seats| seats.0.keys().any(|(held, _)| *held == entity));
+                Some(Value::Bool(seated || reserved))
+            }
+            // CK *IsStarting* / *IsStopping - Quest*: "in the process of starting
+            // up" / "shutting down". A quest here starts and stops in one step,
+            // so it is never between the two states.
+            (Value::Form(_), "isstarting" | "isstopping") if args.is_empty() => Some(Value::Bool(false)),
             // CK *CountLinkedRefChain*, which the page gives as script: starting
             // at the reference, each step takes the keyword's link and counts
             // it (a missing link too: A to B to C counts 3) unless the link is
@@ -4660,6 +4689,13 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "isfurnitureinuse")
+                if arg_kinds.len() <= 1
+                    && arg_kinds.first().is_none_or(|arg| matches!(arg, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
+            {
+                return Some(Kind::Bool);
+            }
+            (Kind::Quest, "isstarting" | "isstopping") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "countlinkedrefchain")
                 if arg_kinds.len() <= 2
                     && arg_kinds.first().is_none_or(|keyword| {

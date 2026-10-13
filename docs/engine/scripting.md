@@ -742,6 +742,12 @@ runtime:
   to the player?") is true for the NPC whose response surface is open. `DialogueSurfaceState`
   moved from the binary into the scripting crate for it (one source, re-exported where the
   dialogue systems use it).
+- **Furniture and quest transitions.** `IsFurnitureInUse([abIgnoreReserved])` ("if any marker on
+  the furniture is in use", or reserved when reservations are not ignored) is true while an actor is
+  `Seated` on the furniture or, unless ignored, while the sandbox AI holds a seat in
+  `SeatReservations` (moved into core for it); the player cannot use furniture here, so nothing
+  else occupies it. `Quest.IsStarting()` / `IsStopping()` ("in the process of starting up" / "shutting
+  down") are false: a quest starts and stops in one step, so it is never between the two states.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap
