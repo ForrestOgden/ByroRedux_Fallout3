@@ -520,9 +520,7 @@ fn reference_side(e: &Expr, scope: &Scope) -> Option<Option<ActorRef>> {
             reference.then(|| receiver_actor(e, scope)).flatten().map(Some)
         }
         Expr::Call { .. } => {
-            let reference_call = ["GetActorRef", "GetActorReference", "GetReference", "GetRef"]
-                .into_iter()
-                .any(|method| method_call(e, method).is_some_and(|(_, args)| args.is_empty()))
+            let reference_call = alias_reference_getter(e).is_some_and(|(_, args)| args.is_empty())
                 || player_expr_ref(e, scope);
             reference_call.then(|| receiver_actor(e, scope)).flatten().map(Some)
         }
@@ -943,7 +941,13 @@ pub enum Effect {
     },
     /// `<global>.SetValue(value)` — resolves the VMAD-bound GLOB FormID and
     /// updates the canonical runtime [`crate::Globals`] table.
-    SetGlobalValue { global: ObjectRef, value: f32 },
+    SetGlobalValue {
+        global: ObjectRef,
+        /// M47.2 — a run-time number since FORMAT 60: a literal, a read
+        /// global plus an offset (`G.Mod(x)`, `G.SetValue(S.GetValue() + 1)`),
+        /// or any other [`ValueExpr`].
+        value: ValueExpr,
+    },
     /// `<quest>.SetStage(stage)`.
     SetStage { quest: QuestRef, stage: u16 },
     /// `<quest>.Start()`.
@@ -1020,13 +1024,6 @@ pub enum Effect {
     /// which moves the player in place or transitions to the reference's
     /// cell.
     MovePlayerTo { destination: ObjectRef },
-    /// M47.2 — `<global> = <source> + offset`, read when the effect applies:
-    /// `G.Mod(x)` (`source` is `global`) and `G.SetValue(S.GetValue() + c)`.
-    SetGlobalRelative {
-        global: ObjectRef,
-        source: ObjectRef,
-        offset: f32,
-    },
     /// `<object>.Disable([fadeOut])` — records the placed reference as
     /// disabled even when its cell/entity is not currently loaded.
     Disable { object: ObjectRef, fade_out: bool },
@@ -2314,16 +2311,9 @@ fn lower_quest_variable_write(
     // M47.2 — `<global>.Value = …`, the GlobalVariable property's write.
     if member.node.0.eq_ignore_ascii_case("value") {
         if let Some(global) = global_property(&object.node, scope) {
-            return Some(match as_num(value) {
-                Some(value) => Effect::SetGlobalValue { global, value },
-                None => {
-                    let (source, offset) = relative_global_value(value, scope)?;
-                    Effect::SetGlobalRelative {
-                        global,
-                        source,
-                        offset,
-                    }
-                }
+            return Some(Effect::SetGlobalValue {
+                global,
+                value: classify_value(value, scope)?,
             });
         }
     }
@@ -2772,9 +2762,8 @@ const MOVE_TO_MAX_ARGS: usize = 6;
 const SKYRIM_PLAYER_CONTROLS_ARGS: usize = 9;
 
 /// `GlobalVariable.SetValue(afValue)` / `SetValueInt(aiValue)` with a
-/// literal, or — M47.2 — a value relative to a global read
-/// ([`Effect::SetGlobalRelative`]): `G.SetValue(S.GetValue() + 1.0)` (the
-/// radio-ready and counter idioms), and `G.Mod(afHowMuch)`, which the CK
+/// run-time number — a literal, `S.GetValue() + 1.0` (the radio-ready and
+/// counter idioms), any [`ValueExpr`] — and `G.Mod(afHowMuch)`, which the CK
 /// defines as adding to the value.
 fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
     if let Some((object, args)) = method_call(e, "Mod") {
@@ -2782,52 +2771,23 @@ fn prim_set_global_value(e: &Expr, scope: &Scope) -> Option<Effect> {
             return None;
         }
         let global = receiver_object(object, scope)?;
-        return Some(Effect::SetGlobalRelative {
-            source: global.clone(),
+        return Some(Effect::SetGlobalValue {
+            value: ValueExpr::Arith(
+                Box::new(ValueExpr::Global(global.clone())),
+                ArithOp::Add,
+                Box::new(classify_value(&args[0].value.node, scope)?),
+            ),
             global,
-            offset: as_num(&args[0].value.node)?,
         });
     }
     let (object, args) = method_call(e, "SetValue").or_else(|| method_call(e, "SetValueInt"))?;
     if args.len() != 1 {
         return None;
     }
-    let global = receiver_object(object, scope)?;
-    let value = &args[0].value.node;
-    if let Some(value) = as_num(value) {
-        return Some(Effect::SetGlobalValue { global, value });
-    }
-    let (source, offset) = relative_global_value(value, scope)?;
-    Some(Effect::SetGlobalRelative {
-        global,
-        source,
-        offset,
+    Some(Effect::SetGlobalValue {
+        global: receiver_object(object, scope)?,
+        value: classify_value(&args[0].value.node, scope)?,
     })
-}
-
-/// `<global read> ± <literal>` or `<literal> + <global read>`, under casts:
-/// the read global and the signed offset.
-fn relative_global_value(expr: &Expr, scope: &Scope) -> Option<(ObjectRef, f32)> {
-    let mut node = expr;
-    while let Expr::Cast { expr, .. } = node {
-        node = &expr.node;
-    }
-    let Expr::BinaryOp { op, left, right } = node else {
-        return None;
-    };
-    match op {
-        BinaryOp::Add => {
-            if let (Some(source), Some(offset)) =
-                (global_value_read(&left.node, scope), as_num(&right.node))
-            {
-                return Some((source, offset));
-            }
-            let source = global_value_read(&right.node, scope)?;
-            Some((source, as_num(&left.node)?))
-        }
-        BinaryOp::Sub => Some((global_value_read(&left.node, scope)?, -as_num(&right.node)?)),
-        _ => None,
-    }
 }
 
 /// `Quest.SetStage(int aiStage)` — one parameter in every shipped game.
@@ -4496,7 +4456,17 @@ fn speaker_expr_ref(value: &Expr, scope: &Scope) -> bool {
 /// `.GetReference()` / `.GetActorReference()` (Skyrim's `ReferenceAlias`
 /// spelling of the same getters, M47.2).
 fn alias_reference_getter(e: &Expr) -> Option<(&Expr, &[byroredux_papyrus::ast::CallArg])> {
-    ["GetRef", "GetActorRef", "GetReference", "GetActorReference"]
+    // M47.2 — Starfield's `ReferenceAlias.GetShipRef()` is
+    // `GetShipReference()`, which is `GetReference() as SpaceshipReference`
+    // (its shipped `ReferenceAlias.pex`).
+    [
+        "GetRef",
+        "GetActorRef",
+        "GetReference",
+        "GetActorReference",
+        "GetShipRef",
+        "GetShipReference",
+    ]
         .into_iter()
         .find_map(|getter| method_call(e, getter))
 }
@@ -4776,7 +4746,7 @@ mod tests {
             Some(vec![
                 Effect::SetGlobalValue {
                     global: ObjectRef::Property("GameHour".into()),
-                    value: 7.0,
+                    value: crate::translate::effects::ValueExpr::Literal(7.0),
                 },
                 Effect::SetStage {
                     quest: QuestRef::SelfRef,
@@ -5612,22 +5582,25 @@ mod tests {
                 "RadioReady.Value = 1.0",
                 Effect::SetGlobalValue {
                     global: property("RadioReady"),
-                    value: 1.0,
+                    value: crate::translate::effects::ValueExpr::Literal(1.0),
                 },
             ),
             (
                 "kmyQuest.pRDSGlobal.Value = 1 as Float",
                 Effect::SetGlobalValue {
                     global: property("pRDSGlobal"),
-                    value: 1.0,
+                    value: crate::translate::effects::ValueExpr::Literal(1.0),
                 },
             ),
             (
                 "Counter.Value = Counter.Value + 1.0",
-                Effect::SetGlobalRelative {
+                Effect::SetGlobalValue {
                     global: property("Counter"),
-                    source: property("Counter"),
-                    offset: 1.0,
+                    value: ValueExpr::Arith(
+                        Box::new(ValueExpr::Global(property("Counter"))),
+                        ArithOp::Add,
+                        Box::new(ValueExpr::Literal(1.0)),
+                    ),
                 },
             ),
             (
@@ -5782,37 +5755,47 @@ mod tests {
         }
     }
 
-    /// M47.2 — relative global writes: `Mod`, a self-increment, a value
-    /// derived from another global, and `SetValueInt` with a literal.
+    /// M47.2 — global writes from run-time numbers: `Mod`, a
+    /// self-increment, a value derived from another global, arithmetic, and
+    /// `SetValueInt` with a literal.
     #[test]
     fn relative_global_writes_lower() {
         let property = |name: &str| ObjectRef::Property(name.into());
-        let relative = |global: &str, source: &str, offset| Effect::SetGlobalRelative {
-            global: property(global),
-            source: property(source),
-            offset,
+        let global = |name: &str| Box::new(ValueExpr::Global(property(name)));
+        let literal = |value: f32| Box::new(ValueExpr::Literal(value));
+        let set = |target: &str, value| Effect::SetGlobalValue {
+            global: property(target),
+            value,
         };
         for (call, expected) in [
-            ("Counter.Mod(1.0)", relative("Counter", "Counter", 1.0)),
+            (
+                "Counter.Mod(1.0)",
+                set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Add, literal(1.0))),
+            ),
             (
                 "Counter.SetValue(Counter.GetValue() + 1.0)",
-                relative("Counter", "Counter", 1.0),
+                set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Add, literal(1.0))),
             ),
             (
                 "RadioReady.SetValue(GameDaysPassed.GetValue() + 1.0)",
-                relative("RadioReady", "GameDaysPassed", 1.0),
+                set(
+                    "RadioReady",
+                    ValueExpr::Arith(global("GameDaysPassed"), ArithOp::Add, literal(1.0)),
+                ),
             ),
             (
                 "Counter.SetValue(Counter.GetValueInt() - 2)",
-                relative("Counter", "Counter", -2.0),
+                set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Sub, literal(2.0))),
             ),
             (
-                "GameHour.SetValueInt(9)",
-                Effect::SetGlobalValue {
-                    global: property("GameHour"),
-                    value: 9.0,
-                },
+                "Counter.SetValue(Counter.GetValue() * 2.0)",
+                set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Mul, literal(2.0))),
             ),
+            (
+                "Counter.Mod(Other.GetValue())",
+                set("Counter", ValueExpr::Arith(global("Counter"), ArithOp::Add, global("Other"))),
+            ),
+            ("GameHour.SetValueInt(9)", set("GameHour", ValueExpr::Literal(9.0))),
         ] {
             let body = first_fn_body(&format!(
                 "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
@@ -5820,8 +5803,7 @@ mod tests {
             assert_eq!(lower_fragment(&body), Some(vec![expected]), "{call}");
         }
         for call in [
-            "Counter.SetValue(Counter.GetValue() * 2.0)",
-            "Counter.Mod(Other.GetValue())",
+            "Counter.SetValue(Counter.GetValue() * Game.GetPlayer().GetEquippedWeapon().GetBaseDamage())",
         ] {
             let body = first_fn_body(&format!(
                 "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"

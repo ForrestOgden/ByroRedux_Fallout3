@@ -285,7 +285,6 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::MovePlayerTo { .. } => "MovePlayerTo",
-        Effect::SetGlobalRelative { .. } => "SetGlobalRelative",
         Effect::ChangePerk { .. } => "ChangePerk",
         Effect::ForceAlias { .. } => "ForceAlias",
         Effect::ModQuestVariable { .. } => "ModQuestVariable",

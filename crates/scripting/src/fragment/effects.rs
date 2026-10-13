@@ -1086,8 +1086,18 @@ pub(crate) fn apply_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
-        Effect::SetGlobalValue { .. } | Effect::SetGlobalRelative { .. } => {
-            apply_global_effect(effect, vmad, world)
+        Effect::SetGlobalValue { global, value } => {
+            // Read first: the value may read `Globals` itself (`G.Mod(x)`).
+            let value = evaluate_value(value, context, vmad, world, stages, deferred)?;
+            let form_id = resolve_property_form_id(vmad, global.property_name())?;
+            if let Some(mut globals) = world.try_resource_mut::<crate::Globals>() {
+                globals.set(form_id, value);
+            } else {
+                log::debug!(
+                    "fragment SetValue skipped: Globals resource is unavailable for {form_id:08X}"
+                );
+            }
+            None
         }
         Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
             apply_inventory_effect(effect, context, vmad, world, stages, deferred)
@@ -1523,51 +1533,6 @@ pub(crate) fn apply_effect(
             unreachable!("conditional and quest-scoped effects are expanded by apply_effects")
         }
         _ => apply_quest_scoped_effect(effect, context, vmad, stages, objectives, deferred),
-    }
-}
-
-/// `SetGlobalValue` — the one arm that writes the `Globals` resource.
-///
-/// #4340 — split out of [`apply_effect`], whose arms are now one-line
-/// delegates. The bodies moved verbatim; every lock they take stays
-/// named in `apply_effect`'s nested-lock residual list, which the #3949
-/// scan now reads across these helpers too.
-fn apply_global_effect(
-    effect: &Effect,
-    vmad: Option<&ScriptInstanceData>,
-    world: &World,
-) -> Option<QuestStageAdvanced> {
-    match effect {
-        Effect::SetGlobalValue { global, value } => {
-            let form_id = resolve_property_form_id(vmad, global.property_name())?;
-            if let Some(mut globals) = world.try_resource_mut::<crate::Globals>() {
-                globals.set(form_id, *value);
-            } else {
-                log::debug!(
-                    "fragment SetValue skipped: Globals resource is unavailable for {form_id:08X}"
-                );
-            }
-            None
-        }
-        Effect::SetGlobalRelative {
-            global,
-            source,
-            offset,
-        } => {
-            let form_id = resolve_property_form_id(vmad, global.property_name())?;
-            let source_id = resolve_property_form_id(vmad, source.property_name())?;
-            let Some(mut globals) = world.try_resource_mut::<crate::Globals>() else {
-                log::debug!("fragment global write skipped: Globals resource is unavailable");
-                return None;
-            };
-            let Some(value) = globals.get(source_id) else {
-                log::debug!("fragment global write skipped: no global {source_id:08X}");
-                return None;
-            };
-            globals.set(form_id, value + offset);
-            None
-        }
-        _ => unreachable!("apply_global_effect received a non-global effect"),
     }
 }
 
@@ -2756,7 +2721,6 @@ fn apply_quest_scoped_effect(
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
         | Effect::MovePlayerTo { .. }
-        | Effect::SetGlobalRelative { .. }
         | Effect::Disable { .. }
         | Effect::Enable { .. }
         | Effect::StartScene { .. }
@@ -2830,7 +2794,7 @@ fn apply_quest_scoped_effect(
 /// (`deferred.quest_variables`, applied only once the quest guards drop) —
 /// Papyrus assignments are immediate. `Globals` and the quest-variable
 /// resources are read under the quest-state guards, the same nested reads
-/// `apply_global_effect` already takes.
+/// the `SetGlobalValue` arm already takes.
 /// A message an effect raised, shown once the quest guards drop.
 #[derive(Debug)]
 enum PendingMessage {

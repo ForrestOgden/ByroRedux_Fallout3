@@ -35,7 +35,7 @@ use byroredux_scripting::papyrus_demo::PapyrusPlayerEntity;
 use byroredux_scripting::quest_stages::QuestStageState;
 use byroredux_scripting::translate::compose::QuestRef;
 use byroredux_scripting::translate::effects::{
-    lower_fragment_with_quest_properties, ActorRef, Effect, FragmentGuard,
+    lower_fragment_with_quest_properties, ActorRef, Effect, FragmentGuard, ValueExpr,
 };
 use byroredux_scripting::{
     dispatch_player_cinematic_animation_event, image_space_modifier_system,
@@ -137,7 +137,6 @@ fn effect_kind(effect: &Effect) -> &'static str {
         Effect::EquipItem { .. } => "EquipItem",
         Effect::MoveTo { .. } => "MoveTo",
         Effect::MovePlayerTo { .. } => "MovePlayerTo",
-        Effect::SetGlobalRelative { .. } => "SetGlobalRelative",
         Effect::ChangePerk { .. } => "ChangePerk",
         Effect::ForceAlias { .. } => "ForceAlias",
         Effect::ModQuestVariable { .. } => "ModQuestVariable",
@@ -1662,7 +1661,7 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                 Effect::SetGlobalValue { global, value },
                                 Effect::SetStage { quest: QuestRef::SelfRef, stage: 10 },
                             ]) if global.property_name().eq_ignore_ascii_case("GameHour")
-                                && (*value - 7.0).abs() <= f32::EPSILON
+                                && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
                         );
                         checks.record(
                             "stage 0 handoff",
@@ -1697,7 +1696,7 @@ fn run() -> Result<Checks, Box<dyn Error>> {
                                         stage: 10,
                                     },
                                 ] if global.property_name().eq_ignore_ascii_case("GameHour")
-                                    && (*value - 7.0).abs() <= f32::EPSILON
+                                    && matches!(value, ValueExpr::Literal(v) if (*v - 7.0).abs() <= f32::EPSILON)
                             )
                         });
                         checks.record(

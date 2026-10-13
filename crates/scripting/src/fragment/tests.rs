@@ -744,7 +744,7 @@ fn set_global_value_resolves_vmad_and_updates_runtime_table() {
     let advances = apply_effects(
         &[Effect::SetGlobalValue {
             global: ObjectRef::Property("::GameHour_var".into()),
-            value: 7.0,
+            value: crate::translate::effects::ValueExpr::Literal(7.0),
         }],
         Q,
         Some(&vmad),
@@ -2285,15 +2285,25 @@ fn relative_global_write_reads_its_source_when_applied() {
             Q,
             10,
             vec![
-                Effect::SetGlobalRelative {
+                Effect::SetGlobalValue {
                     global: ObjectRef::Property("Ready".into()),
-                    source: ObjectRef::Property("Days".into()),
-                    offset: 1.0,
+                    value: crate::translate::effects::ValueExpr::Arith(
+                        Box::new(crate::translate::effects::ValueExpr::Global(
+                            ObjectRef::Property("Days".into()),
+                        )),
+                        crate::translate::effects::ArithOp::Add,
+                        Box::new(crate::translate::effects::ValueExpr::Literal(1.0)),
+                    ),
                 },
-                Effect::SetGlobalRelative {
+                Effect::SetGlobalValue {
                     global: ObjectRef::Property("Ready".into()),
-                    source: ObjectRef::Property("Ready".into()),
-                    offset: 0.5,
+                    value: crate::translate::effects::ValueExpr::Arith(
+                        Box::new(crate::translate::effects::ValueExpr::Global(
+                            ObjectRef::Property("Ready".into()),
+                        )),
+                        crate::translate::effects::ArithOp::Add,
+                        Box::new(crate::translate::effects::ValueExpr::Literal(0.5)),
+                    ),
                 },
             ],
         );
