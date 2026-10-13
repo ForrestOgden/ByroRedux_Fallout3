@@ -91,6 +91,7 @@ pub use condition::{
     ConditionFunction,
 };
 pub use dialogue::{
+    DialogueSurfaceState,
     estimate_dialogue_duration, install_dialogue_quest_conditions, install_dialogue_records,
     note_info_spoken,
     scene_dialogue_system, select_first_info, ActiveDialogueLine, DialogueLine,

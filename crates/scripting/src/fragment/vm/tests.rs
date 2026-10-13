@@ -2703,6 +2703,39 @@ fn get_caps_is_fallout_4s_caps_item() {
     }
 }
 
+/// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
+#[test]
+fn is_in_dialogue_with_player_follows_the_open_surface() {
+    let script = parsed_source(
+        "ScriptName QF_VmTalk extends Quest\n\
+         Actor Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.IsInDialogueWithPlayer()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    let run = |world: &World| {
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(&world), 10, "no conversation");
+    let stranger = world.spawn();
+    world.insert_resource(crate::DialogueSurfaceState { npc: Some(stranger), ..Default::default() });
+    assert_eq!(run(&world), 10, "someone else is talking");
+    world.insert_resource(crate::DialogueSurfaceState { npc: Some(marker), ..Default::default() });
+    assert_eq!(run(&world), 20, "the marker is talking to the player");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

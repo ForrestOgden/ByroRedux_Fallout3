@@ -738,6 +738,10 @@ runtime:
   is the host's.
 - **Integers.** `Int` arithmetic and comparison are exact 32-bit and never go
   through an `f32`, which can't hold every form id.
+- **Dialogue.** `IsInDialogueWithPlayer()` ("Is this actor or talking activator currently talking
+  to the player?") is true for the NPC whose response surface is open. `DialogueSurfaceState`
+  moved from the binary into the scripting crate for it (one source, re-exported where the
+  dialogue systems use it).
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

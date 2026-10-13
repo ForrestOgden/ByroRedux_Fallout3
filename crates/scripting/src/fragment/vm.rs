@@ -2614,6 +2614,7 @@ impl Vm<'_> {
                     | "removeaddedform"
                     | "revert"
                     | "countlinkedrefchain"
+                    | "isindialoguewithplayer"
             );
         if !reads {
             return Ok(None);
@@ -2918,6 +2919,16 @@ impl Vm<'_> {
                 }
                 let chain = seen.into_iter().skip(1).map(Value::Form).collect();
                 Some(Value::Array(Rc::new(RefCell::new(chain))))
+            }
+            // CK *IsInDialogueWithPlayer*: "Is this actor or talking activator
+            // currently talking to the player?" — the NPC whose response
+            // surface is open.
+            (Value::Form(actor), "isindialoguewithplayer") if args.is_empty() => {
+                let partner = self
+                    .world
+                    .try_resource::<crate::DialogueSurfaceState>()
+                    .and_then(|surface| surface.npc);
+                Some(Value::Bool(partner.is_some() && partner == self.entity_of(*actor)))
             }
             // CK *CountLinkedRefChain*, which the page gives as script: starting
             // at the reference, each step takes the keyword's link and counts
@@ -4648,6 +4659,7 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Array);
             }
+            (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "countlinkedrefchain")
                 if arg_kinds.len() <= 2
                     && arg_kinds.first().is_none_or(|keyword| {

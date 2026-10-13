@@ -775,6 +775,27 @@ pub fn scene_dialogue_system(world: &World, dt: f32) {
     append_scene_completions(world, scene_completions);
 }
 
+/// The response surface's open-once-per-selection cue, and the NPC the player is
+/// in conversation with (`ObjectReference.IsInDialogueWithPlayer`). Every applied
+/// selection (activation- or UI-driven) bumps `serial` and names the NPC;
+/// the app layer opens the native dialogue page when it sees a serial it
+/// has not opened yet. `opened_serial` is the app side's watermark, not
+/// gameplay state — the whole resource is runtime plumbing, never
+/// serialized. #5367 Phase L adds the Goodbye close: `close_after` is the
+/// `TotalTime` second at which a spoken Goodbye line ends the
+/// conversation, and `close_requested` is the app-side cue to shut the
+/// page (set by the close system after `end_open_conversation` ran).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DialogueSurfaceState {
+    pub serial: u64,
+    pub npc: Option<EntityId>,
+    pub opened_serial: u64,
+    pub close_after: Option<f32>,
+    pub close_requested: bool,
+}
+
+impl Resource for DialogueSurfaceState {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
