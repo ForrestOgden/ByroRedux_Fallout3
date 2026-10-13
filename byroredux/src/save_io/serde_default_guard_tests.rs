@@ -910,7 +910,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `FragmentGuard::SameReference`.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v56 -> v57):
     // `ActorControlState.ghost`, and the appended `Effect::SetGhost`.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x474d_b25f_4d0a_24b5;
+    // 2026-10-13 (M47.2) — refreshed WITHOUT a bump: the appended
+    // `Effect::SetAlly`.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2522_0256_883f_a550;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

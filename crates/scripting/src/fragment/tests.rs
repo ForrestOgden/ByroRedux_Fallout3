@@ -5719,3 +5719,34 @@ fn same_reference_guards_compare_form_ids() {
     assert!(passes(ActorRef::Player, Some(thing()), false));
     assert!(passes(ActorRef::Player, Some(ActorRef::Player), true));
 }
+
+/// M47.2 — `SetAlly` writes directed Ally / Friend reactions through the same
+/// deferred `FactionRelations` path `SetEnemy` takes (CK *SetAlly - Faction*:
+/// a `true` flag makes that direction a friend, `false` an ally).
+#[test]
+fn set_ally_writes_directed_ally_and_friend_reactions() {
+    use byroredux_sdk::relationships::CombatReaction;
+    const VAMPIRES: u32 = 0x0000_3376;
+    const SERANA: u32 = 0x0000_3377;
+    let mut world = fixture();
+    let identity = crate::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
+    )]);
+    let vampires = identity.form_ref(VAMPIRES).unwrap();
+    let serana = identity.form_ref(SERANA).unwrap();
+    world.insert_resource(identity);
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Vampires", VAMPIRES), ("Serana", SERANA)]),
+        vec![Effect::SetAlly {
+            faction: ObjectRef::Property("::Vampires_var".into()),
+            other_faction: ObjectRef::Property("::Serana_var".into()),
+            self_friend: false,
+            other_friend: true,
+        }],
+    );
+    let relations = world.resource::<crate::FactionRelations>();
+    assert_eq!(relations.reaction(vampires, serana), Some(CombatReaction::Ally));
+    assert_eq!(relations.reaction(serana, vampires), Some(CombatReaction::Friend));
+}

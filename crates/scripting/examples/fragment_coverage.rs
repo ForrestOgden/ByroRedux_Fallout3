@@ -309,6 +309,7 @@ fn effect_kind(e: &Effect) -> &'static str {
         Effect::ShowBarterMenu { .. } => "ShowBarterMenu",
         Effect::ChangeKeyword { .. } => "ChangeKeyword",
         Effect::SetGhost { .. } => "SetGhost",
+        Effect::SetAlly { .. } => "SetAlly",
         Effect::StartScene { .. } => "StartScene",
         Effect::StopScene { .. } => "StopScene",
         Effect::Activate { .. } => "Activate",

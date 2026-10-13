@@ -1106,6 +1106,15 @@ pub enum Effect {
         self_neutral: bool,
         other_neutral: bool,
     },
+    /// M47.2 — `<faction>.SetAlly(<other>, abSelfIsFriendToOther = false,
+    /// abOtherIsFriendToSelf = false)`: each direction becomes an ally, or a
+    /// friend when its flag is set (CK *SetAlly - Faction*).
+    SetAlly {
+        faction: ObjectRef,
+        other_faction: ObjectRef,
+        self_friend: bool,
+        other_friend: bool,
+    },
     /// `<actor>.StartCombat(<target>)`. See [`crate::AiCombatState`] for
     /// the runtime chase-and-strike behavior this arms.
     StartCombat { actor: ActorRef, target: ActorRef },
@@ -2577,6 +2586,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_request_save,
     prim_request_auto_save,
     prim_set_enemy,
+    prim_set_ally,
     prim_start_combat,
     prim_stop_combat,
     prim_set_unconscious,
@@ -3837,6 +3847,22 @@ fn prim_set_enemy(e: &Expr, scope: &Scope) -> Option<Effect> {
         other_faction: receiver_object(&args[0].value.node, scope)?,
         self_neutral: bool_arg(args, 1)?.unwrap_or(false),
         other_neutral: bool_arg(args, 2)?.unwrap_or(false),
+    })
+}
+
+/// `Faction.SetAlly(Faction akOther, bool abSelfIsFriendToOther = false,
+/// bool abOtherIsFriendToSelf = false)`; literal flags only, like
+/// [`prim_set_enemy`].
+fn prim_set_ally(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetAlly")?;
+    if !(1..=3).contains(&args.len()) {
+        return None;
+    }
+    Some(Effect::SetAlly {
+        faction: receiver_object(object, scope)?,
+        other_faction: receiver_object(&args[0].value.node, scope)?,
+        self_friend: bool_arg(args, 1)?.unwrap_or(false),
+        other_friend: bool_arg(args, 2)?.unwrap_or(false),
     })
 }
 

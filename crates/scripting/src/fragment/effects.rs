@@ -370,12 +370,18 @@ pub struct DeferredFragmentEffects {
     /// reference's cell, and a component cannot survive its own entity's
     /// despawn on cell unload.
     reference_lock_changes: Vec<(u32, DeferredLockChange)>,
-    /// `Effect::SetEnemy` calls — `(faction, other_faction, self_neutral,
-    /// other_neutral)` in global FormIDs — applied to `FactionRelations`
-    /// after the quest-state guards drop. That resource follows the same
-    /// nested-acquisition caution as `CinematicPresentationState` above
-    /// (#2269), not the "direct component storage, stays nested" exception.
-    faction_relations: Vec<(u32, u32, bool, bool)>,
+    /// `Effect::SetEnemy` / `Effect::SetAlly` calls — `(faction,
+    /// other_faction, faction's reaction, other's reaction)` in global
+    /// FormIDs — applied to `FactionRelations` after the quest-state guards
+    /// drop. That resource follows the same nested-acquisition caution as
+    /// `CinematicPresentationState` above (#2269), not the "direct component
+    /// storage, stays nested" exception.
+    faction_relations: Vec<(
+        u32,
+        u32,
+        byroredux_sdk::relationships::CombatReaction,
+        byroredux_sdk::relationships::CombatReaction,
+    )>,
     /// M47.2 — `Effect::ChangeFaction` calls, applied to `FactionRanks` and
     /// recorded in [`crate::ScriptedFactionChanges`] after the guards drop.
     faction_changes: Vec<(EntityId, u32, crate::FactionChange)>,
@@ -758,20 +764,20 @@ impl DeferredFragmentEffects {
                 Some(identity) => self
                     .faction_relations
                     .drain(..)
-                    .filter_map(|(faction, other, self_neutral, other_neutral)| {
+                    .filter_map(|(faction, other, reaction, other_reaction)| {
                         let pair = identity.form_ref(faction).zip(identity.form_ref(other));
                         if pair.is_none() {
                             log::warn!(
-                                "SetEnemy {faction:08X} -> {other:08X} dropped: a faction \
-                                 has no owning plugin in the load order"
+                                "SetEnemy/SetAlly {faction:08X} -> {other:08X} dropped: a \
+                                 faction has no owning plugin in the load order"
                             );
                         }
-                        pair.map(|(faction, other)| (faction, other, self_neutral, other_neutral))
+                        pair.map(|(faction, other)| (faction, other, reaction, other_reaction))
                     })
                     .collect::<Vec<_>>(),
                 None => {
                     log::warn!(
-                        "{} SetEnemy call(s) dropped: no LoadOrderIdentity",
+                        "{} SetEnemy/SetAlly call(s) dropped: no LoadOrderIdentity",
                         self.faction_relations.len()
                     );
                     self.faction_relations.clear();
@@ -779,8 +785,9 @@ impl DeferredFragmentEffects {
                 }
             };
             if let Some(mut relations) = world.try_resource_mut::<crate::FactionRelations>() {
-                for (faction, other, self_neutral, other_neutral) in resolved {
-                    relations.set_enemy(faction, other, self_neutral, other_neutral);
+                for (faction, other, reaction, other_reaction) in resolved {
+                    relations.set_reaction(faction, other, reaction);
+                    relations.set_reaction(other, faction, other_reaction);
                 }
             }
         }
@@ -1417,6 +1424,7 @@ pub(crate) fn apply_effect(
             None
         }
         Effect::SetEnemy { .. }
+        | Effect::SetAlly { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }
         | Effect::SetUnconscious { .. }
@@ -2425,13 +2433,48 @@ fn apply_ai_combat_effect(
             self_neutral,
             other_neutral,
         } => {
+            use byroredux_sdk::relationships::CombatReaction;
+            // #4318 — a `true` flag makes that direction neutral, not hostile.
+            let reaction = |neutral: bool| {
+                if neutral {
+                    CombatReaction::Neutral
+                } else {
+                    CombatReaction::Enemy
+                }
+            };
             let faction = resolve_property_form_id(vmad, faction.property_name())?;
             let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
             deferred.faction_relations.push((
                 faction,
                 other_faction,
-                *self_neutral,
-                *other_neutral,
+                reaction(*self_neutral),
+                reaction(*other_neutral),
+            ));
+            None
+        }
+        Effect::SetAlly {
+            faction,
+            other_faction,
+            self_friend,
+            other_friend,
+        } => {
+            use byroredux_sdk::relationships::CombatReaction;
+            // CK *SetAlly - Faction*: a `true` flag makes that direction a
+            // friend, `false` an ally.
+            let reaction = |friend: bool| {
+                if friend {
+                    CombatReaction::Friend
+                } else {
+                    CombatReaction::Ally
+                }
+            };
+            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            let other_faction = resolve_property_form_id(vmad, other_faction.property_name())?;
+            deferred.faction_relations.push((
+                faction,
+                other_faction,
+                reaction(*self_friend),
+                reaction(*other_friend),
             ));
             None
         }
@@ -2717,6 +2760,7 @@ fn apply_quest_scoped_effect(
         | Effect::StopCombat { .. }
         | Effect::SetUnconscious { .. }
         | Effect::SetGhost { .. }
+        | Effect::SetAlly { .. }
         | Effect::AddSpell { .. }
         | Effect::RemoveSpell { .. }
         | Effect::PlayIdle { .. }
