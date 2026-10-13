@@ -642,6 +642,14 @@ pub enum Effect {
         variable: String,
         value: f32,
     },
+    /// M47.2 — `<actor>.AddToFaction(f)` / `.RemoveFromFaction(f)` /
+    /// `.SetFactionRank(f, rank)`: the live `FactionRanks` edit, kept by the
+    /// saved [`crate::ScriptedFactionChanges`] ledger across re-derivation.
+    ChangeFaction {
+        actor: ActorRef,
+        faction: ObjectRef,
+        change: crate::FactionChange,
+    },
     /// A manifest or engine-owned static provider call used as a sequencing
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
     /// released, then resumes the remaining top-level effects in order.
@@ -1228,6 +1236,7 @@ const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_fail_all_objectives,
     prim_add_item,
     prim_remove_item,
+    prim_change_faction,
     prim_equip_item,
     prim_move_to,
     prim_disable,
@@ -1592,6 +1601,36 @@ fn prim_remove_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         item,
         count,
         destination,
+    })
+}
+
+/// `AddToFaction(akFaction)` / `RemoveFromFaction(akFaction)` /
+/// `SetFactionRank(akFaction, aiRank)` with a literal rank in `i8` range.
+fn prim_change_faction(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args, change) = if let Some((object, args)) = method_call(e, "AddToFaction") {
+        (object, args, crate::FactionChange::Add)
+    } else if let Some((object, args)) = method_call(e, "RemoveFromFaction") {
+        (object, args, crate::FactionChange::Remove)
+    } else if let Some((object, args)) = method_call(e, "SetFactionRank") {
+        if args.len() != 2 {
+            return None;
+        }
+        let rank = i8::try_from(int_arg(args, 1).or_else(|| {
+            // `-1` reaches the AST as a negated literal.
+            as_num(&args[1].value.node).filter(|n| n.fract() == 0.0).map(|n| n as i64)
+        })?)
+        .ok()?;
+        (object, &args[..1], crate::FactionChange::SetRank(rank))
+    } else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    Some(Effect::ChangeFaction {
+        actor: receiver_actor(object, scope)?,
+        faction: receiver_object(&args[0].value.node, scope)?,
+        change,
     })
 }
 
@@ -3151,6 +3190,65 @@ mod tests {
              Utility.Wait(1.0)\n EndFunction\n"
         )
         .is_some());
+    }
+
+    /// M47.2 — faction membership calls on an alias actor, the player and
+    /// (in a topic-info fragment) the speaker; `SetFactionRank` takes a
+    /// literal rank in `i8` range, negative included.
+    #[test]
+    fn lowers_faction_membership_calls() {
+        let body = first_fn_body(
+            "ScriptName QF extends Quest\n\
+             Function Fragment_8()\n\
+             Alias_VictimFather.GetActorRef().AddToFaction(CR08ExclusionFaction)\n\
+             Game.GetPlayer().RemoveFromFaction(PlayerFaction)\n\
+             Alias_Boss.GetActorRef().SetFactionRank(BanditFaction, -1)\n EndFunction\n",
+        );
+        let object = |name: &str| ObjectRef::Property(name.into());
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![
+                Effect::ChangeFaction {
+                    actor: ActorRef::Object(object("Alias_VictimFather")),
+                    faction: object("CR08ExclusionFaction"),
+                    change: crate::FactionChange::Add,
+                },
+                Effect::ChangeFaction {
+                    actor: ActorRef::Player,
+                    faction: object("PlayerFaction"),
+                    change: crate::FactionChange::Remove,
+                },
+                Effect::ChangeFaction {
+                    actor: ActorRef::Object(object("Alias_Boss")),
+                    faction: object("BanditFaction"),
+                    change: crate::FactionChange::SetRank(-1),
+                },
+            ])
+        );
+        assert_eq!(
+            lower_first_info_fragment(
+                "ScriptName TIF__1 extends TopicInfo\n\
+                 Function Fragment_0(ObjectReference akSpeakerRef)\n\
+                 Actor akSpeaker = akSpeakerRef as Actor\n\
+                 akSpeaker.RemoveFromFaction(WIKillThankFaction)\n EndFunction\n"
+            ),
+            Some(vec![Effect::ChangeFaction {
+                actor: ActorRef::Speaker,
+                faction: object("WIKillThankFaction"),
+                change: crate::FactionChange::Remove,
+            }])
+        );
+        for call in [
+            "Game.GetPlayer().SetFactionRank(SomeFaction, 300)",
+            "Game.GetPlayer().SetFactionRank(SomeFaction, iRank)",
+            "Game.GetPlayer().AddToFaction()",
+            "Game.GetPlayer().AddToFaction(SomeFaction, 1)",
+        ] {
+            let body = first_fn_body(&format!(
+                "ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n"
+            ));
+            assert_eq!(lower_fragment(&body), None, "{call}");
+        }
     }
 
     #[test]

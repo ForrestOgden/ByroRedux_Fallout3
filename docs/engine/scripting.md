@@ -304,6 +304,14 @@ variable — each optionally negated, the literal on either side. A guard whose
 quest or global does not resolve declines the whole conditional at runtime;
 a quest-variable guard sees a write made earlier in the same fragment.
 
+`AddToFaction` / `RemoveFromFaction` / `SetFactionRank` (CK semantics: join
+at rank 0 unless already a member; leave; set, joining if needed) lower to
+`Effect::ChangeFaction`. `FactionRanks` is re-derived from the record at every
+spawn and, for the player, on every load, so the edit is also recorded in the
+saved `ScriptedFactionChanges` ledger by reference FormID (PlayerRef `0x14`)
+and replayed by `reapply_scripted_faction_changes` from `stamp_quest_reference`
+and the load path.
+
 ### Script registry (M47.0)
 
 `ScriptRegistry` is a resource mapping SCPT/Papyrus `editor_id` strings to

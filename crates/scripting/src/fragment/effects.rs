@@ -328,6 +328,9 @@ pub struct DeferredFragmentEffects {
     /// nested-acquisition caution as `CinematicPresentationState` above
     /// (#2269), not the "direct component storage, stays nested" exception.
     faction_relations: Vec<(u32, u32, bool, bool)>,
+    /// M47.2 — `Effect::ChangeFaction` calls, applied to `FactionRanks` and
+    /// recorded in [`crate::ScriptedFactionChanges`] after the guards drop.
+    faction_changes: Vec<(EntityId, u32, crate::FactionChange)>,
     /// M47.2 — `Effect::SetQuestVariable` writes, applied to
     /// [`crate::QuestScriptVariables`] after the quest-state guards drop.
     quest_variables: Vec<(QuestFormId, byroredux_plugin::esm::records::condition::ConditionStringId, f32)>,
@@ -370,6 +373,7 @@ impl DeferredFragmentEffects {
             reference_lock_changes: Vec::new(),
             faction_relations: Vec::new(),
             quest_variables: Vec::new(),
+            faction_changes: Vec::new(),
             provider_steps: Vec::new(),
         }
     }
@@ -470,6 +474,43 @@ impl DeferredFragmentEffects {
                             state.request_save(auto);
                         }
                     }
+                }
+            }
+        }
+        if !self.faction_changes.is_empty() {
+            let player = world
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                .map(|player| player.0);
+            for (actor, faction, change) in std::mem::take(&mut self.faction_changes) {
+                let rank = {
+                    let Some(mut storage) =
+                        world.query_mut::<byroredux_core::ecs::components::FactionRanks>()
+                    else {
+                        log::debug!("faction change skipped: FactionRanks never registered");
+                        continue;
+                    };
+                    if storage.get_mut(actor).is_none() {
+                        storage.insert(actor, byroredux_core::ecs::components::FactionRanks::new());
+                    }
+                    change.apply(storage.get_mut(actor).expect("present or inserted"), faction)
+                };
+                // The ledger key: PlayerRef for the player, else the placed
+                // reference's FormID. An actor with neither keeps the live
+                // edit only (nothing re-derives it under a stable identity).
+                let reference = if player == Some(actor) {
+                    Some(crate::PLAYER_REFERENCE)
+                } else {
+                    entity_global_form_id(world, actor)
+                };
+                match reference {
+                    Some(reference) => {
+                        if let Some(mut ledger) = world.try_resource_mut::<crate::ScriptedFactionChanges>() {
+                            ledger.record(reference, faction, rank);
+                        }
+                    }
+                    None => log::debug!(
+                        "faction change on {actor:?} not persisted: the actor has no reference identity"
+                    ),
                 }
             }
         }
@@ -804,6 +845,23 @@ pub(crate) fn apply_effect(
         | Effect::SetMotionType { .. }
         | Effect::ExitCart { .. } => {
             apply_vehicle_cinematic_effect(effect, context, vmad, world, deferred)
+        }
+        Effect::ChangeFaction {
+            actor,
+            faction,
+            change,
+        } => {
+            let actor = resolve_actor(
+                vmad,
+                world,
+                context,
+                actor,
+                &deferred.scene_actor_bindings,
+                deferred.speaker,
+            )?;
+            let faction = resolve_property_form_id(vmad, faction.property_name())?;
+            deferred.faction_changes.push((actor, faction, *change));
+            None
         }
         Effect::SetQuestVariable {
             quest,
@@ -2032,6 +2090,7 @@ fn apply_quest_scoped_effect(
         | Effect::ShowRaceMenu
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
+        | Effect::ChangeFaction { .. }
         | Effect::SetEnemy { .. }
         | Effect::StartCombat { .. }
         | Effect::StopCombat { .. }

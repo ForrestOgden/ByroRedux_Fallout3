@@ -573,7 +573,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — `GetVMQuestVariable` reads quest-script variables; a
             // spoken line's fragment writes them (`SetQuestVariable`).
             .reads_resource::<byroredux_scripting::QuestScriptVariables>()
-            .writes_resource::<byroredux_scripting::QuestScriptVariables>(),
+            .writes_resource::<byroredux_scripting::QuestScriptVariables>()
+            // M47.2 — a spoken line's AddToFaction / RemoveFromFaction edits
+            // the speaker's membership and its saved ledger.
+            .writes::<byroredux_core::ecs::components::FactionRanks>()
+            .writes_resource::<byroredux_scripting::ScriptedFactionChanges>(),
     );
     scheduler.add_exclusive_with_access(
         Stage::Late,

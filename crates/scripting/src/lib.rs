@@ -17,6 +17,7 @@ pub mod condition;
 pub mod dialogue;
 pub mod equipment;
 pub mod events;
+pub mod faction_changes;
 pub mod fragment;
 pub mod globals;
 pub mod load_order;
@@ -95,6 +96,9 @@ pub use fragment::{
     FragmentExecutionQueue, FragmentPexTranslation, LockOverride, OwnedFragmentProviders,
     PendingFragmentActivations, QuestStageFragments, ReferenceEnableState,
     ReferenceLockState, ReferenceScriptState, SceneFragments,
+};
+pub use faction_changes::{
+    reapply_scripted_faction_changes, FactionChange, ScriptedFactionChanges, PLAYER_REFERENCE,
 };
 pub use globals::Globals;
 pub use load_order::LoadOrderIdentity;
@@ -184,6 +188,11 @@ use byroredux_core::ecs::world::World;
 /// before any entity has triggered an event.
 pub fn register(world: &mut World) {
     world.insert_resource(CompatibilityRegistry::default());
+    // M47.2 — the scripted faction-membership ledger (saved; a restore
+    // replaces this default).
+    if world.try_resource::<ScriptedFactionChanges>().is_none() {
+        world.insert_resource(ScriptedFactionChanges::default());
+    }
     world.register::<ActivateEvent>();
     world.register::<HitEvent>();
     world.register::<SplashEvent>();

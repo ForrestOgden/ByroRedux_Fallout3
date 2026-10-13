@@ -49,6 +49,30 @@ impl FactionRanks {
         self.0.iter().any(|(fid, _)| *fid == faction_form_id)
     }
 
+    /// Set the actor's rank in `faction_form_id`, joining it if needed
+    /// (Papyrus `SetFactionRank`). Every duplicate entry is updated, so the
+    /// first-entry-wins read of [`Self::rank`] sees the new rank.
+    pub fn set_rank(&mut self, faction_form_id: u32, rank: i8) {
+        let mut found = false;
+        for (fid, existing) in &mut self.0 {
+            if *fid == faction_form_id {
+                *existing = rank;
+                found = true;
+            }
+        }
+        if !found {
+            self.0.push((faction_form_id, rank));
+        }
+    }
+
+    /// Leave `faction_form_id` (Papyrus `RemoveFromFaction`), dropping every
+    /// duplicate entry. Returns whether the actor was a member.
+    pub fn remove(&mut self, faction_form_id: u32) -> bool {
+        let before = self.0.len();
+        self.0.retain(|(fid, _)| *fid != faction_form_id);
+        self.0.len() != before
+    }
+
     /// Number of factions the actor belongs to.
     pub fn len(&self) -> usize {
         self.0.len()
@@ -67,6 +91,19 @@ impl Component for FactionRanks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_rank_and_remove_edit_membership() {
+        let mut f = FactionRanks::from_pairs([(1, 2), (1, 5), (3, 0)]);
+        f.set_rank(1, 4);
+        assert_eq!(f.rank(1), Some(4), "every duplicate updated");
+        f.set_rank(7, -1);
+        assert_eq!(f.rank(7), Some(-1), "joined");
+        assert!(f.remove(1));
+        assert!(!f.is_member(1), "every duplicate dropped");
+        assert!(!f.remove(1));
+        assert_eq!(f.0, vec![(3, 0), (7, -1)]);
+    }
 
     #[test]
     fn rank_finds_member_and_misses_non_member() {

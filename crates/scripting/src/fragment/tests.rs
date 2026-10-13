@@ -4537,3 +4537,51 @@ fn widened_fragment_guards_read_live_state() {
     assert_eq!(read("Global"), Some(1.0));
     assert_eq!(read("SameFragmentWrite"), Some(1.0));
 }
+
+/// M47.2 — a faction change edits the live `FactionRanks` and lands in the
+/// saved ledger under the reference FormID (PlayerRef for the player), so the
+/// spawn / load re-derivation can replay it.
+#[test]
+fn dispatch_change_faction_edits_ranks_and_records_the_ledger() {
+    use crate::translate::compose::ObjectRef;
+    use crate::translate::effects::ActorRef;
+    use byroredux_core::ecs::components::FactionRanks;
+
+    const ACTOR_REF: u32 = 0x000A_1234;
+    const FACTION: u32 = 0x0001_38B8;
+    const OTHER: u32 = 0x0001_5FFB;
+    let mut world = fixture();
+    world.register::<FactionRanks>();
+    let actor = spawn_with_form_id(&mut world, ACTOR_REF);
+    world.insert(actor, FactionRanks::from_pairs([(OTHER, 2)]));
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+
+    run_stage_effects(
+        &world,
+        object_property_vmad(&[("Actor", ACTOR_REF), ("Faction", FACTION), ("Other", OTHER)]),
+        vec![
+            Effect::ChangeFaction {
+                actor: ActorRef::Object(ObjectRef::Property("Actor".into())),
+                faction: ObjectRef::Property("Faction".into()),
+                change: crate::FactionChange::Add,
+            },
+            Effect::ChangeFaction {
+                actor: ActorRef::Object(ObjectRef::Property("Actor".into())),
+                faction: ObjectRef::Property("Other".into()),
+                change: crate::FactionChange::Remove,
+            },
+            Effect::ChangeFaction {
+                actor: ActorRef::Player,
+                faction: ObjectRef::Property("Faction".into()),
+                change: crate::FactionChange::SetRank(3),
+            },
+        ],
+    );
+    let ranks = world.get::<FactionRanks>(actor).unwrap();
+    assert_eq!(ranks.0, vec![(FACTION, 0)]);
+    drop(ranks);
+    assert_eq!(world.get::<FactionRanks>(player).unwrap().rank(FACTION), Some(3));
+    let ledger = world.resource::<crate::ScriptedFactionChanges>();
+    assert_eq!(ledger.changes_for(ACTOR_REF), &[(FACTION, Some(0)), (OTHER, None)]);
+    assert_eq!(ledger.changes_for(crate::PLAYER_REFERENCE), &[(FACTION, Some(3))]);
+}

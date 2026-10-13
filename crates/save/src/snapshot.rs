@@ -308,7 +308,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// `StageDoneGuard` struct to the `FragmentGuard` enum (running / stage /
 /// objective / global / quest-variable reads). Queued fragment tails carry
 /// `Effect`s, so a v40 save with a queued conditional cannot be re-read.
-pub const FORMAT_MAJOR: u16 = 41;
+///
+/// v41 -> v42 (M47.2): a new resource column, `ScriptedFactionChanges` (the
+/// scripted faction-membership ledger), and `Effect::ChangeFaction`. A pre-v42
+/// save has no ledger, so scripted memberships would silently revert;
+/// rejected like the other column additions.
+pub const FORMAT_MAJOR: u16 = 42;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

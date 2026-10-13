@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 41;
+    const BASELINE_MAJOR: u16 = 42;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -833,7 +833,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // contribute their shapes for the first time. Both were registered
     // unchanged since 26b6a779c — no on-disk shape moved, the scan just
     // stopped being blind to them.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xd353_ed17_1e0c_1cca;
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2494_ef1b_8971_49f8;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:
@@ -895,6 +895,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // from an INFO FormID `u32` to a `(speaker reference FormID, INFO
     // FormID)` pair — Say Once is per actor (CK Topic Info). The set's
     // element shape changed, so a v37 save is rejected.
+    //
+    // v41 -> v42 (M47.2) — refreshed WITH a major bump:
+    // `ScriptedFactionChanges` joined the saved registry as a NEW resource
+    // and `Effect::ChangeFaction` the saved `Effect` enum.
     //
     // v40 -> v41 (M47.2) — refreshed WITH a major bump: the saved
     // `Effect::Conditional` guard list became `FragmentGuard`s.

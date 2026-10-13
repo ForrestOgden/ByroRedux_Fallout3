@@ -76,6 +76,9 @@ pub(super) fn stamp_quest_reference(
         },
     );
     byroredux_scripting::mark_scene_actor_bindings_dirty(world);
+    // M47.2 — scripted faction edits outlive the record-derived membership
+    // the actor job just stamped.
+    byroredux_scripting::reapply_scripted_faction_changes(world, entity, placed_ref.form_id);
     // NPC jobs finish their authored inventory before the caller stamps the
     // placed ACHR identity. Restore here, not inside the job (where only the
     // base NPC identity is known). CONT inventory attaches later and restores

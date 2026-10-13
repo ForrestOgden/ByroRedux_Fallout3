@@ -572,6 +572,11 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::QuestScriptVariables>(
             "QuestScriptVariables",
         )
+        // M47.2 — scripted AddToFaction / RemoveFromFaction / SetFactionRank,
+        // replayed over the record-derived `FactionRanks` at spawn and load.
+        .register_resource::<byroredux_scripting::ScriptedFactionChanges>(
+            "ScriptedFactionChanges",
+        )
         // #5367 Phase L — spoken Say-Once INFO bookkeeping: a said line
         // stays disqualified after an F5/F9 cycle, exactly the
         // quest-state contract beside it.
@@ -2014,6 +2019,12 @@ pub fn execute_pending_save_loads(
                 // stale alias-injected memberships anymore, so strip them
                 // before the first refresh reads them as authored.
                 crate::inventory::reset_player_factions_to_record(world, player);
+                // M47.2 — then the restored scripted memberships on top.
+                byroredux_scripting::reapply_scripted_faction_changes(
+                    world,
+                    player,
+                    byroredux_scripting::PLAYER_REFERENCE,
+                );
             }
             log::info!(
                 "save load: {location_label} reloaded ({count_label}); applied {} saved deltas \
