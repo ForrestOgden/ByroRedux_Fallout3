@@ -1262,6 +1262,25 @@ winner, a re-selection, a combat suspension), and that report now also keeps
 a load, and a report of "no package" clears a reused entity id's stale entry). The VM reads
 it as a value; an actor running none reads None.
 
+### Terminal fragments (M47.2)
+
+A Fallout 4 / Starfield terminal's `VMAD` binds `Fragment_Terminal_NN(akTerminalRef)` to its
+menu items. The fragment section is xEdit's `wbVMADFragmentedPERK` ("same fragments format as in
+PERK"): an s8 version, the fragment script's own entry, a u16 count, then per fragment a u32
+index, an unknown byte, the script name and the function name (`parse_terminal_fragments`; the
+`terminal_fragment_census` example checks that all 463 of Fallout 4's bindings, on 205
+terminals, carry an index equal to one of the terminal's menu item ids `ITID` and to the function
+suffix). `TermRecord.script_fragments` holds them; the populate walk installs those the VM's check
+accepts into `TerminalFragments`, sharing the package fragments' `FragmentTable` and the bin
+crate's single `populate_record_fragments`.
+
+The engine has no terminal screen, so the selection source is `report_terminal_selection(terminal
+reference, base, item id)`; the `terminal.select <reference formid> <item id>` console command is
+its only caller until a screen exists. `terminal_fragment_system` (Update) then runs the item's
+fragment with `akTerminalRef` bound to the reference. Starfield's own terminal records carry a
+different menu layout the plugin does not decode, so only the fragment function suffix ties a
+Starfield item to its fragment there; its three base-game bindings are not menu-checked.
+
 ### GetFactionReaction (M47.2)
 
 CK *GetFactionReaction - Actor*: "the faction-based reaction between this actor and another",

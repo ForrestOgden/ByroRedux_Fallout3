@@ -67,6 +67,7 @@ mod package;
 mod populate;
 mod reference;
 mod state;
+mod terminal;
 mod systems;
 mod updates;
 pub mod vm;
@@ -78,6 +79,7 @@ pub use distance::*;
 pub use hits::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
+pub use terminal::*;
 pub use populate::*;
 pub use reference::*;
 pub use state::*;
@@ -113,6 +115,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/populate.rs"),
     include_str!("fragment/reference.rs"),
     include_str!("fragment/systems.rs"),
+    include_str!("fragment/terminal.rs"),
     include_str!("fragment/updates.rs"),
     include_str!("fragment/vm.rs"),
 );

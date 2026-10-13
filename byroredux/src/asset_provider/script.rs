@@ -673,55 +673,52 @@ fn populate_info_fragments(
     }
 }
 
-/// M47.2 — install the Papyrus VM's package (`PF_`) fragments from each
-/// `PACK`'s `VMAD` bindings, for the package-transition dispatcher. Session-
-/// gated like the INFO walk.
-fn populate_package_fragments(
+/// One record's fragment bindings as a populate walk reads them: its FormID,
+/// its fragment script's properties, and each binding's (event, script name,
+/// function name).
+type RecordBindings<'a, E> = (u32, Option<&'a byroredux_plugin::esm::records::script_instance::ScriptInstanceData>, Vec<(E, &'a str, &'a str)>);
+
+/// M47.2 — install the Papyrus VM's fragments for records that bind a fragment
+/// script (packages, terminals), grouped by script and checked by the VM.
+/// Session-gated like the INFO walk: it runs once per `table`. Returns the
+/// number of bindings installed.
+fn populate_record_fragments<E: Copy + Send + Sync + 'static>(
     world: &mut byroredux_core::ecs::world::World,
-    index: &byroredux_plugin::esm::records::EsmIndex,
-) {
-    if world
-        .resource::<byroredux_scripting::PackageFragments>()
-        .is_populated()
-    {
-        return;
+    records: Vec<RecordBindings<'_, E>>,
+) -> usize {
+    use byroredux_scripting::translate::effects::ScriptLibrary as _;
+    if world.resource::<byroredux_scripting::FragmentTable<E>>().is_populated() {
+        return 0;
     }
     world
-        .resource_mut::<byroredux_scripting::PackageFragments>()
+        .resource_mut::<byroredux_scripting::FragmentTable<E>>()
         .mark_populated();
     if world
         .try_resource::<ScriptProvider>()
         .is_none_or(|provider| provider.is_empty())
     {
-        return;
+        return 0;
     }
     let Some(script_provider) = world.remove_resource::<ScriptProvider>() else {
-        return;
+        return 0;
     };
     let library = ProviderScriptLibrary::new(&script_provider);
     let mut vm_scripts = Vec::new();
-    let mut fragments = byroredux_scripting::PackageFragments::default();
+    let mut fragments = byroredux_scripting::FragmentTable::<E>::default();
     let mut total = 0usize;
-    for (&form_id, package) in &index.packages {
-        if package.script_fragments.is_empty() {
-            continue;
-        }
+    for (form_id, vmad, bindings) in records {
         let mut by_script: std::collections::HashMap<&str, Vec<_>> = std::collections::HashMap::new();
-        for fragment in &package.script_fragments {
-            by_script
-                .entry(fragment.script_name.as_str())
-                .or_default()
-                .push((fragment.event, fragment.fragment_name.as_str()));
+        for (event, script_name, function) in bindings {
+            by_script.entry(script_name).or_default().push((event, function));
         }
         for (script_name, bindings) in by_script {
-            use byroredux_scripting::translate::effects::ScriptLibrary as _;
             let Some(script) = library.script(script_name) else {
                 continue;
             };
-            total += byroredux_scripting::populate_package_fragments(
+            total += byroredux_scripting::populate_fragments(
                 &mut fragments,
                 form_id,
-                package.script_instance.as_ref(),
+                vmad,
                 script,
                 &bindings,
                 &library,
@@ -732,11 +729,59 @@ fn populate_package_fragments(
     drop(library);
     world.insert_resource(script_provider);
     install_vm_scripts(world, vm_scripts);
-    if total > 0 {
-        log::info!("M47.2: installed {total} package fragments for {} packages", fragments.len());
-    }
     fragments.mark_populated();
     world.insert_resource(fragments);
+    total
+}
+
+/// M47.2 — the package (`PF_`) fragments each `PACK`'s `VMAD` binds, for the
+/// package-transition dispatcher.
+fn populate_package_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    let records = index
+        .packages
+        .iter()
+        .filter(|(_, package)| !package.script_fragments.is_empty())
+        .map(|(&form_id, package)| {
+            let bindings = package
+                .script_fragments
+                .iter()
+                .map(|f| (f.event, f.script_name.as_str(), f.fragment_name.as_str()))
+                .collect();
+            (form_id, package.script_instance.as_ref(), bindings)
+        })
+        .collect();
+    let total = populate_record_fragments(world, records);
+    if total > 0 {
+        log::info!("M47.2: installed {total} package fragments");
+    }
+}
+
+/// M47.2 — the terminal (`TERM_`) fragments each Fallout 4 / Starfield
+/// terminal binds to its menu items, for the terminal-selection dispatcher.
+fn populate_terminal_fragments(
+    world: &mut byroredux_core::ecs::world::World,
+    index: &byroredux_plugin::esm::records::EsmIndex,
+) {
+    let records = index
+        .terminals
+        .iter()
+        .filter(|(_, terminal)| !terminal.script_fragments.is_empty())
+        .map(|(&form_id, terminal)| {
+            let bindings = terminal
+                .script_fragments
+                .iter()
+                .map(|f| (f.index, f.script_name.as_str(), f.fragment_name.as_str()))
+                .collect();
+            (form_id, terminal.script_instance.as_ref(), bindings)
+        })
+        .collect();
+    let total = populate_record_fragments(world, records);
+    if total > 0 {
+        log::info!("M47.2: installed {total} terminal fragments");
+    }
 }
 
 /// Install every parsed Skyrim+ `SCEN` definition and its referenced
@@ -853,6 +898,7 @@ pub(crate) fn populate_scene_runtime(
     populate_quest_fragments(world, index);
     populate_info_fragments(world, index);
     populate_package_fragments(world, index);
+    populate_terminal_fragments(world, index);
     crate::inventory::install_catalog(world, index);
     // #4415 — canonical spells for runtime `AddSpell` / `RemoveSpell`.
     world.insert_resource(byroredux_scripting::SpellCatalog::from_index(index));

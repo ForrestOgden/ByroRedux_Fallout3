@@ -93,6 +93,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SceneShowCommand);
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
+    registry.register(TerminalSelectCommand);
     registry.register(QuestSetStageCommand);
     registry.register(TimeShowCommand);
     registry.register(TimeSetCommand);

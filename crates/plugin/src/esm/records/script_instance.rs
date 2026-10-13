@@ -719,6 +719,52 @@ pub fn parse_package_fragments(vmad: &[u8]) -> Vec<PackageScriptFragment> {
     out
 }
 
+/// One terminal (`TERM`) fragment binding: the menu item a `Fragment_Terminal_NN`
+/// runs for, with the script and function that implement it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TerminalScriptFragment {
+    /// The xEdit "Fragment Index" (equal to the menu item's `ITID`, which the
+    /// function name `Fragment_Terminal_NN` repeats).
+    pub index: u32,
+    pub script_name: String,
+    pub fragment_name: String,
+}
+
+/// Decode a `TERM` (and `PERK`) `VMAD` fragment section in the Fallout 4 /
+/// Starfield layout (xEdit `wbVMADFragmentedPERK`, "same fragments format as in
+/// PERK"): an `s8` version, the fragment script's own entry (name, status byte,
+/// property table), a `u16` count, then per fragment a `u32` index, an unknown
+/// byte, the script name and the fragment name.
+pub fn parse_terminal_fragments(vmad: &[u8]) -> Vec<TerminalScriptFragment> {
+    let (data, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
+        return Vec::new();
+    };
+    let Some(section) = vmad.get(consumed..) else {
+        return Vec::new();
+    };
+    let mut c = Cursor::new(section);
+    if c.u8().is_none() {
+        return Vec::new();
+    }
+    let (_, clean) = c.scripts(1, data.version, data.object_format);
+    if !clean {
+        return Vec::new();
+    }
+    let Some(count) = c.u16() else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (Some(index), Some(_unknown), Some(script_name), Some(fragment_name)) =
+            (c.u32(), c.u8(), c.wstring(), c.wstring())
+        else {
+            break;
+        };
+        out.push(TerminalScriptFragment { index, script_name, fragment_name });
+    }
+    out
+}
+
 /// Minimal bounds-checked little-endian cursor over a VMAD payload.
 struct Cursor<'a> {
     data: &'a [u8],
@@ -1489,6 +1535,33 @@ mod tests {
         assert_eq!(fragments[0].fragment_name, "Fragment_0");
         assert_eq!(fragments[1].event, PackageFragmentEvent::Change);
         assert_eq!(fragments[1].fragment_name, "Fragment_2");
+    }
+
+    /// A TERM fragment section (xEdit `wbVMADFragmentedPERK`, Fallout 4): an
+    /// s8 version, the fragment script's entry, a u16 count, and per fragment
+    /// a u32 index, an unknown byte and the script and function names.
+    #[test]
+    fn terminal_fragments_decode_index_script_and_function() {
+        let mut vmad = Vec::new();
+        vmad.extend_from_slice(&6i16.to_le_bytes()); // version
+        vmad.extend_from_slice(&2i16.to_le_bytes()); // objectFormat
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // scriptCount = 0
+        vmad.push(3); // extra bind data version
+        push_wstring(&mut vmad, "Fragments:Terminals:TERM_Test_00000001");
+        vmad.push(0); // status
+        vmad.extend_from_slice(&0u16.to_le_bytes()); // propCount = 0
+        vmad.extend_from_slice(&2u16.to_le_bytes());
+        for (index, function) in [(1u32, "Fragment_Terminal_01"), (7, "Fragment_Terminal_07")] {
+            vmad.extend_from_slice(&index.to_le_bytes());
+            vmad.push(0);
+            push_wstring(&mut vmad, "Fragments:Terminals:TERM_Test_00000001");
+            push_wstring(&mut vmad, function);
+        }
+        let fragments = parse_terminal_fragments(&vmad);
+        assert_eq!(fragments.len(), 2);
+        assert_eq!((fragments[0].index, fragments[0].fragment_name.as_str()), (1, "Fragment_Terminal_01"));
+        assert_eq!((fragments[1].index, fragments[1].fragment_name.as_str()), (7, "Fragment_Terminal_07"));
+        assert!(parse_terminal_fragments(&empty_scripts_prefix()).is_empty(), "object-only VMAD");
     }
 
     // ---- SCEN fragment section ----------------------------------------

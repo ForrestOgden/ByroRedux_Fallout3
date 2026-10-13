@@ -2474,6 +2474,59 @@ fn get_faction_reaction_reads_the_factions() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "enemy once scripted");
 }
 
+/// A terminal menu pick runs the picked item's fragment with `akTerminalRef`
+/// bound to the terminal reference; another item's fragment does not run.
+#[test]
+fn terminal_selection_runs_the_items_fragment() {
+    const TERMINAL: u32 = 0x0001_0F50;
+    let script = parsed_source(
+        "ScriptName TERM_VmTest extends Terminal\n\
+         Function Fragment_Terminal_01(ObjectReference akTerminalRef)\n\
+           akTerminalRef.Disable()\n\
+         EndFunction\n\
+         Function Fragment_Terminal_02(ObjectReference akTerminalRef)\n\
+           akTerminalRef.Enable()\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let installed = std::cell::RefCell::new(Vec::new());
+    let library: HashMap<String, Arc<Script>> = HashMap::new();
+    let library = Installed(&library);
+    {
+        let mut fragments = world.resource_mut::<crate::TerminalFragments>();
+        let n = crate::populate_fragments(
+            &mut fragments,
+            TERMINAL,
+            None,
+            script,
+            &[(1u32, "Fragment_Terminal_01"), (2u32, "Fragment_Terminal_02")],
+            &library,
+            &mut |s| installed.borrow_mut().push(s),
+        );
+        assert_eq!(n, 2);
+    }
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in installed.into_inner() {
+            fragments.insert_vm_script(script);
+        }
+    }
+    // The terminal reference is the marker the tests already track.
+    crate::report_terminal_selection(&world, MARKER, TERMINAL, 1);
+    crate::terminal_fragment_system(&world, 0.0);
+    assert!(!crate::fragment::reference_enabled(&world, MARKER), "item 1 disabled the terminal");
+    crate::report_terminal_selection(&world, MARKER, TERMINAL, 2);
+    crate::terminal_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "item 2 enabled it again");
+    crate::report_terminal_selection(&world, MARKER, TERMINAL, 3);
+    crate::terminal_fragment_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, MARKER), "no fragment for item 3");
+}
+
 /// `Math` natives, `Utility.GetCurrentGameTime` (days from the host's game
 /// clock) and `Game.AddAchievement` (recorded once).
 #[test]

@@ -543,7 +543,9 @@ fn main() {
                             .any(|p| p.name.node.0.eq_ignore_ascii_case(INFO_SPEAKER_PARAMETER));
                         // Package fragments (`PF_…`) run on package transitions.
                         let package = script.name.node.0.to_ascii_lowercase().contains("pf_");
-                        let wired = quest_library.quest || quest_library.scene || info || package;
+                        // Terminal fragments (`TERM_…`) run on a menu pick.
+                        let terminal = script.name.node.0.to_ascii_lowercase().contains("term_");
+                        let wired = quest_library.quest || quest_library.scene || info || package || terminal;
                         let checked = if wired {
                             byroredux_scripting::fragment::vm::check_function_reason(
                                 std::sync::Arc::clone(&script_arc),

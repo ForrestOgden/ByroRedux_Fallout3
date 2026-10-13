@@ -22,31 +22,46 @@ use super::*;
 use crate::translate::effects::VmStored;
 use byroredux_plugin::esm::records::script_instance::PackageFragmentEvent;
 
-/// One package's installed fragments.
+/// One record's installed fragments, each bound to an event of type `E`
+/// (a package's Begin / End / Change, a terminal's menu item).
 #[derive(Debug, Clone)]
-pub struct PackageFragmentSet {
-    /// The `PF_` script's properties.
+pub struct FragmentSet<E> {
+    /// The fragment script's properties.
     pub vmad: Option<ScriptInstanceData>,
     /// (event, script, function) per installed fragment.
-    pub fragments: Vec<(PackageFragmentEvent, String, String)>,
+    pub fragments: Vec<(E, String, String)>,
 }
 
-/// Every package's installed fragments, by package FormID.
-#[derive(Debug, Clone, Default)]
-pub struct PackageFragments {
-    map: Arc<HashMap<u32, PackageFragmentSet>>,
+/// One package's installed fragments.
+pub type PackageFragmentSet = FragmentSet<PackageFragmentEvent>;
+
+/// Every record's installed fragments, by record FormID.
+#[derive(Debug, Clone)]
+pub struct FragmentTable<E> {
+    map: Arc<HashMap<u32, FragmentSet<E>>>,
     populated: bool,
 }
 
-impl Resource for PackageFragments {}
-
-impl PackageFragments {
-    pub fn insert(&mut self, package: u32, set: PackageFragmentSet) {
-        Arc::make_mut(&mut self.map).insert(package, set);
+impl<E> Default for FragmentTable<E> {
+    fn default() -> Self {
+        Self { map: Arc::default(), populated: false }
     }
+}
 
-    pub fn get(&self, package: u32) -> Option<&PackageFragmentSet> {
-        self.map.get(&package)
+impl<E: Send + Sync + 'static> Resource for FragmentTable<E> {}
+
+/// Every package's installed fragments, by package FormID.
+pub type PackageFragments = FragmentTable<PackageFragmentEvent>;
+
+impl<E: Clone> FragmentTable<E> {
+    pub fn insert(&mut self, record: u32, set: FragmentSet<E>) {
+        Arc::make_mut(&mut self.map).insert(record, set);
+    }
+}
+
+impl<E> FragmentTable<E> {
+    pub fn get(&self, record: u32) -> Option<&FragmentSet<E>> {
+        self.map.get(&record)
     }
 
     pub fn len(&self) -> usize {
@@ -66,18 +81,21 @@ impl PackageFragments {
     }
 }
 
-/// Install `package`'s fragments from its decompiled `PF_` `script`: the
+/// Install `record`'s fragments from its decompiled fragment `script`: the
 /// `bindings` whose function the VM's check accepts, with the scripts their
 /// runs need handed to `install`. Returns how many installed.
-pub fn populate_package_fragments(
-    frags: &mut PackageFragments,
-    package: u32,
+pub fn populate_fragments<E: Copy>(
+    frags: &mut FragmentTable<E>,
+    record: u32,
     vmad: Option<&ScriptInstanceData>,
     script: Arc<Script>,
-    bindings: &[(PackageFragmentEvent, &str)],
+    bindings: &[(E, &str)],
     library: &dyn crate::translate::effects::ScriptLibrary,
     install: &mut dyn FnMut(Arc<Script>),
-) -> usize {
+) -> usize
+where
+    E: Clone,
+{
     let mut fragments = Vec::new();
     for (event, function) in bindings {
         let Some(scripts) = super::vm::check_function(Arc::clone(&script), function, Some(library)) else {
@@ -91,14 +109,27 @@ pub fn populate_package_fragments(
     let installed = fragments.len();
     if installed > 0 {
         frags.insert(
-            package,
-            PackageFragmentSet {
+            record,
+            FragmentSet {
                 vmad: vmad.cloned(),
                 fragments,
             },
         );
     }
     installed
+}
+
+/// [`populate_fragments`] for a package.
+pub fn populate_package_fragments(
+    frags: &mut PackageFragments,
+    package: u32,
+    vmad: Option<&ScriptInstanceData>,
+    script: Arc<Script>,
+    bindings: &[(PackageFragmentEvent, &str)],
+    library: &dyn crate::translate::effects::ScriptLibrary,
+    install: &mut dyn FnMut(Arc<Script>),
+) -> usize {
+    populate_fragments(frags, package, vmad, script, bindings, library, install)
 }
 
 /// An actor's package changed: `from` stopped running, `to` started.

@@ -814,6 +814,53 @@ impl ConsoleCommand for QuestSetStageCommand {
     }
 }
 
+/// `terminal.select <reference formid> <menu item id>` — pick a menu item on a
+/// terminal reference, running the item's `Fragment_Terminal_NN` (M47.2). The
+/// engine has no terminal screen, so this is the selection source until one
+/// exists.
+pub(crate) struct TerminalSelectCommand;
+
+impl ConsoleCommand for TerminalSelectCommand {
+    fn name(&self) -> &str {
+        "terminal.select"
+    }
+
+    fn description(&self) -> &str {
+        "Pick a terminal menu item by reference and item id, running its fragment"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        const USAGE: &str = "usage: terminal.select <terminal reference formid> <menu item id>";
+        let mut tokens = args.split_whitespace();
+        let (Some(raw_reference), Some(raw_item)) = (tokens.next(), tokens.next()) else {
+            return CommandOutput::error(USAGE);
+        };
+        if tokens.next().is_some() {
+            return CommandOutput::error(USAGE);
+        }
+        let Some(reference) = parse_console_u32(raw_reference) else {
+            return CommandOutput::error(format!("bad reference FormID `{raw_reference}`"));
+        };
+        let Some(item) = parse_console_u32(raw_item) else {
+            return CommandOutput::error(format!("bad menu item id `{raw_item}`"));
+        };
+        let Some(entity) = byroredux_scripting::condition::resolve_entity_by_global_form_id(world, reference) else {
+            return CommandOutput::error(format!("no loaded reference {reference:08X}"));
+        };
+        let Some(base) = byroredux_scripting::relationships::actor_base(world, entity) else {
+            return CommandOutput::error(format!("reference {reference:08X} has no base record"));
+        };
+        let installed = world
+            .try_resource::<byroredux_scripting::TerminalFragments>()
+            .and_then(|fragments| fragments.get(base).map(|set| set.fragments.iter().filter(|(on, _, _)| *on == item).count()))
+            .unwrap_or(0);
+        byroredux_scripting::report_terminal_selection(world, reference, base, item);
+        CommandOutput::line(format!(
+            "Terminal {reference:08X} (base {base:08X}) item {item}: {installed} fragment(s) queued"
+        ))
+    }
+}
+
 /// `dialogue.status` — P4 observability for the activation-driven topic
 /// selection: every NPC currently carrying an `NpcDialogueTopic`. Read-only.
 pub(crate) struct DialogueStatusCommand;

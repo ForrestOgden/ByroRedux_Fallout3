@@ -1681,6 +1681,9 @@ pub struct TermRecord {
     /// VMAD-bearing `TERM` records (`Fallout4.esm`); the shared helper
     /// already decoded this, `parse_term` just wasn't copying it out.
     pub script_instance: Option<super::super::script_instance::ScriptInstanceData>,
+    /// M47.2 — the `Fragment_Terminal_NN` bindings of a Fallout 4 / Starfield
+    /// terminal's `VMAD` ([`parse_terminal_fragments`]), keyed by menu item id.
+    pub script_fragments: Vec<super::super::script_instance::TerminalScriptFragment>,
 }
 
 pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> TermRecord {
@@ -1724,6 +1727,9 @@ pub fn parse_term(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // `ITXT` (menu items). A `CTDA` attaches to whichever element opened
     // most recently — the xEdit FO4 layout ends both the body struct and
     // the menu-item struct with a conditions array.
+    if let Some(vmad) = subs.iter().find(|sub| sub.sub_type == *b"VMAD") {
+        out.script_fragments = super::super::script_instance::parse_terminal_fragments(&vmad.data);
+    }
     let mut current_body: Option<TerminalBody> = None;
     // `true` when the last structural opener was a menu item, `false`
     // when it was a body, `None` before any opener.
