@@ -160,7 +160,7 @@ fn layout(file: &Packfile) -> &'static Layout {
 
 /// Nested generators are followed this deep (a state machine in a blender in a
 /// state machine ...).
-const MAX_GENERATOR_DEPTH: usize = 8;
+const MAX_GENERATOR_DEPTH: usize = 32;
 /// `hkbClipTriggerArray::m_triggers` and its element layout.
 const TRIGGERS_ARRAY: usize = 0x10;
 const TRIGGER_STRIDE: usize = 32;
@@ -268,7 +268,48 @@ pub struct BehaviorGraph {
     pub machine: Option<StateMachine>,
 }
 
+/// How many behavior references [`BehaviorGraph::start_clip`] follows before it gives
+/// up (a mod graph that refers to itself cannot hang it).
+const MAX_REFERENCE_HOPS: usize = 8;
+
+impl StateMachine {
+    /// The clip this machine plays on entry: the start state's own clip, else the
+    /// first of its nested machines that yields one, else the first sub-behavior it
+    /// refers to. `resolve` loads a referenced behavior by the path it names.
+    fn start_clip(&self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, hops: &mut usize) -> Option<StateClip> {
+        let state = self.states.iter().find(|s| s.id == self.start_state).or(self.states.first())?;
+        if let Some(clip) = &state.clip {
+            return Some(clip.clone());
+        }
+        for machine in &state.content.machines {
+            if let Some(clip) = machine.start_clip(resolve, hops) {
+                return Some(clip);
+            }
+        }
+        for reference in &state.content.behavior_references {
+            if *hops >= MAX_REFERENCE_HOPS {
+                return None;
+            }
+            *hops += 1;
+            if let Some(clip) = resolve(reference).and_then(|graph| graph.machine?.start_clip(resolve, hops)) {
+                return Some(clip);
+            }
+        }
+        state.content.blended_clips.first().cloned()
+    }
+}
+
 impl BehaviorGraph {
+    /// The clip an actor standing idle in this graph plays: following the start
+    /// state of every machine down (and into the sub-behaviors a state refers to,
+    /// loaded through `resolve`) to the first clip. Fallout 4's `MTBehavior` reaches
+    /// `Animations\PoseA_Idle1.hkt` through its `MTIdles` state's reference to
+    /// `DialogueBehavior.hkx`. Variables and events are not evaluated: this is the
+    /// pose the graph starts in.
+    pub fn start_clip(&self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) -> Option<StateClip> {
+        self.machine.as_ref()?.start_clip(resolve, &mut 0)
+    }
+
     /// The id of the event named `name` (case-insensitive).
     pub fn event_id(&self, name: &str) -> Option<i32> {
         self.events
@@ -706,5 +747,92 @@ mod tests {
             .map(|s| s.content.blended_clips.len() + usize::from(s.clip.is_some()))
             .sum();
         assert!(blended >= 8, "the eight walk directions are clips of one blender: {blended}");
+
+        // The humanoid MT graph idles in `PoseA_Idle1`, reached through its
+        // `MTIdles` state's reference to `DialogueBehavior.hkx`.
+        let mt = decode_behavior_graph(&archive.extract(r"meshes\actors\character\behaviors\mtbehavior.hkx").unwrap()).unwrap();
+        let clip = mt
+            .start_clip(&mut |reference| {
+                let path = format!(r"meshes\actors\character\{}", reference.to_ascii_lowercase());
+                decode_behavior_graph(&archive.extract(&path).ok()?).ok()
+            })
+            .expect("the MT idle clip");
+        assert_eq!(clip.animation, "Animations\\PoseA_Idle1.hkt");
+        assert_eq!(clip.mode, ClipMode::Looping);
+    }
+
+    fn machine_of(start: i32, states: Vec<State>) -> StateMachine {
+        StateMachine { start_state: start, states, wildcard: Vec::new() }
+    }
+
+    fn state_of(id: i32, clip: Option<&str>, content: StateContent) -> State {
+        State {
+            id,
+            name: format!("S{id}"),
+            transitions: Vec::new(),
+            clip: clip.map(|animation| StateClip {
+                animation: animation.to_owned(),
+                mode: ClipMode::Looping,
+                playback_speed: 1.0,
+                start_time: 0.0,
+                user_fraction: 0.0,
+                triggers: Vec::new(),
+            }),
+            content,
+        }
+    }
+
+    /// The idle pose is found by following start states down, then nested machines,
+    /// then referenced sub-behaviors; a self-referencing graph ends instead of hanging.
+    #[test]
+    fn start_clip_follows_start_states_nested_machines_and_references() {
+        let leaf = BehaviorGraph {
+            events: Vec::new(),
+            machine: Some(machine_of(
+                1,
+                vec![state_of(0, Some("Animations\\Other.hkt"), StateContent::default()), state_of(1, Some("Animations\\Idle.hkt"), StateContent::default())],
+            )),
+        };
+        let root = BehaviorGraph {
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(
+                    0,
+                    None,
+                    StateContent {
+                        // The first nested machine has nothing; the reference is next.
+                        machines: vec![machine_of(0, vec![state_of(0, None, StateContent::default())])],
+                        behavior_references: vec!["Behaviors\\Leaf.hkx".into()],
+                        ..Default::default()
+                    },
+                )],
+            )),
+        };
+        let mut loaded = Vec::new();
+        let clip = root
+            .start_clip(&mut |path| {
+                loaded.push(path.to_owned());
+                Some(leaf.clone())
+            })
+            .expect("a clip");
+        assert_eq!(clip.animation, "Animations\\Idle.hkt", "the start state, not the first state");
+        assert_eq!(loaded, ["Behaviors\\Leaf.hkx"]);
+
+        let looping = BehaviorGraph {
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec!["Self.hkx".into()], ..Default::default() })],
+            )),
+        };
+        let mut hops = 0;
+        assert!(looping
+            .start_clip(&mut |_| {
+                hops += 1;
+                Some(looping.clone())
+            })
+            .is_none());
+        assert!(hops <= MAX_REFERENCE_HOPS);
     }
 }
