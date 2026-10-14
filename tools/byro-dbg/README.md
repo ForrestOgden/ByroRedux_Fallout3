@@ -36,8 +36,8 @@ byro> 142.Transform.translation
 byro> tex.missing
 17 unique missing textures: ...
 
-byro> screenshot /tmp/frame.png
-Screenshot saved: /tmp/frame.png
+byro> screenshot frame.png
+Screenshot saved: screenshots/frame.png
 ```
 
 ## Common workflows

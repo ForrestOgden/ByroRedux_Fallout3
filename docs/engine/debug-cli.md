@@ -15,8 +15,10 @@ live beside their implementations.
 The listener starts automatically in debug builds. Release builds require
 `BYRO_DEBUG_SERVER=1` to opt in. Debug screenshots accept a filename under
 `screenshots/`; `tex.dump` reads only archives configured at engine startup and
-writes under `texture-dumps/`. Loose `LoadNif` paths stay within configured game
-data roots.
+writes under `texture-dumps/`. Every file path in a `LoadNif`,
+`LoadInteriorCell` or `LoadExteriorCell` request must be relative to the
+directory of a startup `--esm` / `--master` / `--bsa` arg (or, for `LoadNif`,
+archive-relative); absolute and `..` paths are rejected with an `Error`.
 
 > Last reconciled 2026-10-04 (#5150: screenshot response contract,
 > `tex.dump` default path, timeout figures). The doc was substantially
@@ -82,7 +84,8 @@ are fire-and-forget. We need:
    - `LoadNif`, `LoadInteriorCell`, `LoadExteriorCell` — queued for the
      engine binary to drain on a frame where it holds both `&mut World` and
      `&mut VulkanContext` (mirrors the existing `PendingCellTransition`
-     pattern); the request returns `Ok` immediately.
+     pattern); the request returns `Ok` immediately, unless a path is
+     absolute or uses `..` (an `Error`, #5290).
    - `Eval` — first checks if the leading whitespace-delimited token matches a
      name in the engine's `CommandRegistry` resource (so dotted console
      commands like `tex.missing` / `mesh.cache` dispatch through
@@ -126,7 +129,7 @@ enum is tagged with `#[serde(tag = "cmd", rename_all = "snake_case")]`.
 | `InspectSkinnedMesh { entity }` | Dump a `SkinnedMesh`'s skeleton root, per-bone resolved entity + `GlobalTransform`, bind-inverses, the per-skin global transform, and the computed palette. Pairs with `WalkEntity` for the M41 Phase 1b.x palette-formula investigation (#841). |
 | `Inspect { entity? }` | Per-entity component dump — every registered component on the entity as `(name, JSON value)`. `entity: None` reads the world's `SelectedRef` (see "Picked-Ref Workflow"). The inspection half of the Bethesda-console `prid` + introspection pattern. |
 | `Metrics` | Live runtime metrics: CPU %, RAM used/total, process RSS, VRAM used/reserved/budget, and per-pass GPU times. Reads the engine's ~2 Hz snapshot without forcing a refresh. Drives the TUI dashboard. |
-| `LoadNif { path, label? }` | Queue a loose-or-archive NIF load against the running engine. Returns `Ok` immediately; the engine drains the queue between frames. |
+| `LoadNif { path, label? }` | Queue a loose-or-archive NIF load against the running engine. Returns `Ok` immediately (an `Error` for an absolute or `..` path — see "On-Demand Asset Loads"); the engine drains the queue between frames. |
 | `LoadInteriorCell { esm, cell, masters, bsas, textures_bsas }` | Queue an interior cell load by editor ID (same async-via-queue semantics). |
 | `LoadExteriorCell { esm, grid_x, grid_y, radius, worldspace?, masters, bsas, textures_bsas }` | Queue an exterior grid load (radius clamped `1..=7` engine-side). |
 | `ListGameProfiles` | Enumerate configured game profiles from `assets/debug_profiles.toml` + `~/.byroredux/profiles.toml` (debug-UI Phase 5). |
@@ -848,14 +851,21 @@ load queue between frames where it holds both `&mut World` and
 `&mut VulkanContext` (the same lane as `PendingCellTransition`). This lets you
 swap content into a live session without a relaunch.
 
-- `LoadNif { path, label? }` — `path` is either an absolute loose-file path or
-  an archive-relative `meshes\foo.nif` resolved through the active BSA/BA2 set.
-  `label` defaults to the basename and becomes the entity `Name` when the NIF
-  carries none.
+- `LoadNif { path, label? }` — `path` is either a loose file relative to the
+  directory of one of the engine's startup `--esm` / `--master` / `--bsa` args
+  (#4752) or an archive-relative `meshes\foo.nif` resolved through the active
+  BSA/BA2 set. `label` defaults to the basename and becomes the entity `Name`
+  when the NIF carries none.
 - `LoadInteriorCell` / `LoadExteriorCell` — carry the `esm`, `masters`,
   `bsas`, `textures_bsas` set (and grid + clamped `radius` + optional
   `worldspace` for exterior) so the load matches what the CLI flags would
-  produce.
+  produce. Every one of those paths follows the same startup-root rule as a
+  loose `LoadNif` path, and one rejected path rejects the whole load (#5165).
+
+An absolute path or one with `..` is answered with an `Error` up front (#5290).
+A relative path that names no file under any startup root still returns `Ok`,
+because roots are only resolved when the engine drains the queue; the
+rejection then appears in the engine log only.
 
 `ListGameProfiles` (Phase 5) enumerates configured games from
 `assets/debug_profiles.toml` (engine defaults) merged with
@@ -1330,8 +1340,8 @@ byro> systems
   ... (illustrative — the live list depends on which gameplay/scripting
        systems main.rs registered; debug_drain_system is last) ...
 
-byro> screenshot /tmp/debug_frame.png
-Screenshot saved: /tmp/debug_frame.png
+byro> screenshot debug_frame.png
+Screenshot saved: screenshots/debug_frame.png
 
 byro> quit
 ```

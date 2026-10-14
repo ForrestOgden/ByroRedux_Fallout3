@@ -337,7 +337,7 @@ pub fn print_help() {
     println!();
     println!("Capture:");
     println!("  screenshot          Capture screenshot (auto-named)");
-    println!("  screenshot <path>  Capture screenshot to specific file");
+    println!("  screenshot <name>  Capture screenshot to screenshots/<name> (bare filename)");
     println!();
     println!("Other:");
     println!("  ping               Check connection");

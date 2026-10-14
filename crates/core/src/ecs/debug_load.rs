@@ -22,9 +22,10 @@ use super::resource::Resource;
 pub enum PendingDebugLoad {
     /// Load a single NIF mesh.
     Nif {
-        /// NIF path. Absolute filesystem (loose) or archive-relative
-        /// (`meshes\foo.nif`) resolved through the active BSA / BA2
-        /// set.
+        /// NIF path. A loose file relative to one of the engine's startup
+        /// `--esm` / `--master` / `--bsa` directories (#4752), or
+        /// archive-relative (`meshes\foo.nif`) resolved through the active
+        /// BSA / BA2 set. Never absolute — see [`is_root_relative_load_path`].
         path: String,
         /// Diagnostic label. Defaults to the basename of `path`
         /// when omitted by the request.
@@ -51,6 +52,53 @@ pub enum PendingDebugLoad {
         bsas: Vec<String>,
         textures_bsas: Vec<String>,
     },
+}
+
+/// The syntactic half of the debug-load path rule (#4752 / #5165): a
+/// requested file path must be relative and made only of normal components
+/// (`.` allowed) — no root, drive prefix or `..`. The binary's
+/// `confine_to_roots` adds the other half (the file must exist under a
+/// startup root). The debug server checks this half when it queues a load,
+/// so a client that sends an absolute path gets an error instead of an `Ok`
+/// for a load the engine then drops (#5290).
+pub fn is_root_relative_load_path(path: &str) -> bool {
+    use std::path::{Component, Path};
+    let path = Path::new(path);
+    path.is_relative()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
+}
+
+impl PendingDebugLoad {
+    /// The first file path this load carries that breaks
+    /// [`is_root_relative_load_path`], if any. Cell loads check every plugin
+    /// and archive path, because one rejected path rejects the whole load
+    /// (#5165).
+    pub fn first_non_root_relative_path(&self) -> Option<&str> {
+        let mut paths: Vec<&str> = Vec::new();
+        match self {
+            Self::Nif { path, .. } => paths.push(path),
+            Self::InteriorCell {
+                esm,
+                masters,
+                bsas,
+                textures_bsas,
+                ..
+            }
+            | Self::ExteriorCell {
+                esm,
+                masters,
+                bsas,
+                textures_bsas,
+                ..
+            } => {
+                paths.push(esm);
+                paths.extend(masters.iter().chain(bsas).chain(textures_bsas).map(String::as_str));
+            }
+        }
+        paths.into_iter().find(|path| !is_root_relative_load_path(path))
+    }
 }
 
 /// Resource slot — a FIFO of queued load ops. Always present at
@@ -109,6 +157,33 @@ impl PendingUpscalerSwitch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_paths_must_be_root_relative() {
+        assert!(is_root_relative_load_path("meshes\\foo.nif"));
+        assert!(is_root_relative_load_path("meshes/foo.nif"));
+        assert!(is_root_relative_load_path("./FalloutNV.esm"));
+        assert!(!is_root_relative_load_path("/tmp/foo.nif"));
+        assert!(!is_root_relative_load_path("../FalloutNV.esm"));
+        assert!(!is_root_relative_load_path("meshes/../../etc/passwd"));
+    }
+
+    #[test]
+    fn a_cell_load_reports_its_first_absolute_path() {
+        let load = PendingDebugLoad::InteriorCell {
+            esm: "FalloutNV.esm".into(),
+            cell: "GSDocMitchellHouse".into(),
+            masters: vec![],
+            bsas: vec!["Fallout - Meshes.bsa".into(), "/abs/Textures.bsa".into()],
+            textures_bsas: vec!["../up.bsa".into()],
+        };
+        assert_eq!(load.first_non_root_relative_path(), Some("/abs/Textures.bsa"));
+        let nif = PendingDebugLoad::Nif {
+            path: "meshes\\clutter\\cup.nif".into(),
+            label: None,
+        };
+        assert_eq!(nif.first_non_root_relative_path(), None);
+    }
 
     #[test]
     fn upscaler_switch_keeps_only_the_last_request() {

@@ -229,15 +229,10 @@ fn startup_asset_roots() -> Vec<std::path::PathBuf> {
 /// to an existing file still inside the root it was joined to (so a symlink
 /// cannot step out). The first root that holds it wins. #4752 / #5165.
 fn confine_to_roots(requested: &str, roots: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
-    use std::path::{Component, Path};
-    let requested = Path::new(requested);
-    if !requested.is_relative()
-        || !requested
-            .components()
-            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
-    {
+    if !byroredux_core::ecs::is_root_relative_load_path(requested) {
         return None;
     }
+    let requested = std::path::Path::new(requested);
     roots.iter().find_map(|root| {
         root.join(requested)
             .canonicalize()

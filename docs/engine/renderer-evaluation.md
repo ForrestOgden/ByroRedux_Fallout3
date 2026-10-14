@@ -166,4 +166,5 @@ diffuse bounce rays return useful energy.
 For interactive follow-up, launch the engine with `--features debug-server`
 and `--bench-hold`, then connect with `target/release/byro-dbg`. Useful probes
 for this scene include `near 300`, `inspect <entity>`, `stats`, and
-`screenshot <path>`.
+`screenshot <name>` (a bare filename, written under the engine cwd's
+`screenshots/`).

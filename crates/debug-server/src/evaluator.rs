@@ -200,10 +200,20 @@ fn eval_metrics(world: &World) -> DebugResponse {
 /// Push a load request onto the `PendingDebugLoadSlot`. Returns `Ok`
 /// (the binary's `step_debug_loads` drains the slot between frames
 /// and dispatches to the real loaders where `&mut World + &mut
-/// VulkanContext` are both held). Returns an error only when the
-/// slot resource is missing — same condition as `eval_metrics`'s
-/// missing-`MetricsSnapshot` branch.
+/// VulkanContext` are both held). Returns an error when the slot
+/// resource is missing — same condition as `eval_metrics`'s
+/// missing-`MetricsSnapshot` branch — or when a path is absolute or
+/// uses `..`, which the engine would only reject after this `Ok` (#5290).
 fn eval_queue_load(world: &World, load: PendingDebugLoad) -> DebugResponse {
+    // #5290 — the engine drops a load whose path is absolute or climbs with
+    // `..` (#4752 / #5165) long after this request was answered, so reject
+    // it here where the client can still see why.
+    if let Some(path) = load.first_non_root_relative_path() {
+        return DebugResponse::error(format!(
+            "load path '{path}' must be relative to a startup --esm/--master/--bsa \
+             directory (or archive-relative); absolute paths and '..' are rejected"
+        ));
+    }
     let Some(mut slot) = world.try_resource_mut::<PendingDebugLoadSlot>() else {
         return DebugResponse::error(
             "PendingDebugLoadSlot resource not present (was the slot inserted at boot?)",
@@ -896,6 +906,38 @@ fn resolve_entity_name(world: &World, entity: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// #5290 — an absolute or `..` load path is refused before it is queued,
+    /// so the client sees the reason instead of an `Ok` that never loads.
+    #[test]
+    fn absolute_load_paths_are_rejected_before_queueing() {
+        use super::{evaluate, PendingDebugLoadSlot};
+        use byroredux_core::ecs::World;
+        use byroredux_debug_protocol::registry::ComponentRegistry;
+        use byroredux_debug_protocol::{DebugRequest, DebugResponse};
+
+        let mut world = World::new();
+        world.insert_resource(PendingDebugLoadSlot::default());
+        let registry = ComponentRegistry::new();
+        let nif = |path: &str| DebugRequest::LoadNif {
+            path: path.into(),
+            label: None,
+        };
+
+        for path in ["/tmp/foo.nif", "../outside/foo.nif"] {
+            match evaluate(&world, &registry, &nif(path)) {
+                DebugResponse::Error { message } => assert!(message.contains(path), "{message}"),
+                other => panic!("{path}: expected Error, got {other:?}"),
+            }
+        }
+        assert_eq!(world.resource::<PendingDebugLoadSlot>().0.len(), 0);
+
+        assert!(matches!(
+            evaluate(&world, &registry, &nif("meshes\\clutter\\cup.nif")),
+            DebugResponse::Ok
+        ));
+        assert_eq!(world.resource::<PendingDebugLoadSlot>().0.len(), 1);
+    }
 
     #[test]
     fn walk_depth_is_capped_even_for_untrusted_requests() {

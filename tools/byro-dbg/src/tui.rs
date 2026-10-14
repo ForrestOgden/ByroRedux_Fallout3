@@ -647,7 +647,7 @@ fn render_loader(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(label, chunks[1]);
 
     let help = Paragraph::new(vec![
-        Line::from("Enter to queue load.  Path may be loose absolute or BSA-relative."),
+        Line::from("Enter to queue load.  Path: BSA-relative, or loose relative to a startup --esm/--bsa dir."),
         Line::from("The active engine must have the relevant --bsa archive loaded."),
         Line::from(""),
         Line::from(Span::styled(
