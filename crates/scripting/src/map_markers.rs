@@ -21,6 +21,10 @@ use byroredux_plugin::esm::records::EsmIndex;
 pub struct MapMarkers {
     visible: HashSet<u32>,
     fast_travel: HashSet<u32>,
+    /// Starfield's `SetMarkerVisibleOnStarMap(abVisible)`: markers a script made visible on
+    /// the star map (the game's `ObjectReference.pex` declares the native with no body; the
+    /// meaning is the name's, and nothing reads it yet - there is no star map).
+    star_map_visible: HashSet<u32>,
 }
 
 impl Resource for MapMarkers {}
@@ -29,6 +33,19 @@ impl MapMarkers {
     /// Whether a script made `marker` visible on the map.
     pub fn is_visible(&self, marker: u32) -> bool {
         self.visible.contains(&marker)
+    }
+
+    /// `SetMarkerVisibleOnStarMap`.
+    pub fn set_star_map_visible(&mut self, marker: u32, visible: bool) {
+        if visible {
+            self.star_map_visible.insert(marker);
+        } else {
+            self.star_map_visible.remove(&marker);
+        }
+    }
+
+    pub fn is_star_map_visible(&self, marker: u32) -> bool {
+        self.star_map_visible.contains(&marker)
     }
 
     /// Whether a script made `marker` a fast-travel target.

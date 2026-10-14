@@ -1634,11 +1634,18 @@ decoder demanded Skyrim's version byte 2, and a version-6 `VMAD` writes 3 there 
 status byte and property table before the fragments. `parse_quest_fragments` and the alias decoder now share one
 walker (`quest_tail`): Fallout 4 binds 7,150 fragments on 885 quests, Starfield 10,202 on 1,012 (Skyrim's 845
 quests are unchanged; `version_6_quest_vmads_bind_their_stage_fragments`). Of Starfield's FC05 quest's 35 fragments
-28 lower, and `quest.setstage 0x1F0267 1600` runs the quest live in a Cydonia boot; its stage 1600
-(`Alias_MarcoStarshipMapMarker.GetRef().AddToMapScanned(true)` beside `SetMarkerVisibleOnStarMap`) is among the 7
-that do not, because `SetMarkerVisibleOnStarMap` is not a modelled native, so `AddToMapScanned` is still not
-reached by a vanilla Starfield fragment. Starfield's profile has no scripts archive: `--scripts-bsa "Starfield -
-Misc.ba2"` is what lets its VM run (reference scripts such as `LoadElevatorLoitererScript.OnLoad` do).
+28 lower. Binding them was not enough: `ScriptProvider::resolve_pex` looked a script up as
+`scripts\Fragments:Quests:QF_...pex`, leaving its `:` namespace colons in the archive key, so every
+namespaced script (all 1,012 Starfield quest fragment scripts, and any `Namespace:Script` attachment) was "not in
+archive"; each colon is a folder now (`a_namespaced_script_name_maps_to_its_archive_folders`). With both,
+a Cydonia boot logs `populated 8206 quest-stage fragments from 1012 scripted quests`, and
+`quest.setstage 0x1F0267 1600` runs `QF_FC05_001F0267.Fragment_Stage_1600_Item_00` through the VM. That stage
+(`Alias_MarcoStarshipMapMarker.GetRef().AddToMapScanned(true)` beside `SetMarkerVisibleOnStarMap(true)`) needed
+`SetMarkerVisibleOnStarMap`, a native with no body in the game's `ObjectReference.pex`, now a per-marker
+flag in `MapMarkers` (its name is the whole grounding; nothing reads it, there is no star map; `FORMAT_MAJOR` 104).
+It stops at `getref on None` because the quest's alias is not filled in a console-set stage, so the scan
+itself is exercised through `script.exec` on the player (above). Starfield's profile has no scripts archive:
+`--scripts-bsa "Starfield - Misc.ba2"` is what lets its VM run.
 
 ### ObjectReference.Activate (M47.2)
 

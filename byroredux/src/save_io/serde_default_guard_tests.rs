@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 103;
+    const BASELINE_MAJOR: u16 = 104;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1026,7 +1026,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // the `DestructionStates` column.
     // 2026-10-14 (M47.2) — refreshed WITH a major bump (v102 -> v103):
     // `Effect::Activate` gained the required `native_only` field.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1a5c_e921_c1e6_0f38;
+    // 2026-10-14 (M47.2) — refreshed WITH a major bump (v103 -> v104):
+    // `MapMarkers` gained the star-map-visible set.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe5c5_b413_82a6_6292;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

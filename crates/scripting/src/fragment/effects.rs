@@ -542,6 +542,8 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
     pub(crate) map_markers: Vec<(u32, bool)>,
+    /// `SetMarkerVisibleOnStarMap(visible)` calls: (marker, visible).
+    pub(crate) star_map_changes: Vec<(u32, bool)>,
     /// M47.2 — `SetScanned` / `AddToMapScanned` flags: (reference, scanned),
     /// applied to [`crate::ScannedReferences`] after the guards drop.
     pub(crate) scanned_changes: Vec<(u32, bool)>,
@@ -627,6 +629,7 @@ impl DeferredFragmentEffects {
             alias_overrides: Vec::new(),
             activation_blocks: Vec::new(),
             map_markers: Vec::new(),
+            star_map_changes: Vec::new(),
             location_clears: Vec::new(),
             base_protection: Vec::new(),
             relationship_changes: Vec::new(),
@@ -1002,6 +1005,14 @@ impl DeferredFragmentEffects {
             {
                 pending.0.append(&mut self.story_events);
             }
+        }
+        if !self.star_map_changes.is_empty() {
+            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+                for (marker, visible) in self.star_map_changes.drain(..) {
+                    markers.set_star_map_visible(marker, visible);
+                }
+            }
+            self.star_map_changes.clear();
         }
         if !self.map_markers.is_empty() {
             if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {

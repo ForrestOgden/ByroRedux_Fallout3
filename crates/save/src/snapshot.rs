@@ -517,7 +517,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v102 -> v103 (M47.2): `Effect::Activate` gained `native_only`
 /// (`Activate(akActivator, true)`); queued fragment tails serialize `Effect`s.
-pub const FORMAT_MAJOR: u16 = 103;
+///
+/// v103 -> v104 (M47.2): `MapMarkers` gained the star-map-visible set
+/// (`SetMarkerVisibleOnStarMap`).
+pub const FORMAT_MAJOR: u16 = 104;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

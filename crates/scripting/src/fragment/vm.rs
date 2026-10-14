@@ -2710,6 +2710,7 @@ impl Vm<'_> {
                     | "istrue"
                     | "isscanned"
                     | "addtomapscanned"
+                    | "setmarkervisibleonstarmap"
                     | "playanimation"
                     | "registerforanimationevent"
                     | "unregisterforanimationevent"
@@ -3559,6 +3560,13 @@ impl Vm<'_> {
                         .is_some_and(|scanned| scanned.is_scanned(*reference)),
                 };
                 Some(Value::Bool(flagged))
+            }
+            // Starfield `SetMarkerVisibleOnStarMap(abVisible)`: a native with no body in the
+            // game's `ObjectReference.pex`; a per-marker flag, as its name says.
+            (Value::Form(marker), "setmarkervisibleonstarmap") if args.len() == 1 => {
+                let visible = self.eval(frame, &args[0].value.node)?.truthy();
+                self.deferred.star_map_changes.push((*marker, visible));
+                Some(Value::None)
             }
             (Value::Form(reference), "addtomapscanned") if args.len() == 1 => {
                 let fast_travel = self.eval(frame, &args[0].value.node)?.truthy();
@@ -5607,7 +5615,7 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Bool);
             }
-            (Kind::Object | Kind::Player, "setscanned" | "addtomapscanned")
+            (Kind::Object | Kind::Player, "setscanned" | "addtomapscanned" | "setmarkervisibleonstarmap")
                 if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]) =>
             {
                 return Some(Kind::None);

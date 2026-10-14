@@ -131,10 +131,13 @@ impl ConsoleCommand for ScanInfoCommand {
         let scanned = world
             .try_resource::<byroredux_scripting::ScannedReferences>()
             .is_some_and(|scanned| scanned.is_scanned(form));
-        let (visible, fast_travel) = world
-            .try_resource::<byroredux_scripting::MapMarkers>()
-            .map_or((false, false), |markers| (markers.is_visible(form), markers.is_fast_travel(form)));
-        CommandOutput::line(format!("{form:08X}: scanned {scanned}, map-visible {visible}, fast-travel {fast_travel}"))
+        let (visible, fast_travel, star_map) = world.try_resource::<byroredux_scripting::MapMarkers>().map_or(
+            (false, false, false),
+            |markers| (markers.is_visible(form), markers.is_fast_travel(form), markers.is_star_map_visible(form)),
+        );
+        CommandOutput::line(format!(
+            "{form:08X}: scanned {scanned}, map-visible {visible}, fast-travel {fast_travel}, star-map-visible {star_map}"
+        ))
     }
 }
 

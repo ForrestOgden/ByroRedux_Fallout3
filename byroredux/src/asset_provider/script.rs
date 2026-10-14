@@ -288,7 +288,9 @@ pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::wor
 /// extension. A name authored with the folder and/or extension already
 /// present (or with forward slashes) is accepted unchanged in meaning.
 pub(crate) fn pex_archive_path(script_name: &str) -> String {
-    let mut name = script_name.replace('/', "\\").to_ascii_lowercase();
+    // A Fallout 4 / Starfield script name carries its namespace with colons
+    // (`Fragments:Quests:QF_FC05_001F0267`): each is a folder in the archive.
+    let mut name = script_name.replace(['/', ':'], "\\").to_ascii_lowercase();
     if !name.ends_with(".pex") {
         name.push_str(".pex");
     }
@@ -456,6 +458,8 @@ pub(crate) fn populate_quest_fragments(
         log::info!(
             "M47.2: populated {total} quest-stage fragments from {quests_with_fragments} scripted quests"
         );
+    } else {
+        log::debug!("M47.2: no quest-stage fragment lowered ({quests_with_fragments} scripted quests with bindings)");
     }
 }
 
@@ -1665,5 +1669,17 @@ mod tests {
             "expected the three production lowering seams, found {seams} — \
              re-derive this pin (#3939)"
         );
+    }
+
+    /// A namespaced Fallout 4 / Starfield script name is a folder path in the archive:
+    /// every `Fragments:Quests:QF_*` quest fragment script used to be "not in archive".
+    #[test]
+    fn a_namespaced_script_name_maps_to_its_archive_folders() {
+        assert_eq!(
+            pex_archive_path("Fragments:Quests:QF_FC05_001F0267"),
+            r"scripts\fragments\quests\qf_fc05_001f0267.pex"
+        );
+        assert_eq!(pex_archive_path("DA10MainDoorScript"), r"scripts\da10maindoorscript.pex");
+        assert_eq!(pex_archive_path(r"scripts\a\b.pex"), r"scripts\a\b.pex");
     }
 }
