@@ -137,8 +137,11 @@ seed in its own right:
   pixel by the frame-free `ignMask` blue-noise mask. The rotation never
   moves with the frame — IGN's per-frame offset crawled — so the frame
   counter only advances the sequence.
-- **Reservoir streaming and the temporal / spatial reuse picks, the GI
-  hemisphere and the path-event samples** draw from
+- **The GI hemisphere direction** takes the same sampler,
+  `ditheredSequence2(pixel, giSeed, MAX_LIGHTS)`; the salt sits one
+  past every light index so its rotation never matches a shadow ray's.
+- **Reservoir streaming and the temporal / spatial reuse picks and the
+  path-event samples** draw from
   `hash2_pixel_frame(pixel, uint(cameraPos.w) …)` (PCG2D, decorrelated
   per pixel and per frame).
 - `interleavedGradientNoise` (frame term wrapped mod 64, #4951) survives

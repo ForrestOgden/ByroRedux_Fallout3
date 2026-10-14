@@ -209,6 +209,21 @@ fn shadow_ray_disk_samples_are_dithered_low_discrepancy() {
     );
 }
 
+/// The GI hemisphere direction takes the same dithered sampler as the shadow
+/// rays: a white per-(pixel, frame) hash leaves SVGF grinding 1/sqrt(N) error,
+/// and the pre-hash scalar IGN pair produced a grid moiré. The salt must stay
+/// past every light index so the GI rotation never matches a shadow ray's.
+#[test]
+fn gi_hemisphere_samples_are_dithered_low_discrepancy() {
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        triangle.contains(
+            "vec2 giRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(giSeed), MAX_LIGHTS);"
+        ),
+        "the GI hemisphere sample must draw from ditheredSequence2 salted with MAX_LIGHTS"
+    );
+}
+
 /// The categorical selected-light oracle distinguishes a legitimate absence
 /// (black) from a corrupt non-sentinel index (magenta).
 #[test]

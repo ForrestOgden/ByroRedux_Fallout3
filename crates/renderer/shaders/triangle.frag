@@ -4190,10 +4190,17 @@ void main() {
             // dither used for both axes, which produced CORRELATED/structured
             // directions and a coherent grid moiré on the dark GI floor that
             // neither the à-trous (spatial) nor SVGF (temporal) could remove.
-            // White-noise 2D samples decorrelate the 1-spp error so both
-            // denoiser stages resolve it. (giSeed still holds 4 frames under
-            // motion for flicker suppression; advances every frame parked.)
-            vec2 giRand = hash2_pixel_frame(uvec2(gl_FragCoord.xy), uint(giSeed));
+            // Then a white PCG hash per (pixel, frame): decorrelated, but its
+            // 1/sqrt(N) temporal error is what SVGF has to grind down.
+            // `ditheredSequence2` (#5369, the shadow-ray sampler) keeps the
+            // two axes decorrelated (two independent ignMask evaluations, no
+            // per-frame crawl) while the R2 recurrence makes each pixel's
+            // running average converge faster than random sampling. Salt
+            // MAX_LIGHTS sits one past every light index, so the GI rotation
+            // never coincides with a shadow-ray consumer's. (giSeed still
+            // holds 4 frames under motion for flicker suppression; advances
+            // every frame parked.)
+            vec2 giRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(giSeed), MAX_LIGHTS);
             float n1 = giRand.x;
             float n2 = giRand.y;
 
