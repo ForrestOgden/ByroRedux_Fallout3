@@ -141,7 +141,7 @@ impl ConsoleCommand for ScanInfoCommand {
     }
 }
 
-/// `quest.force <quest> <alias_id> <entity|.>`: `ReferenceAlias.ForceRefTo` from the console
+/// `quest.force <quest> <alias_id> <entity|.|0xREFR>`: `ReferenceAlias.ForceRefTo` from the console
 /// (an alias override, as the VM records; dropped when the quest stops).
 pub(crate) struct QuestForceAliasCommand;
 
@@ -151,21 +151,35 @@ impl ConsoleCommand for QuestForceAliasCommand {
     }
 
     fn description(&self) -> &str {
-        "ForceRefTo from the console: quest.force <quest_formid> <alias_id> <entity|.>"
+        "ForceRefTo from the console: quest.force <quest_formid> <alias_id> <entity|.|0xREFR>"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let mut tokens = args.split_whitespace();
         let (Some(quest_token), Some(alias_token), Some(entity_token)) = (tokens.next(), tokens.next(), tokens.next())
         else {
-            return CommandOutput::error("usage: quest.force <quest_formid> <alias_id> <entity|.>");
+            return CommandOutput::error("usage: quest.force <quest_formid> <alias_id> <entity|.|0xREFR>");
         };
         let (Some(quest), Ok(alias)) = (parse_console_u32(quest_token), alias_token.parse::<i32>()) else {
             return CommandOutput::error("quest.force: bad quest or alias id");
         };
-        let entity = match resolve_console_entity(world, entity_token) {
-            Ok(entity) => entity,
-            Err(message) => return CommandOutput::error(format!("quest.force: {message}")),
+        // `0x…` names the placed reference by FormID; anything else is an entity id.
+        let entity = if let Some(reference) = entity_token.strip_prefix("0x").and(parse_console_u32(entity_token)) {
+            let found = world.query::<byroredux_scripting::SceneAliasCandidate>().and_then(|candidates| {
+                candidates
+                    .iter()
+                    .find(|(_, candidate)| candidate.reference_form_id == reference)
+                    .map(|(entity, _)| entity)
+            });
+            match found {
+                Some(entity) => entity,
+                None => return CommandOutput::error(format!("quest.force: reference {reference:08X} is not loaded")),
+            }
+        } else {
+            match resolve_console_entity(world, entity_token) {
+                Ok(entity) => entity,
+                Err(message) => return CommandOutput::error(format!("quest.force: {message}")),
+            }
         };
         let player = world
             .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
@@ -178,10 +192,18 @@ impl ConsoleCommand for QuestForceAliasCommand {
         let Some(form) = form else {
             return CommandOutput::error("quest.force: the entity is not a placed reference");
         };
+        // An alias only ever binds a loaded candidate; a mesh child that merely
+        // carries the reference's FormId is not one.
+        if Some(entity) != player && world.get::<byroredux_scripting::SceneAliasCandidate>(entity).is_none() {
+            return CommandOutput::error("quest.force: the entity is not a loaded alias candidate (a placed reference's root)");
+        }
         let Some(mut overrides) = world.try_resource_mut::<byroredux_scripting::AliasOverrides>() else {
             return CommandOutput::error("quest.force: no AliasOverrides resource");
         };
         overrides.set(byroredux_scripting::QuestFormId(quest), alias, byroredux_scripting::AliasOverride::Forced(form));
+        drop(overrides);
+        // The next scene pass re-fills the aliases only when told they changed.
+        byroredux_scripting::scene::mark_scene_actor_bindings_dirty(world);
         CommandOutput::line(format!("alias {alias} of {quest:08X} forced to {form:08X}"))
     }
 }
