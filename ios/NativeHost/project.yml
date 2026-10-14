@@ -1,4 +1,4 @@
-name: Fallout3Native
+name: FalloutNVNative
 options:
   bundleIdPrefix: com.forrestogden
   deploymentTarget:
@@ -13,7 +13,7 @@ settings:
     CODE_SIGNING_ALLOWED: NO
 
 targets:
-  Fallout3Native:
+  FalloutNVNative:
     type: application
     platform: iOS
     sources:
@@ -22,13 +22,13 @@ targets:
         buildPhase: headers
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.forrestogden.fallout3native
+        PRODUCT_BUNDLE_IDENTIFIER: com.forrestogden.falloutnvnative
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Includes/EngineBridge.h"
         OTHER_LDFLAGS:
-          - "$(SRCROOT)/../../target/aarch64-apple-ios/release/libfallout3_ios_bridge.a"
+          - "$(SRCROOT)/../../target/aarch64-apple-ios/release/libfalloutnv_ios_bridge.a"
 
 schemes:
-  Fallout3Native:
+  FalloutNVNative:
     build:
       targets:
-        Fallout3Native: all
+        FalloutNVNative: all

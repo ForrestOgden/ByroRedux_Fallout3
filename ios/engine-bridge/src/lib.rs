@@ -5,9 +5,9 @@ use byroredux_bsa::BsaArchive;
 use std::ffi::{c_char, CStr};
 
 /// ABI version for the Swift host. Nonzero means a linked Rust library,
-/// *not* successful Fallout 3 gameplay.
+/// *not* successful Fallout: New Vegas gameplay.
 #[unsafe(no_mangle)]
-pub extern "C" fn fo3_ios_abi_version() -> u32 {
+pub extern "C" fn fnv_ios_abi_version() -> u32 {
     1
 }
 
@@ -19,7 +19,7 @@ pub extern "C" fn fo3_ios_abi_version() -> u32 {
 /// Returns: 0 valid BSA, -1 null, -2 non-UTF8 path, 1 unreadable/invalid BSA.
 /// This never copies or uploads any game asset bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fo3_ios_probe_bsa(path: *const c_char) -> i32 {
+pub unsafe extern "C" fn fnv_ios_probe_bsa(path: *const c_char) -> i32 {
     if path.is_null() {
         return -1;
     }
@@ -41,17 +41,17 @@ mod tests {
 
     #[test]
     fn abi_is_versioned() {
-        assert_eq!(fo3_ios_abi_version(), 1);
+        assert_eq!(fnv_ios_abi_version(), 1);
     }
 
     #[test]
     fn null_path_is_rejected() {
-        assert_eq!(unsafe { fo3_ios_probe_bsa(std::ptr::null()) }, -1);
+        assert_eq!(unsafe { fnv_ios_probe_bsa(std::ptr::null()) }, -1);
     }
 
     #[test]
     fn nonexistent_archive_is_rejected_without_reading_game_data() {
-        let p = CString::new("/__fallout3_ios_uninstalled__/absent.bsa").unwrap();
-        assert_eq!(unsafe { fo3_ios_probe_bsa(p.as_ptr()) }, 1);
+        let p = CString::new("/__falloutnv_ios_uninstalled__/absent.bsa").unwrap();
+        assert_eq!(unsafe { fnv_ios_probe_bsa(p.as_ptr()) }, 1);
     }
 }

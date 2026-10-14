@@ -15,10 +15,10 @@ class AuditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name) / "Fallout 3"
+        self.root = Path(self.temp.name) / "Fallout: New Vegas"
         self.data = self.root / "Data"
         self.data.mkdir(parents=True)
-        self.fixture("Fallout3.esm", b"TES4\x00\x00fixture")
+        self.fixture("FalloutNV.esm", b"TES4\x00\x00fixture")
         self.fixture("Fallout - Meshes.bsa", b"BSA\x00meshes")
         self.fixture("Fallout - Textures.bsa", b"BSA\x00textures")
 
@@ -30,7 +30,7 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(result["ready_for_parser_tests"])
         self.assertEqual(result["dlc_detected"], [])
         self.assertEqual(len(result["files"]), 3)
-        esm = next(f for f in result["files"] if f["name"] == "Fallout3.esm")
+        esm = next(f for f in result["files"] if f["name"] == "FalloutNV.esm")
         self.assertEqual(esm["sha256"], hashlib.sha256(b"TES4\x00\x00fixture").hexdigest())
         self.assertNotIn(str(self.root), str(result))
 
@@ -54,12 +54,27 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(comparison["matches"])
         self.assertEqual(comparison["changed"], ["fallout - meshes.bsa"])
 
+    def test_fallout_3_master_is_not_accepted_as_new_vegas(self):
+        (self.data / "FalloutNV.esm").unlink()
+        self.fixture("Fallout3.esm", b"TES4old")
+        result = audit.inspect(self.data)
+        self.assertFalse(result["ready_for_parser_tests"])
+        self.assertTrue(any("FalloutNV.esm" in error for error in result["errors"]))
+
+    def test_official_bonus_content_without_main_bsa_is_not_flagged(self):
+        self.fixture("CaravanPack.esm", b"TES4bonus")
+        self.fixture("GunRunnersArsenal.esm", b"TES4guns")
+        result = audit.inspect(self.data)
+        self.assertTrue(result["ready_for_parser_tests"])
+        self.assertEqual(result["dlc_detected"], ["GunRunnersArsenal", "CaravanPack"])
+        self.assertFalse(any("Main BSA" in warning for warning in result["warnings"]))
+
     def test_flags_modded_plugin_and_incomplete_dlc(self):
-        self.fixture("Anchorage.esm", b"TES4dlc")
+        self.fixture("DeadMoney.esm", b"TES4dlc")
         self.fixture("MyMod.esp", b"TES4mod")
         result = audit.inspect(self.data)
         self.assertTrue(result["ready_for_parser_tests"])
-        self.assertEqual(result["dlc_detected"], ["Anchorage"])
+        self.assertEqual(result["dlc_detected"], ["DeadMoney"])
         self.assertTrue(result["warnings"])
 
 

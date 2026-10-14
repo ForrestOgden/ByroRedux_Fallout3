@@ -1,5 +1,5 @@
 [package]
-name = "fallout3-ios-bridge"
+name = "falloutnv-ios-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

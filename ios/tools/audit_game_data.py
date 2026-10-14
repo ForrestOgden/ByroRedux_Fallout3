@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inventory owned Fallout 3 PC game archives without extracting or uploading assets.
+"""Inventory owned Fallout: New Vegas PC game archives without extracting or uploading assets.
 
 Uses Python standard library only. Never writes into game files.
 This checks file *layout and headers*, not whether the game will run.
@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 
 SUFFIXES = {".esm", ".esp", ".esl", ".bsa", ".ba2"}
-REQUIRED = ("Fallout3.esm", "Fallout - Meshes.bsa", "Fallout - Textures.bsa")
-DLC = ("Anchorage", "ThePitt", "BrokenSteel", "PointLookout", "Zeta")
+REQUIRED = ("FalloutNV.esm", "Fallout - Meshes.bsa", "Fallout - Textures.bsa")
+DLC = ("DeadMoney", "HonestHearts", "OldWorldBlues", "LonesomeRoad", "GunRunnersArsenal", "CaravanPack", "ClassicPack", "MercenaryPack", "TribalPack")
+DLC_WITH_MAIN_BSA = {"DeadMoney", "HonestHearts", "OldWorldBlues", "LonesomeRoad"}
 HEADERS = {".esm": b"TES4", ".esp": b"TES4", ".esl": b"TES4",
            ".bsa": b"BSA\x00", ".ba2": b"BTDX"}
 
@@ -22,9 +23,9 @@ HEADERS = {".esm": b"TES4", ".esp": b"TES4", ".esl": b"TES4",
 def find_data_dir(candidate: Path) -> Path:
     candidate = candidate.expanduser().resolve(strict=True)
     if not candidate.is_dir():
-        raise ValueError("Expected a Fallout 3 installation or Data directory.")
+        raise ValueError("Expected a Fallout: New Vegas installation or Data directory.")
     if candidate.name.casefold() == "data" or any(
-        p.is_file() and p.name.casefold() == "fallout3.esm"
+        p.is_file() and p.name.casefold() == "falloutnv.esm"
         for p in candidate.iterdir()
     ):
         return candidate
@@ -74,7 +75,7 @@ def inspect(data_dir: Path) -> dict:
     errors.extend(f"Missing required base-game file: {name}" for name in missing)
     dlc = [name for name in DLC if (name + ".esm").casefold() in names]
     for name in dlc:
-        if (name + " - Main.bsa").casefold() not in names:
+        if name in DLC_WITH_MAIN_BSA and (name + " - Main.bsa").casefold() not in names:
             warnings.append(f"DLC {name} has an ESM but no matching Main BSA")
     plugins = [entry["name"] for entry in inventory
                if Path(entry["name"]).suffix.casefold() in {".esp", ".esl"}]
@@ -83,7 +84,7 @@ def inspect(data_dir: Path) -> dict:
 
     return {
         "schema_version": 1,
-        "product": "Fallout 3 PC",
+        "product": "Fallout: New Vegas PC",
         "scope": "top-level Data archive/plugin files only; no data bytes included",
         "files": inventory,
         "required_files": list(REQUIRED),
@@ -115,7 +116,7 @@ def compare(original: dict, current: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("game_path", type=Path, help="Fallout 3 installation or Data directory")
+    parser.add_argument("game_path", type=Path, help="Fallout: New Vegas installation or Data directory")
     parser.add_argument("--output", type=Path, help="Write JSON metadata manifest (not game data)")
     parser.add_argument("--verify", type=Path, help="Compare to an earlier local metadata manifest")
     args = parser.parse_args(argv)

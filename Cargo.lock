@@ -2305,7 +2305,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "fallout3-ios-bridge"
+name = "falloutnv-ios-bridge"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",

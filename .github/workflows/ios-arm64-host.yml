@@ -1,10 +1,10 @@
-name: iOS / native ARM64 host compile
+name: FNV iOS / native ARM64 host compile
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - 'ios/phase-3-*'
+      - 'fnv/**'
 
 permissions:
   contents: read
@@ -22,9 +22,9 @@ jobs:
           rustup target add aarch64-apple-ios --toolchain 1.96.0
           rustup default 1.96.0
       - name: Verify Rust bridge unit tests on macOS
-        run: cargo test -p fallout3-ios-bridge --locked
+        run: cargo test -p falloutnv-ios-bridge --locked
       - name: Compile native arm64-apple-ios Rust static library
-        run: cargo build -p fallout3-ios-bridge --target aarch64-apple-ios --release --locked
+        run: cargo build -p falloutnv-ios-bridge --target aarch64-apple-ios --release --locked
       - name: Install reproducible Xcode project generator
         run: brew install xcodegen
       - name: Generate native iOS Xcode project
@@ -32,20 +32,20 @@ jobs:
         run: xcodegen generate
       - name: Compile unsigned iPhone application (no signing secrets)
         run: |
-          xcodebuild -project ios/NativeHost/Fallout3Native.xcodeproj \
-            -scheme Fallout3Native -configuration Release \
+          xcodebuild -project ios/NativeHost/FalloutNVNative.xcodeproj \
+            -scheme FalloutNVNative -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO build
       - name: Package unsigned iPhone diagnostic app into IPA
         run: |
-          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Fallout3Native.app"
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/FalloutNVNative.app"
           test -d "$APP"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
-          (cd "$RUNNER_TEMP/ipa" && zip -qr "$RUNNER_TEMP/Fallout3Native-unsigned.ipa" Payload)
+          (cd "$RUNNER_TEMP/ipa" && zip -qr "$RUNNER_TEMP/FalloutNVNative-unsigned.ipa" Payload)
       - uses: actions/upload-artifact@v4
         with:
-          name: Fallout3Native-unsigned-iphoneos
-          path: ${{ runner.temp }}/Fallout3Native-unsigned.ipa
+          name: FalloutNVNative-unsigned-iphoneos
+          path: ${{ runner.temp }}/FalloutNVNative-unsigned.ipa
           if-no-files-found: error

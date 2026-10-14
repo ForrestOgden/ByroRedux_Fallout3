@@ -1,12 +1,12 @@
 # Initial portability inventory
 
-This is a *source/design review*, not evidence of a successful iOS compilation.
+This is a *source/design review*. A native Rust archive-reader/iPhone app build was proven on the previous game target; rebranded New Vegas artifacts require new CI verification and device testing.
 
 | Area | Present upstream | Native iOS work |
 |---|---|---|
 | Rust workspace + C++ bridge | Yes | Identify and isolate platform-specific build dependencies |
 | BSA, NIF, plugin loaders | Yes | Compile parsers for `aarch64-apple-ios`, validate with original owned data |
-| World/ECS/scripting | Partial implementation | Port runtime lifecycle and complete Fallout 3 semantics |
+| World/ECS/scripting | Partial implementation | Port runtime lifecycle and complete Fallout: New Vegas semantics |
 | Renderer | Vulkan 1.3 and ray queries required | Replace mandatory ray-query paths, validate formats and shaders |
 | Window/input | Linux/desktop-first | UIKit + CAMetalLayer and touch/Game Controller |
 | Audio | Desktop-oriented | iOS-compatible audio backend + interruption handling |

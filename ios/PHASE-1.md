@@ -1,11 +1,11 @@
-# Phase 1 — fixed baseline and test gates
+# Phase 1 — inherited fixed baseline and test gates
 
 ## Known fixed baseline
 
 ```text
 Upstream: matiaszanolli/ByroRedux
 Commit: ea2d94a1921592ccd3f18d991950a5b868458405
-Branch under development: ios/phase-1-baseline
+Branch under development: fnv/native-ios-transition
 Rust: 1.96.0 (rust-toolchain.toml)
 Environment: Linux / Ubuntu 24.04 or GitHub Actions ubuntu-latest
 Game data: not required for unit tests
@@ -27,9 +27,9 @@ GPU: not required for unit tests
 ```bash
 sudo apt-get update
 sudo apt-get install -y git curl build-essential g++ libasound2-dev libvulkan-dev
-git clone https://github.com/ForrestOgden/ByroRedux_Fallout3.git
-cd ByroRedux_Fallout3
-git switch ios/phase-1-baseline
+git clone https://github.com/ForrestOgden/ByroRedux_FalloutNV.git
+cd ByroRedux_FalloutNV
+git switch fnv/native-ios-transition
 rustup toolchain install 1.96.0 --profile minimal
 cargo check --workspace --locked
 cargo test --workspace --locked --no-fail-fast
@@ -45,4 +45,4 @@ Command meanings:
 
 ## Phase 1 exit
 
-**Not complete until the first GitHub Actions run reports success and its log is reviewed.** A missing run is a **blocked/unexecuted** gate, not a passing gate. No Fallout 3 gameplay claims derive from these generic tests.
+**Not complete until the first GitHub Actions run reports success and its log is reviewed.** A missing run is a **blocked/unexecuted** gate, not a passing gate. No Fallout: New Vegas gameplay claims derive from these generic tests.

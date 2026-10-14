@@ -2,7 +2,7 @@
 
 Status: **build experiment, not a tested gameplay port**.
 
-The new Rust `fallout3-ios-bridge` package is a static library that links the real `byroredux-bsa` source crate. It exposes two stable C ABI entrypoints: one ABI version and one local BSA reader probe. The SwiftUI iOS host calls the ABI version and makes no unverified gameplay claims.
+The new Rust `falloutnv-ios-bridge` package is a static library that links the real `byroredux-bsa` source crate. It exposes two stable C ABI entrypoints: one ABI version and one local BSA reader probe. The SwiftUI iOS host calls the ABI version and makes no unverified gameplay claims.
 
 This experiment intentionally does not compile ByroRedux's Vulkan renderer or its binary, because those are not currently iPhone-compatible.
 
@@ -16,7 +16,7 @@ Workflow: [iOS / native ARM64 host compile](../.github/workflows/ios-arm64-host.
 4. Generate a standard native iOS Xcode project with XcodeGen.
 5. Build the unsigned iPhone application using the `iphoneos` SDK.
 
-`cargo build -p fallout3-ios-bridge --target aarch64-apple-ios --release --locked`:
+`cargo build -p falloutnv-ios-bridge --target aarch64-apple-ios --release --locked`:
 - `-p` selects only the bridge package (not the unsupported Vulkan renderer).
 - `--target` cross-compiles for iPhone ARM64, not macOS.
 - `--release` enables release optimization.
@@ -32,11 +32,11 @@ Workflow: [iOS / native ARM64 host compile](../.github/workflows/ios-arm64-host.
 
 ## Acceptance and limitations
 
-The CI job must pass before calling iOS cross-compilation working. After that, installing and launching on an actual iPhone is a **separate manual signing/device gate**; an unsigned CI build is not a tested device application. Neither this shell nor the archive probe plays Fallout 3.
+The CI job must pass before calling iOS cross-compilation working. After that, installing and launching on an actual iPhone is a **separate manual signing/device gate**; an unsigned CI build is not a tested device application. Neither this shell nor the archive probe plays Fallout: New Vegas.
 
 ## Manual device milestone after the unsigned artifact passes CI
 
-The workflow publishes `Fallout3Native-unsigned-iphoneos` as a GitHub Actions artifact. Download and extract its ZIP to obtain `Fallout3Native-unsigned.ipa`. It contains no Fallout 3 game files or Apple signing secrets. Sign/sideload with your own Apple account using a supported Windows/iPhone method; an unsigned IPA is **not** installable as-is.
+The workflow publishes `FalloutNVNative-unsigned-iphoneos` as a GitHub Actions artifact. Download and extract its ZIP to obtain `FalloutNVNative-unsigned.ipa`. It contains no Fallout: New Vegas game files or Apple signing secrets. Sign/sideload with your own Apple account using a supported Windows/iPhone method; an unsigned IPA is **not** installable as-is.
 
 On device, report or screenshot:
 - The ABI version shown by the native Rust function.

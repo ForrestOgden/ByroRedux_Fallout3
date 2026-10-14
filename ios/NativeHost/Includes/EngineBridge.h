@@ -5,9 +5,9 @@
 extern "C" {
 #endif
 
-uint32_t fo3_ios_abi_version(void);
+uint32_t fnv_ios_abi_version(void);
 /* Returns 0 for valid BSA, 1 for invalid/unreadable, -1 null, -2 non-UTF8. */
-int32_t fo3_ios_probe_bsa(const char *path);
+int32_t fnv_ios_probe_bsa(const char *path);
 
 #ifdef __cplusplus
 }

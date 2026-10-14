@@ -42,6 +42,8 @@ crates/*/examples/tmp_*
 
 # Game assets and signing secrets are NEVER committed.
 # This is a public source-only repository.
+/falloutnv-data/
+# Legacy Fallout 3 data directory must also remain excluded.
 /fallout3-data/
 /game-data/
 /ios/imported-game-data/
