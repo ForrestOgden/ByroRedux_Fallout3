@@ -1,0 +1,36 @@
+//! `script.var` - read a script variable the Papyrus VM wrote, from the console.
+
+use super::shared::*;
+use byroredux_scripting::quest_stages::QuestFormId;
+use byroredux_scripting::QuestScriptVariables;
+
+/// `script.var <entity|.> <name>`: the value the VM's scripts wrote to `<name>`
+/// (a property or variable) on the reference's script, else its authored value.
+pub(crate) struct ScriptVarCommand;
+
+impl ConsoleCommand for ScriptVarCommand {
+    fn name(&self) -> &str {
+        "script.var"
+    }
+
+    fn description(&self) -> &str {
+        "Read a Papyrus script variable the VM wrote: script.var <entity|.> <name>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let (Some(entity_token), Some(name)) = (tokens.next(), tokens.next()) else {
+            return CommandOutput::error("usage: script.var <entity|.> <name>");
+        };
+        let entity = match resolve_console_entity(world, entity_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("script.var: {message}")),
+        };
+        let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, entity) else {
+            return CommandOutput::error("script.var: the entity is not a placed reference");
+        };
+        let key = QuestScriptVariables::property_key(name);
+        let value = byroredux_scripting::quest_variable(world, QuestFormId(form), key);
+        CommandOutput::line(format!("{form:08X}.{name} = {value:?}"))
+    }
+}

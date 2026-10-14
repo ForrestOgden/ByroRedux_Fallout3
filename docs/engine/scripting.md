@@ -1360,6 +1360,12 @@ rather than guess one. This also fixes the `ECZN` parse: Skyrim / FO4 / Starfiel
 `owner, location, rank, min level, flags, max level` (xEdit `wbDefinitions*`), where the old
 FO3/FNV-shaped read took the location's bytes for rank, min level and flags.
 
+Live in Irkngthand04 (`script.var 321 Damage`, the console twin of a VM variable read): the falling-rock
+trap `000C27C8` (a `PhysicsTrap`, `TrapLevel` defaulting to 1 = Medium) resolved `Damage = 13.0`. By hand
+from the data (`examples/refr_script_props.rs`): its cell's zone `IrkngthandZone` has Min Level 12 (and no
+Match-PC flag), so the player's level 1 is lifted to 12, Medium scales it by 0.67 to 8.04, floored 8, and
+`ResolveLeveledDamage`'s `damageLevel > LvlThreshold1 (6) && <= LvlThreshold2 (10)` picks `LvlDamage2 = 13`.
+
 ### GetBribeAmount and GetGoldAmount (M47.2)
 
 CK *GetBribeAmount - Actor* only says "the amount of gold required to bribe this actor". The
