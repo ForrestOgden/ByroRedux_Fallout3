@@ -785,6 +785,10 @@ runtime:
   flag (default True) in the saved `ReferenceFlags`, state the friendly-hit and command systems will
   read. `Game.StopDialogueCamera` ("Stops all dialogue cameras") is a no-op: the engine never
   starts one, so there is nothing to stop (`StartDialogueCameraOrCenterOnTarget` stays declined).
+- **Actor base traits.** `ActorBase.GetSex()` ("-1: None, 0: Male, 1: Female") is the base `NPC_`'s `ACBS`
+  female bit and `GetVoiceType()` ("the VoiceType for this actor or talking activator") its `VTCK`, from
+  the derived `ActorBaseTraits`. A form that is no actor base stops `GetSex`; an actor without a voice
+  type reads None. (A leveled actor's spawned sex needs `GetLeveledActorBase`, as the CK notes.)
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

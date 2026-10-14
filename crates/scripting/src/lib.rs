@@ -38,6 +38,7 @@ pub mod alias_collections;
 pub mod followers;
 pub mod form_lists;
 pub mod input_layers;
+pub mod actor_base_traits;
 pub mod crime_faction;
 pub mod linked_refs;
 pub mod loc_ref_types;
@@ -169,6 +170,7 @@ pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwn
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
+pub use actor_base_traits::{install_actor_base_traits, voice_type, ActorBaseTrait, ActorBaseTraits};
 pub use crime_faction::{crime_faction, install_crime_factions, CrimeFactionOverrides, CrimeFactions};
 pub use linked_refs::{linked_ref, linked_ref_children, LinkedRefOverrides};
 pub use loc_ref_types::{has_loc_ref_type, LocRefTypeOverrides};

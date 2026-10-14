@@ -3463,6 +3463,47 @@ fn reference_flags_and_the_dialogue_camera() {
     assert!(!flags.is_set(MARKER, ReferenceFlag::CanDoCommand));
 }
 
+/// `GetActorBase().GetSex()` reads the base's female flag and `GetVoiceType()`
+/// its `VTCK` (CK *GetSex - ActorBase*: 0 Male, 1 Female).
+#[test]
+fn sex_and_voice_type_come_from_the_actor_base() {
+    use byroredux_plugin::esm::records::NpcRecord;
+    const BASE: u32 = 0x0001_3BA1;
+    const VOICE: u32 = 0x0002_9F00;
+    let script = parsed_source(
+        "ScriptName QF_VmSex extends Quest\n\
+         Actor Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetActorBase().GetSex() == 1 && Marker.GetVoiceType()\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.npcs.insert(
+        BASE,
+        NpcRecord { form_id: BASE, acbs_flags: 1, voice_form_id: VOICE, ..Default::default() },
+    );
+    crate::install_actor_base_traits(&mut world, &index);
+    world.register::<FormIdComponent>();
+    world.register::<crate::SceneAliasCandidate>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(
+        marker,
+        crate::SceneAliasCandidate { reference_form_id: MARKER, base_form_id: BASE, ..Default::default() },
+    );
+    assert_eq!(crate::voice_type(&world, marker), Some(VOICE));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

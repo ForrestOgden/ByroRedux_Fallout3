@@ -2668,6 +2668,8 @@ impl Vm<'_> {
                     | "isindialoguewithplayer"
                     | "dropobject"
                     | "isloaded"
+                    | "getsex"
+                    | "getvoicetype"
                     | "isinlocation"
                     | "isfurnitureinuse"
                     | "isstarting"
@@ -3139,6 +3141,19 @@ impl Vm<'_> {
                     }
                 };
                 Some(Value::Bool(inside))
+            }
+            // CK *GetSex - ActorBase*: "-1: None, 0: Male, 1: Female", from the
+            // base's female flag. A form that is no actor base stops the run.
+            (Value::Form(base), "getsex") if args.is_empty() => {
+                match self.world.try_resource::<crate::ActorBaseTraits>().and_then(|traits| traits.get(*base)) {
+                    Some(base_trait) => Some(Value::Int(i32::from(base_trait.female))),
+                    None => return stop("GetSex on a form that is not an actor base"),
+                }
+            }
+            // CK *GetVoiceType - ObjectReference*: the voice type of the actor.
+            (Value::Form(actor), "getvoicetype") if args.is_empty() => {
+                let voice = self.entity_of(*actor).and_then(|entity| crate::voice_type(self.world, entity));
+                Some(voice.map_or(Value::None, Value::Form))
             }
             // CK *IsLoaded - Location*: whether the location is loaded.
             (Value::Form(location), "isloaded") if args.is_empty() => {
@@ -5104,6 +5119,8 @@ impl<'l> Checker<'l> {
             }
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object, "isloaded") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object, "getsex") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "getvoicetype") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "isinlocation") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object)]) => {
                 return Some(Kind::Bool);
             }

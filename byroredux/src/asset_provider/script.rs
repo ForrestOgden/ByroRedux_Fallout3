@@ -1035,6 +1035,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_owner_kinds(world, index);
     // M47.2 — Actor.GetCrimeFaction.
     byroredux_scripting::install_crime_factions(world, index);
+    // M47.2 — ActorBase.GetSex / GetVoiceType.
+    byroredux_scripting::install_actor_base_traits(world, index);
     // M47.2 — the scripts quests attach to their aliases, checked when their
     // quest first runs.
     let alias_scripts = byroredux_scripting::install_quest_alias_scripts(world, index);

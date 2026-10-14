@@ -506,6 +506,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("InventoryItemForms", "the load order's inventory item base FormIDs (ALCH/AMMO/ARMO/BOOK/INGR/KEYM/MISC/NOTE/SLGM/WEAP); rebuilt from record_types at load-order install every boot. The created-object grants it gates are saved through QuestAliasInjectionState's inventory_grants ledger"),
         ("PendingScriptStoryEvents", "script-raised story events queued for the Story Manager dispatcher, drained the frame they are raised"),
         ("AuthoredMapMarkers", "map markers' REFR FNAM visibility / travel flags; rebuilt from the load order by install_map_markers every boot"),
+        ("ActorBaseTraits", "M47.2 — each NPC_ base's sex bit and VTCK voice type, installed from the load order every boot"),
         ("CrimeFactions", "M47.2 — each NPC_ base's authored CRIF, installed from the load order every boot"),
         ("ScriptGame", "the load order's game kind, set by install_actor_value_names every boot"),
         ("ActorValueNames", "Papyrus actor-value names to AVIF FormIDs; rebuilt from the load order by install_actor_value_names every boot"),
