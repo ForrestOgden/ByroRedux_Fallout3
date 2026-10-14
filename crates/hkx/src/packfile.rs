@@ -4,6 +4,8 @@ const MAGIC_0: u32 = 0x57e0_e057;
 const MAGIC_1: u32 = 0x10c0_c010;
 const HEADER_SIZE: usize = 0x40;
 const SECTION_HEADER_SIZE: usize = 0x30;
+/// Havok 2014 (file version 11) pads each section header to 0x40 bytes.
+const SECTION_HEADER_SIZE_V11: usize = 0x40;
 
 #[derive(Debug, Clone)]
 struct Section {
@@ -20,6 +22,9 @@ struct Section {
 pub(crate) struct Packfile<'a> {
     bytes: &'a [u8],
     pointer_size: usize,
+    /// The `hkPackfileHeader::m_fileVersion`: 8 (Havok 2010, Skyrim) or 11
+    /// (Havok 2014, Fallout 4).
+    version: u32,
     sections: Vec<Section>,
     data_section: usize,
     local_fixups: Vec<(usize, usize)>,
@@ -62,9 +67,10 @@ impl<'a> Packfile<'a> {
         // `m_reusePaddingOptimization` @0x12, `m_contentsVersion` @0x28).
         // Every sampled vanilla Skyrim LE and SE packfile is version 8,
         // `hk_2010.2.0-r1`, reuse-padding 0.
-        if read_u32(bytes, 0x0C, "file version")? != 8 {
+        let version = read_u32(bytes, 0x0C, "file version")?;
+        if version != 8 && version != 11 {
             return Err(HkxError::UnsupportedLayout(
-                "expected a version-8 (Havok 2010) packfile",
+                "expected a version-8 (Havok 2010) or version-11 (Havok 2014) packfile",
             ));
         }
         if *bytes.get(0x12).ok_or(HkxError::Truncated("layout rules"))? != 0 {
@@ -75,18 +81,20 @@ impl<'a> Packfile<'a> {
         let contents_version = bytes
             .get(0x28..0x38)
             .ok_or(HkxError::Truncated("contents version"))?;
-        if !contents_version.starts_with(b"hk_2010") {
+        let expected: &[u8] = if version == 8 { b"hk_2010" } else { b"hk_2014" };
+        if !contents_version.starts_with(expected) {
             return Err(HkxError::UnsupportedLayout(
-                "expected hk_2010 packfile contents",
+                "packfile contents do not match its file version",
             ));
         }
+        let section_header_size = if version == 8 { SECTION_HEADER_SIZE } else { SECTION_HEADER_SIZE_V11 };
 
         let section_count = read_u32(bytes, 0x14, "section count")? as usize;
         if section_count == 0 || section_count > 64 {
             return Err(HkxError::InvalidData("implausible section count"));
         }
         let section_table_bytes = section_count
-            .checked_mul(SECTION_HEADER_SIZE)
+            .checked_mul(section_header_size)
             .ok_or(HkxError::InvalidData("section table size overflow"))?;
         let section_table_end = HEADER_SIZE
             .checked_add(section_table_bytes)
@@ -97,7 +105,7 @@ impl<'a> Packfile<'a> {
 
         let mut sections = Vec::with_capacity(section_count);
         for index in 0..section_count {
-            let base = HEADER_SIZE + index * SECTION_HEADER_SIZE;
+            let base = HEADER_SIZE + index * section_header_size;
             let tag_bytes = &bytes[base..base + 19];
             let tag_end = tag_bytes.iter().position(|byte| *byte == 0).unwrap_or(19);
             let tag = String::from_utf8_lossy(&tag_bytes[..tag_end]).into_owned();
@@ -201,12 +209,18 @@ impl<'a> Packfile<'a> {
         Ok(Self {
             bytes,
             pointer_size: usize::from(pointer_size),
+            version,
             sections,
             data_section,
             local_fixups,
             global_fixups,
             objects,
         })
+    }
+
+    /// The packfile's `m_fileVersion`: 8 (Havok 2010) or 11 (Havok 2014).
+    pub(crate) fn version(&self) -> u32 {
+        self.version
     }
 
     /// Width of a pointer in the file's object data: 4 or 8.
@@ -608,10 +622,10 @@ mod tests {
     #[test]
     fn rejects_packfiles_that_are_not_havok_2010_msvc_layout() {
         let version =
-            sample().build_with(|bytes| bytes[0x0C..0x10].copy_from_slice(&11u32.to_le_bytes()));
+            sample().build_with(|bytes| bytes[0x0C..0x10].copy_from_slice(&9u32.to_le_bytes()));
         assert_eq!(
             parse_err(&version),
-            HkxError::UnsupportedLayout("expected a version-8 (Havok 2010) packfile")
+            HkxError::UnsupportedLayout("expected a version-8 (Havok 2010) or version-11 (Havok 2014) packfile")
         );
         let reuse_padding = sample().build_with(|bytes| bytes[0x12] = 1);
         assert_eq!(
@@ -622,7 +636,7 @@ mod tests {
             sample().build_with(|bytes| bytes[0x28..0x28 + 14].copy_from_slice(b"hk_2014.1.0-r1"));
         assert_eq!(
             parse_err(&contents),
-            HkxError::UnsupportedLayout("expected hk_2010 packfile contents")
+            HkxError::UnsupportedLayout("packfile contents do not match its file version")
         );
     }
 

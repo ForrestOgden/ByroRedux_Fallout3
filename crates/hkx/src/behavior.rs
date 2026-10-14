@@ -25,51 +25,142 @@ const MAX_STATES: usize = 1024;
 const MAX_TRANSITIONS: usize = 4096;
 const MAX_TRIGGERS: usize = 1024;
 
-// ── 64-bit Havok 2010.2 field offsets ─────────────────────────────────
+// ── 64-bit field offsets ──────────────────────────────────────────────
 
-/// `hkbBehaviorGraphStringData::m_eventNames` (`hkArray<hkStringPtr>`).
-const STRING_DATA_EVENT_NAMES: usize = 0x10;
-/// `hkbBehaviorGraph::m_rootGenerator`.
-const GRAPH_ROOT_GENERATOR: usize = 0x80;
-/// `hkbBehaviorGraph::m_data` (`hkbBehaviorGraphData`).
-const GRAPH_DATA: usize = 0x88;
-/// `hkbBehaviorGraphData::m_stringData`.
-const GRAPH_DATA_STRING_DATA: usize = 0x78;
-/// `hkbStateMachine::m_startStateId`.
-const MACHINE_START_STATE: usize = 0x68;
-/// `hkbStateMachine::m_states` (`hkArray<hkbStateMachine::StateInfo*>`).
-const MACHINE_STATES: usize = 0x90;
-/// `hkbStateMachine::m_wildcardTransitions`.
-const MACHINE_WILDCARD: usize = 0xA0;
-/// `hkbStateMachine::StateInfo` fields.
-const STATE_TRANSITIONS: usize = 0x50;
-const STATE_GENERATOR: usize = 0x58;
-const STATE_NAME: usize = 0x60;
-const STATE_ID: usize = 0x68;
-/// `hkbStateMachineTransitionInfoArray::m_transitions` and its element layout.
-const TRANSITIONS_ARRAY: usize = 0x10;
-const TRANSITION_STRIDE: usize = 72;
-const TRANSITION_EVENT_ID: usize = 0x30;
-const TRANSITION_TO_STATE: usize = 0x34;
-const TRANSITION_PRIORITY: usize = 0x40;
-const TRANSITION_FLAGS: usize = 0x42;
-/// `hkbBlenderGenerator::m_children` (`hkArray<hkbBlenderGeneratorChild*>`) and
-/// `hkbBlenderGeneratorChild::m_generator`.
-const BLENDER_CHILDREN: usize = 0x60;
-const BLENDER_CHILD_GENERATOR: usize = 0x30;
-/// `BGSGamebryoSequenceGenerator::m_pSequence` (`hkStringPtr`): the name of a
-/// `NiControllerSequence` in the object's own NIF.
-const SEQUENCE_NAME: usize = 0x48;
+/// One Havok version's class layouts. Skyrim SE's are `hk_2010.2.0-r1`, Fallout 4's
+/// `hk_2014.1.0-r1`; both are 64-bit MSVC. The 2014 `hkbNode` grew by 0x40 bytes, which
+/// moves every member of the generator classes (graph, state machine, blender) by
+/// that much; `hkbBindable`-derived classes (state info, blender child) and the
+/// plain data classes did not move. The clip generator moved by 0x48, then 0x4C
+/// after its trigger array (one more 4-byte member before the start time).
+struct Layout {
+    /// `hkbBehaviorGraphStringData::m_eventNames` (`hkArray<hkStringPtr>`).
+    string_data_event_names: usize,
+    /// `hkbBehaviorGraph::m_rootGenerator` / `m_data`.
+    graph_root_generator: usize,
+    graph_data: usize,
+    /// `hkbBehaviorGraphData::m_stringData`.
+    graph_data_string_data: usize,
+    /// `hkbStateMachine::m_startStateId`, `m_states`, `m_wildcardTransitions`.
+    machine_start_state: usize,
+    machine_states: usize,
+    machine_wildcard: usize,
+    /// `hkbStateMachine::StateInfo` fields.
+    state_transitions: usize,
+    state_generator: usize,
+    state_name: usize,
+    state_id: usize,
+    /// `hkbStateMachineTransitionInfoArray::m_transitions` and its element layout.
+    transitions_array: usize,
+    transition_stride: usize,
+    transition_event_id: usize,
+    transition_to_state: usize,
+    transition_priority: usize,
+    transition_flags: usize,
+    /// `hkbBlenderGenerator::m_children` and `hkbBlenderGeneratorChild::m_generator`.
+    blender_children: usize,
+    blender_child_generator: usize,
+    /// `BGSGamebryoSequenceGenerator::m_pSequence` (`hkStringPtr`).
+    sequence_name: usize,
+    /// The inner generator of the wrapper generators (`hkbModifierGenerator`,
+    /// `BSiStateTaggingGenerator`, `DynamicAnimationTaggingGenerator`,
+    /// `BSOffsetAnimationGenerator`, `BSCyclicBlendTransitionGenerator`). Only
+    /// measured for Havok 2014; `None` leaves them unfollowed.
+    wrapped_generator: Option<usize>,
+    /// `hkbManualSelectorGenerator::m_generators` and
+    /// `hkbBehaviorReferenceGenerator::m_behaviorName` (a sub-behavior packfile).
+    selector_generators: Option<usize>,
+    reference_behavior_name: Option<usize>,
+    /// `hkbClipGenerator` fields.
+    clip_animation_name: usize,
+    clip_triggers: usize,
+    clip_start_time: usize,
+    clip_playback_speed: usize,
+    clip_user_fraction: usize,
+    clip_mode: usize,
+}
+
+const LAYOUT_2010: Layout = Layout {
+    string_data_event_names: 0x10,
+    graph_root_generator: 0x80,
+    graph_data: 0x88,
+    graph_data_string_data: 0x78,
+    machine_start_state: 0x68,
+    machine_states: 0x90,
+    machine_wildcard: 0xA0,
+    state_transitions: 0x50,
+    state_generator: 0x58,
+    state_name: 0x60,
+    state_id: 0x68,
+    transitions_array: 0x10,
+    transition_stride: 72,
+    transition_event_id: 0x30,
+    transition_to_state: 0x34,
+    transition_priority: 0x40,
+    transition_flags: 0x42,
+    blender_children: 0x60,
+    blender_child_generator: 0x30,
+    sequence_name: 0x48,
+    wrapped_generator: None,
+    selector_generators: None,
+    reference_behavior_name: None,
+    clip_animation_name: 0x48,
+    clip_triggers: 0x50,
+    clip_start_time: 0x60,
+    clip_playback_speed: 0x64,
+    clip_user_fraction: 0x6C,
+    clip_mode: 0x72,
+};
+
+/// Derived from the vanilla Fallout 4 graphs (`Fallout4 - Animations.ba2`) the same
+/// way as the 2010 table (`examples/probe_behavior.rs`): `StateInfo` and
+/// `BlenderGeneratorChild` kept their offsets, the generator classes moved by
+/// 0x40, the transition element kept its 72 bytes (the array object just starts its
+/// elements 0x10 later), and the clip generator moved by 0x48 up to its trigger array and
+/// 0x4C after it. Fallout 4 has no `BGSGamebryoSequenceGenerator`.
+const LAYOUT_2014: Layout = Layout {
+    string_data_event_names: 0x10,
+    graph_root_generator: 0xC0,
+    graph_data: 0xC8,
+    graph_data_string_data: 0x68,
+    machine_start_state: 0xA8,
+    machine_states: 0xD0,
+    machine_wildcard: 0xE0,
+    state_transitions: 0x50,
+    state_generator: 0x58,
+    state_name: 0x60,
+    state_id: 0x68,
+    transitions_array: 0x10,
+    transition_stride: 72,
+    transition_event_id: 0x30,
+    transition_to_state: 0x34,
+    transition_priority: 0x40,
+    transition_flags: 0x42,
+    blender_children: 0xA0,
+    blender_child_generator: 0x30,
+    sequence_name: 0,
+    wrapped_generator: Some(0x90),
+    selector_generators: Some(0x88),
+    reference_behavior_name: Some(0x88),
+    clip_animation_name: 0x90,
+    clip_triggers: 0x98,
+    clip_start_time: 0xAC,
+    clip_playback_speed: 0xB0,
+    clip_user_fraction: 0xB8,
+    clip_mode: 0xBE,
+};
+
+fn layout(file: &Packfile) -> &'static Layout {
+    if file.version() == 11 {
+        &LAYOUT_2014
+    } else {
+        &LAYOUT_2010
+    }
+}
+
 /// Nested generators are followed this deep (a state machine in a blender in a
 /// state machine ...).
 const MAX_GENERATOR_DEPTH: usize = 8;
-/// `hkbClipGenerator` fields.
-const CLIP_ANIMATION_NAME: usize = 0x48;
-const CLIP_TRIGGERS: usize = 0x50;
-const CLIP_START_TIME: usize = 0x60;
-const CLIP_PLAYBACK_SPEED: usize = 0x64;
-const CLIP_USER_FRACTION: usize = 0x6C;
-const CLIP_MODE: usize = 0x72;
 /// `hkbClipTriggerArray::m_triggers` and its element layout.
 const TRIGGERS_ARRAY: usize = 0x10;
 const TRIGGER_STRIDE: usize = 32;
@@ -156,6 +247,9 @@ pub struct StateContent {
     pub machines: Vec<StateMachine>,
     /// Further clips of a blender (the first is the state's own `clip`).
     pub blended_clips: Vec<StateClip>,
+    /// Sub-behavior packfiles an `hkbBehaviorReferenceGenerator` names (Fallout 4:
+    /// a state that runs another graph, e.g. `Behaviors\\DialogueBehavior.hkx`).
+    pub behavior_references: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,23 +330,25 @@ fn string_array(file: &Packfile, field: usize, cap: usize, label: &'static str) 
 }
 
 fn read_transitions(file: &Packfile, array_object: usize) -> Result<Vec<Transition>> {
-    let (data, len) = array(file, array_object + TRANSITIONS_ARRAY, MAX_TRANSITIONS, "transitions")?;
+    let l = layout(file);
+    let (data, len) = array(file, array_object + l.transitions_array, MAX_TRANSITIONS, "transitions")?;
     (0..len)
         .map(|index| {
-            let element = data + index * TRANSITION_STRIDE;
+            let element = data + index * l.transition_stride;
             Ok(Transition {
-                event: file.u32(element + TRANSITION_EVENT_ID, "transition event")? as i32,
-                to_state: file.u32(element + TRANSITION_TO_STATE, "transition target")? as i32,
-                priority: file.u16(element + TRANSITION_PRIORITY, "transition priority")? as i16,
-                flags: file.u16(element + TRANSITION_FLAGS, "transition flags")?,
+                event: file.u32(element + l.transition_event_id, "transition event")? as i32,
+                to_state: file.u32(element + l.transition_to_state, "transition target")? as i32,
+                priority: file.u16(element + l.transition_priority, "transition priority")? as i16,
+                flags: file.u16(element + l.transition_flags, "transition flags")?,
             })
         })
         .collect()
 }
 
 fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
+    let l = layout(file);
     let mut triggers = Vec::new();
-    if let Some(array_object) = file.object_pointer(clip + CLIP_TRIGGERS) {
+    if let Some(array_object) = file.object_pointer(clip + l.clip_triggers) {
         let (data, len) = array(file, array_object + TRIGGERS_ARRAY, MAX_TRIGGERS, "clip triggers")?;
         for index in 0..len {
             let element = data + index * TRIGGER_STRIDE;
@@ -264,7 +360,7 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
             });
         }
     }
-    let mode = match file.u8(clip + CLIP_MODE, "clip mode")? {
+    let mode = match file.u8(clip + l.clip_mode, "clip mode")? {
         0 => ClipMode::SinglePlay,
         1 => ClipMode::Looping,
         2 => ClipMode::UserControlled,
@@ -272,11 +368,11 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
         _ => return Err(HkxError::InvalidData("unknown clip playback mode")),
     };
     Ok(StateClip {
-        animation: string(file, clip + CLIP_ANIMATION_NAME, "clip animation name")?,
+        animation: string(file, clip + l.clip_animation_name, "clip animation name")?,
         mode,
-        playback_speed: file.f32(clip + CLIP_PLAYBACK_SPEED, "clip playback speed")?,
-        start_time: file.f32(clip + CLIP_START_TIME, "clip start time")?,
-        user_fraction: file.f32(clip + CLIP_USER_FRACTION, "clip user fraction")?,
+        playback_speed: file.f32(clip + l.clip_playback_speed, "clip playback speed")?,
+        start_time: file.f32(clip + l.clip_start_time, "clip start time")?,
+        user_fraction: file.f32(clip + l.clip_user_fraction, "clip user fraction")?,
         triggers,
     })
 }
@@ -293,6 +389,7 @@ fn read_generator(
     if depth > MAX_GENERATOR_DEPTH {
         return Ok(());
     }
+    let l = layout(file);
     match file.class_at(generator) {
         Some("hkbClipGenerator") => {
             let read = read_clip(file, generator)?;
@@ -303,17 +400,48 @@ fn read_generator(
             }
         }
         Some("BGSGamebryoSequenceGenerator") => {
-            let name = string(file, generator + SEQUENCE_NAME, "sequence name")?;
+            let name = string(file, generator + l.sequence_name, "sequence name")?;
             if !name.is_empty() {
                 content.sequences.push(name);
             }
         }
         Some("hkbStateMachine") => content.machines.push(read_machine_at(file, generator, depth + 1)?),
+        Some(
+            "hkbModifierGenerator"
+            | "BSiStateTaggingGenerator"
+            | "DynamicAnimationTaggingGenerator"
+            | "BSOffsetAnimationGenerator"
+            | "BSCyclicBlendTransitionGenerator",
+        ) => {
+            if let Some(field) = l.wrapped_generator {
+                if let Some(inner) = file.object_pointer(generator + field) {
+                    read_generator(file, inner, clip, content, depth + 1)?;
+                }
+            }
+        }
+        Some("hkbManualSelectorGenerator") => {
+            if let Some(field) = l.selector_generators {
+                let (data, len) = array(file, generator + field, MAX_STATES, "selector generators")?;
+                for index in 0..len {
+                    if let Some(inner) = file.object_pointer(data + index * 8) {
+                        read_generator(file, inner, clip, content, depth + 1)?;
+                    }
+                }
+            }
+        }
+        Some("hkbBehaviorReferenceGenerator") => {
+            if let Some(field) = l.reference_behavior_name {
+                let name = string(file, generator + field, "behavior reference")?;
+                if !name.is_empty() {
+                    content.behavior_references.push(name);
+                }
+            }
+        }
         Some("hkbBlenderGenerator") => {
-            let (data, len) = array(file, generator + BLENDER_CHILDREN, MAX_STATES, "blender children")?;
+            let (data, len) = array(file, generator + l.blender_children, MAX_STATES, "blender children")?;
             for index in 0..len {
                 let Some(child) = file.object_pointer(data + index * 8) else { continue };
-                let Some(inner) = file.object_pointer(child + BLENDER_CHILD_GENERATOR) else { continue };
+                let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
                 read_generator(file, inner, clip, content, depth + 1)?;
             }
         }
@@ -323,18 +451,19 @@ fn read_generator(
 }
 
 fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
-    let transitions = match file.object_pointer(state + STATE_TRANSITIONS) {
+    let l = layout(file);
+    let transitions = match file.object_pointer(state + l.state_transitions) {
         Some(array_object) => read_transitions(file, array_object)?,
         None => Vec::new(),
     };
     let mut clip = None;
     let mut content = StateContent::default();
-    if let Some(generator) = file.object_pointer(state + STATE_GENERATOR) {
+    if let Some(generator) = file.object_pointer(state + l.state_generator) {
         read_generator(file, generator, &mut clip, &mut content, depth)?;
     }
     Ok(State {
-        id: file.u32(state + STATE_ID, "state id")? as i32,
-        name: string(file, state + STATE_NAME, "state name")?,
+        id: file.u32(state + l.state_id, "state id")? as i32,
+        name: string(file, state + l.state_name, "state name")?,
         transitions,
         clip,
         content,
@@ -346,7 +475,8 @@ fn read_machine(file: &Packfile, machine: usize) -> Result<StateMachine> {
 }
 
 fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<StateMachine> {
-    let (data, len) = array(file, machine + MACHINE_STATES, MAX_STATES, "states")?;
+    let l = layout(file);
+    let (data, len) = array(file, machine + l.machine_states, MAX_STATES, "states")?;
     let mut states = Vec::with_capacity(len);
     for index in 0..len {
         let state = file
@@ -354,12 +484,12 @@ fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<Stat
             .ok_or(HkxError::InvalidData("state pointer without a target"))?;
         states.push(read_state(file, state, depth)?);
     }
-    let wildcard = match file.object_pointer(machine + MACHINE_WILDCARD) {
+    let wildcard = match file.object_pointer(machine + l.machine_wildcard) {
         Some(array_object) => read_transitions(file, array_object)?,
         None => Vec::new(),
     };
     Ok(StateMachine {
-        start_state: file.u32(machine + MACHINE_START_STATE, "start state")? as i32,
+        start_state: file.u32(machine + l.machine_start_state, "start state")? as i32,
         states,
         wildcard,
     })
@@ -369,14 +499,15 @@ fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<Stat
 pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
     let file = Packfile::parse(bytes)?;
     require_64_bit(&file)?;
+    let l = layout(&file);
     let graph = file.object("hkbBehaviorGraph")?;
     let string_data = file
-        .object_pointer(graph + GRAPH_DATA)
-        .and_then(|data| file.object_pointer(data + GRAPH_DATA_STRING_DATA))
+        .object_pointer(graph + l.graph_data)
+        .and_then(|data| file.object_pointer(data + l.graph_data_string_data))
         .or_else(|| file.objects_of("hkbBehaviorGraphStringData").first().copied())
         .ok_or(HkxError::MissingClass("hkbBehaviorGraphStringData"))?;
-    let events = string_array(&file, string_data + STRING_DATA_EVENT_NAMES, MAX_EVENTS, "event names")?;
-    let machine = match file.object_pointer(graph + GRAPH_ROOT_GENERATOR) {
+    let events = string_array(&file, string_data + l.string_data_event_names, MAX_EVENTS, "event names")?;
+    let machine = match file.object_pointer(graph + l.graph_root_generator) {
         Some(root) if file.class_at(root) == Some("hkbStateMachine") => Some(read_machine(&file, root)?),
         _ => match file.objects_of("hkbStateMachine").first() {
             Some(&machine) => Some(read_machine(&file, machine)?),
@@ -517,5 +648,63 @@ mod tests {
         assert_eq!(clip.playback_speed, 2.0);
         let pulled = graph.event_id("Pulled").unwrap();
         assert!(clip.triggers.iter().any(|t| t.event == pulled && t.relative_to_end));
+    }
+
+    fn fo4_animations_archive() -> Option<byroredux_bsa::Ba2Archive> {
+        let env = byroredux_plugin::esm::test_paths::FO4_ENV;
+        let dir = std::env::var(env)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| byroredux_plugin::esm::test_paths::FO4_DEFAULT.to_owned());
+        let path = std::path::Path::new(&dir).join("Fallout4 - Animations.ba2");
+        if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+            }
+            eprintln!("SKIP: {} not found (no game data?)", path.display());
+            return None;
+        }
+        Some(byroredux_bsa::Ba2Archive::open(path).unwrap())
+    }
+
+    /// Fallout 4 ships Havok 2014 packfiles (file version 11): the LED display's
+    /// two-state graph and the player's eight-way walk blend decode with the
+    /// `LAYOUT_2014` offsets - a state machine on named events, a clip per state,
+    /// a blender over clips.
+    /// `cargo test -p byroredux-hkx -- --ignored`
+    #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
+    fn fallout_4_havok_2014_graphs_decode() {
+        let Some(archive) = fo4_animations_archive() else { return };
+        let led = archive
+            .extract(r"meshes\setdressing\animated\leddisplay01\behaviors\behavior00.hkx")
+            .expect("extract");
+        let graph = decode_behavior_graph(&led).unwrap();
+        let machine = graph.machine.as_ref().expect("state machine");
+        assert_eq!(machine.states.len(), 2);
+        let first = &machine.states[0];
+        assert_eq!((first.id, first.name.as_str()), (5, "StartLevel"));
+        assert!(machine.states.iter().any(|s| s.id == machine.start_state));
+        let clip = machine
+            .states
+            .iter()
+            .find_map(|state| state.clip.as_ref().or(state.content.blended_clips.first()))
+            .expect("a state clip");
+        assert!(clip.animation.starts_with("Animations\\"), "{}", clip.animation);
+        assert!(clip.playback_speed.is_finite() && clip.playback_speed > 0.0);
+
+        let walk = archive
+            .extract(r"meshes\actors\character\behaviors\locomotion_8wayblend.hkx")
+            .expect("extract");
+        let graph = decode_behavior_graph(&walk).unwrap();
+        assert_eq!(graph.events.len(), 26);
+        assert_eq!(graph.event_id("FootLeft"), Some(0));
+        let blended: usize = graph
+            .machine
+            .iter()
+            .flat_map(|m| &m.states)
+            .map(|s| s.content.blended_clips.len() + usize::from(s.clip.is_some()))
+            .sum();
+        assert!(blended >= 8, "the eight walk directions are clips of one blender: {blended}");
     }
 }
