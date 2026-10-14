@@ -331,7 +331,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**111**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**113**) grouped by
 purpose:
 
 ```
@@ -435,6 +435,8 @@ levelup [skill <Skill> <n> | perk <perk_hex> | xp <n>] → show / spend the bank
 inv.equip <form_id>         → toggle a player row's equipment state through the native menu's canonical action
 settings.status             → report loaded gameplay settings
 setav / modav               → inspect or mutate an actor value
+script.exec <statement>     → run one Papyrus statement through the VM now
+scan.info <e>               → scanned flag and map-marker state a script left on a reference
 script.qcall <script> <fn> [e] → run a quest script function now (e.g. FavorDialogueScript Bribe)
 script.call <e> <function>  → call a function of the Papyrus scripts on a reference
 script.var <e> <name>       → read a Papyrus variable the VM wrote on a reference

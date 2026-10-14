@@ -1796,6 +1796,11 @@ CK: "the number of real-world seconds that have elapsed since the game has launc
 a menu counted. `TotalTime` is the engine's wall-clock since start, so that is the value
 (`DartTrap` reads it).
 
+Live in a Starfield Cydonia boot, through `script.exec` (one Papyrus statement through the VM) and `scan.info`:
+`Game.GetPlayer().AddItem(Game.GetCredits() as Form, 123)` took the player's inventory from 1 stack / 1 item to
+2 stacks / 124 items (the credits stack of 123), and `Game.GetPlayer().AddToMapScanned(true)` left reference
+`00000014` scanned, map-visible and a fast-travel target (it was none of the three before).
+
 ### Game.GetCredits (M47.2)
 
 Starfield's `Game.GetCredits()` has no CK page, but the corpus fixes its meaning: it is the

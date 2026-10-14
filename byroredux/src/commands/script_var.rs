@@ -72,6 +72,72 @@ impl ConsoleCommand for ScriptQuestCallCommand {
     }
 }
 
+/// `script.exec <papyrus statement>`: run one statement through the Papyrus VM now
+/// (`Game.GetPlayer().AddItem(Game.GetCredits() as Form, 5)`).
+pub(crate) struct ScriptExecCommand;
+
+impl ConsoleCommand for ScriptExecCommand {
+    fn name(&self) -> &str {
+        "script.exec"
+    }
+
+    fn description(&self) -> &str {
+        "Run one Papyrus statement now: script.exec <statement>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        if args.trim().is_empty() {
+            return CommandOutput::error("usage: script.exec <papyrus statement>");
+        }
+        match byroredux_scripting::run_debug_statement(world, args.trim()) {
+            Ok(()) => CommandOutput::line("ran (a statement the VM cannot run logs a `Papyrus VM ... stopped` warning)"),
+            Err(message) => CommandOutput::error(format!("script.exec: {message}")),
+        }
+    }
+}
+
+/// `scan.info <entity|.|0xFORM>`: the scanned flag and map-marker state a script left on a
+/// reference (`SetScanned`, `AddToMapScanned`, `AddToMap`).
+pub(crate) struct ScanInfoCommand;
+
+impl ConsoleCommand for ScanInfoCommand {
+    fn name(&self) -> &str {
+        "scan.info"
+    }
+
+    fn description(&self) -> &str {
+        "Scanned flag and map-marker state of a reference: scan.info <entity|.>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(token) = args.split_whitespace().next() else {
+            return CommandOutput::error("usage: scan.info <entity|.>");
+        };
+        let entity = match resolve_console_entity(world, token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("scan.info: {message}")),
+        };
+        let player = world
+            .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+            .map(|player| player.0);
+        let form = if Some(entity) == player {
+            Some(byroredux_scripting::PLAYER_REFERENCE)
+        } else {
+            byroredux_scripting::condition::entity_global_form_id(world, entity)
+        };
+        let Some(form) = form else {
+            return CommandOutput::error("scan.info: the entity is not a placed reference");
+        };
+        let scanned = world
+            .try_resource::<byroredux_scripting::ScannedReferences>()
+            .is_some_and(|scanned| scanned.is_scanned(form));
+        let (visible, fast_travel) = world
+            .try_resource::<byroredux_scripting::MapMarkers>()
+            .map_or((false, false), |markers| (markers.is_visible(form), markers.is_fast_travel(form)));
+        CommandOutput::line(format!("{form:08X}: scanned {scanned}, map-visible {visible}, fast-travel {fast_travel}"))
+    }
+}
+
 /// `script.var <entity|.> <name>`: the value the VM's scripts wrote to `<name>`
 /// (a property or variable) on the reference's script, else its authored value.
 pub(crate) struct ScriptVarCommand;

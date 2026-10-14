@@ -26,6 +26,16 @@ pub struct MapMarkers {
 impl Resource for MapMarkers {}
 
 impl MapMarkers {
+    /// Whether a script made `marker` visible on the map.
+    pub fn is_visible(&self, marker: u32) -> bool {
+        self.visible.contains(&marker)
+    }
+
+    /// Whether a script made `marker` a fast-travel target.
+    pub fn is_fast_travel(&self, marker: u32) -> bool {
+        self.fast_travel.contains(&marker)
+    }
+
     /// `AddToMap`: visible, and a travel target when asked. A `false` never
     /// takes travel away.
     pub fn add(&mut self, marker: u32, fast_travel: bool) {

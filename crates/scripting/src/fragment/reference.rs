@@ -392,6 +392,31 @@ pub fn run_quest_script_function(world: &World, script: &str, function: &str, ar
     Ok(quest.0)
 }
 
+/// Run one Papyrus statement now (the debug console's `script.exec`): it is wrapped in a
+/// quest script's function, parsed, installed for the VM and run with no properties, so it can
+/// name `Game` calls and what they return (`Game.GetPlayer().AddItem(Game.GetCredits() as
+/// Form, 5)`) but no script property. A statement the VM cannot run stops the run with its
+/// usual warning in the log.
+pub fn run_debug_statement(world: &World, statement: &str) -> Result<(), String> {
+    let source = format!("ScriptName DebugExec extends Quest\nFunction Run()\n{statement}\nEndFunction\n");
+    let (script, _) = byroredux_papyrus::parse_script(&source)
+        .map_err(|errors| format!("does not parse: {}", errors.first().map_or(String::new(), |e| e.to_string())))?;
+    {
+        let mut fragments = world
+            .try_resource_mut::<crate::QuestStageFragments>()
+            .ok_or_else(|| "no quest fragments resource".to_owned())?;
+        fragments.insert_vm_script(Arc::new(script));
+    }
+    let effect = Effect::Interpret {
+        script: "DebugExec".to_owned(),
+        function: "Run".to_owned(),
+        args: Vec::new(),
+        resume: None,
+    };
+    apply_fragment_guard_free(world, std::slice::from_ref(&effect), QuestFormId(0), None);
+    Ok(())
+}
+
 /// The events a reference receives when its cell unloads, in order.
 const UNLOAD_EVENTS: [&str; 2] = ["OnCellDetach", "OnUnload"];
 
