@@ -763,6 +763,11 @@ runtime:
   as the CK says, adds the actor to the faction if it is not in it; a run sees its own set. An
   actor with neither has no crime faction: the CK does not say how the engine would pick one
   from its other factions.
+- **DropObject.** `DropObject(akObject, aiCount = 1)` ("Drops the specified object from this
+  object's inventory", returning "the object that was dropped") takes up to `aiCount` of the item out of
+  the owner's inventory and creates one reference per item at the owner, returning the last; the CK
+  stacks a count above one into a single reference, which created references have no count for. An
+  item the inventory does not hold drops nothing and reads None.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

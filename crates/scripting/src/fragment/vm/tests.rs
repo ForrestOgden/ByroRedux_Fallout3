@@ -3214,6 +3214,43 @@ fn crime_faction_is_authored_then_scripted() {
     assert_eq!(crate::crime_faction(&world, marker, MARKER), None, "the override cleared it");
 }
 
+/// `DropObject` takes up to the count from the owner's inventory and creates a
+/// reference per item dropped; an item the inventory lacks drops nothing.
+#[test]
+fn drop_object_moves_inventory_items_into_the_world() {
+    use byroredux_core::ecs::components::{Inventory, ItemStack};
+    let script = parsed_source(
+        "ScriptName QF_VmDrop extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Form Property Alias_Item Auto\n\
+         Function Fragment_1()\n\
+           ObjectReference dropped = Marker.DropObject(Marker, 3)\n\
+           If dropped\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    world.register::<Inventory>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let owner = world.spawn();
+    world.insert(owner, FormIdComponent(id));
+    // The owner holds two of MARKER (the item is the marker form itself here).
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(MARKER, 2));
+    world.insert(owner, inventory);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let left: u32 = world.get::<Inventory>(owner).unwrap().items.iter().map(|stack| stack.count).sum();
+    assert_eq!(left, 0, "two were held, so two left (3 asked)");
+    assert_eq!(world.resource::<crate::CreatedReferences>().iter().count(), 2, "one reference per dropped item");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

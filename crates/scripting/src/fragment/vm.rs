@@ -2640,6 +2640,7 @@ impl Vm<'_> {
                     | "isintimidated"
                     | "changeanimarchetype"
                     | "setscanned"
+                    | "istrue"
                     | "isscanned"
                     | "addtomapscanned"
                     | "playanimation"
@@ -2662,6 +2663,7 @@ impl Vm<'_> {
                     | "revert"
                     | "countlinkedrefchain"
                     | "isindialoguewithplayer"
+                    | "dropobject"
                     | "isfurnitureinuse"
                     | "isstarting"
                     | "isstopping"
@@ -3061,6 +3063,38 @@ impl Vm<'_> {
                     .and_then(|surface| surface.npc);
                 Some(Value::Bool(partner.is_some() && partner == self.entity_of(*actor)))
             }
+            // CK *DropObject - ObjectReference*: "Drops the specified object from
+            // this object's inventory" and returns "the object that was
+            // dropped". Up to `aiCount` (default 1) of the item leave the
+            // inventory and appear in the world at the owner, one reference
+            // each (the CK stacks a count above one into a single reference,
+            // which created references have no count for); an item the
+            // inventory does not hold drops nothing and reads None.
+            (Value::Form(owner), "dropobject") if (1..=2).contains(&args.len()) => {
+                let values = self.eval_args(frame, args)?;
+                let Some(Value::Form(item)) = values.first() else {
+                    return stop("DropObject without a form");
+                };
+                let wanted = values.get(1).and_then(Value::int).unwrap_or(1).clamp(0, MAX_PLACED_PER_CALL);
+                let Some(entity) = self.entity_of(*owner) else {
+                    return stop("DropObject on a reference that is not loaded");
+                };
+                let held: u32 = self
+                    .world
+                    .query::<byroredux_core::ecs::components::Inventory>()
+                    .and_then(|inventories| {
+                        inventories.get(entity).map(|inventory| {
+                            inventory.items.iter().filter(|stack| stack.base_form_id == *item).map(|stack| stack.count).sum()
+                        })
+                    })
+                    .unwrap_or(0);
+                let take = held.min(wanted as u32);
+                if take == 0 {
+                    return Ok(Some(Value::None));
+                }
+                crate::fragment::remove_items(self.world, entity, *item, take, None);
+                Some(self.place_at_me(*owner, &[Value::Form(*item), Value::Int(take as i32)])?)
+            }
             // CK *IsFurnitureInUse*: "if any marker on the furniture is in use
             // (or reserved, if we aren't ignoring reservations)". The occupants
             // here are the actors seated on it and the seats the sandbox AI
@@ -3137,6 +3171,24 @@ impl Vm<'_> {
                         .is_some_and(|outcomes| outcomes.is(reference, outcome)),
                 };
                 Some(Value::Bool(flagged))
+            }
+            // Starfield `ConditionForm.IsTrue(akRefObject, akTargetObject)`: the
+            // form's conditions with the first reference as subject and the
+            // second as target; see [`crate::condition_form`].
+            (Value::Form(form), "istrue") if args.len() == 2 => {
+                let values = self.eval_args(frame, args)?;
+                let entity = |value: &Value| match value {
+                    Value::Form(reference) => self.entity_of(*reference),
+                    _ => None,
+                };
+                let Some(subject) = entity(&values[0]) else {
+                    return stop("IsTrue without a loaded reference");
+                };
+                let target = entity(&values[1]);
+                match crate::condition_form_is_true(self.world, *form, subject, target) {
+                    Some(result) => Some(Value::Bool(result)),
+                    None => return stop("IsTrue on a condition form the engine cannot fully evaluate"),
+                }
             }
             // Starfield `SetScanned(abValue)`, `IsScanned()` and the composite
             // `AddToMapScanned(abAllowFastTravel)` = `SetScanned(true)` then
@@ -4913,6 +4965,13 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "dropobject")
+                if matches!(arg_kinds.first(), Some(Arg::Kind(Kind::Object | Kind::Player)))
+                    && arg_kinds.get(1).is_none_or(|count| matches!(count, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)))
+                    && arg_kinds.len() <= 2 =>
+            {
+                return Some(Kind::Object);
+            }
             (Kind::Object | Kind::Player, "isfurnitureinuse")
                 if arg_kinds.len() <= 1
                     && arg_kinds.first().is_none_or(|arg| matches!(arg, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
@@ -4940,6 +4999,14 @@ impl<'l> Checker<'l> {
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "isbribed" | "isintimidated") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "isscanned") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object, "istrue")
+                if matches!(
+                    arg_kinds.as_slice(),
+                    [Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit), Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit)]
+                ) =>
+            {
+                return Some(Kind::Bool);
+            }
             (Kind::Object | Kind::Player, "setscanned" | "addtomapscanned")
                 if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]) =>
             {
