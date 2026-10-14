@@ -8,6 +8,13 @@
 //! inherited and not returned. *GetActorOwner* is the same for an ActorBase.
 //! The `XOWN` form is a faction or an actor base; [`OwnerKinds`] tells which.
 //! The cell loader stamps [`ExplicitOwner`] at spawn; both are re-derived.
+//!
+//! `SetActorOwner(akActorBase)` ("Sets the actor base as the owner of this
+//! object. If None, will clear ownership") and `SetFactionOwner(akFaction)`
+//! replace that owner: the reference has one owner slot, so each overrides the
+//! other, and a `None` clears it (the CK says so for the actor base; the faction
+//! page is silent and gets the same reading). [`OwnerOverrides`] keeps them by
+//! the reference's FormID, saved.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,16 +50,65 @@ pub fn install_owner_kinds(world: &mut World, index: &EsmIndex) {
     });
 }
 
+/// The owners scripts set, by reference FormID; `0` is a cleared owner. Saved.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct OwnerOverrides {
+    owners: std::collections::BTreeMap<u32, u32>,
+}
+
+impl Resource for OwnerOverrides {}
+
+impl OwnerOverrides {
+    pub fn set(&mut self, reference: u32, owner: u32) {
+        self.owners.insert(reference, owner);
+    }
+
+    pub fn get(&self, reference: u32) -> Option<u32> {
+        self.owners.get(&reference).copied()
+    }
+}
+
+/// The explicit owner of `entity`: a script's override of its reference, else the
+/// `XOWN` form the cell loader stamped. `pending` is the run's own latest set.
+fn explicit_owner(world: &World, entity: EntityId, pending: Option<u32>) -> Option<u32> {
+    let owner = match pending {
+        Some(owner) => owner,
+        None => match crate::condition::entity_global_form_id(world, entity)
+            .and_then(|reference| world.try_resource::<OwnerOverrides>()?.get(reference))
+        {
+            Some(owner) => owner,
+            None => world.get::<ExplicitOwner>(entity)?.0,
+        },
+    };
+    (owner != 0).then_some(owner)
+}
+
 /// The faction explicitly owning `entity`, if its owner is a faction.
 pub fn faction_owner(world: &World, entity: EntityId) -> Option<u32> {
-    let owner = world.get::<ExplicitOwner>(entity)?.0;
-    world.try_resource::<OwnerKinds>()?.factions.contains(&owner).then_some(owner)
+    faction_owner_with(world, entity, None)
 }
 
 /// The actor base explicitly owning `entity`, if its owner is one.
 pub fn actor_owner(world: &World, entity: EntityId) -> Option<u32> {
-    let owner = world.get::<ExplicitOwner>(entity)?.0;
+    actor_owner_with(world, entity, None)
+}
+
+/// [`faction_owner`] with the owner a run set earlier in itself.
+pub fn faction_owner_with(world: &World, entity: EntityId, pending: Option<u32>) -> Option<u32> {
+    let owner = explicit_owner(world, entity, pending)?;
+    world.try_resource::<OwnerKinds>()?.factions.contains(&owner).then_some(owner)
+}
+
+/// [`actor_owner`] with the owner a run set earlier in itself.
+pub fn actor_owner_with(world: &World, entity: EntityId, pending: Option<u32>) -> Option<u32> {
+    let owner = explicit_owner(world, entity, pending)?;
     world.try_resource::<OwnerKinds>()?.actors.contains(&owner).then_some(owner)
+}
+
+/// Whether `form` is a faction the load order defines.
+pub fn is_faction(world: &World, form: u32) -> bool {
+    world.try_resource::<OwnerKinds>().is_some_and(|kinds| kinds.factions.contains(&form))
 }
 
 #[cfg(test)]

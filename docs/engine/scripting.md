@@ -789,6 +789,13 @@ runtime:
   female bit and `GetVoiceType()` ("the VoiceType for this actor or talking activator") its `VTCK`, from
   the derived `ActorBaseTraits`. A form that is no actor base stops `GetSex`; an actor without a voice
   type reads None. (A leveled actor's spawned sex needs `GetLeveledActorBase`, as the CK notes.)
+- **Owners and crime gold.** `SetActorOwner(akActorBase)` / `SetFactionOwner(akFaction)` replace the
+  reference's one explicit-owner slot (a `None` clears it) in the saved `OwnerOverrides`, which
+  `GetFactionOwner` / `GetActorOwner` read before the placed `XOWN`. A faction's crime gold
+  (`SetCrimeGold` non-violent, `SetCrimeGoldViolent`, `ModCrimeGold(amount, violent)`; reads
+  `GetCrimeGold` = both kinds, `GetCrimeGoldViolent`, `GetCrimeGoldNonViolent`) is the saved
+  `FactionCrimeGold`; the engine has no crime system, so scripts' writes are all of it. A modification
+  below zero floors at zero, which the CK leaves open. Paying it off (`PlayerPayCrimeGold`) stays declined.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

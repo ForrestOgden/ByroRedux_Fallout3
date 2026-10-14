@@ -493,6 +493,12 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `SetNoFavorAllowed` / `SetActorCause` calls, applied to
     /// [`crate::ReferenceFlags`] after the guards drop.
     pub(super) reference_flag_changes: Vec<crate::ReferenceFlagChange>,
+    /// M47.2 — `SetActorOwner` / `SetFactionOwner` calls: (reference, owner or
+    /// 0), applied to [`crate::OwnerOverrides`] after the guards drop.
+    pub(crate) owner_changes: Vec<(u32, u32)>,
+    /// M47.2 — faction crime gold edits, applied to [`crate::FactionCrimeGold`]
+    /// after the guards drop (and visible to the run's own later reads).
+    pub(crate) crime_gold_changes: Vec<crate::CrimeGoldChange>,
     /// M47.2 — `Effect::SetLocationKeywordData`s: (location, keyword, data),
     /// applied to [`crate::LocationKeywordData`] after the guards drop.
     location_keyword_changes: Vec<(u32, u32, f32)>,
@@ -637,6 +643,8 @@ impl DeferredFragmentEffects {
             hit_requests: Vec::new(),
             sound_plays: Vec::new(),
             reference_flag_changes: Vec::new(),
+            owner_changes: Vec::new(),
+            crime_gold_changes: Vec::new(),
             location_keyword_changes: Vec::new(),
             alias_collections: Vec::new(),
             event_requests: Vec::new(),
@@ -766,6 +774,22 @@ impl DeferredFragmentEffects {
                 }
             }
             self.reference_flag_changes.clear();
+        }
+        if !self.owner_changes.is_empty() {
+            if let Some(mut owners) = world.try_resource_mut::<crate::OwnerOverrides>() {
+                for (reference, owner) in self.owner_changes.drain(..) {
+                    owners.set(reference, owner);
+                }
+            }
+            self.owner_changes.clear();
+        }
+        if !self.crime_gold_changes.is_empty() {
+            if let Some(mut gold) = world.try_resource_mut::<crate::FactionCrimeGold>() {
+                for change in self.crime_gold_changes.drain(..) {
+                    gold.apply(change);
+                }
+            }
+            self.crime_gold_changes.clear();
         }
         if !self.sound_plays.is_empty() {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {

@@ -505,7 +505,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v98 -> v99 (M47.2): `ReferenceFlags` gained the `IgnoreFriendlyHits` and
 /// `SetCanDoCommand` sets.
-pub const FORMAT_MAJOR: u16 = 99;
+///
+/// v99 -> v100 (M47.2): the `OwnerOverrides` and `FactionCrimeGold` resource
+/// columns.
+pub const FORMAT_MAJOR: u16 = 100;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

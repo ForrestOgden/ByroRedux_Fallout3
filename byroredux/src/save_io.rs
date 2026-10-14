@@ -636,6 +636,10 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::LinkedRefOverrides>("LinkedRefOverrides")
         // M47.3 — the ObScript quest scripts' local variables.
         .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals")
+        // M47.2 — SetActorOwner / SetFactionOwner.
+        .register_resource::<byroredux_scripting::OwnerOverrides>("OwnerOverrides")
+        // M47.2 — Faction crime gold.
+        .register_resource::<byroredux_scripting::FactionCrimeGold>("FactionCrimeGold")
         // M47.2 — Actor.SetCrimeFaction.
         .register_resource::<byroredux_scripting::CrimeFactionOverrides>("CrimeFactionOverrides")
         // M47.2 — Actor.SetBribed / SetIntimidated flags.

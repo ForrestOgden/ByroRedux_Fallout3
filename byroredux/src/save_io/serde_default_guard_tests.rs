@@ -716,7 +716,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // types are all on `registry_completeness_tests.rs`'s
     // `NOT_SAVED_BY_DESIGN` allowlist (rebuilt from XCWT/WATR/GRAS at cell or
     // worldspace entry), so no snapshot has ever contained either shape.
-    const BASELINE_MAJOR: u16 = 99;
+    const BASELINE_MAJOR: u16 = 100;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1018,7 +1018,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // columns.
     // 2026-10-13 (M47.2) — refreshed WITH a major bump (v98 -> v99):
     // `ReferenceFlags` gained two sets.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5484_82ca_99cd_22d5;
+    // 2026-10-13 (M47.2) — refreshed WITH a major bump (v99 -> v100):
+    // the `OwnerOverrides` and `FactionCrimeGold` columns.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x11f7_8ad4_d6f0_7110;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

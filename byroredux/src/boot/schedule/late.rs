@@ -720,6 +720,11 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::AnimArchetypeOverrides>()
             .reads_resource::<byroredux_scripting::ScannedReferences>()
             .writes_resource::<byroredux_scripting::ScannedReferences>()
+            // M47.2 — a spoken line's SetFactionOwner and crime gold natives.
+            .reads_resource::<byroredux_scripting::OwnerOverrides>()
+            .writes_resource::<byroredux_scripting::OwnerOverrides>()
+            .reads_resource::<byroredux_scripting::FactionCrimeGold>()
+            .writes_resource::<byroredux_scripting::FactionCrimeGold>()
             // M47.2 — a spoken line's FormList.AddForm / GetSize / HasForm.
             .reads_resource::<byroredux_scripting::FormListAdditions>()
             .writes_resource::<byroredux_scripting::FormListAdditions>()

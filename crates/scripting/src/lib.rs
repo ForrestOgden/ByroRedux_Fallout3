@@ -40,6 +40,7 @@ pub mod form_lists;
 pub mod input_layers;
 pub mod actor_base_traits;
 pub mod crime_faction;
+pub mod crime_gold;
 pub mod linked_refs;
 pub mod loc_ref_types;
 pub mod reference_flags;
@@ -166,7 +167,11 @@ pub use bribe::{bribe_amount, install_bribe_rules, BribeRules};
 pub use encounter_level::{
     calculate_encounter_level, install_encounter_level_rules, EncounterLevelRules, ExplicitEncounterZone,
 };
-pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
+pub use ownership::{
+    actor_owner, actor_owner_with, faction_owner, faction_owner_with, install_owner_kinds, is_faction, ExplicitOwner,
+    OwnerKinds, OwnerOverrides,
+};
+pub use crime_gold::{crime_gold_with, CrimeGoldChange, FactionCrimeGold};
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
@@ -365,6 +370,14 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted SetLinkedRef links (saved).
     if world.try_resource::<LinkedRefOverrides>().is_none() {
         world.insert_resource(LinkedRefOverrides::default());
+    }
+    // M47.2 — scripted SetActorOwner / SetFactionOwner (saved).
+    if world.try_resource::<OwnerOverrides>().is_none() {
+        world.insert_resource(OwnerOverrides::default());
+    }
+    // M47.2 — faction crime gold (saved).
+    if world.try_resource::<FactionCrimeGold>().is_none() {
+        world.insert_resource(FactionCrimeGold::default());
     }
     // M47.2 — scripted SetCrimeFaction assignments (saved).
     if world.try_resource::<CrimeFactionOverrides>().is_none() {
