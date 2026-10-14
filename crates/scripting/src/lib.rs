@@ -46,6 +46,7 @@ pub mod crime_gold;
 pub mod linked_refs;
 pub mod loc_ref_types;
 pub mod reference_flags;
+pub mod projectile_requests;
 pub mod sound_requests;
 pub mod ownership;
 pub mod weather_state;
@@ -178,6 +179,7 @@ pub use ownership::{
     OwnerKinds, OwnerOverrides,
 };
 pub use crime_gold::{crime_gold_with, CrimeGoldChange, FactionCrimeGold};
+pub use projectile_requests::{PendingProjectileLaunches, ProjectileLaunch};
 pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, SoundEditorIds, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
@@ -346,6 +348,9 @@ pub fn register(world: &mut World) {
         world.insert_resource(ReferenceFlags::default());
     }
     // M47.2 — Sound.Play requests awaiting the host (transient).
+    if world.try_resource::<PendingProjectileLaunches>().is_none() {
+        world.insert_resource(PendingProjectileLaunches::default());
+    }
     if world.try_resource::<PendingSoundPlays>().is_none() {
         world.insert_resource(PendingSoundPlays::default());
     }

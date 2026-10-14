@@ -584,6 +584,10 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
     // ApplyHavokImpulse requests, after the motion-type change that made the body dynamic.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_havok_impulse_system);
+    // M47.2 — `Weapon.Fire` projectiles: start the requested ones, then fly them
+    // (a hit on a live actor queues the `HitEvent` the damage system consumes).
+    scheduler.add_exclusive(Stage::Update, crate::systems::projectiles::projectile_launch_system);
+    scheduler.add_exclusive(Stage::Update, crate::systems::projectiles::projectile_flight_system);
     // Animated props' behavior graphs: clip-trigger events move their state machines on.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::object_graph_step_system);
     // Native cart tethers consume the horse ACHR's XLKR marker chain before

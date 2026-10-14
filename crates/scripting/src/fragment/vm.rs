@@ -2657,6 +2657,7 @@ impl Vm<'_> {
                     | "getactorowner"
                     | "calculateencounterlevel"
                     | "damageobject"
+                    | "fire"
                     | "getcurrentdestructionstage"
                     | "cleardestruction"
                     | "setdestroyed"
@@ -3311,6 +3312,24 @@ impl Vm<'_> {
             // *GetCurrentDestructionStage* (-1 undamaged), *ClearDestruction* (no
             // event), *SetDestroyed* ("sets or clears this object's destroyed
             // flag", default True) and *IsDestroyed*.
+            // CK *Fire - Weapon*: fires the weapon from the source with the ammo (None:
+            // the reference's current ammo); the host launches the projectile (see
+            // [`crate::projectile_requests`]).
+            (Value::Form(weapon), "fire") if (1..=2).contains(&args.len()) => {
+                let values = self.eval_args(frame, args)?;
+                let source = match values.first() {
+                    Some(Value::Form(source)) if *source != 0 => *source,
+                    _ => return stop("Weapon.Fire without a source reference"),
+                };
+                let ammo = match values.get(1) {
+                    Some(Value::Form(ammo)) => *ammo,
+                    _ => 0,
+                };
+                if let Some(mut pending) = self.world.try_resource_mut::<crate::PendingProjectileLaunches>() {
+                    pending.0.push(crate::ProjectileLaunch { source, weapon: *weapon, ammo });
+                }
+                Some(Value::None)
+            }
             (Value::Form(reference), "damageobject") if args.len() == 1 => {
                 let values = self.eval_args(frame, args)?;
                 let amount = values.first().and_then(Value::number).unwrap_or(0.0);
@@ -5393,6 +5412,16 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "fire")
+                if statement
+                    && (1..=2).contains(&arg_kinds.len())
+                    && matches!(arg_kinds[0], Arg::Kind(Kind::Object | Kind::Player))
+                    && arg_kinds
+                        .get(1)
+                        .is_none_or(|a| matches!(a, Arg::Kind(Kind::Object | Kind::None) | Arg::Literal(Expr::NoneLit))) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object | Kind::Player, "damageobject")
                 if statement
                     && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)]) =>

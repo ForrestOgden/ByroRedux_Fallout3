@@ -110,9 +110,12 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // `Weapons\1handMineDrop\Mine*.NIF` meshes ship in
         // `Fallout - Meshes.bsa`; without the `statics` half they would
         // parse into `index.projectiles` and still render nothing.
-        b"PROJ" => extract_records_with_modl(reader, end, b"PROJ", statics, &mut |fid, subs| {
-            index.projectiles.insert(fid, parse_proj(fid, subs));
-        })?,
+        b"PROJ" => {
+            let proj_remap = reader.get_form_id_remap();
+            extract_records_with_modl(reader, end, b"PROJ", statics, &mut |fid, subs| {
+            index.projectiles.insert(fid, parse_proj(fid, subs, game, &proj_remap));
+            })?
+        }
         b"EFSH" => extract_records(reader, end, b"EFSH", &mut |fid, subs| {
             index.effect_shaders.insert(fid, parse_efsh(fid, subs));
         })?,

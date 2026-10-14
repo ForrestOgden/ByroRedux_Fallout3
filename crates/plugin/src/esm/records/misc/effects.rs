@@ -1,6 +1,6 @@
 //! Effects / FX / VATS / impact records.
 
-use super::super::common::{read_lstring_or_zstring, read_zstring, CommonNamedFields};
+use super::super::common::{read_lstring_or_zstring, read_zstring, remap_fid, CommonNamedFields};
 use crate::esm::reader::SubRecord;
 use crate::esm::sub_reader::SubReader;
 
@@ -128,9 +128,43 @@ pub struct ProjRecord {
     /// `index.projectiles` instead. All 52 `Fallout3.esm` PROJ records
     /// author one.
     pub model_path: String,
+    /// `DATA` offset 4 — gravity (xEdit `wbPROJ`), in the engine's own unit.
+    pub gravity: f32,
+    /// `DATA` offset 12 — range in game units.
+    pub range: f32,
+    /// `DATA` offset 36 — the `EXPL` the projectile detonates into, or 0.
+    pub explosion: u32,
+    /// `DATA` offset 52 — impact force.
+    pub impact_force: f32,
+    /// `DATA` offset 72 (Skyrim+ only; FO3/FNV author rotation there) —
+    /// collision radius in game units.
+    pub collision_radius: f32,
+    /// `DATA` offset 76 (Skyrim+ only) — lifetime in seconds.
+    pub lifetime: f32,
 }
 
-pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
+impl ProjRecord {
+    /// The `DATA` type word (xEdit: 1 Missile, 2 Lobber, 4 Beam, 8 Flame,
+    /// 0x10 Cone, 0x20 Barrier, 0x40 Arrow).
+    pub fn projectile_type(&self) -> u16 {
+        (self.flags >> 16) as u16
+    }
+
+    /// The `DATA` flag word (bit 0 Hitscan, 1 Explosion, 2 Alt. Trigger, 3
+    /// Muzzle Flash, 5 Can Be Disabled, 6 Can Be Picked Up, 7 Supersonic, 8 Pins
+    /// Limbs, 9 Pass Through Small Transparent, 10 Disable Combat Aim
+    /// Correction, 11 Rotation).
+    pub fn projectile_flags(&self) -> u16 {
+        (self.flags & 0xFFFF) as u16
+    }
+}
+
+pub fn parse_proj(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: crate::esm::reader::GameKind,
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> ProjRecord {
     let mut out = ProjRecord {
         form_id,
         ..Default::default()
@@ -139,7 +173,7 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
     // shared walker instead of a hand-rolled copy of its arms. It
     // ignores every other sub-record, so the per-record loop below
     // is unchanged.
-    let common = CommonNamedFields::from_subs_with_remap(subs, &None);
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
     out.full_name = common.full_name;
     out.model_path = common.model_path;
@@ -148,8 +182,32 @@ pub fn parse_proj(form_id: u32, subs: &[SubRecord]) -> ProjRecord {
             b"DATA" if sub.data.len() >= 12 => {
                 let mut r = SubReader::new(&sub.data);
                 out.flags = r.u32_or_default();
-                r.skip_or_eof(4); // skip the 4-byte field at offset 4..8
+                out.gravity = r.f32_or_default();
                 out.muzzle_speed = r.f32_or_default();
+                out.range = r.f32_or_default();
+                // Offsets 16..36 are lights, tracer chance and the alt-trigger
+                // proximity / timer; then explosion at 36.
+                if sub.data.len() >= 40 {
+                    let mut r = SubReader::new(&sub.data[36..]);
+                    let explosion = r.u32_or_default();
+                    out.explosion = if explosion == 0 { 0 } else { remap_fid(explosion, remap) };
+                }
+                if sub.data.len() >= 56 {
+                    out.impact_force = SubReader::new(&sub.data[52..]).f32_or_default();
+                }
+                // The tail past offset 68 differs by era: Skyrim+ authors collision
+                // radius and lifetime there (xEdit TES5 `wbPROJ`), FO3/FNV a rotation.
+                let skyrim_plus = matches!(
+                    game,
+                    crate::esm::reader::GameKind::Skyrim
+                        | crate::esm::reader::GameKind::Fallout4
+                        | crate::esm::reader::GameKind::Fallout76
+                        | crate::esm::reader::GameKind::Starfield
+                );
+                if skyrim_plus && sub.data.len() >= 80 {
+                    out.collision_radius = SubReader::new(&sub.data[72..]).f32_or_default();
+                    out.lifetime = SubReader::new(&sub.data[76..]).f32_or_default();
+                }
             }
             _ => {}
         }
@@ -438,11 +496,39 @@ mod tests {
             sub(b"FULL", b"5mm Round\0"),
             sub(b"DATA", data),
         ];
-        let p = parse_proj(0x0007_4824, &subs);
+        let p = parse_proj(0x0007_4824, &subs, crate::esm::reader::GameKind::Fallout3NV, &None);
         assert_eq!(p.editor_id, "5mmRoundProjectile");
         assert_eq!(p.full_name, "5mm Round");
         assert_eq!(p.flags, 0x0000_0001);
         assert!((p.muzzle_speed - 3000.0).abs() < 1e-3);
+    }
+
+    /// Skyrim's `TrapDart` projectile (`TrapDartWooden01`, Skyrim.esm `000141EF`):
+    /// flags word 0x0208 (Muzzle Flash, Pins Limbs), type 1 (Missile), speed
+    /// 1300. The xEdit TES5 layout carries gravity at 4, range at 12, the
+    /// explosion at 36, impact force at 52, collision radius at 72, lifetime at 76.
+    #[test]
+    fn parse_proj_reads_the_skyrim_layout() {
+        let mut data = [0u8; 84];
+        data[0..2].copy_from_slice(&0x0208u16.to_le_bytes());
+        data[2..4].copy_from_slice(&1u16.to_le_bytes());
+        data[4..8].copy_from_slice(&0.25_f32.to_le_bytes());
+        data[8..12].copy_from_slice(&1300.0_f32.to_le_bytes());
+        data[12..16].copy_from_slice(&5000.0_f32.to_le_bytes());
+        data[36..40].copy_from_slice(&0x0001_0203u32.to_le_bytes());
+        data[52..56].copy_from_slice(&9.0_f32.to_le_bytes());
+        data[72..76].copy_from_slice(&6.0_f32.to_le_bytes());
+        data[76..80].copy_from_slice(&30.0_f32.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"TrapDartWooden01\0"), sub(b"DATA", data)];
+        let p = parse_proj(0x0001_41EF, &subs, crate::esm::reader::GameKind::Skyrim, &None);
+        assert_eq!((p.projectile_type(), p.projectile_flags()), (1, 0x0208));
+        assert_eq!((p.gravity, p.muzzle_speed, p.range), (0.25, 1300.0, 5000.0));
+        assert_eq!((p.explosion, p.impact_force), (0x0001_0203, 9.0));
+        assert_eq!((p.collision_radius, p.lifetime), (6.0, 30.0));
+        // FO3/FNV author a rotation where Skyrim has radius and lifetime.
+        let subs = vec![sub(b"DATA", data)];
+        let fnv = parse_proj(1, &subs, crate::esm::reader::GameKind::Fallout3NV, &None);
+        assert_eq!((fnv.collision_radius, fnv.lifetime), (0.0, 0.0));
     }
 
     #[test]
@@ -450,7 +536,7 @@ mod tests {
         // Truncated DATA (or absent DATA on placeholder PROJs) must not
         // panic. Stub returns Default::default() field values.
         let subs = vec![sub(b"EDID", b"TestProjectile\0")];
-        let p = parse_proj(0xDEADBEEF, &subs);
+        let p = parse_proj(0xDEADBEEF, &subs, crate::esm::reader::GameKind::Skyrim, &None);
         assert_eq!(p.editor_id, "TestProjectile");
         assert_eq!(p.flags, 0);
         assert_eq!(p.muzzle_speed, 0.0);

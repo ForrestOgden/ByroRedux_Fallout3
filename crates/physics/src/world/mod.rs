@@ -544,6 +544,26 @@ impl PhysicsWorld {
         body
     }
 
+    /// [`spawn_fixed_cuboid`](Self::spawn_fixed_cuboid) returning the entity-side
+    /// handles (body and collider), for fixtures that give a slab an owner.
+    pub fn spawn_fixed_cuboid_handles(
+        &mut self,
+        half: byroredux_core::math::Vec3,
+        translation: byroredux_core::math::Vec3,
+    ) -> crate::RapierHandles {
+        use rapier3d::prelude::*;
+        let body = self.bodies.insert(RigidBodyBuilder::fixed().build());
+        let collider = self.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(half.x, half.y, half.z)
+                .translation(Vector::new(translation.x, translation.y, translation.z))
+                .build(),
+            body,
+            &mut self.bodies,
+        );
+        self.update_query_pipeline();
+        crate::RapierHandles { body, collider }
+    }
+
     /// Remove a rigid body and its attached colliders from the simulation.
     ///
     /// Returns `true` if `handle` referenced a live body. The body's

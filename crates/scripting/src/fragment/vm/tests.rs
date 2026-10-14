@@ -5161,6 +5161,52 @@ fn damage_object_walks_the_destruction_stages() {
     assert_eq!(crate::destruction::destruction_stage(&world, marker, MARKER), -1);
 }
 
+/// `Weapon.Fire(akSource, akAmmo)` records a launch for the host: the weapon, the
+/// source reference and the ammo (None: 0, "the current ammo").
+#[test]
+fn weapon_fire_records_a_projectile_launch() {
+    const WEAPON: u32 = 0x0001_42E3;
+    const AMMO: u32 = 0x0002_36DD;
+    let script = parsed_source(
+        "ScriptName QF_VmFire extends Quest\n\
+         Weapon Property Dart Auto\n\
+         Ammo Property Bolt Auto\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Dart.Fire(Marker, Bolt)\n\
+           Dart.Fire(Marker)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    let property = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmFire".into(),
+                status: 0,
+                properties: vec![property("Dart", WEAPON), property("Bolt", AMMO), property("Marker", MARKER)],
+            }],
+        },
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world.resource::<crate::PendingProjectileLaunches>().0,
+        [
+            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: AMMO },
+            crate::ProjectileLaunch { source: MARKER, weapon: WEAPON, ammo: 0 },
+        ]
+    );
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

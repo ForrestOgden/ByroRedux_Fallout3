@@ -1565,6 +1565,30 @@ setting) are there. So there is no engine behaviour to port, and what the retail
 a call to a method it does not have is not something the files settle; the call stays declined
 rather than guessed at.
 
+### Weapon.Fire and projectiles (M47.2)
+
+CK *Fire - Weapon*: "fires the weapon from the specified object reference, using the specified
+ammo" (None: the reference's current ammo). The native records a `ProjectileLaunch`; the host's
+`projectile_launch_system` (`systems/projectiles.rs`) resolves weapon, ammo and projectile and
+`projectile_flight_system` flies it. The records: `AMMO.DATA` names the `PROJ`; `PROJ.DATA` (xEdit
+`wbPROJ`, parsed into `ProjRecord`: flags/type word, gravity, speed, range, explosion, impact force,
+and on Skyrim+ collision radius and lifetime) gives the speed in game units per second, the range in
+game units, and a lifetime in seconds where 0 means live out the range ("arrows are set to 0.00 to
+live forever"). A projectile flies straight along the source reference's forward from just past
+it, sweeping each step with a physics corridor; a hit on a live actor queues the `HitEvent` the
+damage pipeline already consumes (so health, death, bleedout, `OnHit` and the story events follow),
+worth the weapon's damage plus the ammo's (Skyrim: a bow and its arrow add; `TrapDartWeapon01` is 1,
+its `TrapDart` ammo 0). Projectiles are plain data in `ActiveProjectiles`, never saved.
+
+Refused or not modelled, said plainly: a projectile with a non-zero gravity does not launch (the CK
+describes the field only as "how much gravity has an effect on the projectile", and the game's own
+arrow gravity settings do not give a general unit; `TrapDart` has 0, arrows 0.35, ballista bolts 0.8),
+the projectile model, impact force on bodies, and the explosion a record names. The corridor width
+(at least 4 units) is an engine approximation like the melee sweep's, not game data. Census:
+`DartTrap` (177 Skyrim references) now passes the VM; its firing is started by a trigger's
+`Activate` (`OnActivate` reads the activating `TrapTriggerBase`'s `Type`), so a live test needs a
+trigger crossing, and the flight and hit are covered by tests against a real physics world.
+
 ### Utility.GetCurrentRealTime (M47.2)
 
 CK: "the number of real-world seconds that have elapsed since the game has launched", with time in
