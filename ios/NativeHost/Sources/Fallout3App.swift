@@ -7,6 +7,11 @@ import SwiftUI
 struct Fallout3NativeApp: App {
     private let metalDevice = MTLCreateSystemDefaultDevice()
 
+    // Force-link and exercise the real BSA reader without shipping game files.
+    private var bsaProbeResult: Int32 {
+        "/__fallout3_ios_uninstalled__/absent.bsa".withCString { fo3_ios_probe_bsa($0) }
+    }
+
     var body: some Scene {
         WindowGroup {
             ScrollView {
@@ -15,6 +20,8 @@ struct Fallout3NativeApp: App {
                         .font(.title2.bold())
                     Text("Rust archive bridge ABI: \(fo3_ios_abi_version())")
                         .font(.system(.body, design: .monospaced))
+                    Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
+                        .font(.system(.footnote, design: .monospaced))
                     if let device = metalDevice {
                         Text("Metal GPU: \(device.name)")
                         Text("Hardware ray tracing: \(device.supportsRaytracing ? "supported" : "unavailable")")
