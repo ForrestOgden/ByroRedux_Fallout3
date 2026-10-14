@@ -1,0 +1,11 @@
+[package]
+name = "fallout3-ios-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+byroredux-bsa = { workspace = true }
