@@ -34,6 +34,7 @@ members = [
     "tools/byro-dbg",
     "tools/texture-upscale",
     "byroredux",
+    "ios/engine-bridge",
 ]
 resolver = "2"
 

@@ -1,0 +1,34 @@
+name: FalloutNVNative
+options:
+  bundleIdPrefix: com.forrestogden
+  deploymentTarget:
+    iOS: "18.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    GENERATE_INFOPLIST_FILE: YES
+    CODE_SIGNING_ALLOWED: NO
+
+targets:
+  FalloutNVNative:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Includes/EngineBridge.h
+        buildPhase: headers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.forrestogden.falloutnvnative
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/Includes/EngineBridge.h"
+        OTHER_LDFLAGS:
+          - "$(SRCROOT)/../../target/aarch64-apple-ios/release/libfalloutnv_ios_bridge.a"
+
+schemes:
+  FalloutNVNative:
+    build:
+      targets:
+        FalloutNVNative: all

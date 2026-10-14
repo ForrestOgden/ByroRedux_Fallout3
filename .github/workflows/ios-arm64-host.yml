@@ -1,0 +1,51 @@
+name: FNV iOS / native ARM64 host compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'fnv/**'
+
+permissions:
+  contents: read
+
+jobs:
+  native-ios-host:
+    name: Rust staticlib and unsigned UIKit-compatible iOS app
+    runs-on: macos-15
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.96.0 and the native iPhone ARM64 target
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup target add aarch64-apple-ios --toolchain 1.96.0
+          rustup default 1.96.0
+      - name: Verify Rust bridge unit tests on macOS
+        run: cargo test -p falloutnv-ios-bridge --locked
+      - name: Compile native arm64-apple-ios Rust static library
+        run: cargo build -p falloutnv-ios-bridge --target aarch64-apple-ios --release --locked
+      - name: Install reproducible Xcode project generator
+        run: brew install xcodegen
+      - name: Generate native iOS Xcode project
+        working-directory: ios/NativeHost
+        run: xcodegen generate
+      - name: Compile unsigned iPhone application (no signing secrets)
+        run: |
+          xcodebuild -project ios/NativeHost/FalloutNVNative.xcodeproj \
+            -scheme FalloutNVNative -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned iPhone diagnostic app into IPA
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/FalloutNVNative.app"
+          test -d "$APP"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qr "$RUNNER_TEMP/FalloutNVNative-unsigned.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FalloutNVNative-unsigned-iphoneos
+          path: ${{ runner.temp }}/FalloutNVNative-unsigned.ipa
+          if-no-files-found: error
