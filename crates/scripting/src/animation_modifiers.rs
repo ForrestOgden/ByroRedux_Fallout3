@@ -20,10 +20,16 @@
 //!   sending m_eventToSend."
 //! - `hkbEventDrivenModifier` - "Event used to activate the wrapped modifier. Event used to
 //!   deactivate the wrapped modifier."; on from the start when `active_by_default`.
+//! - `hkbTimerModifier` / `BSTimerModifier` - "An event is sent at this time." / "The event
+//!   to send when the timer goes off."; `BSRandomAlarmModifier` - a time drawn uniformly
+//!   between "the minimum amount of time before the timer goes off" and the maximum, started
+//!   over on expiry if "Whether or not to reset the alarm when the timer expires".
 //! - `hkbModifierList` - its modifiers.
 //!
 //! Not run: the modifiers that pose the skeleton (look-at, twist, foot IK, ragdoll, jiggle),
-//! the timers, and `BSIsActiveModifier` (booleans for the engine's own code).
+//! the ones that compute a variable from engine state (`BSSpeedSamplerModifier`,
+//! `BSInterpValueModifier`, `BSGetTimeStepModifier`), and `BSIsActiveModifier` (booleans for
+//! the engine's own code).
 
 use byroredux_hkx::{BehaviorGraph, Modifier, ModifierNode, Statement, VariableKind};
 use std::collections::HashMap;
@@ -75,6 +81,12 @@ struct Runtime {
     count: u32,
     /// Per expression: parsed once, and what the last frames made of it.
     expressions: Vec<ExpressionRuntime>,
+    /// A timer's seconds since it activated (or last went off), and how many times a random
+    /// alarm has been drawn.
+    elapsed: f32,
+    fired: bool,
+    draws: u32,
+    alarm: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,7 +154,13 @@ impl ModifierState {
                     self.activate(item, vars, events);
                 }
             }
-            Modifier::EventsFromRange { .. } | Modifier::EventOnDeactivate { .. } | Modifier::EventEveryNEvents { .. } => {}
+            Modifier::RandomAlarm { min_seconds, max_seconds, .. } => {
+                runtime.alarm = Some(draw_alarm(node.id, runtime.draws, *min_seconds, *max_seconds));
+            }
+            Modifier::Timer { .. }
+            | Modifier::EventsFromRange { .. }
+            | Modifier::EventOnDeactivate { .. }
+            | Modifier::EventEveryNEvents { .. } => {}
         }
     }
 
@@ -213,20 +231,45 @@ impl ModifierState {
                 }
             }
             Modifier::ModifyOnce { .. } | Modifier::AssignVariables { .. } | Modifier::EventsFromRange { .. } => {}
-            Modifier::EvaluateExpression { .. } | Modifier::EventOnDeactivate { .. } => {}
+            Modifier::EvaluateExpression { .. }
+            | Modifier::EventOnDeactivate { .. }
+            | Modifier::Timer { .. }
+            | Modifier::RandomAlarm { .. } => {}
         }
     }
 
-    /// One frame: the modifiers that look at the variables every frame run.
-    pub(crate) fn tick(&mut self, vars: &mut Vars, events: &mut Vec<i32>) {
+    /// One frame of `dt` seconds: the modifiers that look at the variables or the clock run.
+    pub(crate) fn tick(&mut self, dt: f32, vars: &mut Vars, events: &mut Vec<i32>) {
         let active = self.active.clone();
         for node in &active {
-            self.tick_node(node, vars, events);
+            self.tick_node(node, dt, vars, events);
         }
     }
 
-    fn tick_node(&mut self, node: &Arc<ModifierNode>, vars: &mut Vars, events: &mut Vec<i32>) {
+    fn tick_node(&mut self, node: &Arc<ModifierNode>, dt: f32, vars: &mut Vars, events: &mut Vec<i32>) {
         match &node.kind {
+            Modifier::Timer { alarm_seconds, event } => {
+                let runtime = self.runtime.entry(node.id).or_default();
+                runtime.elapsed += dt.max(0.0);
+                if !runtime.fired && runtime.elapsed >= *alarm_seconds {
+                    runtime.fired = true;
+                    push_event(events, *event);
+                }
+            }
+            Modifier::RandomAlarm { min_seconds, max_seconds, event, reset } => {
+                let runtime = self.runtime.entry(node.id).or_default();
+                runtime.elapsed += dt.max(0.0);
+                let alarm = *runtime.alarm.get_or_insert_with(|| draw_alarm(node.id, 0, *min_seconds, *max_seconds));
+                if runtime.elapsed >= alarm && (!runtime.fired || *reset) {
+                    push_event(events, *event);
+                    runtime.fired = true;
+                    if *reset {
+                        runtime.elapsed = 0.0;
+                        runtime.draws += 1;
+                        runtime.alarm = Some(draw_alarm(node.id, runtime.draws, *min_seconds, *max_seconds));
+                    }
+                }
+            }
             Modifier::EventsFromRange { input, input_variable, lower_bound, ranges } => {
                 let value = input_variable.and_then(|variable| vars.values.get(variable)).copied().unwrap_or(*input);
                 // The range the value falls in: the first whose upper bound it does not pass.
@@ -273,12 +316,12 @@ impl ModifierState {
             Modifier::EventDriven { inner, .. } => {
                 let enabled = self.runtime.get(&node.id).is_some_and(|runtime| runtime.enabled);
                 if let (true, Some(inner)) = (enabled, inner) {
-                    self.tick_node(inner, vars, events);
+                    self.tick_node(inner, dt, vars, events);
                 }
             }
             Modifier::List(items) => {
                 for item in items {
-                    self.tick_node(item, vars, events);
+                    self.tick_node(item, dt, vars, events);
                 }
             }
             Modifier::AssignVariables { .. }
@@ -287,6 +330,18 @@ impl ModifierState {
             | Modifier::EventEveryNEvents { .. } => {}
         }
     }
+}
+
+/// A deterministic draw in `[min, max]` for a random alarm: a hash of the modifier and how
+/// many draws it has made, so a replay sees the same times.
+fn draw_alarm(id: u32, draw: u32, min: f32, max: f32) -> f32 {
+    let mut x = (u64::from(id) << 32 | u64::from(draw)).wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    let fraction = (x >> 40) as f32 / (1u64 << 24) as f32;
+    let (min, max) = if max >= min { (min, max) } else { (max, min) };
+    min + (max - min) * fraction
 }
 
 fn push_event(events: &mut Vec<i32>, event: i32) {
@@ -375,12 +430,12 @@ mod tests {
         let modifier = node(1, Modifier::EventsFromRange { input: 0.0, input_variable: Some(0), lower_bound: 0.0, ranges });
         h.run(|state, vars, events| state.sync(vec![modifier.clone()], vars, events));
         h.values[0] = 80.0;
-        assert_eq!(h.run(|state, vars, events| state.tick(vars, events)), vec![0], "entering the walk range");
-        assert!(h.run(|state, vars, events| state.tick(vars, events)).is_empty(), "still in it");
+        assert_eq!(h.run(|state, vars, events| state.tick(0.1, vars, events)), vec![0], "entering the walk range");
+        assert!(h.run(|state, vars, events| state.tick(0.1, vars, events)).is_empty(), "still in it");
         h.values[0] = 300.0;
-        assert_eq!(h.run(|state, vars, events| state.tick(vars, events)), vec![1], "into the run range");
+        assert_eq!(h.run(|state, vars, events| state.tick(0.1, vars, events)), vec![1], "into the run range");
         h.values[0] = 5000.0;
-        assert!(h.run(|state, vars, events| state.tick(vars, events)).is_empty(), "past every range");
+        assert!(h.run(|state, vars, events| state.tick(0.1, vars, events)).is_empty(), "past every range");
     }
 
     #[test]
@@ -395,13 +450,42 @@ mod tests {
         h.values[1] = 2.0;
         // Expressions run in order: the stance is assigned (an int stays whole), then the
         // event expression reads it - false to true, so it is sent.
-        assert_eq!(h.run(|state, vars, events| state.tick(vars, events)), vec![0]);
+        assert_eq!(h.run(|state, vars, events| state.tick(0.1, vars, events)), vec![0]);
         assert_eq!(h.values[0], 4.0);
-        assert!(h.run(|state, vars, events| state.tick(vars, events)).is_empty(), "still true: not again");
+        assert!(h.run(|state, vars, events| state.tick(0.1, vars, events)).is_empty(), "still true: not again");
         h.values[1] = 1.0;
-        assert!(h.run(|state, vars, events| state.tick(vars, events)).is_empty(), "false: nothing");
+        assert!(h.run(|state, vars, events| state.tick(0.1, vars, events)).is_empty(), "false: nothing");
         h.values[1] = 2.0;
-        assert_eq!(h.run(|state, vars, events| state.tick(vars, events)), vec![0], "false to true again");
+        assert_eq!(h.run(|state, vars, events| state.tick(0.1, vars, events)), vec![0], "false to true again");
+    }
+
+    #[test]
+    fn a_timer_sends_its_event_once_after_its_time_and_a_random_alarm_when_drawn() {
+        let mut h = Harness::new(&[], &["Alarm", "Random"]);
+        let timer = node(1, Modifier::Timer { alarm_seconds: 0.25, event: 0 });
+        let random = node(2, Modifier::RandomAlarm { min_seconds: 1.0, max_seconds: 3.5, event: 1, reset: true });
+        h.run(|state, vars, events| state.sync(vec![timer.clone(), random.clone()], vars, events));
+        let mut fired = Vec::new();
+        for frame in 0..200 {
+            for event in h.run(|state, vars, events| state.tick(0.1, vars, events)) {
+                fired.push((frame, event));
+            }
+        }
+        let alarms: Vec<_> = fired.iter().filter(|(_, event)| *event == 0).collect();
+        assert_eq!(alarms.len(), 1, "a timer goes off once");
+        assert_eq!(alarms[0].0, 2, "after 0.25 s at 0.1 s a frame: the third frame");
+        let randoms: Vec<i32> = fired.iter().filter(|(_, event)| *event == 1).map(|(frame, _)| *frame).collect();
+        assert!((5..=20).contains(&randoms.len()), "a 1 - 3.5 s alarm that resets goes off 6 to 20 times in 20 s: {randoms:?}");
+        assert!(randoms[0] >= 9 && randoms[0] <= 35, "the first draw lies in [1.0, 3.5] s: {randoms:?}");
+        for pair in randoms.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!((9..=36).contains(&gap), "every draw lies in [1.0, 3.5] s: gap of {gap} frames");
+        }
+        for pair in 0..64 {
+            let draw = draw_alarm(7, pair, 1.0, 3.5);
+            assert!((1.0..=3.5).contains(&draw));
+        }
+        assert_eq!(draw_alarm(7, 3, 1.0, 3.5), draw_alarm(7, 3, 1.0, 3.5), "deterministic");
     }
 
     #[test]

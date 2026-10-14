@@ -1649,65 +1649,83 @@ Starfield's profile has no scripts archive:
 
 ### Behavior graph depth (M47.2)
 
-What the graph runtime (`crates/scripting/src/animation_graph.rs`, `crates/hkx/src/behavior.rs`) evaluates
-beyond events and clips, all of it checked on Fallout 4's `MTBehavior` (Magnolia, Goodneighbor) and
-the Skyrim/FO4 corpus (`examples/blend_dump.rs`, `class_census.rs`).
+What the graph runtime (`crates/scripting/src/animation_graph.rs`, `animation_modifiers.rs`,
+`crates/hkx/src/behavior.rs`) evaluates beyond events and clips, checked on Fallout 4's `MTBehavior`
+(Magnolia, Goodneighbor) and the 328 Fallout 4 graphs (`examples/blend_dump.rs`, `class_census*.rs`).
 
-- **Variables.** `hkbBehaviorGraphData`: `m_variableInfos` (6-byte elements: role, flags, type byte),
-  the initial values in `hkbVariableValueSet`'s word array (bool/int/real take one word each), the names in
-  the string data. `ObjectAnimationGraph` holds the live values. `SetAnimationVariableBool/Int/Float` and
-  `GetAnimationVariable*` (CK: "the value of a variable on the reference's animation graph") read and write
-  them; `anim.var <entity> [name [value]]` is the console twin. A sub-behavior's variables are interned into
-  its parent's table by name when it is inlined, like its events.
-- **Bindings.** `hkbVariableBindingSet` (at the bindable's `+0x10`, 40-byte bindings: member path, variable
-  index at `+0x1C`) binds a variable to a clip's `playbackSpeed`, a blender's `blendParameter`, a
-  transition effect's `duration` and a blender child's `weight`. In the 8-way locomotion graph the top
-  blender carries no binding; its `BSCyclicBlendTransitionGenerator` wrapper binds `fBlendParameter` to
-  `Direction` (4 wrappers, 4 unbound blenders), so the wrapper's variable drives the blender it wraps.
-- **Parametric blenders.** The flags (`+0x9A` on Havok 2014, `+0x5A` on 2010) mark a blender parametric
-  (`0x10`), cyclic (`0x20`) and synced (`0x01`). A parametric blender's child weights are positions on one
-  axis: the vanilla graph has walk at 80 and run at 370 for `Speed`, and eight directions at 0, 0.125 ...
-  0.875 round a cyclic `Direction` of `[0, 1)`. The blend parameter falls between two children, which share
-  the pose in proportion; beyond the ends the end child has it; a cyclic blender wraps the last child into the
-  first (`blender_weights`, tested). The pose is every clip of the tree (zero-weight ones too, so a clip that
-  enters the blend is already in phase) as an `AnimationStack`; all layers advance through their own lengths at
-  the weighted mean of their cycles per second, so a walk and a run stay in phase (an approximation of Havok's
-  sync points). The weights follow the variables every frame (`object_graph_step_system`).
-- **Transition fades.** The transition-info element's effect (`+0x20`) is an `hkbBlendingTransitionEffect`;
-  its `duration` (`+0xA8` on 2014, `+0x50` on 2010; the vanilla names read `blend_0.25s`, `blend_0.2s`, and the
-  floats say 0.25, 0.2) or its bound variable is the time the old pose fades out as the new one fades in. The
-  stack's blend-in/out layers do it; when one plain clip is left the stack goes back to an `AnimationPlayer`.
-  The engine world registers `AnimationStack` (an unregistered storage dropped the pose silently - found live).
-- **Conditions.** The element's condition (`+0x28`) is an `hkbExpressionCondition` / `hkbStringCondition`: C-like
-  text over variables (`iSyncIdleLocomotion == 1`, `!IsPlayer`, `(staggerDirection > .25) && (staggerDirection <
-  .75)`). `crates/hkx/src/expression.rs` parses and evaluates it; an event fires its transition only while the
-  condition holds. The one vanilla text with a lone `=` has no reading and holds.
+**Sources.** The Havok Behavior SDK is not on disk (the 2013 SDK here has the animation-level blend job and
+class patches, no `hkb*` source), so the semantics come from the files and from the engine itself: Fallout4.exe
+carries Havok's description strings and validation messages for the behavior classes (`strings Fallout4.exe`;
+its class tables are built in code, so member *offsets* come from the vanilla graphs' objects, in the member
+order the strings give). Examples below quote them.
+
+- **Variables and bindings.** `hkbBehaviorGraphData`: `m_variableInfos` (6-byte elements), the initial values in
+  `hkbVariableValueSet`'s word array, the names in the string data; `Get/SetAnimationVariable*` and `anim.var`.
+  `hkbVariableBindingSet` (at the bindable's `+0x10`, 40-byte bindings: member path, variable `+0x1C`, array
+  offset `+0x14`) binds a variable to a clip's `playbackSpeed`, a blender's `blendParameter`, a transition
+  effect's `duration`, a blender child's `weight`, a machine's `startStateId`, a selector's
+  `selectedGeneratorIndex`, an array element of a bone-weight array. A sub-behavior's variables, events and
+  modifier ids are renumbered into its parent's tables when it is inlined.
+- **The generator tree.** A state's generator is a tree (`Generator`: clip, Gamebryo sequence, blender, selector,
+  nested machine, sub-behavior reference, modifier wrapper), and the pose is the active clips of the whole tree,
+  not one motion leaf: the vanilla `MTRoot` is a layered blender whose children are whole nested machines.
+  A machine starts in the state its `startStateId` variable names (`iSyncIdleLocomotion`, `iIsInSneak`, ...: 80
+  bindings), a selector picks its child by `iIsPlayer` and the like, and a change of the clips that is not an
+  event (a selector's variable moving) restarts the pose.
+- **Parametric blenders.** Flags `0x10` parametric, `0x20` cyclic, `0x01` sync. A parametric blender's child weights
+  are positions on one axis (walk 80 / run 370 for `Speed`; eight headings at 0, 0.125 ... round a cyclic
+  `Direction`); the parameter falls between two children, which share the pose; a cyclic blender wraps. The
+  top blender of the 8-way graph is fed by its `BSCyclicBlendTransitionGenerator` wrapper ("The blend parameter
+  to pass into the cyclic blend generator. DO NOT SET A VARIABLE ON THE REFERENCED BLENDER GENERATOR").
+- **Layered blenders and bone masks.** Any other blender mixes its children by their weights ("Non parametric
+  blend children should have weight between 0.0 and 1.0"), bone by bone through each child's
+  `hkbBoneWeightArray` ("A weight for each bone. If the list is too short, missing bones are assumed to have
+  weight 1.") and normalised where the layers meet - the same combine the SDK's `hkaSampleBlendJob` documents for
+  per-bone weights. `AnimationLayer::bone_weights` + `AnimationStack::bone_index` carry the mask; the vanilla
+  upper-body / lower-body pair is complementary (0.33 / 0.66 / 1 gradients over the spine), so each bone comes
+  from the layer that owns it. A mask element can follow a variable (`boneWeights` bindings on the array). A
+  *boolean* bound to a child's own `boneWeights` (`bEquipOk`, `bAllowHeadTracking`, `bAnimationDriven`) is read
+  as a switch for that child: the camera machine of `MTRoot` is bound to `bAnimationDriven`, and without the
+  switch every NPC would carry a 50% camera pose. That is an inference (the engine's strings do not describe
+  the binding); integers and reals bound there (`iSyncIdleLocomotion`, `Speed`, `Direction`: 10 children) are
+  left unapplied.
+- **Sync points.** A synced blender's clips that carry `SyncLeft` and `SyncRight` annotations (1,357 of the
+  humanoid clips, left first or right first) share one phase: 0 at each clip's left plant, 1 at its right, 2
+  wraps; each clip is put at the time that maps to through its own points and the phase runs at the weighted
+  mean of the clips' rates. A walk that plants its left foot at 0.33 s and a run that plants its right foot first
+  therefore stay foot for foot. Clips without the pair (idles, gestures) play at their own speed.
+- **Transition fades and conditions.** The effect's duration (`+0xA8`; the names `blend_0.25s` agree with the
+  floats) or its bound variable fades the old pose out as the new one fades in; the condition at `+0x28`
+  (C-like text over variables, `crates/hkx/src/expression.rs`) gates the transition. A settled single clip goes
+  back to an `AnimationPlayer`. The engine world registers `AnimationStack` (an unregistered storage dropped the
+  pose silently - found live).
+- **Modifiers** (`animation_modifiers.rs`; Havok 2014 layouts only). The ones that act on the graph itself run
+  while their generator is on the active path: `BSAssignVariablesModifier` ("A float variable to set on activate"),
+  `BSModifyOnceModifier`, `hkbEventsFromRangeModifier` (vanilla: `SpeedSmoothed` <= 150 -> `walkStart`, <= 600 ->
+  `runStart`), `hkbEvaluateExpressionModifier` ("Expression of the form 'variablename = expression' or
+  'eventname = boolean expression'", four event modes), `BSEventOnDeactivateModifier`,
+  `BSEventEveryNEventsModifier`, `hkbEventDrivenModifier` ("Event used to activate the wrapped modifier"),
+  `hkbModifierList`, `hkbTimerModifier` / `BSTimerModifier`, `BSRandomAlarmModifier` (a deterministic draw). Their
+  events go through the same path as a clip trigger's; the graph moves itself (a modifier raising `walkStart`
+  takes the idle's transition, tested). Not run: the modifiers that pose the skeleton (look-at, twist, foot IK,
+  ragdoll, jiggle), those that compute a variable from engine state (`BSSpeedSamplerModifier`,
+  `BSInterpValueModifier`, `BSGetTimeStepModifier`, `hkbDampingModifier`: the strings give their members
+  but not their formulas) and `BSIsActiveModifier` (its booleans are for the engine's own code).
 - **Locomotion inputs.** `graph_locomotion_system` (PostUpdate, after the movers, for graph actors the Skyrim
-  walk-clip system does not drive) feeds `Speed`/`SpeedSmoothed` (units a second, smoothed over 0.1 s),
-  `Direction` (the heading of the motion relative to the body as a fraction of a turn) and
-  `moveStart`/`moveStop` with the walk clip's hysteresis windows. A graph actor faces -Z: Havok's forward is +Y in
-  Z-up, which converts to -Z, and a live Magnolia with an unrotated root has her toe 8.4 units beyond her foot
-  along -Z (the skeleton's reference pose agrees for FO4 and Skyrim alike). `actor.walk <entity> <speed>
-  <seconds> [turns]` is a stand-in mover; live, a 120 u/s walk set `Speed` to 119.9994, took `moveStart`, blended the
-  walk-lean clips, and `moveStop` crossfaded back to the idle (the 0.25 s fade measured on the stack's weights).
-  The mover systems themselves still face an NPC `+Z` toward its target, which is the wrong end of an FO4 rig; no
-  FO4 NPC walks by itself yet, so nothing shows it.
-- **Root motion.** Fallout 4 authors locomotion in place (the walk-forward's Root and COM tracks do not move) and
-  keeps the travel in `hkaDefaultAnimatedReferenceFrame` (Havok 2014: duration at `+0x40`, `hkVector4` samples
-  at `+0x48`; 113.9 units over 1.233 s for `WalkForward`, along Z-up +Y). The decoder reads it
-  (`HkxAnimation::reference_frame`), the clip converter lays it on the root bone and binds the root as the
-  accumulation root, a stack's `RootMotionDelta` is now the weighted mix of its layers' deltas (it was the heaviest
-  layer's), and `graph_root_motion_system` carries an actor whose graph sets `bGraphDriven` or `bAnimationDriven`
-  by it, in the actor's own frame. Live: with `bGraphDriven` set, Magnolia moved 249 units along -Z in 3 s on the
-  walk blend (about 83 u/s), and stopped when it was cleared. Yaw in the extracted motion is not applied.
-
-Not built, and why: **layered (non-parametric) blenders** keep their first child - their per-child weights act
-over `hkbBoneWeightArray` bone masks, and the Behavior-level combine rule is in no file on disk (the Havok
-2013 SDK here has the animation-level blend job, whose per-bone weights and reference-pose threshold match the
-`AnimationStack` average, but no `hkbBlenderGenerator` source). **Modifiers** (`BSAssignVariablesModifier`,
-`hkbEvaluateExpressionModifier`, `hkbEventsFromRangeModifier`, `BSIsActiveModifier`, `BSEventOnDeactivateModifier`,
-...) are not run: the SDK's class patches give member names but not behaviour, and a guessed rule would feed the
-variables the conditions read. **Sync points**: layers are synced by normalised phase.
+  walk-clip system does not drive) feeds `Speed`/`SpeedSmoothed`, `Direction` and `moveStart`/`moveStop` from the
+  actor's displacement (hysteresis windows from the walk-clip system). A graph actor faces -Z: Havok's forward is
+  +Y in Z-up, which converts to -Z, and a live Magnolia with an unrotated root has her toe 8.4 units beyond her
+  foot along -Z (the skeleton's reference pose agrees for FO4 and Skyrim). `actor.walk <entity> <speed> <seconds>
+  [turns]` is a stand-in mover. Live: a 100 u/s walk set `Speed` to 99.9997, took `moveStart`, blended the
+  synced walk-lean clips with the camera child switched off, and `moveStop` faded back. The Walk -> Jog -> Run
+  states are chosen by events the *engine* sends (`Jog`, `Run`), not by the graph; they are not sent. The mover
+  systems face an NPC `+Z` toward its target, the wrong end of an FO4 rig; no FO4 NPC walks by itself yet.
+- **Root motion.** Fallout 4 authors locomotion in place and keeps the travel in
+  `hkaDefaultAnimatedReferenceFrame` (duration `+0x40`, `hkVector4` samples `+0x48`; 113.9 units over 1.233 s for
+  `WalkForward`, along Z-up +Y). The decoder reads it, the clip converter lays it on the root bone and binds the
+  root as the accumulation root, a stack's `RootMotionDelta` is the weighted mix of its layers' deltas, and
+  `graph_root_motion_system` carries an actor whose graph sets `bGraphDriven` / `bAnimationDriven` by it (live:
+  249 units in 3 s on the walk blend). Yaw in the extracted motion is not applied.
 
 ### ObjectReference.Activate (M47.2)
 

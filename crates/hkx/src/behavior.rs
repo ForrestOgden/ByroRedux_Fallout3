@@ -81,6 +81,12 @@ const EXPRESSION_MODE: usize = 0x10;
 const EVERY_N_CHECK: usize = 0x58;
 const EVERY_N_SEND: usize = 0x68;
 const EVERY_N_COUNT: usize = 0x78;
+const TIMER_ALARM: usize = 0x58;
+const TIMER_EVENT: usize = 0x60;
+const RANDOM_ALARM_MIN: usize = 0x58;
+const RANDOM_ALARM_MAX: usize = 0x5C;
+const RANDOM_ALARM_EVENT: usize = 0x60;
+const RANDOM_ALARM_RESET: usize = 0x70;
 const MODIFY_ONCE_ON_ACTIVATE: usize = 0x60;
 const MODIFY_ONCE_ON_DEACTIVATE: usize = 0x68;
 /// `BSAssignVariablesModifier`: 20 `(floatVariableN, floatValueN)` pairs from 0x58, then 4
@@ -420,6 +426,11 @@ pub enum Modifier {
     /// `hkbEventDrivenModifier`: the wrapped modifier runs only between its activate and
     /// deactivate events (and from the start when `active_by_default`).
     EventDriven { activate: i32, deactivate: i32, active_by_default: bool, inner: Option<Arc<ModifierNode>> },
+    /// `hkbTimerModifier` / `BSTimerModifier`: "An event is sent at this time."
+    Timer { alarm_seconds: f32, event: i32 },
+    /// `BSRandomAlarmModifier`: a timer whose time is drawn between a minimum and a maximum,
+    /// and which starts over when it goes off if `reset`.
+    RandomAlarm { min_seconds: f32, max_seconds: f32, event: i32, reset: bool },
     /// `hkbModifierList`.
     List(Vec<Arc<ModifierNode>>),
 }
@@ -660,6 +671,7 @@ fn visit_modifier(node: &mut Arc<ModifierNode>, f: &mut dyn FnMut(Slot<'_>)) {
             ranges.iter_mut().for_each(|range| f(Slot::Event(&mut range.event)));
         }
         Modifier::EvaluateExpression { .. } => {}
+        Modifier::Timer { event, .. } | Modifier::RandomAlarm { event, .. } => f(Slot::Event(event)),
         Modifier::EventOnDeactivate { event } => f(Slot::Event(event)),
         Modifier::EventEveryNEvents { check, send, .. } => {
             f(Slot::Event(check));
@@ -1285,6 +1297,16 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
             deactivate: event_at(file, object + EVENT_DRIVEN_DEACTIVATE)?,
             active_by_default: file.u8(object + EVENT_DRIVEN_BY_DEFAULT, "event driven default")? != 0,
             inner: child(EVENT_DRIVEN_MODIFIER)?,
+        },
+        Some("hkbTimerModifier" | "BSTimerModifier") => Modifier::Timer {
+            alarm_seconds: file.f32(object + TIMER_ALARM, "alarm time")?,
+            event: event_at(file, object + TIMER_EVENT)?,
+        },
+        Some("BSRandomAlarmModifier") => Modifier::RandomAlarm {
+            min_seconds: file.f32(object + RANDOM_ALARM_MIN, "minimum alarm time")?,
+            max_seconds: file.f32(object + RANDOM_ALARM_MAX, "maximum alarm time")?,
+            event: event_at(file, object + RANDOM_ALARM_EVENT)?,
+            reset: file.u8(object + RANDOM_ALARM_RESET, "reset alarm")? != 0,
         },
         Some("hkbModifierList") => {
             let (data, len) = array(file, object + MODIFIER_LIST_MODIFIERS, MAX_STATES, "modifier list")?;

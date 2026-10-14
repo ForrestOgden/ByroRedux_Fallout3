@@ -994,7 +994,7 @@ impl ObjectAnimationGraph {
         // The modifiers that watch the variables run once a frame; what they raise is
         // taken like a trigger's event.
         let mut raised = Vec::new();
-        self.with_modifiers(|state, vars| state.tick(vars, &mut raised));
+        self.with_modifiers(|state, vars| state.tick(dt, vars, &mut raised));
         for event in raised {
             self.note_raised(event);
             if let Some(Some(playback)) = self.send_event(event) {
