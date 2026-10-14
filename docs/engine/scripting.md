@@ -1544,7 +1544,10 @@ state:
   select an MT entry, and all 710 name their own archetype. What is **not** built is the actor
   behavior graph that would run the selected `behavior_graph` and `animation_paths` (the
   engine animates FO4 actors with no graph at all), so a script's archetype change is observable
-  through keywords and selection, not yet on screen.
+  through keywords and selection, not yet on screen. The first step of that milestone is measured: all 328 behavior graphs
+  in `Fallout4 - Animations.ba2` fail `decode_behavior_graph` ("expected a version-8 (Havok 2010)
+  packfile"), so Fallout 4 needs its own HKX reader (a newer packfile or tagfile layout) before the
+  graph runtime that animates placed props can run an actor's.
 - **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
   `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines
   `AddToMapScanned(b)` as `Self.SetScanned(true)` then `Self.AddToMap(b)`, and xEdit's condition
