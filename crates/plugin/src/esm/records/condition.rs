@@ -532,6 +532,7 @@ pub fn param1_is_form_id(function_index: u32) -> bool {
         | 14  // GetActorValue — AVIF FormID
         | 56  // GetQuestRunning — quest FormID
         | 58  // GetStage      — quest FormID
+        | 79  // GetQuestVariable — quest FormID (param_2 = variable slot, a literal; FO3/FNV/Oblivion)
         | 59  // GetStageDone  — quest FormID (param_2 = stage, a literal)
         | 67  // GetInCell     — CELL FormID
         | 68  // GetIsClass    — CLAS FormID

@@ -495,7 +495,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v95 -> v96 (M47.2): `Effect::SetCrimeFaction` and the
 /// `CrimeFactionOverrides` resource column.
-pub const FORMAT_MAJOR: u16 = 96;
+///
+/// v96 -> v97 (M47.3): the `ObScriptQuestLocals` resource column (quest
+/// script locals, `GetQuestVariable`).
+pub const FORMAT_MAJOR: u16 = 97;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

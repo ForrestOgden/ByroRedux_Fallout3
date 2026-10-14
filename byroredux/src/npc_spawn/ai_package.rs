@@ -39,17 +39,14 @@ fn package_conditions_pass(
     world: &World,
     ctx: &ConditionContext,
 ) -> bool {
-    use byroredux_scripting::condition::{evaluate, ConditionFunction};
+    use byroredux_scripting::condition::evaluate;
 
     if conditions.is_empty() {
         return true;
     }
-    let all_known = conditions.iter().all(|condition| {
-        !matches!(
-            ConditionFunction::from_index(condition.function_index),
-            ConditionFunction::Unknown(_)
-        )
-    });
+    let all_known = conditions
+        .iter()
+        .all(|condition| byroredux_scripting::condition::is_modeled(world, condition));
     if !all_known {
         return true;
     }
@@ -70,15 +67,11 @@ fn package_conditions_pass(
 /// every load and every combat.
 fn package_conditions_fully_modeled(
     conditions: &byroredux_plugin::esm::records::condition::ConditionList,
+    world: &World,
 ) -> bool {
-    conditions.iter().all(|condition| {
-        !matches!(
-            byroredux_scripting::condition::ConditionFunction::from_index(
-                condition.function_index
-            ),
-            byroredux_scripting::condition::ConditionFunction::Unknown(_)
-        )
-    })
+    conditions
+        .iter()
+        .all(|condition| byroredux_scripting::condition::is_modeled(world, condition))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -177,6 +170,7 @@ impl AmbientBehavior {
         package: &PackRecord,
         template: &PackRecord,
         actor_form_id: u32,
+        world: &World,
     ) -> Option<Self> {
         let location_radius = package
             .location
@@ -298,7 +292,7 @@ impl AmbientBehavior {
                 Some(PackTargetKind::SpecificReference(0x0000_0014)) => true,
                 Some(_) => false,
             };
-            if package_conditions_fully_modeled(&package.conditions)
+            if package_conditions_fully_modeled(&package.conditions, world)
                 && targets_player
                 && package.dialogue_type == 0
             {
@@ -311,7 +305,7 @@ impl AmbientBehavior {
                      (modeled={}, targets_player={}, dialogue_type={})",
                     package.form_id,
                     package.editor_id,
-                    package_conditions_fully_modeled(&package.conditions),
+                    package_conditions_fully_modeled(&package.conditions, world),
                     targets_player,
                     package.dialogue_type,
                 );
@@ -782,7 +776,7 @@ fn select_active_package<'a>(
             // package to the next eligible one; the fail-open policy is
             // unchanged for every other procedure.
             && (package.procedure_type != PROCEDURE_DIALOGUE
-                || package_conditions_fully_modeled(&package.conditions))
+                || package_conditions_fully_modeled(&package.conditions, world))
     })
 }
 
@@ -846,7 +840,7 @@ pub(super) fn apply_ai_package_behavior(
             .package_template_form_id
             .and_then(|form_id| index.packages.get(&form_id))
             .unwrap_or(package);
-        AmbientBehavior::from_package(package, template, resolved.shell.form_id)
+        AmbientBehavior::from_package(package, template, resolved.shell.form_id, world)
     });
 
     // M47.2 — the spawn-time winner begins (its Begin fragment runs).
@@ -1015,7 +1009,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, _dt: f32) {
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
                 .unwrap_or(package);
-            AmbientBehavior::from_package(package, template, runtime.actor_form_id)
+            AmbientBehavior::from_package(package, template, runtime.actor_form_id, world)
         });
         if m42_debug_enabled() {
             log::warn!(
@@ -1248,10 +1242,10 @@ mod tests {
         };
         use byroredux_plugin::esm::records::misc::pack::PackTarget;
 
-        // Uncatalogued fn 79 (GetQuestVariable — the corpus's dominant
-        // blocker, 59 of the 60 FNV bases): the fail-open SELECTS the
-        // package (it is the first eligible) but the bridge must not
-        // install.
+        // Fn 79 (GetQuestVariable — the corpus's dominant blocker, 59 of the
+        // 60 FNV bases) is modeled only on the pre-Papyrus games; this world
+        // names no game, so it passes as fail-open: the fail-open SELECTS the
+        // package (it is the first eligible) but the bridge must not install.
         let mut unmodeled = pack(0x600, PROCEDURE_DIALOGUE, None);
         unmodeled.conditions = vec![Condition {
             function_index: 79,

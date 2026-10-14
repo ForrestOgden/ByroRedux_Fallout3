@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **47 functions** at their canonical CTDA
+//! lineage. This catalog ships **48 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -34,6 +34,7 @@
 //! | 46    | GetDead                | `Dead` marker               |
 //! | 56    | GetQuestRunning        | `QuestStageState[param_1]`  |
 //! | 58    | GetStage               | `QuestStageState[param_1]`  |
+//! | 79    | GetQuestVariable       | `ObScriptQuestLocals[param_1][param_2]` (FO3 / FNV / Oblivion) |
 //! | 59    | GetStageDone           | `QuestStageState[param_1]`  |
 //! | 67    | GetInCell              | `CellRoot` + `CellFormId`   |
 //! | 68    | GetIsClass             | `Background.class_form_id`  |
@@ -129,6 +130,14 @@ pub enum ConditionFunction {
     /// for `param_1` quest in the `QuestStageState` resource.
     /// FO3 / FNV / Skyrim index 58.
     GetStage,
+    /// `GetQuestVariable(quest, variable) → f32` (Oblivion / Fallout 3 / New Vegas
+    /// index **79**; Fallout 4 and Starfield use 79 for `WouldBeStealing`, so the
+    /// evaluator passes it there rather than misread it, and Skyrim's takes a
+    /// string name this decoder does not carry, so it passes too). Reads the
+    /// quest script's local `variable` (its 1-based `SLSD` slot, `param_2`) from
+    /// [`crate::obscript_quests::ObScriptQuestLocals`]: what the quest script's
+    /// own GameMode runs left, 0 until one assigns it.
+    GetQuestVariable,
     /// `GetStageDone(quest_form_id, stage) → f32`. Returns 1.0 if
     /// `stage` (param_2) for `quest_form_id` (param_1) has been
     /// reached at any point, 0.0 otherwise. Bethesda's standard
@@ -349,6 +358,7 @@ impl ConditionFunction {
             77 => Self::GetRandomPercent,
             46 => Self::GetDead,
             58 => Self::GetStage,
+            79 => Self::GetQuestVariable,
             59 => Self::GetStageDone,
             67 => Self::GetInCell,
             68 => Self::GetIsClass,
@@ -401,8 +411,9 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 47] = [
+    pub const CATALOG: [ConditionFunction; 48] = [
         Self::GetDistance,
+        Self::GetQuestVariable,
         Self::GetActorValue,
         Self::GetDead,
         Self::GetStage,
@@ -465,6 +476,7 @@ impl ConditionFunction {
             | Self::GetGlobalValue
             | Self::GetDistance
             | Self::GetStage
+            | Self::GetQuestVariable
             | Self::GetStageDone
             | Self::GetInCell
             | Self::GetIsClass
@@ -523,6 +535,7 @@ impl ConditionFunction {
             Self::GetActorValue => "GetActorValue",
             Self::GetDead => "GetDead",
             Self::GetStage => "GetStage",
+            Self::GetQuestVariable => "GetQuestVariable",
             Self::GetStageDone => "GetStageDone",
             Self::GetInCell => "GetInCell",
             Self::GetIsClass => "GetIsClass",
@@ -629,6 +642,7 @@ impl ConditionFunction {
             | Self::GetGlobalValue
             | Self::GetRandomPercent
             | Self::GetStage
+            | Self::GetQuestVariable
             | Self::GetStageDone
             | Self::IsSceneActionComplete
             | Self::IsHardcore
@@ -671,6 +685,7 @@ impl ConditionFunction {
             | Self::GetQuestRunning
             | Self::GetGlobalValue
             | Self::GetStage
+            | Self::GetQuestVariable
             | Self::GetStageDone
             | Self::IsSceneActionComplete
             | Self::IsHardcore
@@ -1023,6 +1038,11 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
 
     // Run the function — returns the f32 the comparator works against.
     let function = ConditionFunction::from_index(condition.function_index);
+    if function == ConditionFunction::GetQuestVariable && !uses_obscript_quest_variables(world) {
+        // Index 79 is another function (or a string-named variable) outside the
+        // pre-Papyrus games: pass it, as every uncatalogued function does.
+        return true;
+    }
     let function_result = if function.reads_context() {
         let subject = match (condition.run_on, ctx.location_subject) {
             (RunOn::Subject, Some(location)) => LocationSubject::Location(location),
@@ -1036,6 +1056,28 @@ pub fn evaluate_condition(condition: &Condition, world: &World, ctx: &ConditionC
     condition
         .comparator
         .apply(function_result, comparand_value(condition, world))
+}
+
+/// Whether the load order's game is one whose index-79 `GetQuestVariable` reads an
+/// ObScript quest script's local (Oblivion, Fallout 3 and New Vegas).
+pub fn uses_obscript_quest_variables(world: &World) -> bool {
+    use byroredux_plugin::esm::reader::GameKind;
+    world
+        .try_resource::<crate::ScriptGame>()
+        .is_some_and(|game| matches!(game.0, GameKind::Oblivion | GameKind::Fallout3NV))
+}
+
+/// Whether the evaluator can really evaluate `condition` in this world: its
+/// function is catalogued, and an index that is a different function in another
+/// game (79) is catalogued for the loaded one. The fail-closed gates (dialogue
+/// quest gates, Story Manager nodes, perk entries, intrusive packages) decline a
+/// condition for which this is `false`.
+pub fn is_modeled(world: &World, condition: &Condition) -> bool {
+    match ConditionFunction::from_index(condition.function_index) {
+        ConditionFunction::Unknown(_) => false,
+        ConditionFunction::GetQuestVariable => uses_obscript_quest_variables(world),
+        _ => true,
+    }
 }
 
 /// The value a condition's function result is compared against.
@@ -1524,6 +1566,13 @@ pub fn evaluate_function(
             } else {
                 0.0
             }
+        }
+        ConditionFunction::GetQuestVariable => {
+            // GetQuestVariable(quest, variable): the quest script's local in its
+            // 1-based `SLSD` slot (`param_2`), 0 until a GameMode run assigns it.
+            world
+                .try_resource::<crate::obscript_quests::ObScriptQuestLocals>()
+                .map_or(0.0, |locals| locals.get(condition.param_1, condition.param_2 as u16))
         }
         ConditionFunction::GetStage => {
             // GetStage(quest_form_id). The current quest stage lives

@@ -48,7 +48,7 @@ use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{SmNodeKind, SmNodePolicies, SmQuestLink, SmNodeRecord};
 use std::collections::HashMap;
 
-use crate::condition::{evaluate, ConditionContext, ConditionFunction, EventDataSlots};
+use crate::condition::{evaluate, ConditionContext, EventDataSlots};
 use crate::quest_stages::{QuestDefinitionRegistry, QuestFormId, QuestStageState, QuestStatus};
 use crate::scene::SceneActorBindings;
 
@@ -1091,14 +1091,7 @@ fn walk_siblings(
         // (`WIGreetingNodeSHARES` fn 145 `== 0`). Declining is also
         // the honest answer for the fail-closed half: a node whose
         // gate cannot run neither starts nor consumes.
-        let modeled = node.conditions.iter().all(|condition| {
-            !matches!(
-                ConditionFunction::from_index(
-                    condition.function_index
-                ),
-                ConditionFunction::Unknown(_)
-            )
-        });
+        let modeled = node.conditions.iter().all(|condition| crate::condition::is_modeled(world, condition));
         if modeled && evaluate(&node.conditions, world, &context) {
             let queued_before = state.candidates.len();
             if node.kind == SmNodeKind::Quest {

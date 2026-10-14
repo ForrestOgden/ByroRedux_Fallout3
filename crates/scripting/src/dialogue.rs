@@ -18,7 +18,7 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::condition::ConditionList;
 use byroredux_plugin::esm::records::{DialRecord, InfoRecord, SceneActionType};
 
-use crate::condition::{evaluate, ConditionContext, ConditionFunction};
+use crate::condition::{evaluate, ConditionContext};
 use crate::papyrus_demo::PapyrusPlayerEntity;
 use crate::quest_stages::{QuestFormId, QuestStageState};
 use crate::scene::{
@@ -431,12 +431,7 @@ fn select_info<'a>(
         *verdicts.entry(quest).or_insert_with(|| {
             // #5380 fail-closed: an uncatalogued function is an unreadable
             // gate, and an unreadable gate never passes.
-            if conditions.iter().any(|condition| {
-                matches!(
-                    ConditionFunction::from_index(condition.function_index),
-                    ConditionFunction::Unknown(_)
-                )
-            }) {
+            if conditions.iter().any(|condition| !crate::condition::is_modeled(world, condition)) {
                 return false;
             }
             evaluate(&conditions, world, context)

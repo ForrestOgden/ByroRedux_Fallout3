@@ -73,6 +73,40 @@ impl ObScriptEffectLog {
     }
 }
 
+/// The local variables quest scripts hold between GameMode runs: quest FormID to
+/// the 1-based `SLSD` slot and its value. A variable no run assigned is absent and
+/// reads `0`, the value every ObScript local starts at. `GetQuestVariable`
+/// (condition function 79) reads it. Saved: a quest script's variables are
+/// gameplay state.
+#[derive(Debug, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct ObScriptQuestLocals {
+    values: std::collections::BTreeMap<u32, std::collections::BTreeMap<u16, f32>>,
+}
+
+impl Resource for ObScriptQuestLocals {}
+
+impl ObScriptQuestLocals {
+    /// A quest's variables, to seed a run's [`VmState`].
+    pub fn of(&self, quest: u32) -> HashMap<u16, f32> {
+        self.values.get(&quest).map(|slots| slots.iter().map(|(&slot, &value)| (slot, value)).collect()).unwrap_or_default()
+    }
+
+    /// Keep a run's variables for the next run.
+    pub fn store(&mut self, quest: u32, locals: &HashMap<u16, f32>) {
+        if locals.is_empty() {
+            self.values.remove(&quest);
+        } else {
+            self.values.insert(quest, locals.iter().map(|(&slot, &value)| (slot, value)).collect());
+        }
+    }
+
+    /// The value of `quest`'s variable `slot` (0 when never assigned).
+    pub fn get(&self, quest: u32, slot: u16) -> f32 {
+        self.values.get(&quest).and_then(|slots| slots.get(&slot)).copied().unwrap_or(0.0)
+    }
+}
+
 /// Per-quest script-loop timers + execution counters.
 #[derive(Default)]
 pub struct ObScriptQuestTimers {
@@ -127,6 +161,9 @@ pub fn install_quest_scripts(
     if world.try_resource::<ObScriptQuestTimers>().is_none() {
         world.insert_resource(ObScriptQuestTimers::default());
     }
+    if world.try_resource::<ObScriptQuestLocals>().is_none() {
+        world.insert_resource(ObScriptQuestLocals::default());
+    }
     if world.try_resource::<ObScriptEffectLog>().is_none() {
         world.insert_resource(ObScriptEffectLog::default());
     }
@@ -147,7 +184,12 @@ pub fn run_quest_game_mode(
     drop(table);
 
     let program = ObScriptProgram::new(&script);
-    let mut state = VmState::default();
+    let mut state = VmState {
+        locals: world
+            .try_resource::<ObScriptQuestLocals>()
+            .map(|locals| locals.of(quest_form_id))
+            .unwrap_or_default(),
+    };
     let mut host = QuestCommandHost {
         world,
         quest: quest_form_id,
@@ -155,6 +197,10 @@ pub fn run_quest_game_mode(
         script: &script,
     };
     let outcome = program.run_block(0, &mut state, &mut host);
+    drop(host);
+    if let Some(mut locals) = world.try_resource_mut::<ObScriptQuestLocals>() {
+        locals.store(quest_form_id, &state.locals);
+    }
     Some(outcome)
 }
 

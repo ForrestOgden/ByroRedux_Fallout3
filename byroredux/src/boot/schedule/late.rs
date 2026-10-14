@@ -707,6 +707,8 @@ pub(super) fn register_late_systems(scheduler: &mut Scheduler) {
             // M47.2 — a spoken line's SetLinkedRef / GetLinkedRef.
             .reads_resource::<byroredux_scripting::LinkedRefOverrides>()
             .writes_resource::<byroredux_scripting::LinkedRefOverrides>()
+            // M47.3 — a package or topic condition's GetQuestVariable.
+            .reads_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>()
             // M47.2 — a spoken line's SetCrimeFaction / GetCrimeFaction.
             .reads_resource::<byroredux_scripting::CrimeFactionOverrides>()
             .writes_resource::<byroredux_scripting::CrimeFactionOverrides>()

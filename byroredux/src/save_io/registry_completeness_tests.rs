@@ -847,7 +847,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingInventoryActions", "P3: the inv.equip command's handoff queue, drained through apply_action each frame — runtime plumbing, same posture as InjectedKeyPulse"),
         ("QuestScriptTable", "built once per load order from ESM QUST script_ref resolution (M47.3) — same posture as PackageRegistry, process-lifetime statics"),
         ("ObScriptEffectLog", "bounded diagnostic ring of recent script side effects (M47.3), runtime observability only"),
-        ("ObScriptQuestTimers", "per-quest 5 s tick accumulators + execution counters (M47.3) — cadence restarts on load; script locals are re-executed fresh per GameMode run in phase 1 (documented M47.3 residual, not silently lossy save state)"),
+        ("ObScriptQuestTimers", "per-quest 5 s tick accumulators + execution counters (M47.3) — cadence restarts on load; script locals persist in the saved ObScriptQuestLocals"),
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
         ("SharedToneCache", "bounded DDS mip cache for NPC seam blending; derived from archive assets and rebuilt on demand"),

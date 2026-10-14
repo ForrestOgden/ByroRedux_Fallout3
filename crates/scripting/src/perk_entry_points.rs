@@ -71,7 +71,7 @@ use byroredux_plugin::esm::records::{
     ActorValueRef, EsmIndex, PerkConditionTab, PerkEntryBody, PerkFunctionData,
 };
 
-use crate::condition::{evaluate, ConditionContext, ConditionFunction};
+use crate::condition::{evaluate, ConditionContext};
 use crate::story_manager::StoryManagerRng;
 
 /// FO3 / FNV entry-point indices (`wbPERKEntryPoints`, xEdit
@@ -472,12 +472,7 @@ fn tabs_pass(
         // A condition the evaluator cannot model reads as 0.0, which many
         // comparisons satisfy; an entry gated on one must not fire on it
         // (the same fail-closed rule the Story Manager walk applies, #5380).
-        let modeled = tab.conditions.iter().all(|condition| {
-            !matches!(
-                ConditionFunction::from_index(condition.function_index),
-                ConditionFunction::Unknown(_)
-            )
-        });
+        let modeled = tab.conditions.iter().all(|condition| crate::condition::is_modeled(world, condition));
         if !modeled {
             return false;
         }
