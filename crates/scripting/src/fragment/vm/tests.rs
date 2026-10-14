@@ -4970,6 +4970,7 @@ fn animation_events_reach_registered_scripts() {
          ObjectReference Property Marker Auto\n\
          ObjectReference Property Bare Auto\n\
          Int Heard\n\
+         Int Lost\n\
          Int Registered\n\
          Function Fragment_1()\n\
            If RegisterForAnimationEvent(Marker, \"Done\") && !RegisterForAnimationEvent(Bare, \"Done\")\n\
@@ -4982,6 +4983,11 @@ fn animation_events_reach_registered_scripts() {
          Event OnAnimationEvent(ObjectReference akSource, String asEventName)\n\
            If akSource == Marker && asEventName == \"Done\"\n\
              Heard += 1\n\
+           EndIf\n\
+         EndEvent\n\
+         Event OnAnimationEventUnregistered(ObjectReference akSource, String asEventName)\n\
+           If akSource == Marker && asEventName == \"Done\"\n\
+             Lost += 1\n\
            EndIf\n\
          EndEvent\n",
     );
@@ -5063,6 +5069,14 @@ fn animation_events_reach_registered_scripts() {
     assert_eq!(variable(&world, "Heard"), None, "Done is not due yet");
     tick(&world, 0.2);
     assert_eq!(variable(&world, "Heard"), Some(1.0), "Done reached OnAnimationEvent");
+    // The sender's cell unloads: the registration is dropped and the script told.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::AnimationEventRegistrations>().entries().len(), 1, "registered again");
+    crate::raise_unload_events(&world, &[marker]);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert!(world.resource::<crate::AnimationEventRegistrations>().entries().is_empty(), "dropped with the graph");
+    assert_eq!(variable(&world, "Lost"), Some(1.0), "OnAnimationEventUnregistered ran with the event");
     // Unregistered (the call lowercases the name: matching ignores case), nothing more.
     world.resource_mut::<QuestStageState>().set_stage(Q, 20);
     crate::fragment::quest_fragment_dispatch_system(&world);

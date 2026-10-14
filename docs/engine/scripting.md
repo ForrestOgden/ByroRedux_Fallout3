@@ -1470,8 +1470,11 @@ raises are the ones an accepted `PlayAnimation` sent and the ones a clip's trigg
 `animation_event_system` (`fragment/anim_events.rs`) drains them each frame and queues
 the animation-event handler `(akSource, asEventName)` for every registration for that reference and event, as a
 separate run like a custom event's receivers. Registrations are a saved `AnimationEventRegistrations`
-(FORMAT 101) and end when the owning quest stops. Not modelled: `OnAnimationEventUnregistered`,
-actors' graphs (none runs) and the `SoundPlay.*` notifies. `UnregisterForAnimationEvent` removes the
+(FORMAT 101) and end when the owning quest stops. When the sender's graph unloads with its cell the
+registrations for it are dropped and each script is sent the unregistered event with the sender and
+the event name (CK: "automatically unregistered by the game due to the target animation graph
+unloading", not for a manual unregister). Not modelled: actors' graphs (none runs) and the
+`SoundPlay.*` notifies. `UnregisterForAnimationEvent` removes the
 registration; `SetAnimationVariable*` have no graph variable to act on and do nothing.
 
 **Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's

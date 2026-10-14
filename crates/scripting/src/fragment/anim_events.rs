@@ -87,6 +87,42 @@ impl AnimationEventRegistrations {
     }
 }
 
+/// The graphs of `victims` are about to unload with their cells: CK
+/// *OnAnimationEventUnregistered* — "received when one of the animation events we
+/// are listening for has been automatically unregistered by the game due to the
+/// target animation graph unloading" (not for a manual unregister). Each
+/// registration for a victim's events is dropped and its script is sent the
+/// event with the sender and the event name.
+pub(super) fn unregister_unloaded(world: &World, victims: &[EntityId]) {
+    let senders: Vec<u32> = victims
+        .iter()
+        .filter(|&&victim| world.get::<crate::ObjectAnimationGraph>(victim).is_some())
+        .filter_map(|&victim| crate::condition::entity_global_form_id(world, victim))
+        .collect();
+    if senders.is_empty() {
+        return;
+    }
+    let dropped: Vec<AnimationEventRegistration> = {
+        let Some(mut registrations) = world.try_resource_mut::<AnimationEventRegistrations>() else {
+            return;
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut registrations.entries).into_iter().partition(|r| senders.contains(&r.sender));
+        registrations.entries = kept;
+        dropped
+    };
+    for registration in dropped {
+        let receiver = EventRegistration {
+            owner: registration.owner,
+            script: registration.script,
+            sender: super::DistanceTarget::Reference(registration.sender),
+            event: "OnAnimationEventUnregistered".to_owned(),
+            remote: false,
+        };
+        events::enqueue(world, &[receiver], registration.sender, &[VmStored::Str(registration.event)]);
+    }
+}
+
 /// Deliver the events the object graphs raised this frame to the scripts
 /// registered for them.
 pub fn animation_event_system(world: &World, _dt: f32) {

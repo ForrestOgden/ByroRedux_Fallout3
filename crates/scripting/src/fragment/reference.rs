@@ -56,7 +56,7 @@ pub const DELIVERED_EVENTS: [&str; 14] = [
 pub(super) fn is_delivered_event(name: &str) -> bool {
     DELIVERED_EVENTS
         .iter()
-        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent", "OnDestructionStageChanged"])
+        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent", "OnAnimationEventUnregistered", "OnDestructionStageChanged"])
         .any(|event| event.eq_ignore_ascii_case(name))
 }
 
@@ -239,6 +239,7 @@ impl Resource for PendingUnloadDeliveries {}
 /// ones quest aliases are filled with, before they despawn. Delivered with the
 /// next frame's events.
 pub fn raise_unload_events(world: &World, victims: &[EntityId]) {
+    super::anim_events::unregister_unloaded(world, victims);
     // The alias standing takes the quest-state guard: before the reference
     // scripts' query is held (see `collect_deliveries`).
     let aliases = alias_script_targets(world);
