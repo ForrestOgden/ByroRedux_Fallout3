@@ -487,6 +487,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — hit event registration changes, applied to
     /// [`super::HitRegistrations`] after the guards drop.
     pub(super) hit_requests: Vec<(u32, String, super::HitRequest)>,
+    /// `RegisterForAnimationEvent` changes, applied to
+    /// [`super::AnimationEventRegistrations`] after the guards drop.
+    pub(super) animation_event_requests: Vec<(u32, String, super::AnimationEventRequest)>,
     /// M47.2 — `Sound.Play` calls, queued on [`crate::PendingSoundPlays`] after
     /// the guards drop.
     pub(super) sound_plays: Vec<crate::SoundPlay>,
@@ -641,6 +644,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
+            animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
             reference_flag_changes: Vec::new(),
             owner_changes: Vec::new(),
@@ -804,6 +808,14 @@ impl DeferredFragmentEffects {
                 }
             }
             self.hit_requests.clear();
+        }
+        if !self.animation_event_requests.is_empty() {
+            if let Some(mut registrations) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
+                for (owner, script, request) in self.animation_event_requests.drain(..) {
+                    registrations.request(owner, &script, &request);
+                }
+            }
+            self.animation_event_requests.clear();
         }
         if !self.distance_requests.is_empty() {
             if let Some(mut watches) = world.try_resource_mut::<super::DistanceWatches>() {

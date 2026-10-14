@@ -105,6 +105,11 @@ pub struct ObjectAnimationGraph {
     pub root: EntityId,
     state: i32,
     active: Active,
+    /// Events the graph raised since [`take_raised`](Self::take_raised): the
+    /// ones a script's accepted `PlayAnimation` sent and the ones a clip's
+    /// triggers fired (a trigger raises its event whether or not a transition
+    /// answers it, as an animation notify does). Runtime only.
+    raised: Vec<String>,
 }
 
 impl Component for ObjectAnimationGraph {
@@ -115,7 +120,7 @@ impl ObjectAnimationGraph {
     /// The graph in its start state, with the start state's clip not yet playing.
     pub fn new(graph: Arc<LoadedGraph>, root: EntityId) -> Option<Self> {
         let state = graph.graph.machine.as_ref()?.start_state;
-        Some(Self { graph, root, state, active: Active::default() })
+        Some(Self { graph, root, state, active: Active::default(), raised: Vec::new() })
     }
 
     pub fn state(&self) -> i32 {
@@ -124,6 +129,17 @@ impl ObjectAnimationGraph {
 
     pub fn graph(&self) -> &LoadedGraph {
         &self.graph
+    }
+
+    /// The events raised since the last call, oldest first.
+    pub fn take_raised(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.raised)
+    }
+
+    fn note_raised(&mut self, event: i32) {
+        if let Some(name) = self.graph.graph.event_name(event) {
+            self.raised.push(name.to_owned());
+        }
     }
 
     /// The playback of the current state's clip, started fresh.
@@ -222,6 +238,7 @@ impl ObjectAnimationGraph {
             }
             let carry = self.active.elapsed - at;
             self.active.events.remove(0);
+            self.note_raised(event);
             if let Some(Some(playback)) = self.send_event(event) {
                 self.active.elapsed = carry;
                 started.push(playback);
@@ -267,6 +284,11 @@ pub fn play_animation_and_wait(world: &World, entity: EntityId, event: &str, wai
     graph.seconds_until(target)
 }
 
+/// Whether `entity` runs a behavior graph.
+pub fn has_graph(world: &World, entity: EntityId) -> bool {
+    world.query::<ObjectAnimationGraph>().is_some_and(|graphs| graphs.get(entity).is_some())
+}
+
 /// `reference.WaitForAnimationEvent(event)`: the seconds until the graph's own
 /// schedule raises `event`; `None` when the object has no graph or it never does.
 pub fn wait_for_animation_event(world: &World, entity: EntityId, event: &str) -> Option<f32> {
@@ -283,6 +305,9 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
         let id = graph.graph.graph.event_id(event)?;
         let before = graph.state;
         let sent = graph.send_event(id);
+        if sent.is_some() {
+            graph.note_raised(id);
+        }
         log::debug!(
             "PlayAnimation '{event}' on entity {entity}: {} (state {before} -> {})",
             if sent.is_some() { "accepted" } else { "rejected" },

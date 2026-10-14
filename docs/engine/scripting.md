@@ -1461,9 +1461,18 @@ never raises) also returns at once, the CK's false. Used as a value it is refuse
 cannot sit inside an expression). `WaitForAnimationEvent(event)` is the same wait without the send
 (CK: "waits for the specified animation event from this object to happen before returning"; false
 when the graph unloaded first, here: no graph). `TrapBear` uses both: `OnTriggerEnter` plays
-`Trigger01` and waits for `Trans01`. `RegisterForAnimationEvent` still answers false:
-delivering animation events to registered scripts' Papyrus handler is not built. `UnregisterForAnimationEvent` and
-`SetAnimationVariable*` have no graph variable to act on and do nothing.
+`Trigger01` and waits for `Trans01`. `RegisterForAnimationEvent(sender, event)` registers the
+calling script (a call on another form registers nothing) and answers true when the sender has a
+graph, false otherwise (the CK: "the animation graph may not be loaded quite yet"); the event name
+is never checked ("the game will allow you to register ANY animation event"). The events a graph
+raises are the ones an accepted `PlayAnimation` sent and the ones a clip's triggers fire as it plays
+(a trigger raises its event whether or not a transition answers it, as an animation notify does);
+`animation_event_system` (`fragment/anim_events.rs`) drains them each frame and queues
+the animation-event handler `(akSource, asEventName)` for every registration for that reference and event, as a
+separate run like a custom event's receivers. Registrations are a saved `AnimationEventRegistrations`
+(FORMAT 101) and end when the owning quest stops. Not modelled: `OnAnimationEventUnregistered`,
+actors' graphs (none runs) and the `SoundPlay.*` notifies. `UnregisterForAnimationEvent` removes the
+registration; `SetAnimationVariable*` have no graph variable to act on and do nothing.
 
 **Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's
 skeleton bones are NiNodes (`Lever01`). A NIF with a behavior graph keeps its node tree

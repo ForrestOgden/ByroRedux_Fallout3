@@ -2477,6 +2477,20 @@ impl Vm<'_> {
 
     /// The object reads no effect models.
     fn object_read(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<Value>> {
+        // The Form natives a script calls on itself without a receiver
+        // (`RegisterForAnimationEvent(Self, "Reset")`) read as `Self.<name>(...)`.
+        if let Expr::Ident(called) = callee {
+            if matches!(
+                called.0.to_ascii_lowercase().as_str(),
+                "registerforanimationevent" | "unregisterforanimationevent"
+            ) {
+                let on_self = Expr::MemberAccess {
+                    object: Box::new(ident("self")),
+                    member: spanned(called.clone()),
+                };
+                return self.object_read(frame, &on_self, args);
+            }
+        }
         let Expr::MemberAccess { object, member } = callee else {
             return Ok(None);
         };
@@ -2940,9 +2954,9 @@ impl Vm<'_> {
             }
             // Animation-graph natives (CK *PlayAnimation*, *RegisterForAnimationEvent*,
             // *SetAnimationVariable\**): see [`crate::animation_graph`]. `PlayAnimation`
-            // sends the event to the object's behavior graph; the registration
-            // answers false (`OnAnimationEvent` delivery is not built) and a
-            // variable set has no graph variable to write.
+            // sends the event to the object's behavior graph; the registrations
+            // deliver `OnAnimationEvent` (see [`super::animation_event_system`]) and
+            // a variable set has no graph variable to write.
             (Value::Form(reference), "playanimation") if args.len() == 1 => {
                 let values = self.eval_args(frame, args)?;
                 let event = values[0].text();
@@ -2951,12 +2965,47 @@ impl Vm<'_> {
                     .is_some_and(|entity| crate::animation_graph::play_animation(self.world, entity, &event));
                 Some(Value::Bool(accepted))
             }
-            (Value::Form(_), "registerforanimationevent") if args.len() == 2 => {
-                self.eval_args(frame, args)?;
-                Some(Value::Bool(false))
+            // CK *RegisterForAnimationEvent - Form*: true "if it was successfully able
+            // to register", false when "the animation graph may not be loaded". A
+            // reference has a graph here when its prop attached one; the registrant
+            // is the script that makes the call (a call on another form is not a
+            // registration this script can own), and the event name is never
+            // checked: "the game will allow you to register ANY animation event".
+            (Value::Form(registrant), "registerforanimationevent") if args.len() == 2 => {
+                let values = self.eval_args(frame, args)?;
+                let sender = match values.first() {
+                    Some(Value::Form(sender)) if *sender != 0 => Some(*sender),
+                    _ => None,
+                };
+                let registered = sender.filter(|_| *registrant == frame.owner.0).filter(|sender| {
+                    self.entity_of(*sender)
+                        .is_some_and(|entity| crate::animation_graph::has_graph(self.world, entity))
+                });
+                match registered {
+                    Some(sender) => {
+                        let script = frame.script.name.node.0.clone();
+                        let event = values[1].text();
+                        self.deferred.animation_event_requests.push((
+                            frame.owner.0,
+                            script,
+                            super::AnimationEventRequest::Register { sender, event },
+                        ));
+                        Some(Value::Bool(true))
+                    }
+                    None => Some(Value::Bool(false)),
+                }
             }
-            (Value::Form(_), "unregisterforanimationevent") if args.len() == 2 => {
-                self.eval_args(frame, args)?;
+            (Value::Form(registrant), "unregisterforanimationevent") if args.len() == 2 => {
+                let values = self.eval_args(frame, args)?;
+                if let (true, Some(Value::Form(sender))) = (*registrant == frame.owner.0, values.first()) {
+                    let script = frame.script.name.node.0.clone();
+                    let event = values[1].text();
+                    self.deferred.animation_event_requests.push((
+                        frame.owner.0,
+                        script,
+                        super::AnimationEventRequest::Unregister { sender: *sender, event },
+                    ));
+                }
                 Some(Value::None)
             }
             (Value::Form(_), "setanimationvariablefloat" | "setanimationvariablebool" | "setanimationvariableint")
@@ -5005,6 +5054,19 @@ impl<'l> Checker<'l> {
                     self.check_handler(&script, handler, frame.self_kind)?;
                 }
                 return Some(Kind::None);
+            }
+            // CK *RegisterForAnimationEvent - Form* on the script itself: the
+            // `OnAnimationEvent` it delivers must run whole (see the runtime arm).
+            if matches!(name.as_str(), "registerforanimationevent" | "unregisterforanimationevent")
+                && matches!(
+                    arg_kinds.as_slice(),
+                    [Arg::Kind(Kind::Object | Kind::Player), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]
+                )
+            {
+                if name == "registerforanimationevent" && !self.versions(&script, "onanimationevent").is_empty() {
+                    self.check_handler(&script, "onanimationevent", frame.self_kind)?;
+                }
+                return Some(if name == "registerforanimationevent" { Kind::Bool } else { Kind::None });
             }
             if name == "gotostate" && statement {
                 // The switch runs the state events, called for no value.

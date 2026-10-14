@@ -140,6 +140,7 @@ pub use fragment::{
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
+    animation_event_system, AnimationEventRegistration, AnimationEventRegistrations, AnimationEventRequest,
     raise_unload_events, ActorWatch, PendingUnloadDeliveries,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
@@ -366,6 +367,10 @@ pub fn register(world: &mut World) {
     // M47.2 — keyword data scripts attached to locations (saved).
     if world.try_resource::<LocationKeywordData>().is_none() {
         world.insert_resource(LocationKeywordData::default());
+    }
+    // M47.2 — Papyrus animation event registrations (saved).
+    if world.try_resource::<AnimationEventRegistrations>().is_none() {
+        world.insert_resource(AnimationEventRegistrations::default());
     }
     // M47.2 — Papyrus hit event registrations (saved).
     if world.try_resource::<HitRegistrations>().is_none() {

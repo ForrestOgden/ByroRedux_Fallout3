@@ -60,6 +60,7 @@ pub mod budget;
 mod alias_scripts;
 mod effects;
 mod distance;
+mod anim_events;
 mod events;
 mod hits;
 mod owners;
@@ -77,6 +78,7 @@ pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST
 pub use alias_scripts::*;
 pub use effects::*;
 pub use distance::*;
+pub use anim_events::*;
 pub use hits::*;
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
@@ -106,6 +108,7 @@ pub use updates::*;
 #[cfg(test)]
 pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/alias_scripts.rs"),
+    include_str!("fragment/anim_events.rs"),
     include_str!("fragment/budget.rs"),
     include_str!("fragment/state.rs"),
     include_str!("fragment/effects.rs"),

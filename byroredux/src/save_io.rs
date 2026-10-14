@@ -655,6 +655,7 @@ pub fn build_save_registry() -> SaveRegistry {
         // M47.2 — alias script owner ids and the quests whose alias scripts started.
         .register_resource::<byroredux_scripting::AliasScriptOwners>("AliasScriptOwners")
         // M47.2 — Papyrus hit event registrations.
+        .register_resource::<byroredux_scripting::AnimationEventRegistrations>("AnimationEventRegistrations")
         .register_resource::<byroredux_scripting::HitRegistrations>("HitRegistrations")
         // M47.2 — Location.SetKeywordData data.
         .register_resource::<byroredux_scripting::LocationKeywordData>("LocationKeywordData")

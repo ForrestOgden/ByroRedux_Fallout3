@@ -4955,6 +4955,120 @@ fn custom_and_remote_events_reach_registered_scripts() {
     assert_eq!(pings(&world), Some(111.0));
 }
 
+/// `RegisterForAnimationEvent` registers the script for an event of a reference
+/// with a behavior graph (true; false without one), and the graph's raised events
+/// deliver `OnAnimationEvent(akSource, asEventName)` to it: the clip trigger's
+/// event does, an event it did not register for does not, and after an
+/// `UnregisterForAnimationEvent` nothing does.
+#[test]
+fn animation_events_reach_registered_scripts() {
+    use byroredux_core::animation::AnimationPlayer;
+    use byroredux_hkx::{BehaviorGraph, ClipMode, ClipTrigger, State, StateClip, StateMachine, Transition};
+    const OTHER: u32 = 0x0001_0F81;
+    let script = parsed_source(
+        "ScriptName QF_VmAnimEvents extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         ObjectReference Property Bare Auto\n\
+         Int Heard\n\
+         Int Registered\n\
+         Function Fragment_1()\n\
+           If RegisterForAnimationEvent(Marker, \"Done\") && !RegisterForAnimationEvent(Bare, \"Done\")\n\
+             Registered = 1\n\
+           EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           UnregisterForAnimationEvent(Marker, \"done\")\n\
+         EndFunction\n\
+         Event OnAnimationEvent(ObjectReference akSource, String asEventName)\n\
+           If akSource == Marker && asEventName == \"Done\"\n\
+             Heard += 1\n\
+           EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    world.register::<AnimationPlayer>();
+    world.register::<crate::ObjectAnimationGraph>();
+    let mut pool = FormIdPool::default();
+    let marker_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    let bare_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(OTHER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(marker_id));
+    let bare = world.spawn();
+    world.insert(bare, FormIdComponent(bare_id));
+    let clip = StateClip {
+        animation: "a/go.hkx".into(),
+        mode: ClipMode::SinglePlay,
+        playback_speed: 1.0,
+        start_time: 0.0,
+        user_fraction: 0.0,
+        triggers: vec![ClipTrigger { local_time: 0.5, event: 1, relative_to_end: false, annotation: false }],
+    };
+    let graph = BehaviorGraph {
+        events: vec!["Go".into(), "Done".into()],
+        machine: Some(StateMachine {
+            start_state: 0,
+            states: vec![
+                State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0 }], clip: None },
+                State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip) },
+            ],
+            wildcard: Vec::new(),
+        }),
+    };
+    let mut clips = std::collections::HashMap::new();
+    clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
+    world.insert(
+        marker,
+        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips }), marker).unwrap(),
+    );
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        for (name, form_id) in [("Marker", MARKER), ("Bare", OTHER)] {
+            vmad.scripts[0].properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value: PropertyValue::Object { form_id, alias: -1 },
+            });
+        }
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert(
+            Q,
+            20,
+            vec![Effect::Interpret {
+                script: "QF_VmAnimEvents".into(),
+                function: "Fragment_2".into(),
+                args: Vec::new(),
+                resume: None,
+            }],
+        );
+    }
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    let tick = |world: &World, dt: f32| {
+        crate::object_graph_step_system(world, dt);
+        crate::animation_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(variable(&world, "Registered"), Some(1.0), "true with a graph, false without");
+    // `Go` raises no registered event; the clip's trigger raises `Done` 0.5 s in.
+    assert!(crate::animation_graph::play_animation(&world, marker, "Go"));
+    tick(&world, 0.4);
+    assert_eq!(variable(&world, "Heard"), None, "Done is not due yet");
+    tick(&world, 0.2);
+    assert_eq!(variable(&world, "Heard"), Some(1.0), "Done reached OnAnimationEvent");
+    // Unregistered (the call lowercases the name: matching ignores case), nothing more.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(world.resource::<crate::AnimationEventRegistrations>().entries().is_empty());
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

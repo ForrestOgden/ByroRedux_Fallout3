@@ -278,6 +278,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
     if let Some(hits) = world.try_resource::<super::HitRegistrations>() {
         registered.extend(hits.entries().iter().map(|e| e.owner));
     }
+    if let Some(animation) = world.try_resource::<super::AnimationEventRegistrations>() {
+        registered.extend(animation.entries().iter().map(|e| e.owner));
+    }
     if registered.is_empty() {
         return;
     }
@@ -299,6 +302,9 @@ pub(super) fn prune_stopped_quests(world: &World) {
     }
     if let Some(mut hits) = world.try_resource_mut::<super::HitRegistrations>() {
         hits.drop_owners(&stopped);
+    }
+    if let Some(mut animation) = world.try_resource_mut::<super::AnimationEventRegistrations>() {
+        animation.drop_owners(&stopped);
     }
 }
 
