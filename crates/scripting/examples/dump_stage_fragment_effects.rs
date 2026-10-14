@@ -6,9 +6,12 @@
 //!
 //! Usage:
 //!   cargo run -p byroredux-scripting --release --example dump_stage_fragment_effects -- \
-//!     <Skyrim.esm> <Skyrim - Misc.bsa> <quest formid hex> [stage]
+//!     <ESM> <scripts BSA or BA2> <quest formid hex> [stage]
 
-use byroredux_bsa::BsaArchive;
+#[path = "common/archives.rs"]
+#[allow(dead_code)]
+mod archives;
+use archives::Archive;
 use byroredux_core::ecs::World;
 use byroredux_scripting::{populate_quest_fragments_from_pex, QuestFormId, QuestStageFragments};
 
@@ -44,11 +47,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .push((f.stage, f.fragment_name.as_str()));
     }
 
-    let archive = BsaArchive::open(&bsa_path)?;
+    let archive = Archive::open(&bsa_path)?;
     let mut world = World::new();
     world.insert_resource(QuestStageFragments::default());
     for (script_name, bindings) in &by_script {
-        let path = format!("scripts\\{}.pex", script_name.to_ascii_lowercase());
+        let path = format!("scripts\\{}.pex", script_name.to_ascii_lowercase().replace(':', "\\"));
         let pex = archive
             .extract(&path)
             .map_err(|e| format!("{script_name}: {e}"))?;

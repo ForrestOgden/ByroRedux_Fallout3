@@ -1622,6 +1622,19 @@ modelled, and a base with a health of 0 or less takes any damage straight to 0% 
 nothing about it). Census: `refr_script_coverage` on Skyrim 61.1% to 62.6% of scripted references
 (`MineOreScript` now stops on `Activate`, not `DamageObject`; see the next section).
 
+### Fallout 4 and Starfield quest stage fragments (M47.2)
+
+None of the 920 scripted Fallout 4 quests or 1,349 Starfield ones bound a stage fragment: the QUST `VMAD` fragment
+decoder demanded Skyrim's version byte 2, and a version-6 `VMAD` writes 3 there and puts the fragment script's own
+status byte and property table before the fragments. `parse_quest_fragments` and the alias decoder now share one
+walker (`quest_tail`): Fallout 4 binds 7,150 fragments on 885 quests, Starfield 10,202 on 1,012 (Skyrim's 845
+quests are unchanged; `version_6_quest_vmads_bind_their_stage_fragments`). Of Starfield's FC05 quest's 35 fragments
+28 lower, and `quest.setstage 0x1F0267 1600` runs the quest live in a Cydonia boot; its stage 1600
+(`Alias_MarcoStarshipMapMarker.GetRef().AddToMapScanned(true)` beside `SetMarkerVisibleOnStarMap`) is among the 7
+that do not, because `SetMarkerVisibleOnStarMap` is not a modelled native, so `AddToMapScanned` is still not
+reached by a vanilla Starfield fragment. Starfield's profile has no scripts archive: `--scripts-bsa "Starfield -
+Misc.ba2"` is what lets its VM run (reference scripts such as `LoadElevatorLoitererScript.OnLoad` do).
+
 ### ObjectReference.Activate (M47.2)
 
 CK *Activate - ObjectReference*: `Activate(akActivator, abDefaultProcessingOnly = false)`; with the

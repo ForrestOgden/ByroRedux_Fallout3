@@ -327,6 +327,12 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
     let Some(section) = vmad.get(consumed..) else {
         return Vec::new();
     };
+    // Fallout 4 and Starfield (VMAD version 6) carry the same section with a leading
+    // byte that is not 2 (3 on the vanilla quests) and the fragment script's own
+    // properties before the fragments: the shared walker reads it.
+    if ScriptInstanceData::parse_with_consumed(vmad).0.version >= 6 {
+        return quest_tail(vmad).fragments;
+    }
     let mut c = Cursor::new(section);
     // Skyrim fragment sections are universally version 2; decline any
     // other value rather than misread an underived shape.
@@ -410,49 +416,71 @@ pub fn parse_quest_alias_scripts_with_remap(
 /// to the very last byte of the `VMAD` — what a corpus census checks to prove
 /// the layout.
 pub fn quest_alias_section(vmad: &[u8]) -> (Vec<QuestAliasScripts>, bool) {
+    let tail = quest_tail(vmad);
+    (tail.aliases, tail.exact)
+}
+
+/// What a QUST `VMAD`'s trailing section holds: the stage fragments and the alias scripts.
+#[derive(Default)]
+struct QuestTail {
+    fragments: Vec<QuestScriptFragment>,
+    aliases: Vec<QuestAliasScripts>,
+    /// Whether the section was walked to the very last byte.
+    exact: bool,
+}
+
+/// Walk the section after a QUST `VMAD`'s scripts: `u8 unknown, u16 fragmentCount,
+/// wstring fileName`; for version 6 (Fallout 4, Starfield), when the file name is not
+/// empty, the fragment script's own status byte and property table; the fragments
+/// (`u16 stage, i16, i32, u8 flags, wstring script, wstring function`); then
+/// `u16 aliasCount` and the alias scripts (xEdit `wbScriptFragmentsQuest` /
+/// `wbVMADFragmentedQUST`). Anything it cannot walk ends it with what was decoded.
+fn quest_tail(vmad: &[u8]) -> QuestTail {
     let (data, Some(consumed)) = ScriptInstanceData::parse_with_consumed(vmad) else {
-        return (Vec::new(), false);
+        return QuestTail::default();
     };
     let Some(section) = vmad.get(consumed..) else {
-        return (Vec::new(), false);
+        return QuestTail::default();
     };
     let mut c = Cursor::new(section);
     let (Some(_unknown), Some(fragment_count), Some(file_name)) = (c.u8(), c.u16(), c.wstring()) else {
-        return (Vec::new(), false);
+        return QuestTail::default();
     };
     if data.version >= 6 && !file_name.is_empty() {
-        // Fallout 4: the fragment script's own flags and properties.
+        // Fallout 4 and later: the fragment script's own flags and properties.
         let has_status = data.version >= 4;
         if has_status && c.u8().is_none() {
-            return (Vec::new(), false);
+            return QuestTail::default();
         }
         let Some(property_count) = c.u16() else {
-            return (Vec::new(), false);
+            return QuestTail::default();
         };
         for _ in 0..property_count {
             let (Some(_name), Some(ptype)) = (c.wstring(), c.u8()) else {
-                return (Vec::new(), false);
+                return QuestTail::default();
             };
             if has_status && c.u8().is_none() {
-                return (Vec::new(), false);
+                return QuestTail::default();
             }
             match c.property_value(ptype, data.object_format) {
-                Some(PropertyValue::Unknown(_)) | None => return (Vec::new(), false),
+                Some(PropertyValue::Unknown(_)) | None => return QuestTail::default(),
                 Some(_) => {}
             }
         }
     }
+    let mut fragments = Vec::with_capacity(usize::from(fragment_count));
     for _ in 0..fragment_count {
-        let (Some(_stage), Some(_), Some(_), Some(_), Some(_script), Some(_function)) =
+        let (Some(stage), Some(_), Some(_), Some(_), Some(script_name), Some(fragment_name)) =
             (c.u16(), c.i16(), c.i32(), c.u8(), c.wstring(), c.wstring())
         else {
-            return (Vec::new(), false);
+            return QuestTail { fragments, ..QuestTail::default() };
         };
+        fragments.push(QuestScriptFragment { stage, script_name, fragment_name });
     }
     let Some(alias_count) = c.u16() else {
-        return (Vec::new(), false);
+        return QuestTail { fragments, ..QuestTail::default() };
     };
-    let mut out = Vec::with_capacity(alias_count as usize);
+    let mut aliases = Vec::with_capacity(usize::from(alias_count));
     for _ in 0..alias_count {
         let Some(PropertyValue::Object { alias, .. }) = c.property_value(1, data.object_format) else {
             break;
@@ -461,20 +489,16 @@ pub fn quest_alias_section(vmad: &[u8]) -> (Vec<QuestAliasScripts>, bool) {
             break;
         };
         let (scripts, clean) = c.scripts(count, version, object_format);
-        out.push(QuestAliasScripts {
+        aliases.push(QuestAliasScripts {
             alias_id: alias,
-            scripts: ScriptInstanceData {
-                version,
-                object_format,
-                scripts,
-            },
+            scripts: ScriptInstanceData { version, object_format, scripts },
         });
         if !clean {
             break;
         }
     }
     let exact = c.pos == section.len();
-    (out, exact)
+    QuestTail { fragments, aliases, exact }
 }
 
 /// Event that invokes one compiled Papyrus fragment attached to a `SCEN`.
@@ -1687,5 +1711,36 @@ mod tests {
             instance_with_alias(-1).object_form_id("MyQuest"),
             Some(0x0002_42af)
         );
+    }
+
+    /// Fallout 4 and Starfield quests (VMAD version 6) carry their stage fragments behind a
+    /// leading byte that is not 2 and the fragment script's own property table: before the
+    /// shared walker, none of the 920 / 1,349 scripted quests bound a single fragment.
+    #[test]
+    #[ignore = "needs Fallout4.esm and Starfield.esm on disk (~1 GB resident each)"]
+    fn version_6_quest_vmads_bind_their_stage_fragments() {
+        let starfield = crate::esm::test_paths::starfield_data_dir().join("Starfield.esm");
+        let fo4 = crate::esm::test_paths::fo4_esm();
+        for path in [starfield, fo4] {
+            if !path.is_file() {
+                if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0")
+                {
+                    panic!("game data required, but {path:?} is not a file");
+                }
+                continue;
+            }
+            let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+            let bound = index.quests.values().filter(|quest| !quest.fragments.is_empty()).count();
+            let scripted = index.quests.values().filter(|quest| quest.script_instance.is_some()).count();
+            assert!(bound * 2 > scripted, "{path:?}: {bound} of {scripted} scripted quests bound fragments");
+        }
+        // Starfield's FC05 binds 35 fragments, its stage 1600 among them.
+        let path = crate::esm::test_paths::starfield_data_dir().join("Starfield.esm");
+        if path.is_file() {
+            let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+            let fc05 = &index.quests[&0x001F_0267];
+            assert_eq!(fc05.fragments.len(), 35);
+            assert!(fc05.fragments.iter().any(|f| f.stage == 1600 && f.fragment_name == "Fragment_Stage_1600_Item_00"));
+        }
     }
 }
