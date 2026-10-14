@@ -364,6 +364,9 @@ struct Vm<'a> {
     /// struct local: a run cannot suspend while either is on the stack.
     value_calls: usize,
     blocked_callers: usize,
+    /// Whether the native call being resolved is a statement (its result is
+    /// unused): a call for effect on a `None` object is ignored, as the engine does.
+    for_effect: bool,
     /// The arrays and structs script variables hold that this run has read
     /// or written, by (owner, variable). They are reference values: every
     /// read in the run shares one, so a mutation is seen by the next read, and
@@ -414,6 +417,7 @@ pub(super) fn run_fragment(
         yielded: false,
         value_calls: 0,
         blocked_callers: 0,
+        for_effect: false,
         aggregates: Default::default(),
         collections: Default::default(),
     };
@@ -3396,9 +3400,14 @@ impl Vm<'_> {
             }
             (Value::Form(weapon), "fire") if (1..=2).contains(&args.len()) => {
                 let values = self.eval_args(frame, args)?;
+                // Nothing to fire from (DartTrap asks for the Nth link of a chain, which
+                // can run past its end): the call fails and the script goes on.
                 let source = match values.first() {
                     Some(Value::Form(source)) if *source != 0 => *source,
-                    _ => return stop("Weapon.Fire without a source reference"),
+                    _ => {
+                        log::debug!("Papyrus: Weapon.Fire with no source reference, ignored");
+                        return Ok(Some(Value::None));
+                    }
                 };
                 let ammo = match values.get(1) {
                     Some(Value::Form(ammo)) => *ammo,
@@ -3635,6 +3644,15 @@ impl Vm<'_> {
             (Value::Form(form), "getbaseobject" | "getactorbase" | "getleveledactorbase") => {
                 Some(self.base_of(*form).map_or(Value::None, Value::Form))
             }
+            // CK *Papyrus Runtime Errors*: 'Cannot call X() on a None object, aborting
+            // function call' - "since you cannot call a non-global function on
+            // nothing, the call is ignored and the error printed out". A call for
+            // effect is skipped and the script goes on; one whose result is used has
+            // no result to give, so the run stops.
+            (Value::None, _) if self.for_effect => {
+                log::debug!("Papyrus: {name}() called on a None object, ignored");
+                Some(Value::None)
+            }
             (Value::None, _) => return stop(format!("{name} on None")),
             _ => None,
         })
@@ -3800,7 +3818,11 @@ impl Vm<'_> {
         if let Some(value) = self.layer_call(frame, callee, args)? {
             return Ok(value);
         }
-        if let Some(value) = self.object_read(frame, callee, args)? {
+        // (A call whose value is used is not "for effect", whatever encloses it.)
+        let saved = std::mem::replace(&mut self.for_effect, false);
+        let read = self.object_read(frame, callee, args);
+        self.for_effect = saved;
+        if let Some(value) = read? {
             return Ok(value);
         }
         if let Some(value) = self.script_call(frame, callee, args)? {
@@ -3946,7 +3968,10 @@ impl Vm<'_> {
         if self.layer_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
         }
-        if self.object_read(frame, &callee.node, args)?.is_some() {
+        self.for_effect = true;
+        let read = self.object_read(frame, &callee.node, args);
+        self.for_effect = false;
+        if read?.is_some() {
             return Ok(Flow::Normal);
         }
         // CK *UpdateCurrentInstanceGlobal - Quest*: "Attempts to update the

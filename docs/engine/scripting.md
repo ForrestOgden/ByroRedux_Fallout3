@@ -1628,7 +1628,13 @@ would close a cycle is not made. The player's direct activation of a Parent-Acti
 is refused in `emit_activate_event`. Before this nothing passed an activation on, so no lever or
 trigger could open anything.
 
-Live in Bleak Falls Barrow: stepping on trigger `00086018` (a `TrapTriggerBase`, whose script
+A reference's VMAD names only the script properties it edits, so a script it lists inherits the
+rest from its base record's copy (`attach::dedup_vmad_scripts` merges them; Skyrim.esm's `DartTrap`
+ports list the script with no properties and the weapons and sound sit on the base). Live in
+Blindcliff Cave: pulling the Nordic pull bar `00021F4D`, which is a dart port's activate parent,
+runs `DartTrap.OnActivate`, whose loop launches 21 `Weapon.Fire` darts from the chain of linked
+ports (`TrapDartWeapon01`, 1 damage, 1300 u/s); no dart was followed into a target live (the
+flight and hit are tested). Live in Bleak Falls Barrow: stepping on trigger `00086018` (a `TrapTriggerBase`, whose script
 `Activate`s itself) passes the activation to the three `TrapBladeSwinging01` references that name it
 as their parent (`0003AC37`, `0003AC35`, `0003AC33`; all Parent Activate Only), whose scripts run.
 Their behavior graph then rejects `PlayAnimation('Single')` from its start state (the graph decodes
@@ -1670,6 +1676,15 @@ lands. A trap body is owned by the nearest scripted entity up its parents, or â€
 collision entity an animated prop's hierarchical import leaves â€” the REFR its `PhysicsSourceForm`
 names. That collision does not follow the blade's node animation yet, so a swinging blade's body
 stays at its rest pose.
+
+### Calls on None (M47.2)
+
+CK *Papyrus Runtime Errors*: "Cannot call X() on a None object, aborting function call ... since
+you cannot call a non-global function on nothing, the call is ignored and the error printed out".
+A native called for effect on a `None` object is therefore skipped and the script goes on (the VM
+logs it at debug); a call whose value is used has nothing to give and still stops the run.
+`Weapon.Fire` with no source reference is ignored the same way (`DartTrap` asks for the Nth link of
+a chain and can run past its end).
 
 ### CreateDetectionEvent (M47.2)
 

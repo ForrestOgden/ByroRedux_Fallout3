@@ -17,7 +17,12 @@ fn main() -> anyhow::Result<()> {
             for script in &instance.scripts {
                 let name = script.name.to_ascii_lowercase();
                 if wanted.contains(&name) {
-                    *hits.entry(name).or_default() += 1;
+                    *hits.entry(name.clone()).or_default() += 1;
+                    if std::env::var("SHOW_REFS").is_ok() {
+                        let parents: Vec<String> =
+                            r.activate_parents.iter().map(|p| format!("{:08X}", p.reference)).collect();
+                        println!("    {cell_key} {name} REFR {:08X} activate parents {parents:?}", r.form_id);
+                    }
                 }
             }
         }

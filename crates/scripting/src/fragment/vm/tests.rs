@@ -5379,6 +5379,55 @@ fn trap_hits_and_shakes_reach_their_consumers() {
     assert_eq!((rumble.left, rumble.right, rumble.duration_secs), (0.25, 1.0, 0.5));
 }
 
+/// A call for effect on a `None` object is ignored and the script goes on (CK:
+/// "the call is ignored and the error printed out"); a call whose value is used
+/// has nothing to give and stops the run.
+#[test]
+fn a_call_on_none_is_ignored_for_effect_and_stops_for_a_value() {
+    let script = parsed_source(
+        "ScriptName QF_VmNone extends Quest\n\
+         Sound Property Missing Auto\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Missing.Play(Marker)\n\
+           Self.SetStage(20)\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Int id = Missing.Play(Marker)\n\
+           Self.SetStage(30)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmNone".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.resource_mut::<crate::QuestStageFragments>().insert(
+        Q,
+        15,
+        vec![Effect::Interpret { script: "QF_VmNone".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "the call for effect was ignored");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 15);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 15, "the value call stopped the run");
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

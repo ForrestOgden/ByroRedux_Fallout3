@@ -779,7 +779,7 @@ pub(super) fn attach_vmad_scripts(
         let translation = byroredux_scripting::translate_pex_detailed_with_providers(
             &resolved.bytes,
             game,
-            Some(script_instance),
+            Some(&script_instance),
             None,
             &providers,
         );
@@ -821,7 +821,7 @@ pub(super) fn attach_vmad_scripts(
             // No recognizer models it: the Papyrus VM runs it, when it can
             // run every event handler the script has.
             None if !provider_attached
-                && crate::asset_provider::attach_vm_reference_script(world, entity, script) =>
+                && crate::asset_provider::attach_vm_reference_script(world, entity, &script) =>
             {
                 log::debug!(
                     "M47.2: the Papyrus VM runs .pex '{}' on base {base_form_id:08X} → entity {entity:?}",
@@ -848,23 +848,44 @@ pub(super) fn attach_vmad_scripts(
 /// raw byte string, #1769 / D7-NEW-01). Each surviving [`ScriptInstance`]
 /// is paired with its owning [`ScriptInstanceData`] (needed downstream for
 /// VMAD property resolution).
-fn dedup_vmad_scripts<'a>(
-    refr_script_instance: Option<&'a esm::records::script_instance::ScriptInstanceData>,
-    base_script_instance: Option<&'a esm::records::script_instance::ScriptInstanceData>,
+fn dedup_vmad_scripts(
+    refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    base_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
 ) -> Vec<(
-    &'a esm::records::script_instance::ScriptInstanceData,
-    &'a esm::records::script_instance::ScriptInstance,
+    esm::records::script_instance::ScriptInstanceData,
+    esm::records::script_instance::ScriptInstance,
 )> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for script_instance in [refr_script_instance, base_script_instance]
+    for (is_refr, script_instance) in [(true, refr_script_instance), (false, base_script_instance)]
         .into_iter()
-        .flatten()
+        .filter_map(|(is_refr, instance)| Some((is_refr, instance?)))
     {
         for script in &script_instance.scripts {
-            if seen.insert(script.name.to_ascii_lowercase()) {
-                out.push((script_instance, script));
+            if !seen.insert(script.name.to_ascii_lowercase()) {
+                continue;
             }
+            // A script the reference lists keeps its own property values and
+            // inherits the rest from the base record's copy of it: a reference's
+            // VMAD names only what it edits (Skyrim.esm's `DartTrap` ports list the
+            // script with no properties, the weapons and sound sit on the base).
+            let mut merged = script.clone();
+            if is_refr {
+                let base_copy = base_script_instance
+                    .into_iter()
+                    .flat_map(|base| base.scripts.iter())
+                    .find(|candidate| candidate.name.eq_ignore_ascii_case(&script.name));
+                for property in base_copy.into_iter().flat_map(|base| base.properties.iter()) {
+                    if !merged.properties.iter().any(|own| own.name.eq_ignore_ascii_case(&property.name)) {
+                        merged.properties.push(property.clone());
+                    }
+                }
+            }
+            let mut data = script_instance.clone();
+            if let Some(slot) = data.scripts.iter_mut().find(|candidate| candidate.name == script.name) {
+                *slot = merged.clone();
+            }
+            out.push((data, merged));
         }
     }
     out
@@ -971,6 +992,30 @@ mod dedup_vmad_scripts_tests {
             out[0].1.name, "MyScript",
             "the REFR-own copy must win the collision"
         );
+    }
+
+    /// A reference that lists a script with fewer properties than the base record's
+    /// copy keeps its own values and inherits the rest (`DartTrap` ports).
+    #[test]
+    fn a_reference_inherits_the_base_copys_properties_it_does_not_set() {
+        use esm::records::script_instance::{PropertyValue, ScriptProperty};
+        let property = |name: &str, value: i32| ScriptProperty {
+            name: name.into(),
+            status: 1,
+            value: PropertyValue::Int32(value),
+        };
+        let mut refr = instance(&["DartTrap"]);
+        refr.scripts[0].properties = vec![property("NumShots", 3)];
+        let mut base = instance(&["DartTrap"]);
+        base.scripts[0].properties = vec![property("numshots", 20), property("LvlThreshold1", 10)];
+
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+
+        assert_eq!(out.len(), 1);
+        let names: Vec<_> = out[0].1.properties.iter().map(|p| (p.name.as_str(), &p.value)).collect();
+        assert_eq!(names.len(), 2, "NumShots once (the reference's), LvlThreshold1 inherited");
+        assert!(matches!(out[0].1.properties[0].value, PropertyValue::Int32(3)), "the reference wins");
+        assert_eq!(out[0].0.scripts[0].properties.len(), 2, "the data the VM resolves from carries the merge");
     }
 
     /// Distinct names (even case-insensitively) both survive, REFR-first.
