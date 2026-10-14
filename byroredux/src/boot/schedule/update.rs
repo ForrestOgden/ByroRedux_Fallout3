@@ -395,34 +395,6 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
             .writes::<crate::components::NavPath>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
-    scheduler.add_exclusive_with_access(
-        Stage::Update,
-        crate::combat::combat_damage_system,
-        Access::new()
-            .reads::<byroredux_core::ecs::components::Inventory>()
-            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
-            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
-            .writes_resource::<crate::combat::CombatState>()
-            .reads::<byroredux_scripting::HitEvent>()
-            .reads::<byroredux_core::ecs::components::ActorVitals>()
-            .reads::<crate::components::AnimationTarget>()
-            .writes::<byroredux_core::ecs::components::ActorValues>()
-            .writes::<byroredux_core::ecs::components::Dead>()
-            // M47.2 — spare_from_death: essential / protected actors bleed out.
-            .reads::<byroredux_scripting::ActorProtection>()
-            .reads::<byroredux_scripting::SceneAliasCandidate>()
-            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
-            .writes::<byroredux_scripting::Bleedout>()
-            .reads_resource::<byroredux_scripting::BleedoutRules>()
-            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
-            .reads_resource::<byroredux_scripting::SceneActorBindings>()
-            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
-            // M47.2 — reconcile_dead_actor's note_actor_death (cleared locations).
-            .reads_resource::<byroredux_scripting::LocationTable>()
-            .writes_resource::<byroredux_scripting::LocationClearState>()
-            .writes::<byroredux_core::animation::AnimationPlayer>()
-            .writes::<byroredux_core::animation::AnimationStack>(),
-    );
     scheduler.add_exclusive(Stage::Update, rumble_on_activate_dispatch);
     scheduler.add_exclusive(
         Stage::Update,
@@ -544,10 +516,6 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::reference_script_event_system,
     );
-    // M47.2 — the hits scripts registered for (Fallout 4 / Starfield
-    // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
-    // stand.
-    scheduler.add_exclusive(Stage::Update, byroredux_scripting::hit_event_system);
     // M47.2 — activate parents: this frame's activations passed on to the children.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::activate_parent_relay_system);
     // M47.2 — the object graphs' raised events, delivered as `OnAnimationEvent`
@@ -591,6 +559,42 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::trap_hits::trap_contact_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::projectiles::projectile_launch_system);
     scheduler.add_exclusive(Stage::Update, crate::systems::projectiles::projectile_flight_system);
+    // `HitEvent` is a one-frame marker that `event_cleanup_system` drains in Late, so its
+    // consumers run after EVERY producer: the melee / NPC strikes above, the VM effect flush
+    // (`ProcessTrapHit`) and the projectile flight just before. (A consumer ahead of a
+    // producer never sees its hits: the dart trap's darts dealt no damage that way.)
+    // M47.2 — the hits scripts registered for (Fallout 4 / Starfield
+    // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
+    // stand.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::hit_event_system);
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::combat::combat_damage_system,
+        Access::new()
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
+            .writes_resource::<crate::combat::CombatState>()
+            .reads::<byroredux_scripting::HitEvent>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            .reads::<crate::components::AnimationTarget>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::Dead>()
+            // M47.2 — spare_from_death: essential / protected actors bleed out.
+            .reads::<byroredux_scripting::ActorProtection>()
+            .reads::<byroredux_scripting::SceneAliasCandidate>()
+            .reads_resource::<byroredux_scripting::ActorBaseProtectionOverrides>()
+            .writes::<byroredux_scripting::Bleedout>()
+            .reads_resource::<byroredux_scripting::BleedoutRules>()
+            .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
+            // M47.2 — reconcile_dead_actor's note_actor_death (cleared locations).
+            .reads_resource::<byroredux_scripting::LocationTable>()
+            .writes_resource::<byroredux_scripting::LocationClearState>()
+            .writes::<byroredux_core::animation::AnimationPlayer>()
+            .writes::<byroredux_core::animation::AnimationStack>(),
+    );
     // Animated props' behavior graphs: clip-trigger events move their state machines on.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::object_graph_step_system);
     // Native cart tethers consume the horse ACHR's XLKR marker chain before

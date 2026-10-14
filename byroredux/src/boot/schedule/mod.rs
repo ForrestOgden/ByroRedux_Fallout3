@@ -107,6 +107,45 @@ mod fragment_activation_order_tests {
         );
     }
 
+    /// `HitEvent` is a one-frame marker (`event_cleanup_system` drains it in
+    /// Late), so a consumer registered ahead of a producer never sees that
+    /// producer's hits: the `Weapon.Fire` projectiles and the `ProcessTrapHit`
+    /// flush used to land after `combat_damage_system`, and a dart trap's
+    /// darts hurt nobody.
+    #[test]
+    fn hit_event_consumers_run_after_every_producer() {
+        let setup = BOOT_SRC
+            .split("mod fragment_activation_order_tests")
+            .next()
+            .expect("split always yields a first segment");
+        let pos = |needle: &str| {
+            setup
+                .find(needle)
+                .unwrap_or_else(|| panic!("`{needle}` is no longer registered in boot/schedule/"))
+        };
+        for consumer in [
+            "crate::combat::combat_damage_system,",
+            "byroredux_scripting::hit_event_system)",
+        ] {
+            for producer in [
+                // the VM effect flush (`ProcessTrapHit`) runs inside the script systems
+                "byroredux_scripting::reference_script_event_system",
+                "byroredux_scripting::alias_script_event_system",
+                "crate::systems::projectiles::projectile_flight_system",
+                "crate::combat::combat_input_system,",
+                "crate::systems::make_npc_combat_ai_system()",
+            ] {
+                if setup.find(producer).is_none() {
+                    continue;
+                }
+                assert!(
+                    pos(producer) < pos(consumer),
+                    "`{consumer}` must be registered after the `HitEvent` producer `{producer}`"
+                );
+            }
+        }
+    }
+
     #[test]
     fn extension_event_adapters_run_before_transient_cleanup() {
         let setup = BOOT_SRC
