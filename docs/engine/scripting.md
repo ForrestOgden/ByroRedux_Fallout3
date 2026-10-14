@@ -1453,7 +1453,7 @@ and the run suspends for them; the CK's "if the event you send it doesn't exist,
 never return" becomes an immediate return, and a reference with no graph (or an event the graph
 never raises) also returns at once, the CK's false. Used as a value it is refused (a latent call
 cannot sit inside an expression). `RegisterForAnimationEvent` still answers false:
-`OnAnimationEvent` delivery to registered scripts is not built. `UnregisterForAnimationEvent` and
+delivering animation events to registered scripts' Papyrus handler is not built. `UnregisterForAnimationEvent` and
 `SetAnimationVariable*` have no graph variable to act on and do nothing.
 
 **Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's
