@@ -345,6 +345,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // per-cell sit clip handle (set at cell load where the archive provider
     // lives).
     world.insert_resource(crate::systems::projectiles::ActiveProjectiles::default());
+    world.insert_resource(crate::systems::trap_hits::TrapContacts::default());
     world.insert_resource(crate::components::SeatReservations::default());
     world.insert_resource(crate::components::SandboxSitClip::default());
     // P3 — the inv.equip command's handoff queue, drained through the

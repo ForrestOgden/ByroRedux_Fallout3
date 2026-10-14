@@ -46,6 +46,6 @@ pub use water::{
     WaterContactScratch,
 };
 pub use world::{
-    actor_move_interaction_groups, CharacterMoveParams, CharacterMoveResult, NearbyCollider,
+    actor_move_interaction_groups, BodyMotion, CharacterMoveParams, CharacterMoveResult, NearbyCollider,
     PhysicsRayHit, PhysicsWorld, ACTOR_BONE_GROUP, PHYSICS_DT,
 };

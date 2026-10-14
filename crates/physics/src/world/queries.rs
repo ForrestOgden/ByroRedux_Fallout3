@@ -7,7 +7,7 @@
 
 use rapier3d::prelude::*;
 
-use super::{NearbyCollider, PhysicsRayHit, PhysicsWorld, solid_probe_filter};
+use super::{BodyMotion, NearbyCollider, PhysicsRayHit, PhysicsWorld, solid_probe_filter};
 
 /// Result of a [`PhysicsWorld::move_character`] step. Mirrors Rapier's
 /// `EffectiveCharacterMovement` but with engine-side types so callers
@@ -515,6 +515,55 @@ impl PhysicsWorld {
         let queries = self.queries(filter);
         let overlaps = queries.intersect_shape(pos, &shape).next().is_some();
         overlaps
+    }
+
+    /// The bodies whose solid colliders overlap any collider of `body` (sensors
+    /// and the body itself excluded), each once. A shape-overlap query, so it
+    /// finds a fixed or kinematic body's touching neighbours, which the narrow
+    /// phase does not pair by default. The query pipeline must be current, as for
+    /// the floor probes.
+    pub fn bodies_overlapping_body(&self, body: RigidBodyHandle) -> Vec<RigidBodyHandle> {
+        let Some(rb) = self.bodies.get(body) else {
+            return Vec::new();
+        };
+        let mut found: Vec<RigidBodyHandle> = Vec::new();
+        for &collider in rb.colliders() {
+            let Some(collider) = self.colliders.get(collider) else {
+                continue;
+            };
+            if collider.is_sensor() {
+                continue;
+            }
+            let filter = QueryFilter::default().exclude_sensors().exclude_rigid_body(body);
+            let queries = self.queries(filter);
+            for (_handle, other) in queries.intersect_shape(*collider.position(), collider.shape()) {
+                if let Some(parent) = other.parent() {
+                    if !found.contains(&parent) {
+                        found.push(parent);
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// `body`'s world velocity and position, and its motion type as Skyrim numbers
+    /// it (Dynamic 1, Keyframed 4, Fixed 5).
+    pub fn body_motion(&self, body: RigidBodyHandle) -> Option<BodyMotion> {
+        let rb = self.bodies.get(body)?;
+        let velocity = rb.linvel();
+        let position = rb.translation();
+        Some(BodyMotion {
+            velocity: byroredux_core::math::Vec3::new(velocity.x, velocity.y, velocity.z),
+            position: byroredux_core::math::Vec3::new(position.x, position.y, position.z),
+            motion_type: match rb.body_type() {
+                RigidBodyType::Dynamic => 1,
+                RigidBodyType::Fixed => 5,
+                RigidBodyType::KinematicPositionBased | RigidBodyType::KinematicVelocityBased => 4,
+                // A soft-frame body (rapier's multibody link frame) is driven, not simulated.
+                _ => 4,
+            },
+        })
     }
 
     /// Diagnostic — compute the AABB of all static colliders in the

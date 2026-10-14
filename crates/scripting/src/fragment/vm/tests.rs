@@ -522,6 +522,76 @@ fn script_variables_read_their_declared_values_and_hold_strings() {
     assert!(crate::fragment::reference_enabled(&world, MARKER));
 }
 
+/// Events the engine raises outside a script run reach the reference's handler
+/// with their arguments: a trap hit with its ten, a destruction stage change with
+/// both stage numbers.
+#[test]
+fn raised_reference_events_reach_the_handlers_with_their_arguments() {
+    use crate::translate::effects::VmStored;
+    const REF: u32 = 0x0001_0F11;
+    const TARGET: u32 = 0x0001_0F12;
+    let script = parsed_source(
+        "ScriptName VmRaisedScript extends ObjectReference\n\
+         Int Property Hits Auto\n\
+         Int Property Motion Auto\n\
+         Int Property Stage Auto\n\
+         Int Property Stopped Auto\n\
+         Event OnTrapHitStart(ObjectReference akTarget, Float afXVel, Float afYVel, Float afZVel, Float afXPos, Float afYPos, Float afZPos, Int aeMaterial, Bool abInitialHit, Int aeMotionType)\n\
+           If abInitialHit && afZPos > 2.5\n\
+             Hits += 1\n\
+             Motion = aeMotionType\n\
+           EndIf\n\
+         EndEvent\n\
+         Event OnTrapHitStop(ObjectReference akTarget)\n Stopped += 1\n EndEvent\n\
+         Event OnDestructionStageChanged(Int aiOldStage, Int aiCurrentStage)\n Stage = aiCurrentStage\n EndEvent\n",
+    );
+    let (events, scripts) =
+        crate::check_reference_script(Arc::clone(&script), &crate::DELIVERED_EVENTS, None).expect("the VM runs it");
+    assert_eq!(events, ["OnDestructionStageChanged", "OnTrapHitStart", "OnTrapHitStop"].map(String::from));
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(REF) });
+    world.insert_resource(pool);
+    let reference = world.spawn();
+    world.insert(reference, FormIdComponent(id));
+    let instance = ScriptInstance { name: "VmRaisedScript".into(), status: 0, properties: Vec::new() };
+    crate::attach_reference_script(&mut world, reference, &instance, events, scripts);
+    let var = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(QuestFormId(REF), crate::QuestScriptVariables::property_key(name))
+    };
+
+    crate::raise_reference_event(
+        &world,
+        reference,
+        "OnTrapHitStart",
+        vec![
+            VmStored::Form(TARGET),
+            VmStored::Float(0.0),
+            VmStored::Float(0.0),
+            VmStored::Float(0.0),
+            VmStored::Float(1.0),
+            VmStored::Float(2.0),
+            VmStored::Float(3.0),
+            VmStored::Int(0),
+            VmStored::Bool(true),
+            VmStored::Int(4),
+        ],
+    );
+    crate::raise_reference_event(&world, reference, "OnTrapHitStop", vec![VmStored::Form(TARGET)]);
+    crate::raise_reference_event(&world, reference, "OnDestructionStageChanged", vec![VmStored::Int(-1), VmStored::Int(2)]);
+    crate::reference_script_event_system(&world, 0.0);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(var(&world, "Hits"), Some(1.0), "the start's arguments bound by position");
+    assert_eq!(var(&world, "Motion"), Some(4.0));
+    assert_eq!(var(&world, "Stopped"), Some(1.0));
+    assert_eq!(var(&world, "Stage"), Some(2.0));
+}
+
 /// A reference script the VM runs: `OnInit` once, `OnLoad` on every cell
 /// load, `OnTriggerEnter` only in its auto state (the crossing moves it to
 /// `Done`), and `OnActivate` — each through the event markers.
@@ -5249,6 +5319,64 @@ fn create_detection_event_is_recorded() {
             crate::DetectionEvent { source: MARKER, owner: OWNER, sound_level: 0 },
         ]
     );
+}
+
+/// `ProcessTrapHit` lands the trap's damage as the target's `HitEvent`;
+/// `Game.ShakeCamera` / `ShakeController` become the player's transient command
+/// markers, clamped to 0..1 with the camera's 0 duration meaning the game
+/// setting's 1.25 s.
+#[test]
+fn trap_hits_and_shakes_reach_their_consumers() {
+    const TRAP: u32 = 0x0001_0F72;
+    let script = parsed_source(
+        "ScriptName QF_VmTrapHit extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         ObjectReference Property Trap Auto\n\
+         Function Fragment_1()\n\
+           Marker.ProcessTrapHit(Trap, 7.5, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9, 0.0)\n\
+           Game.ShakeCamera(None, 2.0)\n\
+           Game.ShakeController(0.25, 3.0, 0.5)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let property = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmTrapHit".into(),
+                status: 0,
+                properties: vec![property("Marker", MARKER), property("Trap", TRAP)],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let marker_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    let trap_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(TRAP) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(marker_id));
+    let trap = world.spawn();
+    world.insert(trap, FormIdComponent(trap_id));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let events = world.query::<crate::HitEvent>().unwrap();
+    let hit = events.get(marker).expect("the target was hit");
+    assert_eq!((hit.aggressor, hit.source, hit.damage), (trap, trap, 7.5));
+    drop(events);
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    let camera = *world.get::<crate::papyrus_demo::CameraShakeCommand>(player).expect("camera shake");
+    assert_eq!((camera.intensity, camera.duration_secs), (1.0, 1.25));
+    let rumble = *world.get::<crate::papyrus_demo::ControllerRumbleCommand>(player).expect("rumble");
+    assert_eq!((rumble.left, rumble.right, rumble.duration_secs), (0.25, 1.0, 0.5));
 }
 
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.

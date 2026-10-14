@@ -33,7 +33,7 @@ use byroredux_plugin::esm::records::script_instance::ScriptInstance;
 /// The events reference scripts receive, in the order one cell load
 /// delivers the first four (CK *OnCellAttach*: "reliably called before
 /// OnCellLoad"; attach and load are one moment here).
-pub const DELIVERED_EVENTS: [&str; 14] = [
+pub const DELIVERED_EVENTS: [&str; 18] = [
     "OnInit",
     "OnCellAttach",
     "OnLoad",
@@ -48,6 +48,12 @@ pub const DELIVERED_EVENTS: [&str; 14] = [
     "OnDeath",
     "OnCellDetach",
     "OnUnload",
+    // Raised outside a script run, by `raise_reference_event`: a destructible
+    // object's stage worsening, and a trap body touching a live actor.
+    "OnDestructionStageChanged",
+    "OnTrapHit",
+    "OnTrapHitStart",
+    "OnTrapHitStop",
 ];
 
 /// An event the runtime delivers — to a reference, or an update to the
@@ -56,7 +62,7 @@ pub const DELIVERED_EVENTS: [&str; 14] = [
 pub(super) fn is_delivered_event(name: &str) -> bool {
     DELIVERED_EVENTS
         .iter()
-        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent", "OnAnimationEventUnregistered", "OnDestructionStageChanged"])
+        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent", "OnAnimationEventUnregistered"])
         .any(|event| event.eq_ignore_ascii_case(name))
 }
 

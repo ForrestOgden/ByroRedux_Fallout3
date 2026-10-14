@@ -243,6 +243,14 @@ pub struct PhysicsRayHit {
     pub distance: f32,
 }
 
+/// A body's world velocity and position and its Skyrim motion-type number.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyMotion {
+    pub velocity: byroredux_core::math::Vec3,
+    pub position: byroredux_core::math::Vec3,
+    pub motion_type: i32,
+}
+
 /// Rapier simulation container + fixed-timestep accumulator.
 ///
 /// Held as an ECS resource. Query via `world.resource_mut::<PhysicsWorld>()`.

@@ -2509,6 +2509,35 @@ impl Vm<'_> {
         if let Some(class) = static_class(&object.node) {
             return Ok(match (class, name.as_str()) {
                 ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
+                // CK *ShakeCamera - Game*: shakes the camera "from the specified
+                // object's location" (None: the player's) with `afStrength`
+                // (default 0.5, clamped to 0..1) for `afDuration` seconds, where 0
+                // (the default) means the `fCameraShakeTime` game setting - 1.25 in
+                // SkyrimSE.exe's table (no plugin sets it). The camera subsystem
+                // drains the player's `CameraShakeCommand`; the source's distance
+                // is not modelled.
+                ("game", "shakecamera") if args.len() <= 3 => {
+                    let values = self.eval_args(frame, args)?;
+                    let strength = values.get(1).and_then(Value::number).unwrap_or(0.5).clamp(0.0, 1.0);
+                    let duration = values.get(2).and_then(Value::number).unwrap_or(0.0);
+                    self.deferred.camera_shakes.push(crate::papyrus_demo::CameraShakeCommand {
+                        intensity: strength,
+                        duration_secs: if duration > 0.0 { duration } else { 1.25 },
+                    });
+                    Some(Value::None)
+                }
+                // CK *ShakeController - Game*: both motors clamped to 0..1, for the
+                // duration; the input subsystem drains `ControllerRumbleCommand`.
+                ("game", "shakecontroller") if args.len() == 3 => {
+                    let values = self.eval_args(frame, args)?;
+                    let motor = |i: usize| values.get(i).and_then(Value::number).unwrap_or(0.0).clamp(0.0, 1.0);
+                    self.deferred.controller_shakes.push(crate::papyrus_demo::ControllerRumbleCommand {
+                        left: motor(0),
+                        right: motor(1),
+                        duration_secs: values.get(2).and_then(Value::number).unwrap_or(0.0).max(0.0),
+                    });
+                    Some(Value::None)
+                }
                 // CK *GetCaps - Game*: "the MiscObject representing caps".
                 // Fallout 4's is `Caps001`, form `0x0F` of `Fallout4.esm`
                 // (checked against the record); no other game's page or
@@ -2657,6 +2686,8 @@ impl Vm<'_> {
                     | "getactorowner"
                     | "calculateencounterlevel"
                     | "damageobject"
+                    | "processtraphit"
+                    | "hasspell"
                     | "createdetectionevent"
                     | "fire"
                     | "getcurrentdestructionstage"
@@ -2886,8 +2917,8 @@ impl Vm<'_> {
                     .map_or(Value::None, Value::Form),
             ),
             // CK *Play - Sound*: "Plays the sound from the location of the
-            // specified object reference." The call returns an instance id; the
-            // check lets only the statement form through, which drops it.
+            // specified object reference." The call returns an instance id: 1 when
+            // the sound was queued, 0 when it could not be (the check's note).
             (Value::Form(sound), "play") if args.len() == 1 => {
                 let source = match self.eval(frame, &args[0].value.node)? {
                     Value::Form(form) if form != 0 => Some(form),
@@ -3319,6 +3350,38 @@ impl Vm<'_> {
             // CK *CreateDetectionEvent*: a detection event at this object's location
             // for `akOwner` at `aiSoundLevel` (default 0); recorded for a hearing
             // system the engine does not have (see [`crate::detection_events`]).
+            // CK *HasSpell - Actor*: whether the actor "knows" the spell or shout (not
+            // whether one is acting on it) - the actor's spell list, which holds its
+            // race's and what `AddSpell` gave it.
+            (Value::Form(actor), "hasspell") if args.len() == 1 => {
+                let values = self.eval_args(frame, args)?;
+                let spell = match values.first() {
+                    Some(Value::Form(spell)) => *spell,
+                    _ => 0,
+                };
+                let knows = spell != 0
+                    && self
+                        .entity_of(*actor)
+                        .and_then(|entity| self.world.get::<crate::SpellList>(entity).map(|list| list.0.contains(&spell)))
+                        .unwrap_or(false);
+                Some(Value::Bool(knows))
+            }
+            // CK *ProcessTrapHit*: "tells this reference to handle getting hit by a
+            // trap, dealing the specified amount of damage and possibly applying a
+            // pushback force" (`afStagger` 0 to 1). The damage lands as the target's
+            // `HitEvent`; the pushback distance and the stagger have no model.
+            (Value::Form(target), "processtraphit") if args.len() == 11 => {
+                let values = self.eval_args(frame, args)?;
+                let trap = match values.first() {
+                    Some(Value::Form(trap)) if *trap != 0 => *trap,
+                    _ => return stop("ProcessTrapHit without a trap reference"),
+                };
+                let damage = values.get(1).and_then(Value::number).unwrap_or(0.0);
+                if let (Some(target), Some(trap)) = (self.entity_of(*target), self.entity_of(trap)) {
+                    self.deferred.trap_hits.push((target, trap, damage));
+                }
+                Some(Value::None)
+            }
             (Value::Form(source), "createdetectionevent") if (1..=2).contains(&args.len()) => {
                 let values = self.eval_args(frame, args)?;
                 let owner = match values.first() {
@@ -5075,10 +5138,14 @@ impl<'l> Checker<'l> {
                 return Some(if matches!(native, LayerNative::Query(_)) { Kind::Bool } else { Kind::None });
             }
         }
-        // `<Sound>.Play(akSource)` as a statement: the receiver must be declared
-        // a `Sound` (`VisualEffect.Play` has the same name and a different
-        // meaning), and the returned instance id goes unused.
-        if name == "play" && statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Alias)]) {
+        // `<Sound>.Play(akSource)`: the receiver must be declared a `Sound`
+        // (`VisualEffect.Play` has the same name and a different meaning). The
+        // call returns the playback instance id (0: "the sound failed to play");
+        // here that is 1 when the sound was queued, which is right for the scripts
+        // that keep it or test it and moot for the ones that would steer the
+        // instance - `StopInstance` and `SetInstanceVolume` stay unsupported, so a
+        // script that does is declined whole.
+        if name == "play" && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::Alias)]) {
             if let Some(receiver) = receiver {
                 let mut declared = receiver;
                 while let Expr::Cast { expr, .. } = declared {
@@ -5088,7 +5155,7 @@ impl<'l> Checker<'l> {
                     self.static_type(frame, declared),
                     Some(Type::Object(ty)) if ty.0.eq_ignore_ascii_case("sound")
                 ) {
-                    return Some(Kind::None);
+                    return Some(if statement { Kind::None } else { Kind::Num });
                 }
             }
         }
@@ -5205,6 +5272,21 @@ impl<'l> Checker<'l> {
         if let Some(class) = static_class(receiver) {
             if class == "game" && name == "getplayer" {
                 return Some(Kind::Player);
+            }
+            let numeric_arg = |a: &Arg| matches!(a, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
+            if class == "game"
+                && name == "shakecamera"
+                && statement
+                && arg_kinds.len() <= 3
+                && arg_kinds.first().is_none_or(|a| {
+                    matches!(a, Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit))
+                })
+                && arg_kinds.iter().skip(1).all(numeric_arg)
+            {
+                return Some(Kind::None);
+            }
+            if class == "game" && name == "shakecontroller" && statement && arg_kinds.len() == 3 && arg_kinds.iter().all(numeric_arg) {
+                return Some(Kind::None);
             }
             if class == "game"
                 && name == "stopdialoguecamera"
@@ -5428,6 +5510,21 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "hasspell")
+                if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit)]) =>
+            {
+                return Some(Kind::Bool);
+            }
+            (Kind::Object | Kind::Player, "processtraphit")
+                if statement
+                    && arg_kinds.len() == 11
+                    && matches!(arg_kinds[0], Arg::Kind(Kind::Object | Kind::Player))
+                    && arg_kinds[1..]
+                        .iter()
+                        .all(|a| matches!(a, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num))) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object | Kind::Player, "createdetectionevent")
                 if statement
                     && (1..=2).contains(&arg_kinds.len())

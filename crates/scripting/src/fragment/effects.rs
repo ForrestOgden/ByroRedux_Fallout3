@@ -493,6 +493,13 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Sound.Play` calls, queued on [`crate::PendingSoundPlays`] after
     /// the guards drop.
     pub(super) sound_plays: Vec<crate::SoundPlay>,
+    /// `Game.ShakeCamera` / `Game.ShakeController` calls, placed as the player's
+    /// transient command markers once the guards drop.
+    pub(super) camera_shakes: Vec<crate::papyrus_demo::CameraShakeCommand>,
+    pub(super) controller_shakes: Vec<crate::papyrus_demo::ControllerRumbleCommand>,
+    /// `ProcessTrapHit` calls: `(target, trap, damage)`, queued as the target's
+    /// `HitEvent` once the guards drop.
+    pub(super) trap_hits: Vec<(byroredux_core::ecs::EntityId, byroredux_core::ecs::EntityId, f32)>,
     /// M47.2 — `SetNoFavorAllowed` / `SetActorCause` calls, applied to
     /// [`crate::ReferenceFlags`] after the guards drop.
     pub(super) reference_flag_changes: Vec<crate::ReferenceFlagChange>,
@@ -646,6 +653,9 @@ impl DeferredFragmentEffects {
             hit_requests: Vec::new(),
             animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
+            camera_shakes: Vec::new(),
+            controller_shakes: Vec::new(),
+            trap_hits: Vec::new(),
             reference_flag_changes: Vec::new(),
             owner_changes: Vec::new(),
             crime_gold_changes: Vec::new(),
@@ -794,6 +804,45 @@ impl DeferredFragmentEffects {
                 }
             }
             self.crime_gold_changes.clear();
+        }
+        if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
+            let player = world
+                .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+                .map(|player| player.0);
+            if let Some(player) = player {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
+                    if let Some(shake) = self.camera_shakes.last() {
+                        shakes.insert(player, *shake);
+                    }
+                }
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>() {
+                    if let Some(shake) = self.controller_shakes.last() {
+                        shakes.insert(player, *shake);
+                    }
+                }
+            }
+            self.camera_shakes.clear();
+            self.controller_shakes.clear();
+        }
+        if !self.trap_hits.is_empty() {
+            if let Some(mut events) = world.query_mut::<crate::HitEvent>() {
+                for (target, trap, damage) in self.trap_hits.drain(..) {
+                    events.insert(
+                        target,
+                        crate::HitEvent {
+                            aggressor: trap,
+                            source: trap,
+                            projectile: 0,
+                            damage,
+                            power_attack: false,
+                            sneak_attack: false,
+                            bash_attack: false,
+                            blocked: false,
+                        },
+                    );
+                }
+            }
+            self.trap_hits.clear();
         }
         if !self.sound_plays.is_empty() {
             if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {

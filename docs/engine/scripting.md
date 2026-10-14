@@ -1589,6 +1589,36 @@ the projectile model, impact force on bodies, and the explosion a record names. 
 `Activate` (`OnActivate` reads the activating `TrapTriggerBase`'s `Type`), so a live test needs a
 trigger crossing, and the flight and hit are covered by tests against a real physics world.
 
+### Trap hits (M47.2)
+
+CK *OnTrapHit* / *OnTrapHitStart* / *OnTrapHitStop* / *ProcessTrapHit* (`systems/trap_hits.rs`).
+A *trap* is a body on Havok layer 14 (Skyrim's Trap layer, the one the impulse multiplier table
+names) that carries Papyrus scripts; a *live target* is an actor that is not dead. Each tick the
+trap's colliders are shape-tested against solid colliders (`PhysicsWorld::bodies_overlapping_body`,
+which also finds fixed and kinematic neighbours that the narrow phase does not pair), and a new
+(trap, actor) overlap raises `OnTrapHitStart` and `OnTrapHit` with the CK's ten arguments `(akTarget,
+afXVel, afYVel, afZVel, afXPos, afYPos, afZPos, aeMaterial, abInitialHit, aeMotionType)` through
+`raise_reference_event`; the pair ending raises `OnTrapHitStop(akTarget)`. Velocity and position are
+the trap body's, converted to the scripts' Z-up axes; the motion type is Skyrim's number (Dynamic 1,
+Keyframed 4, Fixed 5). The scripts gate when a contact matters themselves (`TrapHitBase` stays in its
+`CannotHit` state until its trap springs). `ProcessTrapHit(akTrap, afDamage, …)` on the target
+becomes its `HitEvent`, so the damage pipeline takes it from there; the pushback distance and the
+stagger have no model.
+
+Not modelled, said plainly: `OnTrapHit` "is sent every so often as long as a trap object is in
+contact" with no stated cadence, so it is sent once, with the start, as the initial hit; the
+material number ("opaque … just to be passed to other native functions") is 0. `Game.ShakeCamera`
+(strength 0..1 default 0.5, a duration of 0 meaning `fCameraShakeTime`, 1.25 s in SkyrimSE.exe's
+table) and `Game.ShakeController` (both motors 0..1) place the player's `CameraShakeCommand` /
+`ControllerRumbleCommand` markers for the camera and input subsystems to drain; the source's distance
+is not modelled. `Actor.HasSpell` reads the actor's spell list. With these `TrapHitBase` (803 Skyrim
+references) and `PhysicsTrapHit` (466) pass the VM. `Sound.Play` is now also accepted for its value
+(the instance id, 1 once queued) which `StockadeBarricade01ActivatorScript`, the wall torch sconces
+and others use; `StopInstance` and `SetInstanceVolume` stay unsupported, so a script that steers the
+instance is still declined. Skyrim VM coverage 64.4% to 66.3%. The trap-contact system has been run
+against a real physics world in tests (overlap starts, a standing contact is not new, a dead actor
+ends it) and the engine runs the barrow with it; no live trap contact was driven.
+
 ### CreateDetectionEvent (M47.2)
 
 CK *CreateDetectionEvent - ObjectReference*: "creates a detection event at this object's location"

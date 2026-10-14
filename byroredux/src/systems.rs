@@ -15,6 +15,7 @@ mod character;
 pub(crate) mod dialogue_voice;
 pub(crate) mod projectiles;
 pub(crate) mod scripted_sound;
+pub(crate) mod trap_hits;
 pub(crate) mod eat_sleep;
 mod cinematic;
 pub(crate) mod combat_ai;
