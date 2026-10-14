@@ -877,7 +877,7 @@ Per-game decline heads behind the remaining fragment gap
 `VM_REASON_SCRIPTS=<text>` names the fragments behind a reason). Lowered +
 interpreted: Skyrim 88.1%, Fallout 4 83.6%, Starfield 81.8%.
 - **Skyrim**: `DropObject` (133, inside the `CarryActorScript` carry packages),
-  `ModFavorPoints` (99, no CK page), `Say` (66), `Game.ShowTrainingMenu` (57,
+  `ModFavorPoints` (99, defined in `Actor.pex`; now run), `Say` (66), `Game.ShowTrainingMenu` (57,
   no UI), `IsLoaded`, `UnregisterForUpdate`, `GetActorRef`, `IsInLocation`.
 - **Fallout 4**: `GetWorkshopResourceObjects` (152, the workshop API),
   `GetLinkedRefArray` (99), `Game.GetCommonProperties` (67), `SetCanDoCommand`,
@@ -1663,16 +1663,21 @@ and `MineOreFurnitureScript` 348 references now run). Not modelled: the call's B
 default processing succeeded) and what default processing does for a furniture, which the CK does
 not say; the existing consumers decide. `FORMAT_MAJOR` 103 (`Effect::Activate.native_only`).
 
-### ModFavorPoints stays declined (M47.2)
+### ModFavorPoints and MakePlayerFriend (M47.2)
 
-`Actor.ModFavorPoints(float)` is called by about a hundred vanilla Skyrim fragments (the Thieves
-Guild, Mages College and Dark Brotherhood quest rewards, e.g. `akSpeaker.ModFavorPoints(50)`), and no
-local CK page, wiki or xEdit definition describes it. SkyrimSE.exe does not define it either: a
-case-insensitive search of the binary for `modfavor` finds nothing, while the neighbouring natives
-(`SetDoingFavor`) and the favor data (the `FavorPointsBonus` actor value, the `iFavorPointsRestore`
-setting) are there. So there is no engine behaviour to port, and what the retail runtime does with
-a call to a method it does not have is not something the files settle; the call stays declined
-rather than guessed at.
+`Actor.ModFavorPoints(int)` is called by about a hundred vanilla Skyrim fragments (the Thieves
+Guild, Mages College and Dark Brotherhood quest rewards, e.g. `akSpeaker.ModFavorPoints(50)`). It has
+no CK page and SkyrimSE.exe does not define it (a case-insensitive search of the binary for
+`modfavor` finds nothing) - because it is not a native: the game's own `Skyrim - Misc.bsa`
+`Actor.pex` defines it in Papyrus, `If iFavorPoints > 0: Self.MakePlayerFriend()`, and
+`ModFavorPointsWithGlobal(g)` as `ModFavorPoints(g.GetValueInt())` (that wrapper is not built). `MakePlayerFriend()` has a CK
+page with its body: for an actor whose base `IsUnique()`, if `GetRelationshipRank(player) == 0`,
+`SetRelationshipRank(player, 1)`. `ModFavorPoints` and `MakePlayerFriend` now run as written: a positive amount makes a *unique*
+actor (ACBS flag `0x20`, xEdit `wbDefinitionsTES5`) whose rank with the player is 0 a rank-1 friend
+(recorded in `ScriptedRelationships`, which `GetRelationshipRank` reads); zero, a negative amount, a
+common actor or an actor already ranked changes nothing
+(`mod_favor_points_befriends_a_unique_actor_with_a_positive_amount`). The earlier note that the
+call stayed declined looked for a native and never opened the script.
 
 ### Weapon.Fire and projectiles (M47.2)
 

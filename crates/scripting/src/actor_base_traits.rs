@@ -18,6 +18,8 @@ use byroredux_plugin::esm::records::EsmIndex;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActorBaseTrait {
     pub female: bool,
+    /// ACBS flag `0x20` ("Unique", xEdit `wbDefinitionsTES5`): `ActorBase.IsUnique`.
+    pub unique: bool,
     /// The `VTCK` voice type; `0` when the record authors none.
     pub voice: u32,
 }
@@ -44,6 +46,7 @@ pub fn install_actor_base_traits(world: &mut World, index: &EsmIndex) -> usize {
                 form_id,
                 ActorBaseTrait {
                     female: npc.acbs_flags & 1 != 0,
+                    unique: npc.acbs_flags & 0x20 != 0,
                     voice: npc.voice_form_id,
                 },
             )
@@ -74,8 +77,8 @@ mod tests {
         let mut world = World::new();
         assert_eq!(install_actor_base_traits(&mut world, &index), 2);
         let traits = world.resource::<ActorBaseTraits>();
-        assert_eq!(traits.get(1), Some(ActorBaseTrait { female: true, voice: 0x77 }));
-        assert_eq!(traits.get(2), Some(ActorBaseTrait { female: false, voice: 0 }));
+        assert_eq!(traits.get(1), Some(ActorBaseTrait { female: true, unique: false, voice: 0x77 }));
+        assert_eq!(traits.get(2), Some(ActorBaseTrait { female: false, unique: false, voice: 0 }));
         assert_eq!(traits.get(3), None);
     }
 }

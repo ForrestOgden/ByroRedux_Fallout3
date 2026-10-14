@@ -3085,6 +3085,65 @@ fn animation_variables_are_written_and_read_on_the_graph() {
     assert_eq!(crate::animation_graph::variable_value(&world, bare, "Speed"), None);
 }
 
+/// `Actor.ModFavorPoints(n)` is, in Skyrim.esm's `Actor.pex`, `If n > 0: MakePlayerFriend()`,
+/// and `MakePlayerFriend()` (CK) makes a *unique* actor whose relationship rank with the
+/// player is 0 a rank-1 friend; any other call changes nothing.
+#[test]
+fn mod_favor_points_befriends_a_unique_actor_with_a_positive_amount() {
+    use byroredux_plugin::esm::records::{EsmIndex, NpcRecord};
+    const FRIEND: u32 = 0x0001_0F91;
+    const FOE: u32 = 0x0001_0F92;
+    const UNIQUE_NPC: u32 = 0x0002_0001;
+    const COMMON_NPC: u32 = 0x0002_0002;
+    let script = parsed_source(
+        "ScriptName QF_VmFavor extends Quest\n\
+         Actor Property Friend Auto\n\
+         Actor Property Common Auto\n\
+         Function Fragment_1()\n\
+           Friend.ModFavorPoints(0)\n\
+           Common.ModFavorPoints(50)\n\
+           Friend.ModFavorPoints(50)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut index = EsmIndex::default();
+    index.npcs.insert(UNIQUE_NPC, NpcRecord { form_id: UNIQUE_NPC, acbs_flags: 0x20, ..Default::default() });
+    index.npcs.insert(COMMON_NPC, NpcRecord { form_id: COMMON_NPC, acbs_flags: 0, ..Default::default() });
+    crate::actor_base_traits::install_actor_base_traits(&mut world, &index);
+    crate::relationships::install_relationships(&mut world, &index);
+    let mut pool = FormIdPool::default();
+    let mut spawn = |world: &mut World, local: u32, base: u32| {
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) });
+        let entity = world.spawn();
+        world.insert(entity, FormIdComponent(id));
+        world.insert(entity, crate::scene::SceneAliasCandidate { base_form_id: base, ..Default::default() });
+        entity
+    };
+    let friend = spawn(&mut world, FRIEND, UNIQUE_NPC);
+    let common = spawn(&mut world, FOE, COMMON_NPC);
+    world.insert_resource(pool);
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        for (name, form_id) in [("Friend", FRIEND), ("Common", FOE)] {
+            vmad.scripts[0].properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value: PropertyValue::Object { form_id, alias: -1 },
+            });
+        }
+        fragments.insert_vmad(Q, vmad);
+    }
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    assert_eq!(crate::relationships::relationship_rank(&world, friend, player), 0);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(crate::relationships::relationship_rank(&world, friend, player), 1, "the unique actor became a friend");
+    assert_eq!(crate::relationships::relationship_rank(&world, common, player), 0, "a common actor stays as it was");
+}
+
 /// `SetBribed` / `SetIntimidated` flag the actor (visible to `IsBribed` in the
 /// same run and afterwards), and `ChangeAnimArchetype` records the keyword.
 #[test]

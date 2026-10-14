@@ -2703,6 +2703,8 @@ impl Vm<'_> {
                     | "setbribed"
                     | "isbribed"
                     | "setintimidated"
+                    | "modfavorpoints"
+                    | "makeplayerfriend"
                     | "isintimidated"
                     | "changeanimarchetype"
                     | "setscanned"
@@ -3501,6 +3503,41 @@ impl Vm<'_> {
                     crate::SpeechcraftOutcome::Intimidated
                 };
                 self.deferred.speechcraft_changes.push((reference, outcome, flagged));
+                Some(Value::None)
+            }
+            // Skyrim.esm's own `Actor.pex` defines these in Papyrus (not natives):
+            // `ModFavorPoints(iFavorPoints)` is `If iFavorPoints > 0: MakePlayerFriend()`, and
+            // `MakePlayerFriend()` (CK *MakePlayerFriend*) is "if the actor's base is unique
+            // and its relationship rank with the player is 0, set it to 1".
+            (Value::Form(actor), "modfavorpoints" | "makeplayerfriend")
+                if args.len() == usize::from(name == "modfavorpoints") =>
+            {
+                let values = self.eval_args(frame, args)?;
+                let friend = match values.first() {
+                    Some(points) => points.number().is_some_and(|points| points as i32 > 0),
+                    None => true,
+                };
+                if friend {
+                    let Some(entity) = self.entity_of(*actor) else {
+                        return stop(format!("{name} on an actor that is not loaded"));
+                    };
+                    let Some(base) = crate::relationships::actor_base(self.world, entity) else {
+                        return stop(format!("{name} on a reference with no actor base"));
+                    };
+                    let unique = self
+                        .world
+                        .try_resource::<crate::ActorBaseTraits>()
+                        .and_then(|traits| traits.get(base))
+                        .is_some_and(|base| base.unique);
+                    let pair = crate::relationships::pair(base, crate::relationships::PLAYER_BASE);
+                    let rank = match self.deferred.relationship_changes.iter().rev().find(|(changed, _)| *changed == pair) {
+                        Some(&(_, rank)) => rank,
+                        None => crate::relationships::base_relationship_rank(self.world, base, crate::relationships::PLAYER_BASE),
+                    };
+                    if unique && rank == 0 {
+                        self.deferred.relationship_changes.push((pair, 1));
+                    }
+                }
                 Some(Value::None)
             }
             (Value::Form(actor), "isbribed" | "isintimidated") if args.is_empty() => {
@@ -5647,6 +5684,14 @@ impl<'l> Checker<'l> {
             (Kind::Object | Kind::Player, "setscanned" | "addtomapscanned" | "setmarkervisibleonstarmap")
                 if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]) =>
             {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "modfavorpoints")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "makeplayerfriend") if statement && arg_kinds.is_empty() => {
                 return Some(Kind::None);
             }
             (Kind::Object | Kind::Player, "setbribed" | "setintimidated")

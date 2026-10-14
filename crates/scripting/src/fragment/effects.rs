@@ -556,7 +556,7 @@ pub struct DeferredFragmentEffects {
     base_protection: Vec<(u32, bool, bool)>,
     /// M47.2 — `Effect::SetRelationshipRank` writes by base pair, recorded in
     /// [`crate::ScriptedRelationships`] after the guards drop.
-    relationship_changes: Vec<((u32, u32), i8)>,
+    pub(crate) relationship_changes: Vec<((u32, u32), i8)>,
     /// M47.2 — `Effect::BlockActivation` changes, recorded in
     /// [`super::ReferenceActivationBlocks`] after the guards drop.
     activation_blocks: Vec<(u32, bool)>,
