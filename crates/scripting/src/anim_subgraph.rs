@@ -85,6 +85,11 @@ impl SubgraphTable {
         self.archetypes.contains(&keyword)
     }
 
+    /// The `AnimArchetype…` keyword FormIDs, in no particular order.
+    pub fn archetype_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.archetypes.iter().copied()
+    }
+
     pub fn archetype_count(&self) -> usize {
         self.archetypes.len()
     }

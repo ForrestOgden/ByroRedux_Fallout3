@@ -1561,7 +1561,10 @@ state:
   animates (a seat, a walk, a played idle), the player and the dead are left alone. Live in
   Goodneighbor's Third Rail: Magnolia, the drifters and the ghoul patrons each carry an `AnimationPlayer` on a
   distinct archetype clip with a running clock (the earlier code gave Fallout 4 no idle:
-  `humanoid_default_idle_kf_path` is `None` for it). Not modelled: the rest of the graph (locomotion, the
+  `humanoid_default_idle_kf_path` is `None` for it). `anim.archetype <entity> <keyword>` (the console twin of the
+  script call) swapped Magnolia's idle live through Friendly\Female, Scared\Female, Confident\Female and
+  Neutral\Female (a registration bug the unit test could not see, the marker component missing from the
+  engine world, is pinned by `the_engine_world_registers_the_marker_and_the_pass_state`). Not modelled: the rest of the graph (locomotion, the
   flavor idles `MTIdles` picks, dialogue poses) and root motion.
 - **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
   `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines

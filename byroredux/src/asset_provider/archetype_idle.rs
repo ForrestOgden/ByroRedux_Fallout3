@@ -138,6 +138,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, index: &EsmIndex, prov
                         .find(|path| provider.has_mesh(path))
                 })
                 .clone()?;
+            log::debug!("archetype idle: {:?} -> '{path}'", entry.animation_paths.first());
             if let Some(handle) = world.resource::<AnimationClipRegistry>().get_by_path(&path) {
                 return Some(handle);
             }

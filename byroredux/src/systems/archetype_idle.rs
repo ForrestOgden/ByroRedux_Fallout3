@@ -32,9 +32,20 @@ impl Component for ArchetypeIdle {
 /// The archetype overrides the last pass saw: a change re-selects every actor.
 /// `NOT_SAVED_BY_DESIGN`: a pass after a load simply runs once more.
 #[derive(Default)]
-pub(crate) struct ArchetypeIdleSeen(AnimArchetypeOverrides);
+pub(crate) struct ArchetypeIdleSeen {
+    overrides: AnimArchetypeOverrides,
+    /// Actors with no entry (or no clip for it) at the last selection: not asked
+    /// again until the overrides change.
+    unmatched: std::collections::HashSet<EntityId>,
+}
 
 impl Resource for ArchetypeIdleSeen {}
+
+fn note_unmatched(world: &World, actor: EntityId) {
+    if let Some(mut seen) = world.try_resource_mut::<ArchetypeIdleSeen>() {
+        seen.unmatched.insert(actor);
+    }
+}
 
 /// Give each actor its archetype idle; see the module docs.
 pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
@@ -43,13 +54,17 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
     }
     let overrides = world.try_resource::<AnimArchetypeOverrides>().map(|o| o.clone()).unwrap_or_default();
     let changed = match world.try_resource_mut::<ArchetypeIdleSeen>() {
-        Some(mut seen) if seen.0 != overrides => {
-            seen.0 = overrides;
+        Some(mut seen) if seen.overrides != overrides => {
+            seen.overrides = overrides;
+            seen.unmatched.clear();
             true
         }
         Some(_) => false,
         None => false,
     };
+    if changed {
+        log::debug!("archetype idle: the archetype overrides changed");
+    }
     let actors: Vec<(EntityId, EntityId)> = match world.query::<AnimationTarget>() {
         Some(targets) => targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect(),
         None => return,
@@ -62,17 +77,25 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
             continue;
         }
         let marker = world.get::<ArchetypeIdle>(actor).map(|marker| *marker);
+        if marker.is_none() && world.try_resource::<ArchetypeIdleSeen>().is_some_and(|seen| seen.unmatched.contains(&actor)) {
+            continue;
+        }
         let animated = world.get::<AnimationPlayer>(actor).is_some();
         if (animated && marker.is_none()) || (marker.is_some() && !changed) {
             continue;
         }
         let Some(entry) = byroredux_scripting::anim_subgraph::select_subgraph(world, actor, SubgraphRole::Mt, &[]) else {
+            log::debug!("archetype idle: {actor} matches no MT subgraph entry");
+            note_unmatched(world, actor);
             continue;
         };
         let Some(clip) = world.try_resource::<ArchetypeIdleClips>().and_then(|clips| clips.clip_for(&entry)) else {
+            log::debug!("archetype idle: {actor}: no idle clip for {:?}", entry.animation_paths.first());
+            note_unmatched(world, actor);
             continue;
         };
         if marker.is_some_and(|marker| marker.clip == clip) {
+            log::debug!("archetype idle: {actor} keeps clip {clip}");
             continue;
         }
         let duration = world
@@ -85,6 +108,7 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         player.local_time = start;
         player.prev_time = start;
         player.speed = speed;
+        log::debug!("archetype idle: {actor} -> clip {clip} ({:?})", entry.animation_paths.first());
         if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
             players.insert(actor, player);
         }
@@ -208,5 +232,15 @@ mod tests {
         world.query_mut::<Dead>().unwrap().insert(corpse, Dead);
         archetype_idle_system(&world, 0.0);
         assert_eq!(clip_of(&world, corpse), None);
+    }
+
+    /// The marker component and the pass's state must exist in the engine's world:
+    /// a component that is only registered by a unit test is never stored live, and
+    /// the idle then never swaps (found live on Magnolia).
+    #[test]
+    fn the_engine_world_registers_the_marker_and_the_pass_state() {
+        let world = crate::boot::build_world(false, &[]);
+        assert!(world.query::<ArchetypeIdle>().is_some(), "ArchetypeIdle is registered");
+        assert!(world.try_resource::<ArchetypeIdleSeen>().is_some());
     }
 }

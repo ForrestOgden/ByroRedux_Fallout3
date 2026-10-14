@@ -34,6 +34,7 @@
 //!   `studio.add`, `studio.list`, `studio.remove`, `studio.clear`)
 
 mod actor_value;
+mod anim_archetype;
 mod assets;
 mod condition;
 mod depth;
@@ -55,6 +56,7 @@ mod water;
 mod world_info;
 
 use actor_value::*;
+use anim_archetype::AnimArchetypeCommand;
 use assets::*;
 use condition::*;
 use depth::*;
@@ -83,6 +85,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(CondCommand);
     registry.register(DepthStatsCommand);
     registry.register(SetAvCommand);
+    registry.register(AnimArchetypeCommand);
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);
     registry.register(QuestEffectsCommand);

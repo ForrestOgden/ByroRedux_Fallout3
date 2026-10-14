@@ -331,7 +331,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**104**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**105**) grouped by
 purpose:
 
 ```
@@ -435,6 +435,7 @@ levelup [skill <Skill> <n> | perk <perk_hex> | xp <n>] → show / spend the bank
 inv.equip <form_id>         → toggle a player row's equipment state through the native menu's canonical action
 settings.status             → report loaded gameplay settings
 setav / modav               → inspect or mutate an actor value
+anim.archetype <e> [kw|none]   → ChangeAnimArchetype from the console (Fallout 4: the actor's idle follows)
 cond                        → evaluate a CTDA condition against live ECS state
 water.dump / water.contacts → inspect water surfaces and physics contacts
 phys.census / phys.stats    → inspect nearby bodies and Rapier telemetry
