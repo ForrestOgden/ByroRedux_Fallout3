@@ -10,14 +10,14 @@ use super::*;
 /// Must be scheduled in `Stage::Update` **before** every `ActivateEvent`
 /// consumer; see [`PendingFragmentActivations`].
 pub fn fragment_activation_flush_system(world: &World, _dt: f32) {
-    let pending: Vec<(EntityId, EntityId)> = {
+    let (pending, native): (Vec<(EntityId, EntityId)>, Vec<(EntityId, EntityId)>) = {
         let Some(mut queue) = world.try_resource_mut::<PendingFragmentActivations>() else {
             return;
         };
-        if queue.0.is_empty() {
+        if queue.is_empty() {
             return;
         }
-        std::mem::take(&mut queue.0)
+        (std::mem::take(&mut queue.0), std::mem::take(&mut queue.1))
     };
     let Some(mut events) = world.query_mut::<crate::ActivateEvent>() else {
         log::debug!("fragment Activate skipped: ActivateEvent component never registered");
@@ -25,6 +25,17 @@ pub fn fragment_activation_flush_system(world: &World, _dt: f32) {
     };
     for (target, activator) in pending {
         events.insert(target, crate::ActivateEvent { activator });
+    }
+    // The default-processing-only ones win over a plain activation of the same
+    // target this frame: the marker is what the script delivery looks for.
+    drop(events);
+    for (target, activator) in native {
+        if let Some(mut events) = world.query_mut::<crate::ActivateEvent>() {
+            events.insert(target, crate::ActivateEvent { activator });
+        }
+        if let Some(mut marks) = world.query_mut::<crate::NativeActivation>() {
+            marks.insert(target, crate::NativeActivation);
+        }
     }
 }
 

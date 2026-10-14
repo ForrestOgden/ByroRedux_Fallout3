@@ -119,7 +119,7 @@ pub use equipment::{
     emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
 };
 pub use events::{
-    ActivateEvent, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
+    ActivateEvent, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
     EquipmentEventBatch, HitEvent, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
     OnTriggerEnterEvent, RippleEvent, SplashEvent, TimerExpired,
 };
@@ -472,6 +472,7 @@ pub fn register(world: &mut World) {
         world.insert_resource(VmFrameBudget::default());
     }
     world.register::<ActivateEvent>();
+    world.register::<NativeActivation>();
     world.register::<HitEvent>();
     world.register::<SplashEvent>();
     world.register::<RippleEvent>();

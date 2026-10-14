@@ -404,6 +404,8 @@ pub struct DeferredFragmentEffects {
     /// [`PendingFragmentActivations`] so they are delivered at the head of
     /// the *next* frame (#2654) — see that resource's docs.
     activations: Vec<(EntityId, EntityId)>,
+    /// The `Activate(…, true)` ones (default processing only).
+    native_activations: Vec<(EntityId, EntityId)>,
     pub(super) reference_enable_changes: Vec<(u32, bool)>,
     /// #4136 — scripted lock changes, FormID-keyed for the same reason
     /// `reference_enable_changes` above is: the state has to outlive the
@@ -614,6 +616,7 @@ impl DeferredFragmentEffects {
             cinematic_presentation: Vec::new(),
             scene_actor_bindings_dirty: false,
             activations: Vec::new(),
+            native_activations: Vec::new(),
             reference_enable_changes: Vec::new(),
             reference_lock_changes: Vec::new(),
             faction_relations: Vec::new(),
@@ -1046,9 +1049,12 @@ impl DeferredFragmentEffects {
         if self.scene_actor_bindings_dirty {
             crate::scene::mark_scene_actor_bindings_dirty(world);
         }
-        if !self.activations.is_empty() {
+        if !self.activations.is_empty() || !self.native_activations.is_empty() {
             match world.try_resource_mut::<PendingFragmentActivations>() {
-                Some(mut pending) => pending.0.append(&mut self.activations),
+                Some(mut pending) => {
+                    pending.0.append(&mut self.activations);
+                    pending.1.append(&mut self.native_activations);
+                }
                 None => log::debug!(
                     "fragment Activate dropped: PendingFragmentActivations is unavailable"
                 ),
@@ -2542,7 +2548,7 @@ fn apply_scene_effect(
                 event
             }
         }
-        Effect::Activate { target, activator } => {
+        Effect::Activate { target, activator, native_only } => {
             let target_entity =
                 resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings)?;
             let activator = match activator {
@@ -2567,7 +2573,11 @@ fn apply_scene_effect(
             // them, ever (#2654). `fragment_activation_flush_system` turns
             // this into a real `ActivateEvent` at the head of the next
             // frame, ahead of every consumer.
-            deferred.activations.push((target_entity, activator));
+            if *native_only {
+                deferred.native_activations.push((target_entity, activator));
+            } else {
+                deferred.activations.push((target_entity, activator));
+            }
             None
         }
         Effect::SetOpen { target, open } => {

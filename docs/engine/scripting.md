@@ -1333,9 +1333,8 @@ behavior graph (see *Animation graphs of placed objects*), so `PhysicsTrap` (451
 references) and `TrapBear` (182) now run: live in Irkngthand04, `PhysicsTrap.OnCellAttach` runs
 `ResolveLeveledDamage` on all of them with no stop, and in HonningbrewMeadery01 the four bear
 traps attach `BearTrap01.hkx`, run `OnLoad`, and answer `OnActivate` with `Reset01` / `Trigger01`
-accepted by the graph. What still stops trap scripts is `Weapon.Fire` (`DartTrap`: no projectile
-launcher), the trap-hit events `TrapHitBase` / `PhysicsTrapHit` handle (nothing delivers them) and
-`ObjectReference.Activate` (`MineOreScript`, once `DamageObject` passes).
+accepted by the graph. `Weapon.Fire`, the trap-hit events and `ObjectReference.Activate` are modelled
+(below, and *ObjectReference.Activate* after *DamageObject*).
 
 ### CalculateEncounterLevel (M47.2)
 
@@ -1570,7 +1569,23 @@ none. Each reference's damage and destroyed flag is a saved `DestructionStates` 
 visible side (replacement models, explosions, debris, a stage's self damage per second) is not
 modelled, and a base with a health of 0 or less takes any damage straight to 0% (the CK says
 nothing about it). Census: `refr_script_coverage` on Skyrim 61.1% to 62.6% of scripted references
-(`MineOreScript` now stops on `Activate`, not `DamageObject`).
+(`MineOreScript` now stops on `Activate`, not `DamageObject`; see the next section).
+
+### ObjectReference.Activate (M47.2)
+
+CK *Activate - ObjectReference*: `Activate(akActivator, abDefaultProcessingOnly = false)`; with the
+flag set "no OnActivate event will be sent to any scripts and the object will ignore the blocked
+flag". The engine's activation is one `ActivateEvent` its own consumers (door, pickup, container)
+and the Papyrus `OnActivate` delivery all read, so the flag rides it as a one-frame `NativeActivation`
+marker: `reference_script_event_system` and the remote-event relay skip `OnActivate` for it, and
+`default_activation_blocked` answers false. Queued apart in `PendingFragmentActivations` (`.1`) and
+flushed with the plain ones at the head of the next frame. Two things made this the largest single
+step of the census: the VM binds the player it holds as a player local, which `prim_activate` did
+not recognise (every `Activate(akActionRef, ...)` in an `OnActivate` declined, not only the
+flagged ones). Skyrim scripted references that run a script: 66.8% to 75.4% (`MineOreScript` 1,317
+and `MineOreFurnitureScript` 348 references now run). Not modelled: the call's Bool result (whether
+default processing succeeded) and what default processing does for a furniture, which the CK does
+not say; the existing consumers decide. `FORMAT_MAJOR` 103 (`Effect::Activate.native_only`).
 
 ### ModFavorPoints stays declined (M47.2)
 

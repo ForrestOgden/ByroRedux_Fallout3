@@ -514,7 +514,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v101 -> v102 (M47.2): the `DestructionStates` resource column
 /// (`DamageObject`, `SetDestroyed`).
-pub const FORMAT_MAJOR: u16 = 102;
+///
+/// v102 -> v103 (M47.2): `Effect::Activate` gained `native_only`
+/// (`Activate(akActivator, true)`); queued fragment tails serialize `Effect`s.
+pub const FORMAT_MAJOR: u16 = 103;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

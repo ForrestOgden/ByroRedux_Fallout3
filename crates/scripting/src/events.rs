@@ -24,6 +24,19 @@ impl Component for ActivateEvent {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Rides an [`ActivateEvent`] raised by `Activate(akActivator, true)` (CK
+/// *Activate - ObjectReference*, `abDefaultProcessingOnly`): "no OnActivate event will
+/// be sent to any scripts and the object will ignore the blocked flag". The engine's
+/// own activation consumers (door, pickup, container) run as usual; the Papyrus
+/// `OnActivate` delivery and the `BlockActivation` gate stand aside. One-frame marker,
+/// drained with the event.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeActivation;
+
+impl Component for NativeActivation {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Fired when an entity is hit in combat.
 /// Replaces Papyrus `OnHit`.
 #[derive(Debug, Clone, Copy)]

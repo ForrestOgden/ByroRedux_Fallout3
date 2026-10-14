@@ -681,6 +681,20 @@ fn reference_scripts_run_their_events() {
     world.insert(reference, crate::ActivateEvent { activator: player });
     crate::reference_script_event_system(&world, 0.0);
     assert!(!crate::fragment::reference_enabled(&world, REF), "OnActivate disabled itself");
+
+    // `Activate(akActionRef, true)` is default processing only: the script hears no
+    // OnActivate, and the block flag is ignored (CK *Activate - ObjectReference*).
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(REF, true);
+    world.remove::<crate::ActivateEvent>(reference);
+    world.register::<crate::NativeActivation>();
+    world.insert(reference, crate::ActivateEvent { activator: player });
+    world.insert(reference, crate::NativeActivation);
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(crate::fragment::reference_enabled(&world, REF), "no OnActivate for a default-processing activation");
+    world.resource_mut::<crate::ReferenceActivationBlocks>().set_blocked(REF, true);
+    assert!(!crate::default_activation_blocked(&world, reference), "the block flag is ignored");
+    world.remove::<crate::NativeActivation>(reference);
+    assert!(crate::default_activation_blocked(&world, reference), "...and stands for a plain activation");
 }
 
 /// An alias script the VM runs: `OnInit` then `OnAliasInit` when its quest

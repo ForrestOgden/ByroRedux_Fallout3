@@ -140,6 +140,10 @@ impl ReferenceActivationBlocks {
 /// container, a conversation) is script-blocked. Its `OnActivate` handlers
 /// still run.
 pub fn default_activation_blocked(world: &World, entity: EntityId) -> bool {
+    // `Activate(…, true)` "will ignore the blocked flag" (CK).
+    if world.has::<crate::NativeActivation>(entity) {
+        return false;
+    }
     let Some(reference) = crate::condition::entity_global_form_id(world, entity) else {
         return false;
     };
@@ -680,7 +684,12 @@ impl FragmentExecutionQueue {
 /// Flushing at the head of the next frame delivers it to all of them,
 /// exactly once.
 #[derive(Debug, Clone, Default)]
-pub struct PendingFragmentActivations(pub(crate) Vec<(EntityId, EntityId)>);
+pub struct PendingFragmentActivations(
+    pub(crate) Vec<(EntityId, EntityId)>,
+    /// The ones raised by `Activate(…, true)`: default processing only, flagged
+    /// with [`crate::NativeActivation`] when delivered.
+    pub(crate) Vec<(EntityId, EntityId)>,
+);
 
 impl Resource for PendingFragmentActivations {}
 
@@ -697,12 +706,19 @@ impl PendingFragmentActivations {
         self.0.push((target, activator));
     }
 
+    /// Queue an activation that runs the engine's default processing only
+    /// (`Activate(akActivator, true)`): the scripts hear no `OnActivate` and the
+    /// block flag is ignored.
+    pub fn push_native(&mut self, target: EntityId, activator: EntityId) {
+        self.1.push((target, activator));
+    }
+
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.0.len() + self.1.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.is_empty() && self.1.is_empty()
     }
 }
 

@@ -542,6 +542,7 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     };
     let cell_loads = world.query::<crate::OnCellLoadEvent>();
     let activations = world.query::<crate::ActivateEvent>();
+    let native = world.query::<crate::NativeActivation>();
     let triggers = world.query::<crate::OnTriggerEnterEvent>();
     let hits = world.query::<crate::HitEvent>();
     let weapons = world.query::<byroredux_core::ecs::components::EquippedWeapon>();
@@ -554,7 +555,12 @@ fn collect_deliveries(world: &World) -> Vec<Delivery> {
     let mut deliveries = Vec::new();
     for entity in entities {
         let loaded = cell_loads.as_ref().is_some_and(|q| q.get(entity).is_some());
-        let activator = activations.as_ref().and_then(|q| q.get(entity)).map(|event| event.activator);
+        // (`Activate(…, true)` is default processing only: no `OnActivate`.)
+        let activator = activations
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .filter(|_| !native.as_ref().is_some_and(|marks| marks.get(entity).is_some()))
+            .map(|event| event.activator);
         let triggerers: Vec<EntityId> = triggers
             .as_ref()
             .and_then(|q| q.get(entity))
@@ -766,7 +772,12 @@ fn relay_engine_events(world: &World) {
     let reference = |entity: EntityId| VmStored::Form(form_of(entity).unwrap_or(0));
     let mut relays: Vec<(u32, &'static str, Vec<VmStored>)> = Vec::new();
     if let Some(events) = world.query::<crate::ActivateEvent>() {
+        // (Acquired after `ActivateEvent`, the order of the delivery pass above.)
+        let native = world.query::<crate::NativeActivation>();
         for (entity, event) in events.iter() {
+            if native.as_ref().is_some_and(|marks| marks.get(entity).is_some()) {
+                continue;
+            }
             if let Some(form) = form_of(entity) {
                 relays.push((form, "OnActivate", vec![reference(event.activator)]));
             }

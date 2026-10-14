@@ -3226,6 +3226,7 @@ fn dispatch_activate_then_set_open_updates_mq101_style_gate() {
                     activator: Some(crate::translate::compose::ObjectRef::Property(
                         "::Alias_BarracksRoomSoldier02_var".into(),
                     )),
+                    native_only: false,
                 },
                 Effect::SetOpen {
                     target: crate::translate::compose::ObjectRef::Property(
@@ -6196,4 +6197,26 @@ fn a_wait_inside_a_branch_resumes_into_the_branch_then_the_program() {
     assert_eq!(caps(&world), 0, "suspended inside the branch");
     fragment_continuation_system(&world, 1.0);
     assert_eq!(caps(&world), 11, "the branch's rest, then the program's");
+}
+
+/// `Activate(…, true)` is queued apart and flushed as an `ActivateEvent` carrying
+/// the `NativeActivation` flag; a plain activation carries none.
+#[test]
+fn native_activations_flush_with_their_flag() {
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::PendingFragmentActivations::default());
+    let (plain, native, activator) = (world.spawn(), world.spawn(), world.spawn());
+    {
+        let mut queue = world.resource_mut::<crate::PendingFragmentActivations>();
+        queue.push(plain, activator);
+        queue.push_native(native, activator);
+        assert_eq!(queue.len(), 2);
+    }
+    crate::fragment_activation_flush_system(&world, 0.016);
+    assert!(world.get::<crate::ActivateEvent>(plain).is_some());
+    assert!(world.get::<crate::NativeActivation>(plain).is_none());
+    assert_eq!(world.get::<crate::ActivateEvent>(native).unwrap().activator, activator);
+    assert!(world.get::<crate::NativeActivation>(native).is_some());
+    assert!(world.resource::<crate::PendingFragmentActivations>().is_empty());
 }

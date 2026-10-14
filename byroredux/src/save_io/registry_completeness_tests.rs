@@ -634,6 +634,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
         // ── crates/scripting/src/ ────────────────────────────────────
         ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("NativeActivation", "one-shot flag riding an ActivateEvent (Activate(…, true)), drained with it by event_cleanup_system"),
         // ActorCinematicState: FIXED — registered (#2380 / SAVE-D1-15),
         // no longer allowlisted here.
         ("ActorStats", "forward-latent — no live production insert site exists outside tests"),

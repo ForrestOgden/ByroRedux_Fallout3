@@ -91,6 +91,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
         budget.reset();
     }
     drain_component::<ActivateEvent>(world);
+    drain_component::<crate::NativeActivation>(world);
     drain_component::<HitEvent>(world);
     drain_component::<SplashEvent>(world);
     drain_component::<RippleEvent>(world);

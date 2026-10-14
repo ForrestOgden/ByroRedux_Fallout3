@@ -1149,6 +1149,9 @@ pub enum Effect {
         /// `None` means the player/default activator; `Some` resolves a
         /// VMAD property or quest-alias `GetRef()` expression.
         activator: Option<ObjectRef>,
+        /// `abDefaultProcessingOnly`: the engine's own activation runs, no script hears
+        /// `OnActivate` and the block flag is ignored.
+        native_only: bool,
     },
     /// `<target>.SetOpen(open)` — synchronizes the canonical two-state
     /// activator and its `::isOpen_var` CTDA-visible VM variable.
@@ -4346,18 +4349,17 @@ fn prim_activate(e: &Expr, scope: &Scope) -> Option<Effect> {
     // decline other runtime expressions rather than invent their identity.
     let activator = match args.first().map(|arg| &arg.value.node) {
         None | Some(Expr::NoneLit) => None,
-        Some(expression) if is_game_get_player(expression) => None,
+        // (The VM binds the player it holds as a player local.)
+        Some(expression) if player_expr_ref(expression, scope) => None,
         Some(expression) => Some(receiver_object(expression, scope)?),
     };
-    // `abDefaultProcessingOnly=true` explicitly bypasses attached-script
-    // OnActivate handling, which this canonical event represents. Accept
-    // only the default/false shape until native-only activation exists.
-    if bool_arg(args, 1)? == Some(true) {
-        return None;
-    }
+    // `abDefaultProcessingOnly=true`: "no OnActivate event will be sent to any
+    // scripts and the object will ignore the blocked flag" (CK).
+    let native_only = bool_arg(args, 1)? == Some(true);
     Some(Effect::Activate {
         target: receiver_object(object, scope)?,
         activator,
+        native_only,
     })
 }
 
@@ -7927,6 +7929,7 @@ mod tests {
                 Effect::Activate {
                     target: ObjectRef::Property("KeepGate".into()),
                     activator: None,
+                    native_only: false,
                 },
                 Effect::SetOpen {
                     target: ObjectRef::Property("KeepGate".into()),
@@ -7937,13 +7940,20 @@ mod tests {
     }
 
     #[test]
-    fn activate_default_processing_only_declines() {
+    fn activate_default_processing_only_lowers_native_only() {
         let body = first_fn_body(
             "ScriptName QF extends Quest\n\
              Function Fragment_15()\n\
              KeepGate.Activate(Game.GetPlayer(), true)\n EndFunction\n",
         );
-        assert_eq!(lower_fragment(&body), None);
+        assert_eq!(
+            lower_fragment(&body),
+            Some(vec![Effect::Activate {
+                target: ObjectRef::Property("KeepGate".into()),
+                activator: None,
+                native_only: true,
+            }])
+        );
     }
 
     #[test]
@@ -7968,6 +7978,7 @@ mod tests {
                 Effect::Activate {
                     target: ObjectRef::Property("Alias_KeepLever1".into()),
                     activator: Some(ObjectRef::Property("Alias_Soldier".into())),
+                    native_only: false,
                 },
                 Effect::SetOpen {
                     target: ObjectRef::Property("KeepGate1".into()),
