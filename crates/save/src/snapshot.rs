@@ -498,7 +498,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v96 -> v97 (M47.3): the `ObScriptQuestLocals` resource column (quest
 /// script locals, `GetQuestVariable`).
-pub const FORMAT_MAJOR: u16 = 97;
+///
+/// v97 -> v98 (M47.2): the `SpeechcraftOutcomes` (`SetBribed` /
+/// `SetIntimidated`), `AnimArchetypeOverrides` (`ChangeAnimArchetype`) and
+/// `ScannedReferences` (`SetScanned` / `AddToMapScanned`) resource columns.
+pub const FORMAT_MAJOR: u16 = 98;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

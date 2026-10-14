@@ -2912,6 +2912,104 @@ fn animation_graph_natives_report_no_graph() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `SetBribed` / `SetIntimidated` flag the actor (visible to `IsBribed` in the
+/// same run and afterwards), and `ChangeAnimArchetype` records the keyword.
+#[test]
+fn speech_outcomes_and_anim_archetype_are_recorded() {
+    const ARCHETYPE: u32 = 0x0002_2E49;
+    let script = parsed_source(
+        "ScriptName QF_VmSpeech extends Quest\n\
+         Actor Property Guard Auto\n\
+         Keyword Property Confident Auto\n\
+         Function Fragment_1()\n\
+           If !Guard.IsBribed()\n\
+             Guard.SetBribed(True)\n\
+             Guard.SetIntimidated()\n\
+             If Guard.IsBribed() && Guard.IsIntimidated() && Guard.ChangeAnimArchetype(Confident)\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let property = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmSpeech".into(),
+                status: 0,
+                properties: vec![property("Guard", MARKER), property("Confident", ARCHETYPE)],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(id));
+    world.insert_resource(crate::SpeechcraftOutcomes::default());
+    world.insert_resource(crate::AnimArchetypeOverrides::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let outcomes = world.resource::<crate::SpeechcraftOutcomes>();
+    assert!(outcomes.is(MARKER, crate::SpeechcraftOutcome::Bribed));
+    assert!(outcomes.is(MARKER, crate::SpeechcraftOutcome::Intimidated));
+    assert_eq!(world.resource::<crate::AnimArchetypeOverrides>().get(MARKER), Some(ARCHETYPE));
+}
+
+/// `AddToMapScanned(b)` is `SetScanned(true)` then `AddToMap(b)`; `IsScanned`
+/// reads the flag.
+#[test]
+fn add_to_map_scanned_marks_scanned_and_adds_to_the_map() {
+    let script = parsed_source(
+        "ScriptName QF_VmScan extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If !Marker.IsScanned()\n\
+             Marker.AddToMapScanned(True)\n\
+             If Marker.IsScanned()\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmScan".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.insert_resource(crate::ScannedReferences::default());
+    world.insert_resource(crate::MapMarkers::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(world.resource::<crate::ScannedReferences>().is_scanned(MARKER));
+    assert!(crate::map_marker_visible(&world, MARKER) && crate::map_marker_fast_travel(&world, MARKER));
+}
+
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
 #[test]
 fn is_in_dialogue_with_player_follows_the_open_surface() {

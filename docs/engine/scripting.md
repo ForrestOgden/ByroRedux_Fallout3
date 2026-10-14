@@ -837,19 +837,19 @@ Not modelled yet:
 
 Per-game decline heads behind the remaining fragment gap
 (`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table;
-`VM_REASON_SCRIPTS=<text>` names the fragments behind a reason):
-- **Skyrim** (4 747 declined): `Game.QueryStat` of engine-tracked names (136),
-  `DropObject` (133, inside the `CarryActorScript` carry packages, which also
-  `PlayIdle`), `ModFavorPoints`, `StopCombatAlarm`, `PlayAnimation`,
-  `IsFurnitureInUse`, the crime / bribe / intimidate family, training menus.
-- **Fallout 4** (4 829 declined): `TERM_` terminal fragments (356, no terminal
-  UI), the workshop API (`GetWorkshopResourceObjects`, 101), `PlayAnimation`
-  (91), `ChangeAnimArchetype` (73), `Game.GetCommonProperties` (65),
-  `SetLocRefType` (52), `PRKF_` perk fragments (45).
-- **Starfield** (4 474 declined): `AddToMapScanned` (109), `Game.GetCredits`
-  (108), `TERM_` (108), `IsTrue` (93), `DisableWithGravJump` (78), the bounty /
-  mission guard families, `PlayAnimation` (67). The ones with no CK page are not
-  guessed.
+`VM_REASON_SCRIPTS=<text>` names the fragments behind a reason). Lowered +
+interpreted: Skyrim 87.3%, Fallout 4 83.5%, Starfield 80.1%.
+- **Skyrim**: `DropObject` (133, inside the `CarryActorScript` carry packages),
+  `ModFavorPoints` (99, no CK page), `Say` (66), `Game.ShowTrainingMenu` (57,
+  no UI), `IsLoaded`, `UnregisterForUpdate`, `GetActorRef`, `IsInLocation`.
+- **Fallout 4**: `GetWorkshopResourceObjects` (152, the workshop API),
+  `GetLinkedRefArray` (99), `Game.GetCommonProperties` (67), `SetCanDoCommand`,
+  `Game.StopDialogueCamera`, `IgnoreFriendlyHits`.
+- **Starfield**: `Game.AddToAvailableCrew` (126), `ConditionForm.IsTrue` (93:
+  `IsTrue(akRefObject, akTargetObject)` evaluates a `CNDF` condition form,
+  which the plugin does not parse and whose subject / target mapping the pex
+  does not fix), `SetMarkerVisibleOnStarMap`, `DisableWithGravJump`,
+  `VisualEffect.Play`. The ones with no CK page are not guessed.
 
 ### The frame budget (M47.2, #5763)
 
@@ -1356,6 +1356,29 @@ loaded"), the other two a no-op. The scripts around them run their own logic (st
 enable / disable) with the animation absent, which is what these references show today. A
 behavior-graph runtime replaces `graph_loaded()` with its per-reference answer. Skyrim
 scripted references on the VM: 42.9% → 52.9%.
+
+### Speech outcomes, anim archetype, scanned references (M47.2, FORMAT 98)
+
+Three small saved states, each keyed by reference FormID like the other per-reference script
+state:
+
+- **`SetBribed` / `IsBribed`, `SetIntimidated` / `IsIntimidated`** (`speechcraft.rs`,
+  `SpeechcraftOutcomes`): CK "flags this actor as bribed / intimidated by the player" and "has
+  been bribed / intimidated by the player", the argument defaulting to True. The pages state
+  no decay, so a flag lasts until a script clears it. An `Is…` in the same run sees an earlier
+  `Set…`. The dialogue condition functions `IsBribedbyPlayer` (402) and `IsIntimidatedbyPlayer`
+  (116) are not catalogued yet and stay fail-open.
+- **`Actor.ChangeAnimArchetype(keyword)`** (Fallout 4; `animation_graph.rs`,
+  `AnimArchetypeOverrides`): CK "adds the specified AnimArchetype keyword to this actor"; none
+  "removes any existing AnimArchetype keyword (sets actor back to 'Neutral')"; true on success.
+  The archetype selects the animation set the actor's graph runs, so it is recorded for the
+  behavior-graph runtime to read (the authored one is the base `NPC_`'s keyword).
+- **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
+  `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines
+  `AddToMapScanned(b)` as `Self.SetScanned(true)` then `Self.AddToMap(b)`, and xEdit's condition
+  table calls `IsScanned` "check if a object has been scanned". The `AddToMap` half is the
+  existing map-marker state. The scanner itself has no player-side runtime, so only scripts
+  set the flag.
 
 ### Game.GetCredits (M47.2)
 

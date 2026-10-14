@@ -633,6 +633,12 @@ pub fn build_save_registry() -> SaveRegistry {
         .register_resource::<byroredux_scripting::obscript_quests::ObScriptQuestLocals>("ObScriptQuestLocals")
         // M47.2 — Actor.SetCrimeFaction.
         .register_resource::<byroredux_scripting::CrimeFactionOverrides>("CrimeFactionOverrides")
+        // M47.2 — Actor.SetBribed / SetIntimidated flags.
+        .register_resource::<byroredux_scripting::SpeechcraftOutcomes>("SpeechcraftOutcomes")
+        // M47.2 — Actor.ChangeAnimArchetype assignments.
+        .register_resource::<byroredux_scripting::AnimArchetypeOverrides>("AnimArchetypeOverrides")
+        // M47.2 — Starfield SetScanned / AddToMapScanned flags.
+        .register_resource::<byroredux_scripting::ScannedReferences>("ScannedReferences")
         // M47.2 — FormList.AddForm / RemoveAddedForm / Revert.
         .register_resource::<byroredux_scripting::FormListAdditions>("FormListAdditions")
         // M47.2 — ObjectReference.SetLocRefType assignments.

@@ -45,7 +45,9 @@ pub mod ownership;
 pub mod weather_state;
 pub mod location_keyword_data;
 pub mod messages;
+pub mod scanning;
 pub mod skills;
+pub mod speechcraft;
 pub mod misc_stats;
 pub mod location;
 pub mod magic;
@@ -150,6 +152,9 @@ pub use editor_location::EditorLocation;
 pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListChange, FormLists};
+pub use animation_graph::AnimArchetypeOverrides;
+pub use scanning::ScannedReferences;
+pub use speechcraft::{SpeechcraftOutcome, SpeechcraftOutcomes};
 pub use bribe::{bribe_amount, install_bribe_rules, BribeRules};
 pub use encounter_level::{
     calculate_encounter_level, install_encounter_level_rules, EncounterLevelRules, ExplicitEncounterZone,
@@ -356,6 +361,18 @@ pub fn register(world: &mut World) {
     // M47.2 — scripted SetCrimeFaction assignments (saved).
     if world.try_resource::<CrimeFactionOverrides>().is_none() {
         world.insert_resource(CrimeFactionOverrides::default());
+    }
+    // M47.2 — SetBribed / SetIntimidated flags and ChangeAnimArchetype
+    // assignments (saved).
+    if world.try_resource::<SpeechcraftOutcomes>().is_none() {
+        world.insert_resource(SpeechcraftOutcomes::default());
+    }
+    if world.try_resource::<AnimArchetypeOverrides>().is_none() {
+        world.insert_resource(AnimArchetypeOverrides::default());
+    }
+    // M47.2 — Starfield SetScanned / AddToMapScanned flags (saved).
+    if world.try_resource::<ScannedReferences>().is_none() {
+        world.insert_resource(ScannedReferences::default());
     }
     // M47.2 — forms scripts added to form lists (saved).
     if world.try_resource::<FormListAdditions>().is_none() {

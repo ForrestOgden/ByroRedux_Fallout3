@@ -2361,6 +2361,16 @@ impl Vm<'_> {
         })
     }
 
+    /// The reference FormID a per-actor script state is keyed by.
+    fn actor_reference(&self, actor: u32) -> Option<u32> {
+        let entity = self.entity_of(actor)?;
+        if actor == PLAYER_REF {
+            Some(PLAYER_REF)
+        } else {
+            self.entity_form(entity)
+        }
+    }
+
     fn eval_args(&mut self, frame: &mut Frame, args: &[CallArg]) -> Run<Vec<Value>> {
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
@@ -2624,6 +2634,14 @@ impl Vm<'_> {
                     | "calculateencounterlevel"
                     | "getbribeamount"
                     | "getgoldamount"
+                    | "setbribed"
+                    | "isbribed"
+                    | "setintimidated"
+                    | "isintimidated"
+                    | "changeanimarchetype"
+                    | "setscanned"
+                    | "isscanned"
+                    | "addtomapscanned"
                     | "playanimation"
                     | "playanimationandwait"
                     | "registerforanimationevent"
@@ -3077,6 +3095,89 @@ impl Vm<'_> {
                     }
                 });
                 Some(crime.map_or(Value::None, Value::Form))
+            }
+            // CK *SetBribed* / *SetIntimidated* ("flags this actor as bribed /
+            // intimidated by the player", default True) and *IsBribed* /
+            // *IsIntimidated*; see [`crate::speechcraft`].
+            (Value::Form(actor), "setbribed" | "setintimidated") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                let flagged = values.first().is_none_or(Value::truthy);
+                let Some(reference) = self.actor_reference(*actor) else {
+                    return stop(format!("{name} on an actor that is not loaded"));
+                };
+                let outcome = if name == "setbribed" {
+                    crate::SpeechcraftOutcome::Bribed
+                } else {
+                    crate::SpeechcraftOutcome::Intimidated
+                };
+                self.deferred.speechcraft_changes.push((reference, outcome, flagged));
+                Some(Value::None)
+            }
+            (Value::Form(actor), "isbribed" | "isintimidated") if args.is_empty() => {
+                let Some(reference) = self.actor_reference(*actor) else {
+                    return stop(format!("{name} on an actor that is not loaded"));
+                };
+                let outcome = if name == "isbribed" {
+                    crate::SpeechcraftOutcome::Bribed
+                } else {
+                    crate::SpeechcraftOutcome::Intimidated
+                };
+                // A `Set…` earlier in this run is seen.
+                let flagged = match self
+                    .deferred
+                    .speechcraft_changes
+                    .iter()
+                    .rev()
+                    .find(|(who, kind, _)| *who == reference && *kind == outcome)
+                {
+                    Some(&(_, _, flagged)) => flagged,
+                    None => self
+                        .world
+                        .try_resource::<crate::SpeechcraftOutcomes>()
+                        .is_some_and(|outcomes| outcomes.is(reference, outcome)),
+                };
+                Some(Value::Bool(flagged))
+            }
+            // Starfield `SetScanned(abValue)`, `IsScanned()` and the composite
+            // `AddToMapScanned(abAllowFastTravel)` = `SetScanned(true)` then
+            // `AddToMap(abAllowFastTravel)` (the game's own `ObjectReference.pex`);
+            // see [`crate::scanning`].
+            (Value::Form(reference), "setscanned") if args.len() == 1 => {
+                let flagged = self.eval(frame, &args[0].value.node)?.truthy();
+                self.deferred.scanned_changes.push((*reference, flagged));
+                Some(Value::None)
+            }
+            (Value::Form(reference), "isscanned") if args.is_empty() => {
+                let flagged = match self.deferred.scanned_changes.iter().rev().find(|(who, _)| who == reference) {
+                    Some(&(_, flagged)) => flagged,
+                    None => self
+                        .world
+                        .try_resource::<crate::ScannedReferences>()
+                        .is_some_and(|scanned| scanned.is_scanned(*reference)),
+                };
+                Some(Value::Bool(flagged))
+            }
+            (Value::Form(reference), "addtomapscanned") if args.len() == 1 => {
+                let fast_travel = self.eval(frame, &args[0].value.node)?.truthy();
+                self.deferred.scanned_changes.push((*reference, true));
+                self.deferred.map_markers.push((*reference, fast_travel));
+                Some(Value::None)
+            }
+            // CK *ChangeAnimArchetype - Actor* (Fallout 4): "adds the specified
+            // AnimArchetype keyword to this actor"; none "removes any existing
+            // AnimArchetype keyword". Returns true on success.
+            (Value::Form(actor), "changeanimarchetype") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                let keyword = match values.first() {
+                    None | Some(Value::None) => 0,
+                    Some(Value::Form(keyword)) => *keyword,
+                    _ => return stop("ChangeAnimArchetype without a keyword"),
+                };
+                let Some(reference) = self.actor_reference(*actor) else {
+                    return stop("ChangeAnimArchetype on an actor that is not loaded");
+                };
+                self.deferred.anim_archetype_changes.push((reference, keyword));
+                Some(Value::Bool(true))
             }
             // CK *IsStarting* / *IsStopping - Quest*: "in the process of starting
             // up" / "shutting down". A quest here starts and stops in one step,
@@ -4837,6 +4938,28 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "isbribed" | "isintimidated") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "isscanned") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "setscanned" | "addtomapscanned")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "setbribed" | "setintimidated")
+                if statement
+                    && arg_kinds.len() <= 1
+                    && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "changeanimarchetype")
+                if arg_kinds.len() <= 1
+                    && arg_kinds.iter().all(|a| {
+                        matches!(a, Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object | Kind::None))
+                    }) =>
+            {
+                return Some(Kind::Bool);
+            }
             // The animation-graph natives (see `animation_graph`): the CK's
             // failure results, since no behavior graph runs.
             (Kind::Object | Kind::Player, "playanimation") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]) => {

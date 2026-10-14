@@ -456,6 +456,12 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — `Effect::SetCrimeFaction`s: (actor reference, faction or 0),
     /// applied to [`crate::CrimeFactionOverrides`] after the guards drop.
     pub(crate) crime_faction_changes: Vec<(u32, u32)>,
+    /// M47.2 — `SetBribed` / `SetIntimidated` calls: (actor reference, outcome,
+    /// flagged), applied to [`crate::SpeechcraftOutcomes`] after the guards drop.
+    pub(crate) speechcraft_changes: Vec<(u32, crate::SpeechcraftOutcome, bool)>,
+    /// M47.2 — `ChangeAnimArchetype` calls: (actor reference, keyword or 0),
+    /// applied to [`crate::AnimArchetypeOverrides`] after the guards drop.
+    pub(crate) anim_archetype_changes: Vec<(u32, u32)>,
     /// M47.2 — form list edits a run made, applied to
     /// [`crate::FormListAdditions`] after the guards drop (and visible to the
     /// run's own later reads).
@@ -517,7 +523,10 @@ pub struct DeferredFragmentEffects {
     keyword_changes: Vec<(EntityId, u32, crate::keywords::KeywordChange)>,
     /// M47.2 — `Effect::AddToMap` additions, recorded in
     /// [`crate::MapMarkers`] after the guards drop.
-    map_markers: Vec<(u32, bool)>,
+    pub(crate) map_markers: Vec<(u32, bool)>,
+    /// M47.2 — `SetScanned` / `AddToMapScanned` flags: (reference, scanned),
+    /// applied to [`crate::ScannedReferences`] after the guards drop.
+    pub(crate) scanned_changes: Vec<(u32, bool)>,
     /// M47.2 — `Effect::SetLocationCleared` changes, recorded in
     /// [`crate::LocationClearState`] after the guards drop.
     location_clears: Vec<(u32, bool)>,
@@ -611,6 +620,9 @@ impl DeferredFragmentEffects {
             linked_ref_changes: Vec::new(),
             loc_ref_type_changes: Vec::new(),
             crime_faction_changes: Vec::new(),
+            speechcraft_changes: Vec::new(),
+            anim_archetype_changes: Vec::new(),
+            scanned_changes: Vec::new(),
             form_list_changes: Vec::new(),
             scripted_ids: world
                 .try_resource::<crate::CreatedReferences>()
@@ -815,6 +827,30 @@ impl DeferredFragmentEffects {
                 }
             }
             self.crime_faction_changes.clear();
+        }
+        if !self.speechcraft_changes.is_empty() {
+            if let Some(mut outcomes) = world.try_resource_mut::<crate::SpeechcraftOutcomes>() {
+                for (actor, outcome, flagged) in self.speechcraft_changes.drain(..) {
+                    outcomes.set(actor, outcome, flagged);
+                }
+            }
+            self.speechcraft_changes.clear();
+        }
+        if !self.scanned_changes.is_empty() {
+            if let Some(mut scanned) = world.try_resource_mut::<crate::ScannedReferences>() {
+                for (reference, flagged) in self.scanned_changes.drain(..) {
+                    scanned.set(reference, flagged);
+                }
+            }
+            self.scanned_changes.clear();
+        }
+        if !self.anim_archetype_changes.is_empty() {
+            if let Some(mut overrides) = world.try_resource_mut::<crate::AnimArchetypeOverrides>() {
+                for (actor, keyword) in self.anim_archetype_changes.drain(..) {
+                    overrides.set(actor, keyword);
+                }
+            }
+            self.anim_archetype_changes.clear();
         }
         if !self.form_list_changes.is_empty() {
             if let Some(mut additions) = world.try_resource_mut::<crate::FormListAdditions>() {
