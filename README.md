@@ -1,3 +1,20 @@
+# Fallout: New Vegas — Native iOS Development Fork
+
+**Status:** Native ARM64 build/diagnostics under development. **Not a playable iPhone port.** This fork retains the original ByroRedux engine below and is being adapted to load *legally owned* Fallout: New Vegas PC/Steam data directly on iOS. There is no Windows/x86, console emulation, or streaming layer in the intended final app.
+
+- **Active branch:** [`fnv/native-ios-transition`](https://github.com/ForrestOgden/ByroRedux_Fallout3/tree/fnv/native-ios-transition)
+- **Project plan and limitations:** [`ios/PROJECT.md`](ios/PROJECT.md) · [`ios/MIGRATION.md`](ios/MIGRATION.md)
+- **Steam game-data preflight:** [`ios/PHASE-2.md`](ios/PHASE-2.md)
+- **Native iPhone ARM64 host:** [`ios/PHASE-3.md`](ios/PHASE-3.md)
+- **Build workflow:** [GitHub Actions](https://github.com/ForrestOgden/ByroRedux_Fallout3/actions)
+- **Reference original game scene:** Prospector Saloon (`GSProspectorSaloonInterior`)
+
+**Assets:** This is a source-only public repository. Never commit or upload game files, Steam credentials, installation keys, or Apple signing secrets.
+
+The upstream code is developed by [matiaszanolli/ByroRedux](https://github.com/matiaszanolli/ByroRedux). Its historical engine documentation follows unchanged.
+
+---
+
 <p align="center">
   <img src="assets/logo.jpg" alt="ByroRedux — game engine" width="180">
 </p>
