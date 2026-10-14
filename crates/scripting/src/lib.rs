@@ -32,6 +32,7 @@ pub mod fragment;
 pub mod globals;
 pub mod load_order;
 pub mod map_markers;
+pub mod anim_subgraph;
 pub mod keywords;
 pub mod menus;
 pub mod alias_collections;

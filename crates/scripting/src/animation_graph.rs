@@ -267,6 +267,15 @@ pub fn play_animation_and_wait(world: &World, entity: EntityId, event: &str, wai
     graph.seconds_until(target)
 }
 
+/// `reference.WaitForAnimationEvent(event)`: the seconds until the graph's own
+/// schedule raises `event`; `None` when the object has no graph or it never does.
+pub fn wait_for_animation_event(world: &World, entity: EntityId, event: &str) -> Option<f32> {
+    let graphs = world.query::<ObjectAnimationGraph>()?;
+    let graph = graphs.get(entity)?;
+    let target = graph.graph.graph.event_id(event)?;
+    graph.seconds_until(target)
+}
+
 fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
     let (root, playback) = {
         let mut graphs = world.query_mut::<ObjectAnimationGraph>()?;

@@ -1285,6 +1285,9 @@ fn prebaked_race_skin_remains_intrinsic_through_equip_and_corpse_loot() {
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1627,6 +1630,9 @@ fn prebaked_equip_state_marks_only_partially_displaced_skin_slots() {
         race_reactions: Vec::new(),
         default_skin: Some(SKIN),
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     let mut npc = test_npc(0x0100_0045, "PartialSkinDisplacementNpc");
     npc.race_form_id = RACE;
@@ -1707,6 +1713,9 @@ fn prebaked_equip_state_keeps_zero_mask_race_skin() {
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1785,6 +1794,9 @@ fn zero_mask_exemption_does_not_disable_the_occupancy_filter() {
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1867,6 +1879,9 @@ fn facegen_mask_fixture(helmet_bits: u32, skin_bits: u32) -> u32 {
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 
@@ -1991,6 +2006,9 @@ fn prebaked_equip_state_drops_skin_mesh_fully_displaced_by_gear() {
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
     race.default_skin = Some(SKIN);
 

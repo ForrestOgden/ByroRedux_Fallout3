@@ -1311,6 +1311,24 @@ pub fn parse_cndf(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     out
 }
 
+/// Keyword (`KYWD`): the form Papyrus keyword properties and `KWDA` lists
+/// point at. Only the editor id is read — keywords carry no data of their own,
+/// and the name is what tells the animation-archetype keywords
+/// (`AnimArchetypeConfident`, …) from the rest.
+#[derive(Debug, Clone, Default)]
+pub struct KywdRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+}
+
+pub fn parse_kywd(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> KywdRecord {
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
+    KywdRecord {
+        form_id,
+        editor_id: common.editor_id,
+    }
+}
+
 /// Lighting template (`LGTM`). Provides a named bundle of XCLL-shaped
 /// lighting values that cells can reference via `LTMP` and selectively
 /// override per-field. Full per-field inheritance fallback lands

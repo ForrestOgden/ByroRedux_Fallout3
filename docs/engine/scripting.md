@@ -1328,8 +1328,14 @@ and passes Skyrim's 1, 4, 5 and 7 as the `Motion_*` constant they name, into the
 `MotionTypeChangeRequest` bridge `scripted_motion_type_system` drains. The inertia variants and
 every other game's numbers stop the run instead of being guessed (the Fallout 4 page lists only
 the constant names). The traps (`physicstrap`, `soundtrap`, `tripwire`, `magictrap`) now pass
-this native; `CalculateEncounterLevel` is modelled (below), so what stops them now is
-`PlayAnimation`'s absent graph and `DamageObject` (no destruction runtime).
+this native; `CalculateEncounterLevel` is modelled (below) and `PlayAnimation` drives the
+behavior graph (see *Animation graphs of placed objects*), so `PhysicsTrap` (451 placed
+references) and `TrapBear` (182) now run: live in Irkngthand04, `PhysicsTrap.OnCellAttach` runs
+`ResolveLeveledDamage` on all of them with no stop, and in HonningbrewMeadery01 the four bear
+traps attach `BearTrap01.hkx`, run `OnLoad`, and answer `OnActivate` with `Reset01` / `Trigger01`
+accepted by the graph. What still stops trap scripts is `DamageObject` (no destruction runtime;
+`MineOreScript`, `TrapHitBase`), `Weapon.Fire` (`DartTrap`: no projectile launcher) and
+`TrapHitBase`'s receiver expression.
 
 ### CalculateEncounterLevel (M47.2)
 
@@ -1452,7 +1458,10 @@ raised (following the machine through the transitions the clip events take) are 
 and the run suspends for them; the CK's "if the event you send it doesn't exist, the function will
 never return" becomes an immediate return, and a reference with no graph (or an event the graph
 never raises) also returns at once, the CK's false. Used as a value it is refused (a latent call
-cannot sit inside an expression). `RegisterForAnimationEvent` still answers false:
+cannot sit inside an expression). `WaitForAnimationEvent(event)` is the same wait without the send
+(CK: "waits for the specified animation event from this object to happen before returning"; false
+when the graph unloaded first, here: no graph). `TrapBear` uses both: `OnTriggerEnter` plays
+`Trigger01` and waits for `Trans01`. `RegisterForAnimationEvent` still answers false:
 delivering animation events to registered scripts' Papyrus handler is not built. `UnregisterForAnimationEvent` and
 `SetAnimationVariable*` have no graph variable to act on and do nothing.
 
@@ -1484,16 +1493,37 @@ state:
   `Set…`. The dialogue condition functions `IsBribedbyPlayer` (402) and `IsIntimidatedbyPlayer`
   (116) are not catalogued yet and stay fail-open.
 - **`Actor.ChangeAnimArchetype(keyword)`** (Fallout 4; `animation_graph.rs`,
-  `AnimArchetypeOverrides`): CK "adds the specified AnimArchetype keyword to this actor"; none
-  "removes any existing AnimArchetype keyword (sets actor back to 'Neutral')"; true on success.
-  The archetype selects the animation set the actor's graph runs, so it is recorded for the
-  behavior-graph runtime to read (the authored one is the base `NPC_`'s keyword).
+  `AnimArchetypeOverrides`, consumed by `anim_subgraph.rs`): CK "adds the specified AnimArchetype
+  keyword to this actor"; none "removes any existing AnimArchetype keyword (sets actor back to
+  'Neutral')"; true on success. The archetype is an *actor keyword*, and the CK *Subgraphs* page
+  says what reads it: a RACE's "Subgraph Data" entry lists the actor keywords that "need to exist
+  on the Actor for this sub graph data to get picked", and "the game will always choose the
+  subgraph data that matches the maximum number of actor keywords". Two consumers follow.
+  `keywords::has_keyword` gives an actor with an override exactly that archetype keyword among the
+  `AnimArchetype…` ones (the `KYWD`s so named: Fallout4.esm has ten, with the FormIDs the CK page
+  lists) and hides its authored one, so `HasKeyword` guards and the `HasKeyword` condition see the
+  change. `anim_subgraph::select_subgraph(world, actor, role, target)` picks the entry of a role
+  (third person) whose actor keywords the actor all has — the special `Female` keyword is ACBS
+  *Female* XOR *Swap Gender Anims* — taking the most keywords, the first authored on a tie (the CK
+  calls that undetermined). A race's entries are its own, its `SRAC` template's and those of races
+  `SADD`-additive onto it (`RaceRecord::subgraph_data`, xEdit `wbRACE`). Vanilla check
+  (`vanilla_fo4_archetype_npcs_select_their_entries`): 710 of the 726 archetype-authoring `NPC_`s
+  select an MT entry, and all 710 name their own archetype. What is **not** built is the actor
+  behavior graph that would run the selected `behavior_graph` and `animation_paths` (the
+  engine animates FO4 actors with no graph at all), so a script's archetype change is observable
+  through keywords and selection, not yet on screen.
 - **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
   `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines
   `AddToMapScanned(b)` as `Self.SetScanned(true)` then `Self.AddToMap(b)`, and xEdit's condition
   table calls `IsScanned` "check if a object has been scanned". The `AddToMap` half is the
   existing map-marker state. The scanner itself has no player-side runtime, so only scripts
   set the flag.
+
+### Utility.GetCurrentRealTime (M47.2)
+
+CK: "the number of real-world seconds that have elapsed since the game has launched", with time in
+a menu counted. `TotalTime` is the engine's wall-clock since start, so that is the value
+(`DartTrap` reads it).
 
 ### Game.GetCredits (M47.2)
 

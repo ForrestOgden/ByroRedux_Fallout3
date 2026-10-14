@@ -516,6 +516,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingPlayerXp", "script RewardPlayerXP grants queued after the quest guards drop, drained by scripted_experience_system the same or the next frame"),
         ("AuthoredRelationships", "the load order's RELA relationship ranks; rebuilt from the records by install_relationships every boot"),
         ("MessageCatalog", "the load order's MESG messages, display names and global editor IDs; rebuilt from the records by install_message_catalog every boot"),
+        ("SubgraphTable", "RACE subgraph entries, the AnimArchetype keywords and gender flags; rebuilt from the records by install_subgraph_table every boot"),
         ("KeywordTable", "base objects' keywords (an actor's with its race's); rebuilt from the records by install_keyword_table every boot"),
         ("PendingBarterMenu", "a script's ShowBarterMenu request, consumed by the app the frame it is raised"),
         ("BarterRules", "the load order's vendor factions, merchant containers, buy/sell lists and barter GMSTs; rebuilt by install_barter_rules every boot"),

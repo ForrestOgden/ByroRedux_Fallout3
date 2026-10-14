@@ -11,7 +11,7 @@ use super::super::cell::EsmCellIndex;
 use super::super::reader::GameKind;
 use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ClassRecord, ClimateRecord, CobjRecord,
-    ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, EcznRecord, EfshRecord, EnchRecord,
+    ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord,
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
@@ -347,6 +347,8 @@ pub struct EsmIndex {
     pub encounter_zones: HashMap<u32, EcznRecord>,
     /// `CNDF` Starfield condition forms (`ConditionForm.IsTrue`).
     pub condition_forms: HashMap<u32, CndfRecord>,
+    /// `KYWD` keywords (editor id only).
+    pub keywords: HashMap<u32, KywdRecord>,
     /// `LGTM` lighting templates — ties to #379 (per-field inheritance
     /// fallback on cells without XCLL).
     pub lighting_templates: HashMap<u32, LgtmRecord>,
@@ -841,6 +843,7 @@ impl EsmIndex {
             map_category!("regions", regions),
             map_category!("encounter_zones", encounter_zones),
             map_category!("condition_forms", condition_forms),
+            map_category!("keywords", keywords),
             map_category!("lighting_templates", lighting_templates),
             map_category!("image_spaces", image_spaces),
             map_category!("head_parts", head_parts),

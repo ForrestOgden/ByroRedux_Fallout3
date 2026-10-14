@@ -54,7 +54,7 @@ pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"COBJ", *b"CONT", *b"CPTH", *b"CREA", *b"CSNO", *b"CSTY", *b"DEBR", *b"DEHY", *b"DIAL",
     *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
-    *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"LCRT", *b"LCTN",
+    *b"IDLM", *b"IMAD", *b"IMGS", *b"IMOD", *b"INGR", *b"IPCT", *b"IPDS", *b"KEYM", *b"KYWD", *b"LCRT", *b"LCTN",
     *b"LGTM", *b"LIGH", *b"LSCR", *b"LSCT", *b"LTEX", *b"LVLC", *b"LVLI", *b"LVLN", *b"LVSP", *b"MESG",
     *b"MGEF", *b"MICN", *b"MISC", *b"MOVS", *b"MSET", *b"MSTT", *b"MSWP", *b"MUSC", *b"NAVI",
     *b"NAVM", *b"NOTE", *b"NPC_", *b"OMOD", *b"OTFT", *b"PACK", *b"PERK", *b"PKIN", *b"PROJ",
@@ -401,7 +401,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"GLOB" | b"GMST" => {
                 dispatch_global::dispatch_global_group(&label, &mut reader, end, &mut index)?;
             }
-            b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN" | b"CNDF"
+            b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN" | b"CNDF" | b"KYWD"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
             | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" | b"WTHS" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(

@@ -1019,6 +1019,12 @@ pub(crate) fn populate_scene_runtime(
     // HasKeyword.
     let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
     log::info!("Installed keyword table: {keyworded} base objects");
+    // M47.2 — RACE subgraph data and the archetype keywords, for
+    // ChangeAnimArchetype and the actor's graph selection.
+    let archetypes = byroredux_scripting::anim_subgraph::install_subgraph_table(world, index);
+    if archetypes > 0 {
+        log::info!("Installed subgraph table: {archetypes} animation archetype keywords");
+    }
     // M47.2 — vendor factions and barter prices, for ShowBarterMenu.
     let vendors = crate::barter::install_barter_rules(world, index);
     if vendors > 0 {

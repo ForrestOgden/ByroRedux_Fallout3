@@ -1944,7 +1944,9 @@ fn categories_table_row_count_pinned() {
     // GetRelationshipRank).
     // Bumped 107 → 108 in M47.2 (condition_forms — Starfield CNDF, the lists
     //   `ConditionForm.IsTrue` evaluates).
-    assert_eq!(EsmIndex::categories().len(), 108);
+    // Bumped 108 → 109 in M47.2 (keywords — KYWD editor ids, which name the
+    //   AnimArchetype keywords `ChangeAnimArchetype` swaps between).
+    assert_eq!(EsmIndex::categories().len(), 109);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

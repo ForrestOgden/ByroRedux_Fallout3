@@ -2567,6 +2567,14 @@ impl Vm<'_> {
                     Some(Value::Float(low + draw * (high - low)))
                 }
                 // CK *GetCurrentGameTime - Utility*: "game days passed".
+                // CK *GetCurrentRealTime - Utility*: "the number of real-world
+                // seconds that have elapsed since the game has launched" (time in
+                // a menu counts). `TotalTime` is the engine's wall-clock since
+                // start.
+                ("utility", "getcurrentrealtime") => {
+                    let seconds = self.world.try_resource::<byroredux_core::ecs::TotalTime>().map_or(0.0, |t| t.0);
+                    Some(Value::Float(seconds))
+                }
                 ("utility", "getcurrentgametime") => {
                     let hours = self
                         .world
@@ -3651,6 +3659,32 @@ impl Vm<'_> {
                     return stop("Utility.Wait beyond MAX_PROVIDER_WAIT_SECONDS");
                 }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
+            }
+        }
+        // CK *WaitForAnimationEvent*: "waits for the specified animation event from
+        // this object to happen before returning". The graph's schedule is
+        // deterministic, so the wait is computed now; with no graph (or an event it
+        // never raises) the call returns false at once, which the CK gives as "the
+        // animation graph unloaded before the event was sent".
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if member.node.0.eq_ignore_ascii_case("waitforanimationevent")
+                && args.len() == 1
+                && static_class(&object.node).is_none()
+            {
+                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                    let values = self.eval_args(frame, args)?;
+                    let event = values[0].text();
+                    let seconds = self
+                        .entity_of(reference)
+                        .and_then(|entity| crate::animation_graph::wait_for_animation_event(self.world, entity, &event));
+                    return match seconds {
+                        Some(seconds) if seconds > MAX_PROVIDER_WAIT_SECONDS => {
+                            stop("WaitForAnimationEvent beyond MAX_PROVIDER_WAIT_SECONDS")
+                        }
+                        Some(seconds) => Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new())),
+                        None => Ok(Flow::Normal),
+                    };
+                }
             }
         }
         // CK *PlayAnimationAndWait*: send the event and wait until the graph raises
@@ -5071,7 +5105,7 @@ impl<'l> Checker<'l> {
             {
                 return Some(Kind::Num);
             }
-            if class == "utility" && name == "getcurrentgametime" && arg_kinds.is_empty() {
+            if class == "utility" && matches!(name.as_str(), "getcurrentgametime" | "getcurrentrealtime") && arg_kinds.is_empty() {
                 return Some(Kind::Num);
             }
             if class == "utility" && name == "wait" {
@@ -5301,6 +5335,13 @@ impl<'l> Checker<'l> {
                     ) =>
             {
                 // Latent: it waits for the graph's event, so only as a statement.
+                self.waits = true;
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "waitforanimationevent")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]) =>
+            {
+                // Latent, like PlayAnimationAndWait: only as a statement.
                 self.waits = true;
                 return Some(Kind::None);
             }

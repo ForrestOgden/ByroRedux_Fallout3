@@ -4,6 +4,8 @@
 //!
 //! A reference's keywords are, in order of precedence:
 //!
+//! * a script's `ChangeAnimArchetype`: the actor then has that archetype
+//!   keyword and no other (`anim_subgraph`);
 //! * a script's `AddKeyword` / `RemoveKeyword`. The FO4 CK *AddKeyword* page:
 //!   "Once a keyword has been added by this function it won't be removed if
 //!   an alias that also added the keyword was removed from the object. In a
@@ -108,6 +110,10 @@ fn base_of(world: &World, entity: EntityId) -> Option<u32> {
 /// Whether `entity` has `keyword`.
 pub fn has_keyword(world: &World, entity: EntityId, keyword: u32) -> bool {
     if let Some(key) = reference_key(world, entity) {
+        // `ChangeAnimArchetype` swaps the actor's archetype keyword.
+        if let Some(has) = crate::anim_subgraph::archetype_override_has(world, key, keyword) {
+            return has;
+        }
         let scripted = world
             .try_resource::<ScriptedKeywords>()
             .and_then(|changes| changes.0.get(&key).cloned());

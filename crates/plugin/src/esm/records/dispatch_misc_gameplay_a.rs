@@ -124,6 +124,14 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                 index.condition_forms.insert(fid, parse_cndf(fid, subs, &cndf_remap));
             })?
         }
+        // Keyword editor ids: the animation-archetype keywords are told
+        // apart by name (`AnimArchetype…`).
+        b"KYWD" => {
+            let kywd_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"KYWD", &mut |fid, subs| {
+                index.keywords.insert(fid, parse_kywd(fid, subs, &kywd_remap));
+            })?
+        }
         // LGTM lighting templates — consumer lands alongside #379
         // (per-field inheritance fallback on cells without XCLL).
         b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {

@@ -59,7 +59,7 @@ pub use soun::{parse_sndr, parse_soun, SounRecord};
 pub use actor::{
     decode_ai_data, effective_actor_level, parse_clas, parse_fact, parse_npc, parse_race,
     ActorAiData, Aggression, ClassRecord, Confidence, CreatureStats, FactionMembership,
-    FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord,
+    FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
     VendorData, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };
 pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
@@ -81,13 +81,13 @@ pub use items::{
 pub use misc::{
     active_package, parse_acti, parse_arma, parse_avif, ActorValueRef, MagicArchetype, SpellType,
     MGEF_FLAG_DETRIMENTAL, MGEF_FLAG_RECOVER, parse_bptd, parse_cobj, parse_csty,
-    parse_dial, parse_dlbr, parse_cndf, parse_eczn, parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt,
+    parse_dial, parse_dlbr, parse_cndf, parse_kywd, parse_eczn, parse_efsh, parse_ench, parse_expl, parse_eyes, parse_hair, parse_hdpt,
     parse_idle, parse_imad, parse_imgs, parse_imod, parse_info, parse_ipct, parse_ipds, parse_lctn, parse_lgtm, parse_rela,
     parse_mesg, parse_mgef, parse_mgef_for_game, parse_minimal_esm_record, parse_navi, parse_navm,
     parse_pack, parse_perk, parse_proj, parse_qust, parse_regn, parse_repu, parse_scen, parse_slgm,
     parse_sm_node, parse_spel, parse_term, parse_watr, select_active_region_sound, ActiRecord, AliasFillType,
     AliasFlags, AliasInjectedData, AliasLinkedAlias, ArmaRecord, AvifRecord, BptdRecord,
-    CobjRecord, CstyRecord, DialRecord, DialogueCategory, DlbrRecord, CndfRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord, EyesRecord,
+    CobjRecord, CstyRecord, DialRecord, DialogueCategory, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord, ExplRecord, EyesRecord,
     HairRecord, HdptRecord, IdleRecord, ImadColorKey, ImadRecord, ImadScalarKey, ImgsRecord,
     ImodRecord, InfoDataHeader, InfoRecord, IpctRecord, IpdsRecord, LctnRecord, RelaRecord, LgtmRecord, MagicEffectItem, MesgRecord,
     MgefRecord, MinimalEsmRecord, NaviRecord, NavmExternalConnection, NavmRecord, NavmTriangle,

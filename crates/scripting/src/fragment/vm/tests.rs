@@ -3217,6 +3217,115 @@ fn play_animation_drives_the_objects_behavior_graph() {
     assert_eq!((player.clip_handle, player.root_entity), (4, Some(marker)));
 }
 
+/// `WaitForAnimationEvent` suspends the script until the object's graph raises
+/// the event (a clip trigger 0.5 s in), and returns at once for an object with
+/// no graph (the CK's "graph unloaded"). It is latent: a statement only.
+#[test]
+fn wait_for_animation_event_waits_for_the_graphs_event() {
+    use byroredux_core::animation::AnimationPlayer;
+    use byroredux_hkx::{BehaviorGraph, ClipMode, ClipTrigger, State, StateClip, StateMachine, Transition};
+    const SOURCE: &str = "ScriptName QF_VmWaitEvent extends Quest\n\
+        ObjectReference Property Marker Auto\n\
+        Function Fragment_1()\n\
+          Marker.PlayAnimation(\"Go\")\n\
+          Marker.WaitForAnimationEvent(\"Done\")\n\
+          Self.SetStage(20)\n\
+        EndFunction\n\
+        Function Fragment_2()\n\
+          If Marker.WaitForAnimationEvent(\"Done\")\n\
+            Self.SetStage(20)\n\
+          EndIf\n\
+        EndFunction\n";
+    let script = parsed_source(SOURCE);
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_2", None).is_err(), "latent for its value is refused");
+    let build = |with_graph: bool| {
+        let mut world = world_with_fragment(Arc::clone(&script));
+        world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_VmWaitEvent".into(),
+                    status: 0,
+                    properties: vec![ScriptProperty {
+                        name: "Marker".into(),
+                        status: 1,
+                        value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                    }],
+                }],
+            },
+        );
+        world.register::<FormIdComponent>();
+        world.register::<AnimationPlayer>();
+        world.register::<crate::ObjectAnimationGraph>();
+        let mut pool = FormIdPool::default();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+        world.insert_resource(pool);
+        let marker = world.spawn();
+        world.insert(marker, FormIdComponent(id));
+        if with_graph {
+            let clip = StateClip {
+                animation: "a/go.hkx".into(),
+                mode: ClipMode::SinglePlay,
+                playback_speed: 1.0,
+                start_time: 0.0,
+                user_fraction: 0.0,
+                triggers: vec![ClipTrigger { local_time: 0.5, event: 1, relative_to_end: false, annotation: false }],
+            };
+            let graph = BehaviorGraph {
+                events: vec!["Go".into(), "Done".into()],
+                machine: Some(StateMachine {
+                    start_state: 0,
+                    states: vec![
+                        State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0 }], clip: None },
+                        State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip) },
+                    ],
+                    wildcard: Vec::new(),
+                }),
+            };
+            let mut clips = std::collections::HashMap::new();
+            clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
+            world.insert(
+                marker,
+                crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips }), marker).unwrap(),
+            );
+        }
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        world
+    };
+    let world = build(true);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "waiting for Done");
+    crate::fragment::fragment_continuation_system(&world, 0.4);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 10, "0.1 s short");
+    crate::fragment::fragment_continuation_system(&world, 0.2);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "Done raised at 0.5 s");
+    let world = build(false);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "no graph: no wait");
+}
+
+/// `Utility.GetCurrentRealTime` is the engine's wall-clock seconds since start.
+#[test]
+fn get_current_real_time_reads_the_engine_clock() {
+    let script = parsed_source(
+        "ScriptName QF_VmRealTime extends Quest\n\
+         Function Fragment_1()\n\
+           Float started = Utility.GetCurrentRealTime()\n\
+           If started > 11.5 && started < 12.5\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(byroredux_core::ecs::TotalTime(12.0));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
 #[test]
 fn is_in_dialogue_with_player_follows_the_open_surface() {

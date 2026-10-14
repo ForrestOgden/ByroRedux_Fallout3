@@ -159,6 +159,53 @@ pub struct RaceRecord {
     /// CK's *Keyword* page has Banish "only affect Actors that have the
     /// 'ActorTypeDaedra' Keyword".
     pub keywords: Vec<u32>,
+    /// FO4+ `SRAC`: the race whose subgraph data this race uses as its own
+    /// (a reskin keeps the template's animations).
+    pub subgraph_template: Option<u32>,
+    /// FO4+ `SADD`: the race this race's subgraph data is added to.
+    pub subgraph_additive: Option<u32>,
+    /// FO4+ subgraph data (`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` groups).
+    pub subgraph_data: Vec<SubgraphData>,
+}
+
+/// The role of a subgraph entry: when its behavior graph and animations load
+/// (xEdit `wbRACE` `SRAF` role enum; CK *Subgraphs* page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubgraphRole {
+    /// No weapon readied; the role `ChangeAnimArchetype` / `ChangeAnimFlavor` change.
+    Mt,
+    Weapon,
+    Furniture,
+    Idle,
+    Pipboy,
+    /// A role value xEdit's table does not name.
+    Other(u16),
+}
+
+impl SubgraphRole {
+    fn from_raw(raw: u16) -> Self {
+        match raw {
+            0 => Self::Mt,
+            1 => Self::Weapon,
+            2 => Self::Furniture,
+            3 => Self::Idle,
+            4 => Self::Pipboy,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// One RACE "Subgraph Data" entry: a behavior graph attached to the race's
+/// character graph while the actor has all of `actor_keywords`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubgraphData {
+    pub actor_keywords: Vec<u32>,
+    pub behavior_graph: String,
+    pub animation_paths: Vec<String>,
+    pub target_keywords: Vec<u32>,
+    pub role: SubgraphRole,
+    /// `SRAF` perspective: `false` = 3rd, `true` = 1st.
+    pub first_person: bool,
 }
 
 /// RACE `INDX` head-part identifiers, resolved by semantic role.
@@ -320,7 +367,13 @@ pub fn parse_race(
         race_reactions: Vec::new(),
         default_skin: None,
         spells: Vec::new(),
+        subgraph_template: None,
+        subgraph_additive: None,
+        subgraph_data: Vec::new(),
     };
+    // The entry being read. xEdit: an entry's fields come unordered and its
+    // `SRAF` "closes" it, so the flags arm pushes it.
+    let mut pending_subgraph = PendingSubgraph::default();
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
 
@@ -645,6 +698,39 @@ pub fn parse_race(
             // rather than a hardcoded game list so FO76/Starfield ride
             // along automatically; TES4/FO3/FNV RACE records don't
             // author WNAM at all.
+            // FO4+ subgraph data (xEdit `wbRACE`).
+            b"SRAC" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.subgraph_template = Some(remap_fid(raw, remap));
+            }
+            b"SADD" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                record.subgraph_additive = Some(remap_fid(raw, remap));
+            }
+            b"SAKD" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                pending_subgraph.actor_keywords.push(remap_fid(raw, remap));
+            }
+            b"STKD" if sub.data.len() >= 4 => {
+                let raw = SubReader::new(&sub.data).u32_or_default();
+                pending_subgraph.target_keywords.push(remap_fid(raw, remap));
+            }
+            b"SGNM" => pending_subgraph.behavior_graph = read_zstring(&sub.data),
+            b"SAPT" => pending_subgraph.animation_paths.push(read_zstring(&sub.data)),
+            b"SRAF" if sub.data.len() >= 4 => {
+                let mut reader = SubReader::new(&sub.data);
+                let role = reader.u16_or_default();
+                let perspective = reader.u16_or_default();
+                let pending = std::mem::take(&mut pending_subgraph);
+                record.subgraph_data.push(SubgraphData {
+                    actor_keywords: pending.actor_keywords,
+                    behavior_graph: pending.behavior_graph,
+                    animation_paths: pending.animation_paths,
+                    target_keywords: pending.target_keywords,
+                    role: SubgraphRole::from_raw(role),
+                    first_person: perspective != 0,
+                });
+            }
             b"WNAM" if game.uses_prebaked_facegen() && sub.data.len() >= 4 => {
                 let raw = SubReader::new(&sub.data).u32_or_default();
                 record.default_skin = Some(remap_fid(raw, remap));
@@ -654,4 +740,12 @@ pub fn parse_race(
     }
 
     record
+}
+
+#[derive(Default)]
+struct PendingSubgraph {
+    actor_keywords: Vec<u32>,
+    behavior_graph: String,
+    animation_paths: Vec<String>,
+    target_keywords: Vec<u32>,
 }
