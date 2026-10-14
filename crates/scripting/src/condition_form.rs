@@ -46,6 +46,24 @@ pub fn install_condition_forms(world: &mut World, index: &EsmIndex) -> usize {
 }
 
 impl ConditionForms {
+    /// The conditions of `form`, for the debug console.
+    pub fn conditions(&self, form: u32) -> Option<&ConditionList> {
+        self.0.get(&form)
+    }
+
+    /// The loaded forms the interpreter can answer: every condition modeled and runnable
+    /// inside a run, in FormID order (the debug console lists them).
+    pub fn runnable(&self, world: &World) -> Vec<u32> {
+        let mut forms: Vec<u32> = self
+            .0
+            .iter()
+            .filter(|(_, list)| list.iter().all(|c| runnable_inside_a_run(world, c)))
+            .map(|(&form, _)| form)
+            .collect();
+        forms.sort_unstable();
+        forms
+    }
+
     /// Whether `form` is a loaded condition form.
     pub fn contains(&self, form: u32) -> bool {
         self.0.contains_key(&form)

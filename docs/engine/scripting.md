@@ -1438,6 +1438,11 @@ The list is evaluated only when every condition is modeled end to end (`is_model
 reads state the interpreter holds locked (quest stages, alias bindings); any other form
 stops the run rather than answering with the fail-open pass. 338 of 899 forms qualify.
 
+Live in a Starfield Cydonia boot (`cndf <form> <entity>` is the console twin; `cndf list` names the answerable
+forms: 259 with the interpreter's view of that load): the first 40 evaluated against the player gave 34 false and
+6 true, so the evaluation discriminates. `0003BF4B` is a single `GetGlobalValue(273872) < Global 273868` (true);
+`00030171` is `GetActorValue(196973) == 0 OR GetActorValue(2602891) == 1` (true: the first reads 0).
+
 ### Animation graphs of placed objects (M47.2)
 
 `PlayAnimation`, `PlayAnimationAndWait` and `RegisterForAnimationEvent` send events to a
