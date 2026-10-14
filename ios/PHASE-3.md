@@ -33,3 +33,16 @@ Workflow: [iOS / native ARM64 host compile](../.github/workflows/ios-arm64-host.
 ## Acceptance and limitations
 
 The CI job must pass before calling iOS cross-compilation working. After that, installing and launching on an actual iPhone is a **separate manual signing/device gate**; an unsigned CI build is not a tested device application. Neither this shell nor the archive probe plays Fallout 3.
+
+## Manual device milestone after the unsigned artifact passes CI
+
+The workflow publishes `Fallout3Native-unsigned-iphoneos` as a GitHub Actions artifact. Download and extract its ZIP to obtain `Fallout3Native-unsigned.ipa`. It contains no Fallout 3 game files or Apple signing secrets. Sign/sideload with your own Apple account using a supported Windows/iPhone method; an unsigned IPA is **not** installable as-is.
+
+On device, report or screenshot:
+- The ABI version shown by the native Rust function.
+- Metal device name.
+- Whether hardware ray tracing is reported.
+- Whether Apple GPU family 8 is supported.
+- Any launch/signing error.
+
+The on-screen Metal fields are first-party native GPU queries, **not** proof of Vulkan ray-query support in MoltenVK. Never equate those interfaces.
