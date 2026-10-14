@@ -1617,7 +1617,13 @@ references) and `PhysicsTrapHit` (466) pass the VM. `Sound.Play` is now also acc
 and others use; `StopInstance` and `SetInstanceVolume` stay unsupported, so a script that steers the
 instance is still declined. Skyrim VM coverage 64.4% to 66.3%. The trap-contact system has been run
 against a real physics world in tests (overlap starts, a standing contact is not new, a dead actor
-ends it) and the engine runs the barrow with it; no live trap contact was driven.
+ends it). Live in Bleak Falls Barrow, putting the player on each of the three swinging blades
+(`TrapBladeSwinging01`, refs `0003AC37`, `0003AC35`, `0003AC33`) delivers `TrapHitBase.OnTrapHitStart`
+and `OnTrapHit` to that reference; the blade's trap stays in `CannotHit` until it springs, so no damage
+lands. A trap body is owned by the nearest scripted entity up its parents, or — for the bare
+collision entity an animated prop's hierarchical import leaves — the REFR its `PhysicsSourceForm`
+names. That collision does not follow the blade's node animation yet, so a swinging blade's body
+stays at its rest pose.
 
 ### CreateDetectionEvent (M47.2)
 

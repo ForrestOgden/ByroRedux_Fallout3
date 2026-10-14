@@ -29,6 +29,9 @@ use byroredux_scripting::translate::effects::VmStored;
 /// Havok layer 14: Skyrim's Trap.
 const LAYER_TRAP: u8 = 14;
 
+/// How far up the parents a trap body looks for the entity that carries the scripts.
+const MAX_PARENT_HOPS: usize = 8;
+
 /// Which (trap, actor) pairs were in contact last tick.
 #[derive(Debug, Default)]
 pub(crate) struct TrapContacts(pub HashSet<(EntityId, EntityId)>);
@@ -56,6 +59,13 @@ fn live_actor(world: &World, collider_entity: EntityId) -> Option<EntityId> {
     world.get::<Dead>(actor).is_none().then_some(actor)
 }
 
+/// The local form id of the REFR a bare collision entity came from.
+fn source_reference(world: &World, entity: EntityId) -> Option<u32> {
+    let source = world.get::<byroredux_core::ecs::components::PhysicsSourceForm>(entity)?.0;
+    let pool = world.try_resource::<byroredux_core::form_id::FormIdPool>()?;
+    pool.resolve(source).map(|pair| pair.local.0)
+}
+
 /// Raise this tick's trap-contact events.
 pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
     // The scripted trap bodies: a Trap-layer rigid body that carries scripts.
@@ -68,17 +78,69 @@ pub(crate) fn trap_contact_system(world: &World, _dt: f32) {
             .collect(),
         None => return,
     };
-    let scripted: Vec<EntityId> = match world.query::<byroredux_scripting::PapyrusReferenceScripts>() {
-        Some(scripts) => trap_layer.into_iter().filter(|&entity| scripts.get(entity).is_some()).collect(),
-        None => return,
+    // The scripts sit on the placement root, the colliders on the root or a child
+    // of it: a trap body is owned by the nearest scripted entity up its parents.
+    // (One guard at a time: the ancestor chains first, then the scripts.)
+    let trap_layer_all = trap_layer.clone();
+    let chains: Vec<(EntityId, Vec<EntityId>)> = {
+        let parents = world.query::<byroredux_core::ecs::components::Parent>();
+        trap_layer
+            .into_iter()
+            .map(|entity| {
+                let mut chain = vec![entity];
+                while chain.len() < MAX_PARENT_HOPS {
+                    let Some(parent) = parents.as_ref().and_then(|p| p.get(*chain.last().unwrap())).map(|p| p.0) else {
+                        break;
+                    };
+                    chain.push(parent);
+                }
+                (entity, chain)
+            })
+            .collect()
+    };
+    static LAST_CHAINS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+    if LAST_CHAINS.swap(chains.len(), std::sync::atomic::Ordering::Relaxed) != chains.len() {
+        log::debug!("trap contacts: {} Trap-layer bodies; ancestor chains {:?}", chains.len(), chains);
+    }
+    let scripted: Vec<(EntityId, EntityId)> = {
+        let Some(scripts) = world.query::<byroredux_scripting::PapyrusReferenceScripts>() else {
+            return;
+        };
+        chains
+            .into_iter()
+            .filter_map(|(entity, chain)| Some((entity, chain.into_iter().find(|&at| scripts.get(at).is_some())?)))
+            .collect()
+    };
+    // A bhk collision shape can be a bare entity, decoupled from its placement's
+    // hierarchy (the hierarchical import of an animated prop): its
+    // `PhysicsSourceForm` names the REFR, whose entity carries the scripts.
+    let scripted = {
+        let mut owned: std::collections::HashSet<EntityId> = scripted.iter().map(|(entity, _)| *entity).collect();
+        let mut scripted = scripted;
+        let bare: Vec<(EntityId, u32)> = trap_layer_all
+            .iter()
+            .filter(|entity| !owned.contains(entity))
+            .filter_map(|&entity| Some((entity, source_reference(world, entity)?)))
+            .collect();
+        for (entity, reference) in bare {
+            if let Some(owner) = byroredux_scripting::ReferenceScriptIndex::lookup(world, reference) {
+                owned.insert(entity);
+                scripted.push((entity, owner));
+            }
+        }
+        scripted
     };
     let traps: Vec<(EntityId, _)> = match world.query::<byroredux_physics::RapierHandles>() {
         Some(handles) => scripted
             .into_iter()
-            .filter_map(|entity| Some((entity, handles.get(entity)?.body)))
+            .filter_map(|(body_entity, owner)| Some((owner, handles.get(body_entity)?.body)))
             .collect(),
         None => return,
     };
+    static LAST_TRAP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(usize::MAX);
+    if LAST_TRAP_COUNT.swap(traps.len(), std::sync::atomic::Ordering::Relaxed) != traps.len() {
+        log::debug!("trap contacts: {} scripted Trap-layer bodies", traps.len());
+    }
     let previous = world
         .try_resource_mut::<TrapContacts>()
         .map(|mut contacts| std::mem::take(&mut contacts.0))
@@ -204,6 +266,21 @@ mod tests {
         world.query_mut::<Dead>().unwrap().insert(near, Dead);
         trap_contact_system(&world, 0.0);
         assert!(world.resource::<TrapContacts>().0.is_empty(), "a dead actor is not a live target");
+    }
+
+    /// The scripts sit on the placement root and the collider on a child of it:
+    /// the root is the trap that is hit.
+    #[test]
+    fn a_child_collider_belongs_to_its_scripted_root() {
+        use byroredux_core::ecs::components::Parent;
+        let (mut world, trap, near) = trap_world();
+        world.register::<Parent>();
+        let scripts = world.remove::<PapyrusReferenceScripts>(trap).expect("the trap had scripts");
+        let root = world.spawn();
+        world.insert(root, scripts);
+        world.insert(trap, Parent(root));
+        trap_contact_system(&world, 0.0);
+        assert_eq!(world.resource::<TrapContacts>().0, HashSet::from([(root, near)]));
     }
 
     /// A body that is not on the Trap layer, or carries no scripts, is not a trap.
