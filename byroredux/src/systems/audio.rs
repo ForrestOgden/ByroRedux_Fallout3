@@ -1,6 +1,6 @@
 //! Audio routing systems — reverb zones, footstep emitters, and water audio.
 
-use byroredux_core::ecs::components::water::{SubmersionState, WaterContact};
+use byroredux_core::ecs::components::water::SubmersionState;
 use byroredux_core::ecs::{ActiveCamera, EntityId, GlobalTransform, World};
 use byroredux_core::math::Vec3;
 use byroredux_scripting::{RippleEvent, SplashEvent};
@@ -138,7 +138,6 @@ pub(crate) fn reverb_zone_system(world: &World, _dt: f32) {
 /// character-mode attach is on the body in the player-spawn arm.
 pub(crate) fn footstep_system(world: &World, _dt: f32) {
     use crate::components::{FootstepConfig, FootstepEmitter, FootstepScratch};
-    use crate::systems::character::depth_reaches_swimlevel;
 
     let Some(config) = world.try_resource::<FootstepConfig>() else {
         return;
@@ -167,27 +166,31 @@ pub(crate) fn footstep_system(world: &World, _dt: f32) {
     // caller from a parallel one (#4616), so the gate must leave no edge
     // behind. The values are per-frame inputs the loop below only reads,
     // so resolving them once up front is behaviour-identical.
+    //
+    // #5347 — the gate is `!is_grounded` alone; swimming needs no operand of
+    // its own. `character_controller_system` hands its pre-move swim verdict
+    // to `resolve_ground_contact`, which never grounds a swimmer
+    // (`character::tests::a_swimmer_is_never_grounded`), and the
+    // `WaterContact` depth it publishes is measured at that same pose — so a
+    // swimlevel test on it here reduced to `!is_grounded` and only held the
+    // `WaterContact` lock edge. If swimming ever stops clearing
+    // `is_grounded` (say, wading on a lake floor stays grounded), restore an
+    // explicit swim operand together with a test that holds `is_grounded`
+    // at true through the swim leg.
     let body_gate = world
         .try_resource::<crate::systems::PlayerEntity>()
         .and_then(|player| player.0)
         .map(|body| {
-            let controller = world.get::<byroredux_physics::CharacterController>(body);
-            let grounded = controller
-                .as_deref()
-                .is_some_and(|c: &byroredux_physics::CharacterController| c.is_grounded);
-            let swimming = match (&controller, world.get::<WaterContact>(body)) {
-                (Some(c), Some(contact)) => {
-                    depth_reaches_swimlevel(contact.depth, c.half_height + c.radius)
-                }
-                _ => false,
-            };
+            let grounded = world
+                .get::<byroredux_physics::CharacterController>(body)
+                .is_some_and(|c| c.is_grounded);
             // #5545 — the body's rapier handle rides the same pre-resolved
             // tuple: the surface probe below starts at the capsule centre
             // and must exclude the walker's own body.
             let rapier_body = world
                 .get::<byroredux_physics::RapierHandles>(body)
                 .map(|handles| handles.body);
-            (body, !grounded || swimming, rapier_body)
+            (body, !grounded, rapier_body)
         });
 
     // Phase 1: walk every emitter, accumulate stride, collect the
@@ -1211,6 +1214,12 @@ mod footstep_tests {
     /// whole WATAL W1 swim route used to), and the re-seed must keep the
     /// swim distance from replaying on exit: the first grounded land step
     /// after surfacing fires exactly its own distance.
+    ///
+    /// The swim leg holds `is_grounded = false` because that is what a
+    /// swimmer has in production (`resolve_ground_contact`, pinned by
+    /// `character::tests::a_swimmer_is_never_grounded`); the footstep gate
+    /// reads nothing else (#5347). The swimlevel `WaterContact` keeps the
+    /// fixture faithful to a real swim frame.
     #[test]
     fn swimming_body_is_silent_and_exit_does_not_replay_the_swim_distance() {
         let (mut world, body, _cam) = character_mode_world(0.5);
@@ -1331,7 +1340,7 @@ mod footstep_tests {
     }
 
     /// #5305 — the character-mode gate must resolve the body's
-    /// `CharacterController`/`WaterContact` reads as owned values BEFORE
+    /// `CharacterController` read as an owned value BEFORE
     /// the GlobalTransform/FootstepEmitter guards are taken. Under the CI
     /// lock-order detector, taking them inside that scope recorded
     /// `GlobalTransform → CharacterController` / `→ WaterContact`, which
