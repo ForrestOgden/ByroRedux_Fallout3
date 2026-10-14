@@ -752,9 +752,13 @@ pub(super) fn spawn_placed_instances(
         ref_scale,
     );
 
+    // (A collider that is its animated node's own body is spawned beneath that node
+    // below, once the node entities exist.)
+    let node_owned: &[Option<usize>] = cached.graph_nodes.as_deref().map_or(&[], |graph| graph.collision_nodes.as_slice());
     spawn_collision_shapes(
         world,
         collisions,
+        node_owned,
         ref_pos,
         ref_rot,
         ref_scale,
@@ -817,6 +821,10 @@ pub(super) fn spawn_placed_instances(
             super::graph_nodes::spawn_nodes(world, graph, placement_root, ref_pos, ref_rot, ref_scale),
         )
     });
+    // The colliders that are their animated nodes' own bodies ride the nodes.
+    if let Some((graph, spawned)) = &graph_nodes {
+        spawn_node_collisions(world, graph, spawned, collisions, ref_pos, ref_rot, ref_scale, placement_fid, base_layer);
+    }
     for (sub_mesh_index, (mesh, prepared)) in imported.iter().zip(prepared_meshes).enumerate() {
         let node_parent = graph_nodes
             .as_ref()
@@ -1421,10 +1429,15 @@ fn spawn_particle_emitters(
     }
 }
 
-/// Spawn standalone collision entities from the NIF's bhk shapes.
-/// Split out of `spawn_placed_instances` (#2057).
-fn spawn_collision_shapes(
+/// Spawn the colliders that are their animated nodes' own bodies as children of
+/// the node entities, so a keyframed body follows the node as the behavior graph
+/// moves it (a swinging blade's body swings with it). Each is at the pose of its
+/// node, so its local transform is the identity.
+#[allow(clippy::too_many_arguments)]
+fn spawn_node_collisions(
     world: &mut World,
+    graph: &super::graph_nodes::GraphNodes,
+    spawned: &super::graph_nodes::SpawnedNodes,
     collisions: &[byroredux_nif::import::ImportedCollision],
     ref_pos: Vec3,
     ref_rot: Quat,
@@ -1432,7 +1445,62 @@ fn spawn_collision_shapes(
     placement_fid: Option<byroredux_core::form_id::FormId>,
     base_layer: byroredux_core::ecs::components::RenderLayer,
 ) {
-    for coll in collisions {
+    use byroredux_core::ecs::Parent;
+    for (index, coll) in collisions.iter().enumerate() {
+        let Some(node) = graph.collision_nodes.get(index).copied().flatten() else { continue };
+        let Some(node_entity) = spawned.node_entity(node) else { continue };
+        let (pos, rot, scale) = GlobalTransform::compose_trs(
+            ref_pos,
+            ref_rot,
+            ref_scale,
+            Vec3::from_array(coll.translation),
+            Quat::from_xyzw(coll.rotation[0], coll.rotation[1], coll.rotation[2], coll.rotation[3]),
+            coll.scale,
+        );
+        log::debug!(
+            "node collision: node {node} of the graph prop is a {:?} body (layer {}), riding entity {node_entity}",
+            coll.body.motion_type,
+            coll.body.havok_layer
+        );
+        // A body on a node the behavior graph moves has to move with it: Havok
+        // authors these as fixed bodies and the animation drives them, so the body
+        // is keyframed here (the physics sync follows a keyframed body's
+        // `GlobalTransform`, which the node's animation moves). A closed portcullis
+        // that opened would otherwise stay solid.
+        let mut body = coll.body.clone();
+        if body.motion_type == byroredux_core::ecs::components::MotionType::Static {
+            body.motion_type = byroredux_core::ecs::components::MotionType::Keyframed;
+        }
+        let entity = world.spawn();
+        world.insert(entity, Transform::new(Vec3::ZERO, Quat::IDENTITY, 1.0));
+        world.insert(entity, GlobalTransform::new(pos, rot, scale));
+        world.insert(entity, coll.shape.clone());
+        world.insert(entity, body);
+        world.insert(entity, Parent(node_entity));
+        crate::helpers::add_child(world, node_entity, entity);
+        if let Some(fid) = placement_fid {
+            world.insert(entity, byroredux_core::ecs::components::PhysicsSourceForm(fid));
+        }
+        world.insert(entity, base_layer);
+    }
+}
+
+/// Spawn standalone collision entities from the NIF's bhk shapes.
+/// Split out of `spawn_placed_instances` (#2057).
+fn spawn_collision_shapes(
+    world: &mut World,
+    collisions: &[byroredux_nif::import::ImportedCollision],
+    node_owned: &[Option<usize>],
+    ref_pos: Vec3,
+    ref_rot: Quat,
+    ref_scale: f32,
+    placement_fid: Option<byroredux_core::form_id::FormId>,
+    base_layer: byroredux_core::ecs::components::RenderLayer,
+) {
+    for (index, coll) in collisions.iter().enumerate() {
+        if node_owned.get(index).copied().flatten().is_some() {
+            continue;
+        }
         let nif_pos = Vec3::new(
             coll.translation[0],
             coll.translation[1],
@@ -1492,6 +1560,63 @@ fn spawn_collision_shapes(
             );
         }
         world.insert(entity, base_layer);
+    }
+}
+
+#[cfg(test)]
+mod node_collision_tests {
+    use super::*;
+    use byroredux_core::ecs::components::{CollisionShape, MotionType, RenderLayer, RigidBodyData};
+    use byroredux_core::ecs::{Children, Parent};
+    use byroredux_nif::import::ImportedCollision;
+
+    fn shaped(world: &World) -> Vec<byroredux_core::ecs::EntityId> {
+        world.query::<CollisionShape>().map(|q| q.iter().map(|(e, _)| e).collect()).unwrap_or_default()
+    }
+
+    /// A blade-shaped graph prop: root -> Blade01 (rotated, 256 up) carrying a Static
+    /// body at the node's pose. The collider rides the node: it is the node entity's
+    /// child, keyframed, at the node's world pose, and the detached copy is not made.
+    #[test]
+    fn a_nodes_own_body_rides_the_node_as_a_keyframed_child() {
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<Parent>();
+        world.register::<Children>();
+        world.register::<byroredux_core::ecs::Name>();
+        world.register::<RigidBodyData>();
+        world.register::<CollisionShape>();
+        world.register::<RenderLayer>();
+        world.insert_resource(byroredux_core::string::StringPool::new());
+        let root = world.spawn();
+        let node_rotation = Quat::from_rotation_z(0.9);
+        let graph = super::super::graph_nodes::GraphNodes::for_test(
+            vec![("Blade", None, Vec3::ZERO, Quat::IDENTITY), ("Blade01", Some(0), Vec3::new(0.0, 256.0, 0.0), node_rotation)],
+            vec![Some(1)],
+        );
+        let ref_pos = Vec3::new(100.0, 0.0, 0.0);
+        let spawned = super::super::graph_nodes::spawn_nodes(&mut world, &graph, root, ref_pos, Quat::IDENTITY, 1.0);
+        let node = spawned.node_entity(1).expect("the collider's node was spawned");
+        let collision = ImportedCollision {
+            translation: [0.0, 256.0, 0.0],
+            rotation: node_rotation.to_array(),
+            scale: 1.0,
+            shape: CollisionShape::Ball { radius: 5.0 },
+            body: RigidBodyData { havok_layer: 14, ..RigidBodyData::static_body() },
+        };
+        // The flat spawn leaves it to the node...
+        let before = shaped(&world).len();
+        spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &graph.collision_nodes, ref_pos, Quat::IDENTITY, 1.0, None, RenderLayer::Architecture);
+        assert_eq!(shaped(&world).len(), before, "no detached copy");
+        // ...which spawns it beneath the node.
+        spawn_node_collisions(&mut world, &graph, &spawned, std::slice::from_ref(&collision), ref_pos, Quat::IDENTITY, 1.0, None, RenderLayer::Architecture);
+        let collider = *shaped(&world).first().expect("the node's collider");
+        assert_eq!(world.get::<Parent>(collider).map(|p| p.0), Some(node));
+        assert_eq!(world.get::<RigidBodyData>(collider).unwrap().motion_type, MotionType::Keyframed);
+        assert_eq!(world.get::<RigidBodyData>(collider).unwrap().havok_layer, 14);
+        let global = world.get::<GlobalTransform>(collider).unwrap();
+        assert!((global.translation - Vec3::new(100.0, 256.0, 0.0)).length() < 1.0e-3, "{:?}", global.translation);
     }
 }
 

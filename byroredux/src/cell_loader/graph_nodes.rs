@@ -44,6 +44,10 @@ pub(super) struct MeshNodeLocal {
 #[derive(Debug, Clone)]
 pub(super) struct GraphNodes {
     pub(super) nodes: Vec<GraphNode>,
+    /// Per flat collision (same order as `CachedNifImport::collisions`): the node
+    /// whose pose it stands at, when it is that node's own body - the collider
+    /// then rides the node as the animation moves it.
+    pub(super) collision_nodes: Vec<Option<usize>>,
     /// Per flat mesh (same order as `CachedNifImport::meshes`): its node, when
     /// it hangs under one below the root.
     pub(super) meshes: Vec<Option<MeshNodeLocal>>,
@@ -60,7 +64,12 @@ fn is_identity(translation: [f32; 3], rotation: [f32; 4], scale: f32) -> bool {
 /// hierarchical import does not line up with the flat one mesh for mesh (the
 /// props this serves are simple, and a mismatch keeps the flat spawn), or the
 /// root carries a transform the flat import folds in differently.
-pub(super) fn build(scene: &NifScene, flat: &[ImportedMesh], pool: &mut StringPool) -> Option<Arc<GraphNodes>> {
+pub(super) fn build(
+    scene: &NifScene,
+    flat: &[ImportedMesh],
+    collisions: &[byroredux_nif::import::ImportedCollision],
+    pool: &mut StringPool,
+) -> Option<Arc<GraphNodes>> {
     let imported = byroredux_nif::import::import_nif_scene(scene, pool);
     if imported.meshes.len() != flat.len()
         || imported.meshes.iter().zip(flat).any(|(hierarchical, flat)| hierarchical.name != flat.name)
@@ -78,7 +87,7 @@ pub(super) fn build(scene: &NifScene, flat: &[ImportedMesh], pool: &mut StringPo
         log::debug!("graph nodes: the root node carries a transform — keeping the flat spawn");
         return None;
     }
-    let nodes = imported
+    let nodes: Vec<GraphNode> = imported
         .nodes
         .iter()
         .map(|node| GraphNode {
@@ -102,7 +111,70 @@ pub(super) fn build(scene: &NifScene, flat: &[ImportedMesh], pool: &mut StringPo
             })
         })
         .collect();
-    Some(Arc::new(GraphNodes { nodes, meshes }))
+    let collision_nodes = pair_collisions(&nodes, &imported.nodes, collisions);
+    Some(Arc::new(GraphNodes { nodes, collision_nodes, meshes }))
+}
+
+/// The pose of node `index` in the NIF's frame (its transforms composed down from
+/// the root).
+fn nif_pose(nodes: &[GraphNode], index: usize) -> (Vec3, Quat, f32) {
+    let node = &nodes[index];
+    match node.parent {
+        None => (node.translation, node.rotation, node.scale),
+        Some(parent) => {
+            let (pos, rot, scale) = nif_pose(nodes, parent);
+            GlobalTransform::compose_trs(pos, rot, scale, node.translation, node.rotation, node.scale)
+        }
+    }
+}
+
+/// For each flat collision, the node that carries a body and stands at its pose.
+fn pair_collisions(
+    nodes: &[GraphNode],
+    imported: &[byroredux_nif::import::ImportedNode],
+    collisions: &[byroredux_nif::import::ImportedCollision],
+) -> Vec<Option<usize>> {
+    collisions
+        .iter()
+        .map(|collision| {
+            let position = Vec3::from_array(collision.translation);
+            let rotation = Quat::from_xyzw(
+                collision.rotation[0],
+                collision.rotation[1],
+                collision.rotation[2],
+                collision.rotation[3],
+            );
+            (0..nodes.len()).filter(|&index| imported[index].collision.is_some()).find(|&index| {
+                let (pos, rot, scale) = nif_pose(nodes, index);
+                pos.distance(position) < 1.0e-2 && rot.dot(rotation).abs() > 0.9999 && (scale - collision.scale).abs() < 1.0e-3
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+impl GraphNodes {
+    /// A graph of `(name, parent, translation, rotation)` nodes whose meshes are
+    /// none and whose collision-carrying nodes are `collision_nodes` (tests).
+    pub(super) fn for_test(
+        nodes: Vec<(&str, Option<usize>, Vec3, Quat)>,
+        collision_nodes: Vec<Option<usize>>,
+    ) -> Self {
+        Self {
+            nodes: nodes
+                .into_iter()
+                .map(|(name, parent, translation, rotation)| GraphNode {
+                    name: Some(name.into()),
+                    parent,
+                    translation,
+                    rotation,
+                    scale: 1.0,
+                })
+                .collect(),
+            collision_nodes,
+            meshes: Vec::new(),
+        }
+    }
 }
 
 /// The node entities of one placement, by node index.
@@ -111,6 +183,11 @@ pub(super) struct SpawnedNodes {
 }
 
 impl SpawnedNodes {
+    /// The entity of node `index`, if it was spawned.
+    pub(super) fn node_entity(&self, index: usize) -> Option<EntityId> {
+        self.entities.get(&index).copied()
+    }
+
     /// The entity and local transform mesh `index` hangs from, if it has a node.
     pub(super) fn mesh_parent(&self, graph: &GraphNodes, index: usize) -> Option<(EntityId, MeshNodeLocal)> {
         let local = (*graph.meshes.get(index)?)?;
@@ -129,8 +206,9 @@ pub(super) fn spawn_nodes(
     ref_scale: f32,
 ) -> SpawnedNodes {
     let mut needed = vec![false; graph.nodes.len()];
-    for local in graph.meshes.iter().flatten() {
-        let mut node = Some(local.node);
+    let hosts = graph.meshes.iter().flatten().map(|local| local.node).chain(graph.collision_nodes.iter().flatten().copied());
+    for host in hosts {
+        let mut node = Some(host);
         while let Some(index) = node {
             if needed[index] {
                 break;
@@ -222,6 +300,7 @@ mod tests {
                 node("RuinsLever", Some(0), Vec3::new(1.0, 0.0, 0.0)),
                 node("Lever01", Some(1), Vec3::new(0.0, 2.0, 0.0)),
             ],
+            collision_nodes: Vec::new(),
             meshes: vec![None, local(1, Vec3::ZERO), local(2, Vec3::new(0.0, 0.0, 3.0))],
         }
     }

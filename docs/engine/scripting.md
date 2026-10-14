@@ -1674,8 +1674,12 @@ ends it). Live in Bleak Falls Barrow, putting the player on each of the three sw
 and `OnTrapHit` to that reference; the blade's trap stays in `CannotHit` until it springs, so no damage
 lands. A trap body is owned by the nearest scripted entity up its parents, or — for the bare
 collision entity an animated prop's hierarchical import leaves — the REFR its `PhysicsSourceForm`
-names. That collision does not follow the blade's node animation yet, so a swinging blade's body
-stays at its rest pose.
+names. A bhk body that is an animated node's own (it stands at the node's pose) is spawned beneath
+that node's entity instead of detached, and a body authored `Static` is made `Keyframed`: Havok
+authors the bodies of graph-driven props as fixed and lets the animation move them, and the physics
+sync follows a keyframed body's `GlobalTransform`, so a swinging blade's body swings with it (live,
+its AABB in `phys.census` goes from `[2, 91, 122]` to `[2, 110, 106]` and `[2, 120, 94]` through a
+swing) and an opened portcullis stops blocking. Nothing hit a target live.
 
 ### Calls on None (M47.2)
 

@@ -186,7 +186,7 @@ pub(super) fn parse_and_import_nif(
     let behavior_graph_file: Option<Arc<str>> =
         byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
     let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
-        crate::cell_loader::graph_nodes::build(&scene, &meshes, &mut byroredux_core::string::StringPool::new())
+        crate::cell_loader::graph_nodes::build(&scene, &meshes, &collisions, &mut byroredux_core::string::StringPool::new())
     });
     let graph_sequences = if behavior_graph_file.is_some() { byroredux_nif::anim::import_kf(&scene) } else { Vec::new() };
     Some(Arc::new(CachedNifImport {
