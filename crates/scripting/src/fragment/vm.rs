@@ -2666,6 +2666,7 @@ impl Vm<'_> {
                     | "isindialoguewithplayer"
                     | "dropobject"
                     | "isloaded"
+                    | "isinlocation"
                     | "isfurnitureinuse"
                     | "isstarting"
                     | "isstopping"
@@ -3096,6 +3097,31 @@ impl Vm<'_> {
                 }
                 crate::fragment::remove_items(self.world, entity, *item, take, None);
                 Some(self.place_at_me(*owner, &[Value::Form(*item), Value::Int(take as i32)])?)
+            }
+            // CK *IsInLocation - ObjectReference*, whose page gives its script:
+            // false without a current location, else the location asked about or
+            // one of its descendants.
+            (Value::Form(reference), "isinlocation") if args.len() == 1 => {
+                let Value::Form(asked) = self.eval(frame, &args[0].value.node)? else {
+                    return stop("IsInLocation without a location");
+                };
+                let entity = if *reference == PLAYER_REF {
+                    self.world.try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>().map(|player| player.0)
+                } else {
+                    self.entity_of(*reference)
+                };
+                let current = entity.and_then(|entity| crate::location::current_location(self.world, entity));
+                let inside = match current {
+                    None => false,
+                    Some(current) => {
+                        current == asked
+                            || self
+                                .world
+                                .try_resource::<crate::location::LocationTable>()
+                                .is_some_and(|table| table.is_within(current, asked))
+                    }
+                };
+                Some(Value::Bool(inside))
             }
             // CK *IsLoaded - Location*: whether the location is loaded.
             (Value::Form(location), "isloaded") if args.is_empty() => {
@@ -5044,6 +5070,9 @@ impl<'l> Checker<'l> {
             }
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object, "isloaded") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "isinlocation") if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object)]) => {
+                return Some(Kind::Bool);
+            }
             (Kind::Object | Kind::Player, "dropobject")
                 if matches!(arg_kinds.first(), Some(Arg::Kind(Kind::Object | Kind::Player)))
                     && arg_kinds.get(1).is_none_or(|count| matches!(count, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)))

@@ -777,6 +777,9 @@ runtime:
   that interleave only when a run suspends; here runs interleave at a wait or a budget slice, and a
   guard held across either is not modelled, so every operation succeeds at once and the try-lock
   reads True.
+- **IsInLocation.** `ObjectReference.IsInLocation(akLocation)` follows the CK page's own script:
+  false without a current location, else the location asked about or one of its descendants
+  (`LocationTable::is_within` over `current_location`; the player's is the published one).
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

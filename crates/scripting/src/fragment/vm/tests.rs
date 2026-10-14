@@ -3390,6 +3390,54 @@ fn guard_operations_do_not_evaluate_their_guard_names() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `IsInLocation` is true for the location the reference is in and for any
+/// location above it (CK *IsInLocation*: the location or a child of it), and
+/// false for another branch.
+#[test]
+fn is_in_location_includes_the_ancestors() {
+    use crate::location::tests::{whiterun_index, DRAGONSREACH_CELL, TAMRIEL, WHITERUN_HOLD};
+    use byroredux_core::ecs::components::{CellFormId, CellRoot};
+    let script = parsed_source(
+        "ScriptName QF_VmInLoc extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Location Property Hold Auto\n\
+         Location Property Elsewhere Auto\n\
+         Function Fragment_1()\n\
+           If Marker.IsInLocation(Hold) && !Marker.IsInLocation(Elsewhere)\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    {
+        let mut vmad = vmad();
+        let object = |name: &str, form_id: u32| ScriptProperty {
+            name: name.into(),
+            status: 1,
+            value: PropertyValue::Object { form_id, alias: -1 },
+        };
+        vmad.scripts[0].properties.push(object("Hold", WHITERUN_HOLD));
+        vmad.scripts[0].properties.push(object("Elsewhere", TAMRIEL + 1));
+        world.resource_mut::<crate::QuestStageFragments>().insert_vmad(Q, vmad);
+    }
+    crate::install_location_table(&mut world, &whiterun_index());
+    world.register::<FormIdComponent>();
+    world.register::<CellFormId>();
+    world.register::<CellRoot>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let cell = world.spawn();
+    world.insert(cell, CellFormId(DRAGONSREACH_CELL));
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(marker, CellRoot(cell));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "Dragonsreach is within the hold");
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.
