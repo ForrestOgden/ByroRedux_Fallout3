@@ -1357,6 +1357,152 @@ fn faction_owner_is_the_explicit_owner() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `CalculateEncounterLevel(difficulty)`: the player's level lifted by the
+/// reference's own zone, then scaled by the difficulty's game setting.
+#[test]
+fn calculate_encounter_level_follows_the_zone_and_difficulty() {
+    use byroredux_plugin::esm::records::{EcznRecord, GameSetting, SettingValue};
+    let script = parsed_source(
+        "ScriptName QF_VmEncounter extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.CalculateEncounterLevel() == 20 && Marker.CalculateEncounterLevel(1) == 13\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmEncounter".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER),
+    });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(marker, crate::ExplicitEncounterZone(0x0001_E2E0));
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    world.register::<byroredux_core::character::CharacterLevel>();
+    world.insert(player, byroredux_core::character::CharacterLevel { level: 5, xp: 0 });
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.encounter_zones.insert(
+        0x0001_E2E0,
+        EcznRecord { form_id: 0x0001_E2E0, min_level: 20, ..Default::default() },
+    );
+    for (form_id, (name, value)) in (0x100u32..).zip([
+        ("fLeveledActorMultEasy", 0.33),
+        ("fLeveledActorMultMedium", 0.67),
+        ("fLeveledActorMultHard", 1.0),
+        ("fLeveledActorMultVeryHard", 1.25),
+    ]) {
+        index.game_settings.insert(
+            form_id,
+            GameSetting {
+                form_id,
+                editor_id: name.into(),
+                value: SettingValue::Float(value),
+            },
+        );
+    }
+    crate::install_encounter_level_rules(&mut world, &index);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// `Actor.GetGoldAmount()` counts the actor's `Gold001`, and `GetBribeAmount()`
+/// is the UESP formula over the two actors' levels, speech and morality.
+#[test]
+fn gold_amount_and_bribe_amount_read_the_actors() {
+    use byroredux_core::ecs::components::{ActorValues, Inventory};
+    use byroredux_plugin::esm::records::{AvifRecord, GameSetting, SettingValue};
+    const SPEECH: u32 = 0x0000_0044;
+    const MORALITY: u32 = 0x0000_0033;
+    let script = parsed_source(
+        "ScriptName QF_VmBribe extends Quest\n\
+         Actor Property Guard Auto\n\
+         Function Fragment_1()\n\
+           If Guard.GetGoldAmount() == 7 && Guard.GetBribeAmount() == 35\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmBribe".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Guard".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair {
+        plugin: PluginId::from_filename("Skyrim.esm"),
+        local: LocalFormId(MARKER),
+    });
+    world.insert_resource(pool);
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(id));
+    world.insert(guard, byroredux_core::character::CharacterLevel { level: 10, xp: 0 });
+    world.insert(
+        guard,
+        Inventory { items: vec![byroredux_core::ecs::components::ItemStack::new(0x0F, 7)] },
+    );
+    world.insert(guard, ActorValues::from_pairs([(SPEECH, 25.0), (MORALITY, 0.0)]));
+    let player = world.resource::<PapyrusPlayerEntity>().0;
+    world.register::<byroredux_core::character::CharacterLevel>();
+    world.insert(player, byroredux_core::character::CharacterLevel { level: 10, xp: 0 });
+    world.insert(player, ActorValues::from_pairs([(SPEECH, 25.0)]));
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    for (form_id, editor_id) in [(SPEECH, "AVSpeechcraft"), (MORALITY, "AVMorality")] {
+        index.actor_values.insert(form_id, AvifRecord { form_id, editor_id: editor_id.into(), ..Default::default() });
+    }
+    for (form_id, (name, value)) in (0x200u32..).zip([
+        ("fBribeSpeechcraftMult", 0.1),
+        ("fBribeScale", 0.5),
+        ("fBribeCostCurve", 1.4),
+    ]) {
+        index.game_settings.insert(
+            form_id,
+            GameSetting { form_id, editor_id: name.into(), value: SettingValue::Float(value) },
+        );
+    }
+    assert!(crate::install_bribe_rules(&mut world, &index));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `<Sound>.Play(akSource)` as a statement records the request for the host; a
 /// receiver that is not declared a `Sound` (a `VisualEffect`) is declined.
 #[test]
@@ -2701,6 +2847,69 @@ fn get_caps_is_fallout_4s_caps_item() {
         crate::fragment::quest_fragment_dispatch_system(&world);
         assert_eq!(world.resource::<QuestStageState>().get_stage(Q), expected_stage, "{game:?}");
     }
+}
+
+/// `Game.GetCredits()` is Starfield's currency form (the corpus passes it as the
+/// `RemoveItem` item), and stops the run in other games.
+#[test]
+fn get_credits_is_starfields_currency_form() {
+    use byroredux_plugin::esm::reader::GameKind;
+    for (game, expected_stage) in [(GameKind::Starfield, 20), (GameKind::Fallout4, 10)] {
+        let script = parsed_source(
+            "ScriptName QF_VmCredits extends Quest\n\
+             Function Fragment_1()\n\
+               Form credits = Game.GetCredits() as Form\n\
+               If credits\n\
+                 Self.SetStage(20)\n\
+               EndIf\n\
+             EndFunction\n",
+        );
+        assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+        let mut world = world_with_fragment(script);
+        world.insert_resource(crate::ScriptGame(game));
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), expected_stage, "{game:?}");
+    }
+}
+
+/// The animation-graph natives answer with the CK's failure results while no
+/// behavior graph runs, and the script around them still runs to its end.
+#[test]
+fn animation_graph_natives_report_no_graph() {
+    let script = parsed_source(
+        "ScriptName QF_VmAnim extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If !Marker.PlayAnimation(\"flip\") && !Marker.PlayAnimationAndWait(\"flip\", \"done\") && !Marker.RegisterForAnimationEvent(Marker, \"reset\")\n\
+             Marker.SetAnimationVariableFloat(\"Speed\", 1.0)\n\
+             Marker.SetAnimationVariableBool(\"bOpen\", True)\n\
+             Marker.UnregisterForAnimationEvent(Marker, \"reset\")\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmAnim".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.

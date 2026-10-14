@@ -114,7 +114,7 @@ pub(super) fn dispatch_misc_gameplay_a_group(
             extract_records(reader, end, b"ECZN", &mut |fid, subs| {
                 index
                     .encounter_zones
-                    .insert(fid, parse_eczn(fid, subs, &eczn_remap));
+                    .insert(fid, parse_eczn(fid, subs, game, &eczn_remap));
             })?
         }
         // LGTM lighting templates — consumer lands alongside #379

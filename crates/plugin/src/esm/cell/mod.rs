@@ -679,6 +679,10 @@ pub struct PlacedRef {
     /// block, `XMRK` then `FNAM`); `None` when the reference is no map
     /// marker.
     pub map_marker: Option<u8>,
+    /// `XEZN` — the reference's own `ECZN` (CK: a reference can be tagged
+    /// with an encounter zone of its own); `None` falls back to its cell's
+    /// [`CellData::encounter_zone_form`]. `CalculateEncounterLevel` reads it.
+    pub encounter_zone_form: Option<u32>,
 }
 
 impl PlacedRef {
@@ -717,6 +721,7 @@ impl PlacedRef {
             starts_unconscious: false,
             ragdoll_pose: Vec::new(),
             map_marker: None,
+            encounter_zone_form: None,
         }
     }
 }

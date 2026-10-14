@@ -114,6 +114,7 @@ mod tests {
         let mut index = EsmIndex::default();
         let marker = |form_id, flags| PlacedRef {
             map_marker: Some(flags),
+            encounter_zone_form: None,
             ..PlacedRef::at(form_id, 0x10, [0.0; 3], [0.0; 3])
         };
         index.cells.worldspace_persistent_cells.insert(

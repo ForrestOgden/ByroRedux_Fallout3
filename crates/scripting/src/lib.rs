@@ -19,7 +19,10 @@ pub mod compatibility;
 pub mod condition;
 pub mod editor_location;
 pub mod created_references;
+pub mod animation_graph;
+pub mod bribe;
 pub mod dialogue;
+pub mod encounter_level;
 pub mod equipment;
 pub mod events;
 pub mod faction_changes;
@@ -147,6 +150,10 @@ pub use editor_location::EditorLocation;
 pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListChange, FormLists};
+pub use bribe::{bribe_amount, install_bribe_rules, BribeRules};
+pub use encounter_level::{
+    calculate_encounter_level, install_encounter_level_rules, EncounterLevelRules, ExplicitEncounterZone,
+};
 pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
 pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};

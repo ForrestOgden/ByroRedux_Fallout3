@@ -1204,8 +1204,14 @@ fn merge_sound(entry: &mut RegionDataEntry, f: impl FnOnce(&mut RegionDataPayloa
 }
 
 /// Encounter zone (`ECZN`). Governs spawn scaling / faction ownership
-/// on the cells that reference it via `XEZN`. The `DATA` layout is:
-/// `owner (u32 FormID) + rank (u8) + min-level (u8) + flags (u8) + unused (u8)`.
+/// on the cells that reference it via `XEZN`.
+///
+/// `DATA` layout by game (xEdit `wbDefinitions*` ECZN):
+/// - Fallout 3 / New Vegas: `owner (u32 FormID) + rank (s8) + min level (s8)
+///   + flags (u8) + unused (u8)`.
+/// - Skyrim / Fallout 4 / Starfield: `owner (u32) + location (u32 LCTN) +
+///   rank (s8) + min level (s8) + flags (u8) + max level (s8)`; Skyrim records
+///   below form version 34 stop after the location.
 #[derive(Debug, Clone, Default)]
 pub struct EcznRecord {
     pub form_id: u32,
@@ -1213,14 +1219,39 @@ pub struct EcznRecord {
     /// Form ID of the faction or actor that owns this zone. `0` when
     /// the field is unset (wilderness zones sometimes leave it blank).
     pub owner_form: u32,
+    /// The zone's `LCTN` (Skyrim and later); `0` when unset or absent.
+    pub location_form: u32,
     /// Faction rank required; 0 = no rank gate.
     pub rank: u8,
-    /// Minimum player level for zone to unlock spawn overrides.
+    /// CK *Encounter Zone* "Min Level": the lowest level the zone resolves to
+    /// (a player below it is lifted to it, unless
+    /// [`match_pc_below_minimum`](Self::match_pc_below_minimum)).
     pub min_level: u8,
+    /// CK "Max Level": the highest level the zone resolves to; `0` = no cap.
+    /// Absent (always 0) in Fallout 3 / New Vegas.
+    pub max_level: u8,
     pub flags: u8,
 }
 
-pub fn parse_eczn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> EcznRecord {
+impl EcznRecord {
+    /// `Never Resets` (bit 0).
+    pub const FLAG_NEVER_RESETS: u8 = 0x01;
+    /// `Match PC Below Minimum Level` (bit 1): "the encounter zone will match
+    /// the player's level if the player enters the encounter zone below the
+    /// minimum level" (CK *Encounter Zone*).
+    pub const FLAG_MATCH_PC_BELOW_MINIMUM: u8 = 0x02;
+
+    pub fn match_pc_below_minimum(&self) -> bool {
+        self.flags & Self::FLAG_MATCH_PC_BELOW_MINIMUM != 0
+    }
+}
+
+pub fn parse_eczn(
+    form_id: u32,
+    subs: &[SubRecord],
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) -> EcznRecord {
     let mut out = EcznRecord {
         form_id,
         ..Default::default()
@@ -1231,15 +1262,22 @@ pub fn parse_eczn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
     // is unchanged.
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     out.editor_id = common.editor_id;
+    let has_location = !matches!(game, GameKind::Oblivion | GameKind::Fallout3NV);
     for sub in subs {
         match &sub.sub_type {
             b"DATA" if sub.data.len() >= 7 => {
                 let mut r = SubReader::new(&sub.data);
                 // #3715 — embedded owner (faction/actor) FormID.
                 out.owner_form = remap_fid(r.u32_or_default(), remap);
+                if has_location {
+                    out.location_form = remap_fid(r.u32_or_default(), remap);
+                }
                 out.rank = r.u8_or_default();
                 out.min_level = r.u8_or_default();
                 out.flags = r.u8_or_default();
+                if has_location {
+                    out.max_level = r.u8_or_default();
+                }
             }
             _ => {}
         }
@@ -1872,12 +1910,36 @@ mod tests {
         data.push(15); // min level
         data.push(0x02); // flags
         let subs = vec![sub(b"EDID", b"NcrZone\0"), sub(b"DATA", &data)];
-        let z = parse_eczn(0x9876, &subs, &None);
+        let z = parse_eczn(0x9876, &subs, GameKind::Fallout3NV, &None);
         assert_eq!(z.editor_id, "NcrZone");
         assert_eq!(z.owner_form, 0x0001_CAFE);
         assert_eq!(z.rank, 3);
         assert_eq!(z.min_level, 15);
         assert_eq!(z.flags, 0x02);
+    }
+
+    /// Skyrim / FO4 / Starfield carry a location after the owner and a max
+    /// level after the flags (xEdit ECZN, form version >= 34); reading the
+    /// FO3/FNV layout there took the location's low bytes for rank / min level.
+    #[test]
+    fn parse_eczn_creation_layout_has_location_and_max_level() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0001_CAFEu32.to_le_bytes()); // owner
+        data.extend_from_slice(&0x0002_BEEFu32.to_le_bytes()); // location
+        data.push(1); // rank
+        data.push(6); // min level
+        data.push(0x03); // never resets + match PC below minimum
+        data.push(20); // max level
+        let subs = vec![sub(b"DATA", &data)];
+        let z = parse_eczn(0x10, &subs, GameKind::Skyrim, &None);
+        assert_eq!(z.owner_form, 0x0001_CAFE);
+        assert_eq!(z.location_form, 0x0002_BEEF);
+        assert_eq!((z.rank, z.min_level, z.max_level), (1, 6, 20));
+        assert!(z.match_pc_below_minimum());
+        // The 8-byte pre-34 form stops after the location.
+        let short = vec![sub(b"DATA", &data[..8])];
+        let z = parse_eczn(0x11, &short, GameKind::Skyrim, &None);
+        assert_eq!((z.min_level, z.max_level, z.flags), (0, 0, 0));
     }
 
     /// #3715 — `parse_eczn` never took a remap at all; `owner_form` is
@@ -1891,7 +1953,7 @@ mod tests {
         data.push(5); // min level
         data.push(0); // flags
         let subs = vec![sub(b"DATA", &data)];
-        let z = parse_eczn(0xABCD, &subs, &remap);
+        let z = parse_eczn(0xABCD, &subs, GameKind::Fallout3NV, &remap);
         assert_eq!(z.owner_form, 0x0200_5555);
     }
 

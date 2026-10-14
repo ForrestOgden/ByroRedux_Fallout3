@@ -46,6 +46,7 @@ fn placed_ref(form_id: u32) -> PlacedRef {
         starts_unconscious: false,
         ragdoll_pose: Vec::new(),
         map_marker: None,
+        encounter_zone_form: None,
     }
 }
 

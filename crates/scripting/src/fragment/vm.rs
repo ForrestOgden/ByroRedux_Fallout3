@@ -79,6 +79,10 @@ use crate::translate::effects::{
 const PLAYER_REF: u32 = 0x14;
 /// Fallout 4's `Caps001` (`Game.GetCaps`), form `0x0F` of `Fallout4.esm`.
 const FO4_CAPS: u32 = 0x0F;
+/// Skyrim's `Gold001` (`Actor.GetGoldAmount`), form `0x0F` of `Skyrim.esm`.
+const SKYRIM_GOLD: u32 = 0x0F;
+/// Starfield's `Credits` (`Game.GetCredits`), form `0x0F` of `Starfield.esm`.
+const STARFIELD_CREDITS: u32 = 0x0F;
 /// Statements one run may execute before it is stopped (a runaway loop).
 const MAX_STEPS: usize = 100_000;
 /// Script-function nesting.
@@ -2495,6 +2499,21 @@ impl Vm<'_> {
                     }
                     Some(Value::Form(FO4_CAPS))
                 }
+                // `Game.GetCredits()` (Starfield, no CK page): the corpus uses it
+                // as the currency *form* — `Player.RemoveItem(Game.GetCredits() as
+                // Form, cost)` in `DialogueShipServicesScript` — the Starfield
+                // twin of `GetCaps`. The form is `Credits`, `0x0F` of
+                // `Starfield.esm` (checked against the record).
+                ("game", "getcredits") if args.is_empty() => {
+                    let starfield = self
+                        .world
+                        .try_resource::<crate::ScriptGame>()
+                        .is_some_and(|game| game.0 == byroredux_plugin::esm::reader::GameKind::Starfield);
+                    if !starfield {
+                        return stop("Game.GetCredits outside Starfield");
+                    }
+                    Some(Value::Form(STARFIELD_CREDITS))
+                }
                 // CK *GetForm - Game*: the form of that ID, or None when the
                 // ID names no loaded plugin.
                 ("game", "getform") => {
@@ -2602,6 +2621,16 @@ impl Vm<'_> {
                     | "setactorcause"
                     | "getfactionowner"
                     | "getactorowner"
+                    | "calculateencounterlevel"
+                    | "getbribeamount"
+                    | "getgoldamount"
+                    | "playanimation"
+                    | "playanimationandwait"
+                    | "registerforanimationevent"
+                    | "unregisterforanimationevent"
+                    | "setanimationvariablefloat"
+                    | "setanimationvariablebool"
+                    | "setanimationvariableint"
                     | "play"
                     | "enablelinkchain"
                     | "disablelinkchain"
@@ -2808,6 +2837,86 @@ impl Vm<'_> {
                     }
                 });
                 Some(owner.map_or(Value::None, Value::Form))
+            }
+            // Animation-graph natives (CK *PlayAnimation*, *PlayAnimationAndWait*,
+            // *RegisterForAnimationEvent*, *SetAnimationVariable\**): they drive a
+            // reference's Havok behavior graph, which this engine does not run
+            // (see [`crate::animation_graph`]). The CK's own failure results are the
+            // honest answer for a reference whose graph is not loaded: the event is
+            // not delivered, the play / wait calls return false at once (the latent
+            // one does not wait), the registration returns false, and a variable set
+            // has nothing to write.
+            (Value::Form(_), "playanimation") if args.len() == 1 => {
+                self.eval_args(frame, args)?;
+                Some(Value::Bool(crate::animation_graph::graph_loaded()))
+            }
+            (Value::Form(_), "playanimationandwait") if args.len() == 2 => {
+                self.eval_args(frame, args)?;
+                Some(Value::Bool(crate::animation_graph::graph_loaded()))
+            }
+            (Value::Form(_), "registerforanimationevent") if args.len() == 2 => {
+                self.eval_args(frame, args)?;
+                Some(Value::Bool(crate::animation_graph::graph_loaded()))
+            }
+            (Value::Form(_), "unregisterforanimationevent") if args.len() == 2 => {
+                self.eval_args(frame, args)?;
+                Some(Value::None)
+            }
+            (Value::Form(_), "setanimationvariablefloat" | "setanimationvariablebool" | "setanimationvariableint")
+                if args.len() == 2 =>
+            {
+                self.eval_args(frame, args)?;
+                Some(Value::None)
+            }
+            // CK *GetGoldAmount - Actor*: "the amount of gold on this actor's
+            // person" — the count of Skyrim's `Gold001` in its inventory.
+            (Value::Form(actor), "getgoldamount") if args.is_empty() => {
+                let skyrim = self
+                    .world
+                    .try_resource::<crate::ScriptGame>()
+                    .is_some_and(|game| game.0 == byroredux_plugin::esm::reader::GameKind::Skyrim);
+                if !skyrim {
+                    return stop("GetGoldAmount outside Skyrim");
+                }
+                let gold: u32 = self
+                    .entity_of(*actor)
+                    .and_then(|entity| self.world.get::<byroredux_core::ecs::components::Inventory>(entity).map(|inventory| {
+                        inventory
+                            .items
+                            .iter()
+                            .filter(|stack| stack.base_form_id == SKYRIM_GOLD)
+                            .map(|stack| stack.count)
+                            .sum()
+                    }))
+                    .unwrap_or(0);
+                Some(Value::Int(gold as i32))
+            }
+            // CK *GetBribeAmount - Actor*: the gold to bribe this actor (the UESP
+            // *Speech* formula; see `bribe`).
+            (Value::Form(actor), "getbribeamount") if args.is_empty() => {
+                match self.entity_of(*actor).and_then(|entity| crate::bribe_amount(self.world, entity)) {
+                    Some(amount) => Some(Value::Int(amount)),
+                    None => return stop("GetBribeAmount without bribery data or an actor level"),
+                }
+            }
+            // CK *CalculateEncounterLevel - ObjectReference*: the level from the
+            // player's level, the reference's encounter zone and the difficulty
+            // (default 4, None); see `encounter_level`.
+            (Value::Form(reference), "calculateencounterlevel") if args.len() <= 1 => {
+                let difficulty = match args.first() {
+                    None => 4,
+                    Some(arg) => match self.eval(frame, &arg.value.node)? {
+                        Value::Int(difficulty) => difficulty,
+                        _ => return stop("CalculateEncounterLevel with a non-integer difficulty"),
+                    },
+                };
+                let level = self
+                    .entity_of(*reference)
+                    .and_then(|entity| crate::calculate_encounter_level(self.world, entity, difficulty));
+                match level {
+                    Some(level) => Some(Value::Int(level as i32)),
+                    None => return stop("CalculateEncounterLevel without the player's level or a difficulty multiplier"),
+                }
             }
             // CK *GetTriggerObjectCount*: "the number of objects currently
             // inside this trigger volume".
@@ -4548,7 +4657,7 @@ impl<'l> Checker<'l> {
             if class == "game" && name == "getplayer" {
                 return Some(Kind::Player);
             }
-            if class == "game" && name == "getcaps" && arg_kinds.is_empty() {
+            if class == "game" && matches!(name.as_str(), "getcaps" | "getcredits") && arg_kinds.is_empty() {
                 return Some(Kind::Object);
             }
             if class == "game"
@@ -4726,6 +4835,57 @@ impl<'l> Checker<'l> {
                 if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::NoneLit) | Arg::Kind(Kind::Object)]) =>
             {
                 return Some(Kind::Array);
+            }
+            (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            // The animation-graph natives (see `animation_graph`): the CK's
+            // failure results, since no behavior graph runs.
+            (Kind::Object | Kind::Player, "playanimation") if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]) => {
+                return Some(Kind::Bool);
+            }
+            (Kind::Object | Kind::Player, "playanimationandwait")
+                if matches!(
+                    arg_kinds.as_slice(),
+                    [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]
+                ) =>
+            {
+                return Some(Kind::Bool);
+            }
+            (Kind::Object | Kind::Player, "registerforanimationevent" | "unregisterforanimationevent")
+                if matches!(
+                    arg_kinds.as_slice(),
+                    [Arg::Kind(Kind::Object | Kind::Player), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]
+                ) =>
+            {
+                return Some(if name == "registerforanimationevent" { Kind::Bool } else { Kind::None });
+            }
+            (Kind::Object | Kind::Player, "setanimationvariablefloat" | "setanimationvariableint")
+                if statement
+                    && matches!(
+                        arg_kinds.as_slice(),
+                        [
+                            Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str),
+                            Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)
+                        ]
+                    ) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "setanimationvariablebool")
+                if statement
+                    && matches!(
+                        arg_kinds.as_slice(),
+                        [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str), Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]
+                    ) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "calculateencounterlevel")
+                if arg_kinds.len() <= 1
+                    && arg_kinds
+                        .first()
+                        .is_none_or(|difficulty| matches!(difficulty, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num))) =>
+            {
+                return Some(Kind::Num);
             }
             (Kind::Object | Kind::Player, "getfactionreaction")
                 if matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object | Kind::Player)]) =>

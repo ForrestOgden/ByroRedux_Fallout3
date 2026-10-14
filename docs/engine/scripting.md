@@ -1292,8 +1292,78 @@ and passes Skyrim's 1, 4, 5 and 7 as the `Motion_*` constant they name, into the
 `MotionTypeChangeRequest` bridge `scripted_motion_type_system` drains. The inertia variants and
 every other game's numbers stop the run instead of being guessed (the Fallout 4 page lists only
 the constant names). The traps (`physicstrap`, `soundtrap`, `tripwire`, `magictrap`) now pass
-this native but still stop on `CalculateEncounterLevel`, whose level formula the CK does not
-give.
+this native; `CalculateEncounterLevel` is modelled (below), so what stops them now is
+`ApplyHavokImpulse`, `PlayAnimation` and `DamageObject`.
+
+### CalculateEncounterLevel (M47.2)
+
+CK *CalculateEncounterLevel - ObjectReference*: "the reference's encounter level, based on the
+player's level, the area's level, and the passed-in difficulty" (0 Easy, 1 Medium, 2 Hard,
+3 Very Hard, 4 None, the default). The page gives no arithmetic, but two other CK pages do
+(`encounter_level.rs` cites them):
+
+- **The area's level** (*Encounter Zone*): the zone's `Min Level` lifts a lower player level to
+  it, unless `Match PC Below Minimum Level` is set, when the zone matches the player's level;
+  `Max Level` (0 = none) caps a higher one. A reference's zone is its own `XEZN`
+  (`PlacedRef.encounter_zone_form`, stamped as `ExplicitEncounterZone`), else its cell's
+  (`CellData.encounter_zone_form`, found through `CellRoot` → `CellFormId`); in neither it stands
+  at the player's level.
+- **The difficulty** (*LeveledCharacter*, "Leveled Character References"): Easy / Medium / Hard /
+  Very Hard scale the resolved level by the `fLeveledActorMultEasy` / `Medium` / `Hard` /
+  `VeryHard` game settings (0.33, 0.67, 1.0, 1.25 in `Skyrim.esm`; the same four exist in
+  `Fallout4.esm`), "without exceeding" it. None is the resolved level itself.
+
+Engine policy where the CK is silent: the scaled level rounds down and never drops below 1; a
+load order missing a multiplier setting leaves that difficulty unsupported (the run stops)
+rather than guess one. This also fixes the `ECZN` parse: Skyrim / FO4 / Starfield `DATA` is
+`owner, location, rank, min level, flags, max level` (xEdit `wbDefinitions*`), where the old
+FO3/FNV-shaped read took the location's bytes for rank, min level and flags.
+
+### GetBribeAmount and GetGoldAmount (M47.2)
+
+CK *GetBribeAmount - Actor* only says "the amount of gold required to bribe this actor". The
+formula is the community's, from UESP *Skyrim:Speech* ("Bribe Formula"; its second line has a
+stray closing parenthesis, and `bribe.rs` takes the only balanced reading):
+
+```text
+morality = Morality(npc) * fBribeMoralityMult + 1
+v        = NpcLevel * fBribeNPCLevelMult + PlayerLevel
+           - ((PlayerSpeechcraft - NpcSpeechcraft) - 100) * fBribeSpeechcraftMult
+amount   = v ^ fBribeCostCurve * (fBribeScale * morality)
+```
+
+`Skyrim.esm` authors `fBribeSpeechcraftMult` (0.1), `fBribeScale` (0.5) and `fBribeCostCurve`
+(1.4); `fBribeMoralityMult` (1.0) and `fBribeNPCLevelMult` (0.1) are not authored there, so the
+engine's own defaults apply, which were read from the static setting table of `SkyrimSE.exe`
+(each default sits before a pointer to its name string; the same table gives 1.0 / 1.5 / 0.03
+for the three the master overrides, so the slots are the right ones). The result truncates to
+the `int` Papyrus returns, and a negative base clamps to 0 (engine policy; the source is
+silent). `GetGoldAmount` ("the amount of gold on this actor's person") is the count of Skyrim's
+`Gold001` (`0x0F`, checked against the record) in the actor's inventory.
+
+### Animation-graph natives (M47.2)
+
+`PlayAnimation`, `PlayAnimationAndWait`, `RegisterForAnimationEvent`,
+`UnregisterForAnimationEvent` and `SetAnimationVariable{Float,Bool,Int}` drive a reference's
+Havok behavior graph ("sends the named event to the object's animation graph", CK
+*PlayAnimation*). The engine decodes skeletons and clips from `.hkx` but executes no behavior
+graph (`crates/hkx`), so no reference has a graph to take an event. `animation_graph.rs`
+answers with the results the CK documents for exactly that case: `PlayAnimation` false ("true
+if the animation successfully started"), `PlayAnimationAndWait` false without waiting ("if the
+animation unloads before the end event is received, the function will abort and return false"),
+`RegisterForAnimationEvent` false ("something went wrong — the animation graph may not be
+loaded"), the other two a no-op. The scripts around them run their own logic (states, stages,
+enable / disable) with the animation absent, which is what these references show today. A
+behavior-graph runtime replaces `graph_loaded()` with its per-reference answer. Skyrim
+scripted references on the VM: 42.9% → 52.9%.
+
+### Game.GetCredits (M47.2)
+
+Starfield's `Game.GetCredits()` has no CK page, but the corpus fixes its meaning: it is the
+currency *form*, passed as the item of `Player.RemoveItem(Game.GetCredits() as Form, cost, …)`
+(`DialogueShipServicesScript.RefuelPlayerShip` / `RepairPlayerShip`), the Starfield twin of
+`Game.GetCaps()`. The form is `Credits`, `0x0F` of `Starfield.esm` (checked against the
+record). Outside Starfield the run stops.
 
 ### GetCurrentPackage (M47.2)
 

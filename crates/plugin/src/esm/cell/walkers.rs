@@ -695,6 +695,7 @@ fn parse_refr_group_inner(
             // M47.2 — `XMRK` opens the map-marker block; its `FNAM` is the
             // marker's flags.
             let mut map_marker: Option<u8> = None;
+            let mut encounter_zone_form: Option<u32> = None;
             // SCR-D7-01 / #1737 — the REFR's own `VMAD` (Skyrim+
             // objectReference override scripts), decoded so the cell loader
             // can attach them additively with the base record's scripts.
@@ -959,6 +960,9 @@ fn parse_refr_group_inner(
                     b"XRGD" => {
                         ragdoll_pose = super::helpers::decode_ragdoll_pose(&sub.data);
                     }
+                    b"XEZN" => {
+                        encounter_zone_form = r.u32().ok().map(|fid| reader.remap_form_id(fid));
+                    }
                     b"XMRK" => map_marker = Some(0),
                     b"FNAM" if map_marker.is_some() && !sub.data.is_empty() => {
                         map_marker = Some(sub.data[0]);
@@ -1020,6 +1024,7 @@ fn parse_refr_group_inner(
                         && header.flags & FLAG_STARTS_UNCONSCIOUS != 0,
                     ragdoll_pose,
                     map_marker,
+                    encounter_zone_form,
                 });
             }
         } else if &header.record_type == b"LAND" {

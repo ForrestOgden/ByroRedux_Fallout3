@@ -75,6 +75,9 @@ pub(super) fn stamp_quest_reference(
     if let Some(ownership) = &placed_ref.ownership {
         world.insert(entity, byroredux_scripting::ExplicitOwner(ownership.owner_form_id));
     }
+    if let Some(zone) = placed_ref.encounter_zone_form {
+        world.insert(entity, byroredux_scripting::ExplicitEncounterZone(zone));
+    }
     world.insert(
         entity,
         byroredux_scripting::SceneAliasCandidate {

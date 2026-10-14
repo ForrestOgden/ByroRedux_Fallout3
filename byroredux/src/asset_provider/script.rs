@@ -1048,6 +1048,10 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.
     byroredux_scripting::install_actor_value_names(world, index);
+    // M47.2 — CalculateEncounterLevel (encounter zones + difficulty GMSTs).
+    byroredux_scripting::install_encounter_level_rules(world, index);
+    // M47.2 — Actor.GetBribeAmount (Skyrim's bribe settings).
+    byroredux_scripting::install_bribe_rules(world, index);
     // M47.2 — New Vegas Damage Threshold (armor DT + the DT actor value,
     // perk-composed); absent on load orders without it.
     if crate::combat::install_damage_threshold_rules(world, index) {
