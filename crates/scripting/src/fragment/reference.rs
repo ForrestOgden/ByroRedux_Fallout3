@@ -322,6 +322,42 @@ pub fn raise_reference_event(world: &World, entity: EntityId, event: &'static st
     }
 }
 
+/// Queue a call of `function` on every script the VM runs on `entity`, delivered by
+/// the next [`reference_script_event_system`] run: what a script's own call to its
+/// function does, for the debug console (`script.call`). Returns how many scripts
+/// were queued. The function name is leaked (a handful of console calls).
+pub fn raise_reference_call(world: &World, entity: EntityId, function: &str, args: Vec<VmStored>) -> usize {
+    let Some(owner) = crate::condition::entity_global_form_id(world, entity) else {
+        return 0;
+    };
+    let function: &'static str = Box::leak(function.to_owned().into_boxed_str());
+    let pending: Vec<Delivery> = {
+        let Some(attached) = world.query::<PapyrusReferenceScripts>() else {
+            return 0;
+        };
+        let Some(scripts) = attached.get(entity) else {
+            return 0;
+        };
+        scripts
+            .0
+            .iter()
+            .map(|script| Delivery {
+                owner,
+                script: script.script.clone(),
+                vmad: Arc::clone(&script.vmad),
+                event: function,
+                args: args.clone(),
+                init_gated: false,
+            })
+            .collect()
+    };
+    let count = pending.len();
+    if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+        queue.0.extend(pending);
+    }
+    count
+}
+
 /// The events a reference receives when its cell unloads, in order.
 const UNLOAD_EVENTS: [&str; 2] = ["OnCellDetach", "OnUnload"];
 

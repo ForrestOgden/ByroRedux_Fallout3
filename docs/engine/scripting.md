@@ -1406,6 +1406,14 @@ values). In the engine's Bethesda-unit physics world the two conversions cancel
 (`0.0142875 × 69.99125 ≈ 1`), so a request is applied as
 `direction × magnitude × scale × mult` as a Rapier impulse.
 
+Live in Irkngthand04 (`script.call 321 fireTrap` runs `PhysicsTrap.fireTrap`, whose `Done` state sets
+the body dynamic and applies `ApplyHavokImpulse(0, 0, -1, 15)`): a placed reference carries no body
+itself, so the requests act on `reference_body_entities` (its own, those beneath it, and the bare collision
+entities whose `PhysicsSourceForm` names its REFR); before that, `SetMotionType` and the impulse found
+"no live body" on the script's reference. With it the falling rock's body logged an impulse of
+`(0, -337.5, 0)` (15 x `fGameplayImpulseScale` 150 x the Trap layer's 0.15), fell 359 units from
+y -6107.7 to -6467.1 and came to rest.
+
 `RigidBodyData.havok_layer` carries the authored layer (the low byte of the NIF's packed
 `HavokFilter`; `serde(skip)`, re-derived at import, kept across a live load like
 `part_surface_materials`). The VM queues a `HavokImpulseRequest` on the reference (calls in one

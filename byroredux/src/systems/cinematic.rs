@@ -226,30 +226,73 @@ fn cinematic_event_from_label(label: &str) -> Option<CinematicAnimationEvent> {
     }
 }
 
+/// How many parents up a collision entity is searched for the reference it belongs to.
+const MAX_BODY_OWNER_HOPS: usize = 16;
+
+/// The entities that carry a rigid body for the reference `root`: its own, those of
+/// entities beneath it, and the bare collision entities its REFR owns (their
+/// `PhysicsSourceForm` names it). A script's `SetMotionType` / `ApplyHavokImpulse` on
+/// a placed reference acts on these (the CK: the reference's collision), not on the
+/// placement root, which carries no body.
+pub(crate) fn reference_body_entities(world: &World, root: EntityId) -> Vec<EntityId> {
+    let form = world.get::<byroredux_core::ecs::components::FormIdComponent>(root).map(|id| id.0);
+    let candidates: Vec<EntityId> = match world.query::<RigidBodyData>() {
+        Some(bodies) => bodies.iter().map(|(entity, _)| entity).collect(),
+        None => return Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .filter(|&entity| {
+            if entity == root {
+                return true;
+            }
+            let mut at = entity;
+            for _ in 0..MAX_BODY_OWNER_HOPS {
+                let Some(parent) = world.get::<byroredux_core::ecs::Parent>(at).map(|parent| parent.0) else {
+                    break;
+                };
+                if parent == root {
+                    return true;
+                }
+                at = parent;
+            }
+            form.is_some_and(|form| {
+                world
+                    .get::<byroredux_core::ecs::components::PhysicsSourceForm>(entity)
+                    .is_some_and(|source| source.0 == form)
+            })
+        })
+        .collect()
+}
+
 /// Apply Papyrus `SetMotionType` requests to both canonical ECS body data and
 /// an already-live Rapier body, then drain the one-shot request.
 pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
+    let asked: Vec<(EntityId, MotionTypeChangeRequest)> = match world.query::<MotionTypeChangeRequest>() {
+        Some(request_q) => request_q.iter().map(|(entity, request)| (entity, *request)).collect(),
+        None => return,
+    };
+    if asked.is_empty() {
+        return;
+    }
+    // A reference's request acts on the bodies it owns (see `reference_body_entities`).
+    let mut targets: Vec<(EntityId, MotionTypeChangeRequest)> = Vec::new();
+    for (entity, request) in &asked {
+        let bodies = reference_body_entities(world, *entity);
+        if bodies.is_empty() {
+            targets.push((*entity, *request));
+        }
+        targets.extend(bodies.into_iter().map(|body| (body, *request)));
+    }
     let requests: Vec<(EntityId, MotionTypeChangeRequest, Option<RapierHandles>)> = {
-        let Some(request_q) = world.query::<MotionTypeChangeRequest>() else {
-            return;
-        };
         let handles_q = world.query::<RapierHandles>();
-        request_q
+        targets
             .iter()
             .map(|(entity, request)| {
-                (
-                    entity,
-                    *request,
-                    handles_q
-                        .as_ref()
-                        .and_then(|handles| handles.get(entity).copied()),
-                )
+                (*entity, *request, handles_q.as_ref().and_then(|handles| handles.get(*entity).copied()))
             })
             .collect()
     };
-    if requests.is_empty() {
-        return;
-    }
 
     if let Some(mut bodies) = world.query_mut::<RigidBodyData>() {
         for (entity, request, _) in &requests {
@@ -260,15 +303,17 @@ pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
     }
 
     if let Some(mut physics) = world.try_resource_mut::<PhysicsWorld>() {
-        for (_, request, handles) in &requests {
+        for (entity, request, handles) in &requests {
             if let Some(handles) = handles {
                 physics.set_motion_type(handles.body, request.motion_type, request.allow_activate);
+            } else {
+                log::debug!("SetMotionType({:?}) on entity {entity}: no live body", request.motion_type);
             }
         }
     }
 
     if let Some(mut request_q) = world.query_mut::<MotionTypeChangeRequest>() {
-        for (entity, _, _) in requests {
+        for (entity, _) in asked {
             request_q.remove(entity);
         }
     }
@@ -285,14 +330,23 @@ const SKYRIM_HAVOK_SCALE: f32 = 69.99125;
 /// — Y-up, in Bethesda units. A reference with no live dynamic body is the CK's
 /// "no 3D" failure: the request is dropped. One-shot, drained here.
 pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
-    let requests: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = {
+    let asked: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = {
         let Some(request_q) = world.query::<byroredux_scripting::HavokImpulseRequest>() else {
             return;
         };
         request_q.iter().map(|(entity, request)| (entity, *request)).collect()
     };
-    if requests.is_empty() {
+    if asked.is_empty() {
         return;
+    }
+    // The impulse acts on each body of the reference's collision.
+    let mut requests: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = Vec::new();
+    for (entity, request) in &asked {
+        let bodies = reference_body_entities(world, *entity);
+        if bodies.is_empty() {
+            requests.push((*entity, *request));
+        }
+        requests.extend(bodies.into_iter().map(|body| (body, *request)));
     }
     let Some(rules) = world.try_resource::<byroredux_scripting::HavokImpulseRules>().map(|rules| *rules) else {
         return;
@@ -320,11 +374,12 @@ pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
             let [x, y, z] = request.vector;
             // Z-up game space to the engine's Y-up: (x, y, z) -> (x, z, -y).
             let impulse = byroredux_core::math::Vec3::new(x, z, -y) * factor;
+            log::debug!("ApplyHavokImpulse on entity {entity}: {impulse:?} (layer {layer})");
             physics.apply_impulse(handles.body, impulse);
         }
     }
     if let Some(mut request_q) = world.query_mut::<byroredux_scripting::HavokImpulseRequest>() {
-        for (entity, _) in requests {
+        for (entity, _) in asked {
             request_q.remove(entity);
         }
     }
@@ -2525,4 +2580,38 @@ mod tests {
         );
     }
 
+
+    /// A placed reference carries no body itself: its bodies are the entities beneath it
+    /// and the bare collision entities whose `PhysicsSourceForm` names its REFR (found
+    /// live: a trap's `SetMotionType` and `ApplyHavokImpulse` reached no body).
+    #[test]
+    fn a_references_bodies_are_its_own_its_children_and_the_collision_entities_it_owns() {
+        use byroredux_core::ecs::components::{FormIdComponent, PhysicsSourceForm};
+        use byroredux_core::ecs::Parent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let mut world = World::new();
+        world.register::<RigidBodyData>();
+        world.register::<Parent>();
+        world.register::<FormIdComponent>();
+        world.register::<PhysicsSourceForm>();
+        let mut pool = FormIdPool::new();
+        let mut form = |local| pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) });
+        let (rock, other) = (form(0xC27C8), form(0xC27C7));
+        world.insert_resource(pool);
+        let root = world.spawn();
+        let child = world.spawn();
+        let bare = world.spawn();
+        let stranger = world.spawn();
+        let foreign = world.spawn();
+        world.insert(root, FormIdComponent(rock));
+        world.insert(child, Parent(root));
+        world.insert(bare, PhysicsSourceForm(rock));
+        world.insert(foreign, PhysicsSourceForm(other));
+        for entity in [child, bare, stranger, foreign] {
+            world.insert(entity, RigidBodyData::static_body());
+        }
+        let mut bodies = reference_body_entities(&world, root);
+        bodies.sort_unstable();
+        assert_eq!(bodies, vec![child, bare], "not the stranger, not another REFR's body");
+    }
 }
