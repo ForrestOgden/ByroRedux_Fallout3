@@ -24,11 +24,13 @@
 //!   to send when the timer goes off."; `BSRandomAlarmModifier` - a time drawn uniformly
 //!   between "the minimum amount of time before the timer goes off" and the maximum, started
 //!   over on expiry if "Whether or not to reset the alarm when the timer expires".
+//! - `BSGetTimeStepModifier` - "The current time step.": the variable bound to its
+//!   `timeStep` takes the frame's `dt` (`fTimeStep`).
 //! - `hkbModifierList` - its modifiers.
 //!
 //! Not run: the modifiers that pose the skeleton (look-at, twist, foot IK, ragdoll, jiggle),
-//! the ones that compute a variable from engine state (`BSSpeedSamplerModifier`,
-//! `BSInterpValueModifier`, `BSGetTimeStepModifier`), and `BSIsActiveModifier` (booleans for
+//! the ones whose formula the files do not give (`BSSpeedSamplerModifier`,
+//! `BSInterpValueModifier`, `hkbDampingModifier`), and `BSIsActiveModifier` (booleans for
 //! the engine's own code).
 
 use byroredux_hkx::{BehaviorGraph, Modifier, ModifierNode, Statement, VariableKind};
@@ -158,6 +160,7 @@ impl ModifierState {
                 runtime.alarm = Some(draw_alarm(node.id, runtime.draws, *min_seconds, *max_seconds));
             }
             Modifier::Timer { .. }
+            | Modifier::TimeStep { .. }
             | Modifier::EventsFromRange { .. }
             | Modifier::EventOnDeactivate { .. }
             | Modifier::EventEveryNEvents { .. } => {}
@@ -234,6 +237,7 @@ impl ModifierState {
             Modifier::EvaluateExpression { .. }
             | Modifier::EventOnDeactivate { .. }
             | Modifier::Timer { .. }
+            | Modifier::TimeStep { .. }
             | Modifier::RandomAlarm { .. } => {}
         }
     }
@@ -248,6 +252,11 @@ impl ModifierState {
 
     fn tick_node(&mut self, node: &Arc<ModifierNode>, dt: f32, vars: &mut Vars, events: &mut Vec<i32>) {
         match &node.kind {
+            Modifier::TimeStep { variable } => {
+                if let Some(variable) = variable {
+                    vars.set(*variable, dt);
+                }
+            }
             Modifier::Timer { alarm_seconds, event } => {
                 let runtime = self.runtime.entry(node.id).or_default();
                 runtime.elapsed += dt.max(0.0);
@@ -486,6 +495,15 @@ mod tests {
             assert!((1.0..=3.5).contains(&draw));
         }
         assert_eq!(draw_alarm(7, 3, 1.0, 3.5), draw_alarm(7, 3, 1.0, 3.5), "deterministic");
+    }
+
+    #[test]
+    fn the_time_step_modifier_writes_dt_to_its_variable() {
+        let mut h = Harness::new(&[("fTimeStep", VariableKind::Real)], &[]);
+        let step = node(1, Modifier::TimeStep { variable: Some(0) });
+        h.run(|state, vars, events| state.sync(vec![step.clone()], vars, events));
+        h.run(|state, vars, events| state.tick(0.016, vars, events));
+        assert_eq!(h.values[0], 0.016);
     }
 
     #[test]

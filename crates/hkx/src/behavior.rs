@@ -431,6 +431,9 @@ pub enum Modifier {
     /// `BSRandomAlarmModifier`: a timer whose time is drawn between a minimum and a maximum,
     /// and which starts over when it goes off if `reset`.
     RandomAlarm { min_seconds: f32, max_seconds: f32, event: i32, reset: bool },
+    /// `BSGetTimeStepModifier` ("The current time step."): its `timeStep` member is bound
+    /// to a variable (`fTimeStep`), which takes the frame's `dt` every frame.
+    TimeStep { variable: Option<usize> },
     /// `hkbModifierList`.
     List(Vec<Arc<ModifierNode>>),
 }
@@ -672,6 +675,11 @@ fn visit_modifier(node: &mut Arc<ModifierNode>, f: &mut dyn FnMut(Slot<'_>)) {
         }
         Modifier::EvaluateExpression { .. } => {}
         Modifier::Timer { event, .. } | Modifier::RandomAlarm { event, .. } => f(Slot::Event(event)),
+        Modifier::TimeStep { variable } => {
+            if let Some(variable) = variable {
+                f(Slot::Variable(variable));
+            }
+        }
         Modifier::EventOnDeactivate { event } => f(Slot::Event(event)),
         Modifier::EventEveryNEvents { check, send, .. } => {
             f(Slot::Event(check));
@@ -1298,6 +1306,7 @@ fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<
             active_by_default: file.u8(object + EVENT_DRIVEN_BY_DEFAULT, "event driven default")? != 0,
             inner: child(EVENT_DRIVEN_MODIFIER)?,
         },
+        Some("BSGetTimeStepModifier") => Modifier::TimeStep { variable: bound_variable(file, object, "timeStep")? },
         Some("hkbTimerModifier" | "BSTimerModifier") => Modifier::Timer {
             alarm_seconds: file.f32(object + TIMER_ALARM, "alarm time")?,
             event: event_at(file, object + TIMER_EVENT)?,

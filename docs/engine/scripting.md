@@ -1705,12 +1705,11 @@ order the strings give). Examples below quote them.
   `runStart`), `hkbEvaluateExpressionModifier` ("Expression of the form 'variablename = expression' or
   'eventname = boolean expression'", four event modes), `BSEventOnDeactivateModifier`,
   `BSEventEveryNEventsModifier`, `hkbEventDrivenModifier` ("Event used to activate the wrapped modifier"),
-  `hkbModifierList`, `hkbTimerModifier` / `BSTimerModifier`, `BSRandomAlarmModifier` (a deterministic draw). Their
+  `hkbModifierList`, `hkbTimerModifier` / `BSTimerModifier`, `BSRandomAlarmModifier` (a deterministic draw), `BSGetTimeStepModifier` ("The current time step.": its bound `fTimeStep` takes `dt`). Their
   events go through the same path as a clip trigger's; the graph moves itself (a modifier raising `walkStart`
   takes the idle's transition, tested). Not run: the modifiers that pose the skeleton (look-at, twist, foot IK,
-  ragdoll, jiggle), those that compute a variable from engine state (`BSSpeedSamplerModifier`,
-  `BSInterpValueModifier`, `BSGetTimeStepModifier`, `hkbDampingModifier`: the strings give their members
-  but not their formulas) and `BSIsActiveModifier` (its booleans are for the engine's own code).
+  ragdoll, jiggle), those whose formula the files do not give (`BSSpeedSamplerModifier`,
+  `BSInterpValueModifier`, `hkbDampingModifier`: the strings name their members, not what they compute) and `BSIsActiveModifier` (its booleans are for the engine's own code).
 - **Locomotion inputs.** `graph_locomotion_system` (PostUpdate, after the movers, for graph actors the Skyrim
   walk-clip system does not drive) feeds `Speed`/`SpeedSmoothed`, `Direction` and `moveStart`/`moveStop` from the
   actor's displacement (hysteresis windows from the walk-clip system). A graph actor faces -Z: Havok's forward is

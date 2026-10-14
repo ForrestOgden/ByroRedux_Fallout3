@@ -37,6 +37,7 @@ fn show_modifier(graph: &BehaviorGraph, node: &Arc<ModifierNode>, pad: &str) {
             ranges.iter().map(|r| format!("<={} -> {}{}", r.upper, event(r.event), if r.when_in_range { " (while)" } else { "" })).collect::<Vec<_>>()
         ),
         Modifier::EvaluateExpression { expressions } => println!("{pad}expressions {:?}", expressions.iter().map(|e| (&e.text, e.event_mode)).collect::<Vec<_>>()),
+        Modifier::TimeStep { variable } => println!("{pad}time step -> {}", variable.map_or("-".into(), var)),
         Modifier::Timer { alarm_seconds, event: e } => println!("{pad}timer {alarm_seconds}s -> {}", event(*e)),
         Modifier::RandomAlarm { min_seconds, max_seconds, event: e, reset } => {
             println!("{pad}random alarm {min_seconds}..{max_seconds}s -> {} reset={reset}", event(*e))
