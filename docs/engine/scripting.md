@@ -1448,17 +1448,27 @@ on the object's `AnimationPlayer`: single play holds the last pose, looping loop
 clip is held at its authored fraction. The clip's trigger events are scheduled in real time
 (`(clip time − start time) / speed`, end-relative ones from the clip's length) and raised by
 `object_graph_step_system`, so a lever that finishes `PullDown` raises `Pulled` and settles in the
-"Pulled" state with no script involved. Transitions are instantaneous (no blends), blend trees and
-nested machines have no clip (`examples/graph_dump.rs` prints a decoded graph: 169 of the 420 vanilla
-behavior graphs carry a clip in a root state, 251 do not, most of them actor and creature graphs;
-the swinging blade `meshes\traps\swingingblade\behaviors\behavior00.hkx` is one: its single root
-state `State05` holds a blender generator `Blend00` over two inner state machines, `Behavior01`
-(states `State00`-`State02` playing `Clip00`-`Clip02` of `TrapBladeSwinging01_Trigger.hkx`) and
-`Behavior02` (`State06`, `State03`, `State04` playing the NIF's own Gamebryo sequences `playanim01` /
-`playanim02`), and a `Single` / `Loop` / `Reset` event is answered inside those inner machines, so
-the root machine rejects it and the blade does not swing; running it needs the nested machines, the
-blender's weights and the NIF sequence generator, none of which is decoded), transition conditions and variables are not evaluated, and the
-`SoundPlay.*` events the triggers carry are not played.
+"Pulled" state with no script involved. Transitions are instantaneous (no blends), and the blend weights of a
+blender are not kept: a state's generator may also be a *Gamebryo sequence* (a `NiControllerSequence`
+of the object's own NIF, by name), a *nested state machine*, or a *blender* over such children, and
+the decoder flattens those into `State::content` (`examples/graph_dump.rs` prints a decoded graph;
+169 of the 420 vanilla graphs carry a clip in a root state and 251 do not, most of them actor and
+creature graphs). The runtime keeps one run per machine: an event goes to the root machine first
+and, when its current state has no transition on it, to the nested machines of that state; a
+machine changing state drops the trigger events its old state scheduled and schedules the new
+state's, and a looping clip's triggers come round again each loop. The *motion leaf* is what plays on
+the object's `AnimationPlayer`: a Gamebryo sequence the NIF actually carries if the configuration
+has one, else the first clip; a change of machine state that does not touch the motion leaf does not
+restart it, and one that changes which leaf it is switches the player. The swinging blade
+(`meshes\traps\swingingblade\behaviors\behavior00.hkx`) is this shape: its one root state holds a
+blender over two nested machines, `Behavior01` swinging the `Trigger` clip (`State00` held,
+`State01` looping, `State02` played once on `Single`, raising `Apex`, `Reset` and a swing sound) and
+`Behavior02` naming `playanim01` / `playanim02`, which the blade's NIF does not carry. Live in Bleak
+Falls Barrow, stepping on trigger `00086018` relays the activation to the three blades, their
+`PlayAnimation('Single')` is accepted by the nested machine, and the `Blade01` node sweeps from
++54 degrees through -54 and back. The blender's weights, transition blends and effects, and
+transition conditions and variables are not evaluated, and only the motion leaf plays at a time (a
+blender that mixes two moving clips shows one of them).
 
 **The natives.** `PlayAnimation` returns whether the graph took the event. `PlayAnimationAndWait`
 is a latent statement: the schedule is deterministic, so the seconds until the named event is

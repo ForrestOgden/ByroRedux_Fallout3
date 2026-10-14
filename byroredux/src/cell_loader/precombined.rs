@@ -1094,6 +1094,7 @@ pub(super) fn geometry_only_cached(
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        graph_sequences: Vec::new(),
         placement_root_billboard: None,
         speedtree_wind: None,
         bsx_flags: 0,

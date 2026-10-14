@@ -38,7 +38,7 @@ use byroredux_core::animation::AnimationPlayer;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
-use byroredux_hkx::{BehaviorGraph, ClipMode, State, Transition, TRANSITION_FLAG_DISABLED};
+use byroredux_hkx::{BehaviorGraph, ClipMode, StateClip, StateMachine, Transition, TRANSITION_FLAG_DISABLED};
 
 /// The project file a placed object's NIF names (`BSBehaviorGraphExtraData`),
 /// relative to `meshes\`. Stamped by the cell loader; the binary resolves it.
@@ -57,6 +57,16 @@ pub struct GraphClip {
     pub duration: f32,
 }
 
+/// The `NiControllerSequence`s of a placed object's own NIF, registered in the
+/// animation registry (lower-cased name -> clip): what the graph's Gamebryo
+/// sequence generators play. Stamped beside [`BehaviorGraphRef`].
+#[derive(Debug, Clone, Default)]
+pub struct GraphSequences(pub Arc<Vec<(String, GraphClip)>>);
+
+impl Component for GraphSequences {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// A decoded behavior graph with its clips registered. Shared by every object
 /// that uses the project.
 #[derive(Debug, Clone)]
@@ -64,18 +74,21 @@ pub struct LoadedGraph {
     pub graph: BehaviorGraph,
     /// `(lower-cased animation path, looping)` -> the registered clip.
     pub clips: HashMap<(String, bool), GraphClip>,
+    /// Lower-cased `NiControllerSequence` name -> the registered clip, for the
+    /// Gamebryo sequence generators (`BGSGamebryoSequenceGenerator`) a graph
+    /// plays from the object's own NIF.
+    pub sequences: HashMap<String, GraphClip>,
 }
 
 impl LoadedGraph {
-    fn state(&self, id: i32) -> Option<&State> {
-        self.graph.machine.as_ref()?.states.iter().find(|state| state.id == id)
-    }
-
-    fn clip_for<'a>(&self, state: &'a State) -> Option<(&'a byroredux_hkx::StateClip, GraphClip)> {
-        let clip = state.clip.as_ref()?;
+    fn clip_for<'a>(&self, clip: &'a StateClip) -> Option<(&'a StateClip, GraphClip)> {
         let looping = clip.mode == ClipMode::Looping;
         let registered = *self.clips.get(&(clip.animation.to_ascii_lowercase(), looping))?;
         Some((clip, registered))
+    }
+
+    fn sequence(&self, name: &str) -> Option<GraphClip> {
+        self.sequences.get(&name.to_ascii_lowercase()).copied()
     }
 }
 
@@ -90,11 +103,44 @@ pub struct Playback {
     pub hold_at: Option<f32>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Active {
-    elapsed: f32,
-    /// `(seconds from the clip start, event id)`, ascending.
-    events: Vec<(f32, i32)>,
+/// One state machine's current state, and the runs of the nested machines of that
+/// state (one per `StateContent::machines`, each in its own current state).
+#[derive(Debug, Clone, PartialEq)]
+struct MachineRun {
+    state: i32,
+    nested: Vec<MachineRun>,
+}
+
+impl MachineRun {
+    /// `machine` in `state`, its nested machines at their start states.
+    fn enter(machine: &StateMachine, state: i32) -> Self {
+        let nested = machine
+            .states
+            .iter()
+            .find(|candidate| candidate.id == state)
+            .map(|state| state.content.machines.iter().map(|inner| Self::enter(inner, inner.start_state)).collect())
+            .unwrap_or_default();
+        Self { state, nested }
+    }
+}
+
+/// An event waiting for its time: raised by a clip trigger of the machine at
+/// `path` (indices into the current states' nested machines, from the root).
+#[derive(Debug, Clone)]
+struct Scheduled {
+    at: f32,
+    event: i32,
+    path: Vec<u16>,
+    /// A looping clip's loop length in seconds: the trigger comes round again
+    /// that long after it fires, until the machine leaves the state.
+    period: Option<f32>,
+}
+
+/// What a state plays, in the order the runtime prefers: a Gamebryo sequence
+/// (the motion of a graph that blends it with trigger-only clips), else a clip.
+enum Leaf<'a> {
+    Sequence(&'a str),
+    Clip(&'a StateClip),
 }
 
 /// A placed object's running behavior graph.
@@ -103,8 +149,11 @@ pub struct ObjectAnimationGraph {
     graph: Arc<LoadedGraph>,
     /// The entity whose subtree the clips animate (the placement root).
     pub root: EntityId,
-    state: i32,
-    active: Active,
+    run: MachineRun,
+    /// The graph's own clock, seconds.
+    now: f32,
+    /// Trigger events waiting for their time, in no particular order.
+    scheduled: Vec<Scheduled>,
     /// Events the graph raised since [`take_raised`](Self::take_raised): the
     /// ones a script's accepted `PlayAnimation` sent and the ones a clip's
     /// triggers fired (a trigger raises its event whether or not a transition
@@ -116,15 +165,39 @@ impl Component for ObjectAnimationGraph {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Walk `path` down from the root machine to the machine and run it names.
+fn locate<'a>(
+    mut machine: &'a StateMachine,
+    mut run: &'a MachineRun,
+    path: &[u16],
+) -> Option<(&'a StateMachine, &'a MachineRun)> {
+    for &index in path {
+        let state = machine.states.iter().find(|state| state.id == run.state)?;
+        machine = state.content.machines.get(usize::from(index))?;
+        run = run.nested.get(usize::from(index))?;
+    }
+    Some((machine, run))
+}
+
+/// `run`'s mutable counterpart: the run `path` names.
+fn locate_mut<'a>(mut run: &'a mut MachineRun, path: &[u16]) -> Option<&'a mut MachineRun> {
+    for &index in path {
+        run = run.nested.get_mut(usize::from(index))?;
+    }
+    Some(run)
+}
+
 impl ObjectAnimationGraph {
     /// The graph in its start state, with the start state's clip not yet playing.
     pub fn new(graph: Arc<LoadedGraph>, root: EntityId) -> Option<Self> {
-        let state = graph.graph.machine.as_ref()?.start_state;
-        Some(Self { graph, root, state, active: Active::default(), raised: Vec::new() })
+        let machine = graph.graph.machine.as_ref()?;
+        let run = MachineRun::enter(machine, machine.start_state);
+        Some(Self { graph, root, run, now: 0.0, scheduled: Vec::new(), raised: Vec::new() })
     }
 
+    /// The root machine's current state.
     pub fn state(&self) -> i32 {
-        self.state
+        self.run.state
     }
 
     pub fn graph(&self) -> &LoadedGraph {
@@ -148,108 +221,262 @@ impl ObjectAnimationGraph {
         }
     }
 
-    /// The playback of the current state's clip, started fresh.
-    pub fn start(&mut self) -> Option<Playback> {
-        let state = self.state;
-        self.enter(state)
+    /// The root machine and the leaves of the current configuration, each with
+    /// the path of the machine whose current state holds it.
+    fn leaves(&self) -> Vec<(Vec<u16>, Leaf<'_>)> {
+        fn walk<'a>(
+            machine: &'a StateMachine,
+            run: &MachineRun,
+            path: &mut Vec<u16>,
+            out: &mut Vec<(Vec<u16>, Leaf<'a>)>,
+        ) {
+            let Some(state) = machine.states.iter().find(|state| state.id == run.state) else {
+                return;
+            };
+            if let Some(clip) = &state.clip {
+                out.push((path.clone(), Leaf::Clip(clip)));
+            }
+            for name in &state.content.sequences {
+                out.push((path.clone(), Leaf::Sequence(name)));
+            }
+            for clip in &state.content.blended_clips {
+                out.push((path.clone(), Leaf::Clip(clip)));
+            }
+            for (index, inner) in state.content.machines.iter().enumerate() {
+                if let Some(inner_run) = run.nested.get(index) {
+                    path.push(index as u16);
+                    walk(inner, inner_run, path, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(machine) = self.graph.graph.machine.as_ref() {
+            walk(machine, &self.run, &mut Vec::new(), &mut out);
+        }
+        out
     }
 
-    fn transition(&self, event: i32) -> Option<Transition> {
+    /// Schedule the trigger events of every clip in the state(s) `path`'s machine
+    /// is in, and of the nested machines below, from the graph's current time.
+    fn schedule_from(&mut self, path: &[u16]) {
+        let graph = Arc::clone(&self.graph);
+        let Some(root) = graph.graph.machine.as_ref() else { return };
+        let Some((machine, run)) = locate(root, &self.run, path) else { return };
+        let mut fresh = Vec::new();
+        let now = self.now;
+        fn walk(
+            graph: &LoadedGraph,
+            machine: &StateMachine,
+            run: &MachineRun,
+            path: &mut Vec<u16>,
+            now: f32,
+            out: &mut Vec<Scheduled>,
+        ) {
+            let Some(state) = machine.states.iter().find(|state| state.id == run.state) else {
+                return;
+            };
+            for clip in state.clip.iter().chain(&state.content.blended_clips) {
+                let Some((clip, registered)) = graph.clip_for(clip) else { continue };
+                if clip.mode == ClipMode::UserControlled {
+                    continue;
+                }
+                let speed = if clip.playback_speed.is_finite() && clip.playback_speed > 0.0 { clip.playback_speed } else { 1.0 };
+                let period = (clip.mode == ClipMode::Looping && registered.duration > 0.0)
+                    .then_some(registered.duration / speed);
+                for trigger in &clip.triggers {
+                    let at = if trigger.relative_to_end { registered.duration + trigger.local_time } else { trigger.local_time };
+                    let real = (at - clip.start_time) / speed;
+                    if real >= 0.0 && real.is_finite() {
+                        out.push(Scheduled { at: now + real, event: trigger.event, path: path.clone(), period });
+                    }
+                }
+            }
+            for (index, inner) in state.content.machines.iter().enumerate() {
+                if let Some(inner_run) = run.nested.get(index) {
+                    path.push(index as u16);
+                    walk(graph, inner, inner_run, path, now, out);
+                    path.pop();
+                }
+            }
+        }
+        walk(&graph, machine, run, &mut path.to_vec(), now, &mut fresh);
+        self.scheduled.extend(fresh);
+    }
+
+    /// The motion leaf of the current configuration - a Gamebryo sequence if there
+    /// is one, else the first clip - with its owning machine's path and a name
+    /// that tells it from the others.
+    fn motion_leaf(&self) -> Option<(Vec<u16>, Leaf<'_>)> {
+        // Only leaves that can play: a sequence the object's NIF has, a clip that
+        // was registered (a graph can name sequences its NIF does not carry).
+        let mut leaves: Vec<_> = self
+            .leaves()
+            .into_iter()
+            .filter(|(_, leaf)| match leaf {
+                Leaf::Sequence(name) => self.graph.sequence(name).is_some(),
+                Leaf::Clip(clip) => self.graph.clip_for(clip).is_some(),
+            })
+            .collect();
+        let index = leaves
+            .iter()
+            .position(|(_, leaf)| matches!(leaf, Leaf::Sequence(_)))
+            .or_else(|| leaves.iter().position(|(_, leaf)| matches!(leaf, Leaf::Clip(_))))?;
+        Some(leaves.swap_remove(index))
+    }
+
+    fn leaf_name(leaf: &Leaf<'_>) -> String {
+        match leaf {
+            Leaf::Sequence(name) => format!("seq:{}", name.to_ascii_lowercase()),
+            Leaf::Clip(clip) => format!("clip:{}", clip.animation.to_ascii_lowercase()),
+        }
+    }
+
+    /// How the motion leaf plays. With `after` set (an event just changed the
+    /// machines at those paths, and `before` was the motion leaf's identity), it is
+    /// described only if it is a different leaf now or sits under a machine that
+    /// changed state; otherwise it is already running and nothing restarts.
+    fn playback(&self, after: Option<(&[Vec<u16>], Option<(Vec<u16>, String)>)>) -> Option<Playback> {
+        let (path, leaf) = self.motion_leaf()?;
+        if let Some((changed, before)) = after {
+            let same_leaf = before.as_ref().is_some_and(|(before_path, before_name)| {
+                *before_path == path && *before_name == Self::leaf_name(&leaf)
+            });
+            if same_leaf && !changed.iter().any(|change| path.starts_with(change)) {
+                return None;
+            }
+        }
+        match leaf {
+            Leaf::Sequence(name) => {
+                let registered = self.graph.sequence(name)?;
+                Some(Playback { handle: registered.handle, speed: 1.0, start_time: 0.0, hold_at: None })
+            }
+            Leaf::Clip(clip) => {
+                let (clip, registered) = self.graph.clip_for(clip)?;
+                let speed = if clip.playback_speed.is_finite() && clip.playback_speed > 0.0 { clip.playback_speed } else { 1.0 };
+                if clip.mode == ClipMode::UserControlled {
+                    return Some(Playback {
+                        handle: registered.handle,
+                        speed,
+                        start_time: 0.0,
+                        hold_at: Some(clip.user_fraction.clamp(0.0, 1.0) * registered.duration),
+                    });
+                }
+                Some(Playback { handle: registered.handle, speed, start_time: clip.start_time, hold_at: None })
+            }
+        }
+    }
+
+    /// The playback of the current configuration, started fresh (every trigger
+    /// of every clip in it scheduled from now).
+    pub fn start(&mut self) -> Option<Playback> {
+        self.scheduled.clear();
+        self.schedule_from(&[]);
+        self.playback(None)
+    }
+
+    /// The transition `event` takes in the machine at `machine`/`run`: the current
+    /// state's own first, then the machine's wildcard; disabled ones never fire.
+    fn transition_of(machine: &StateMachine, run: &MachineRun, event: i32) -> Option<Transition> {
         if event < 0 {
             return None;
         }
-        let machine = self.graph.graph.machine.as_ref()?;
-        let state = self.graph.state(self.state)?;
+        let state = machine.states.iter().find(|state| state.id == run.state)?;
         let usable = |t: &&Transition| t.event == event && t.flags & TRANSITION_FLAG_DISABLED == 0;
-        state
-            .transitions
-            .iter()
-            .find(usable)
-            .or_else(|| machine.wildcard.iter().find(usable))
-            .copied()
+        state.transitions.iter().find(usable).or_else(|| machine.wildcard.iter().find(usable)).copied()
     }
 
-    /// Enter `state_id`: schedule its clip's trigger events and describe its playback.
-    fn enter(&mut self, state_id: i32) -> Option<Playback> {
-        self.state = state_id;
-        self.active = Active::default();
+    /// Give `event` to the machine at `path`: its own transition if it has one,
+    /// else to the nested machines of its current state. The paths of the machines
+    /// that changed state are appended to `changed`.
+    fn dispatch(&mut self, path: &mut Vec<u16>, event: i32, changed: &mut Vec<Vec<u16>>) {
         let graph = Arc::clone(&self.graph);
-        let state = graph.state(state_id)?;
-        let (clip, registered) = graph.clip_for(state)?;
-        let speed = if clip.playback_speed.is_finite() && clip.playback_speed > 0.0 {
-            clip.playback_speed
-        } else {
-            1.0
-        };
-        if clip.mode == ClipMode::UserControlled {
-            return Some(Playback {
-                handle: registered.handle,
-                speed,
-                start_time: 0.0,
-                hold_at: Some(clip.user_fraction.clamp(0.0, 1.0) * registered.duration),
-            });
+        let Some(root) = graph.graph.machine.as_ref() else { return };
+        let Some((machine, run)) = locate(root, &self.run, path) else { return };
+        if let Some(transition) = Self::transition_of(machine, run, event) {
+            let entered = MachineRun::enter(machine, transition.to_state);
+            if let Some(slot) = locate_mut(&mut self.run, path) {
+                *slot = entered;
+            }
+            changed.push(path.clone());
+            return;
         }
-        let mut events: Vec<(f32, i32)> = clip
-            .triggers
-            .iter()
-            .filter_map(|trigger| {
-                let at = if trigger.relative_to_end {
-                    registered.duration + trigger.local_time
-                } else {
-                    trigger.local_time
-                };
-                let real = (at - clip.start_time) / speed;
-                (real >= 0.0 && real.is_finite()).then_some((real, trigger.event))
-            })
-            .collect();
-        events.sort_by(|a, b| a.0.total_cmp(&b.0));
-        self.active.events = events;
-        Some(Playback { handle: registered.handle, speed, start_time: clip.start_time, hold_at: None })
+        let inner = run.nested.len();
+        for index in 0..inner {
+            path.push(index as u16);
+            self.dispatch(path, event, changed);
+            path.pop();
+        }
     }
 
-    /// Raise `event`: `None` when no transition answers it; otherwise the new
-    /// state's playback (`Some(None)` when that state has no clip to play).
+    /// Raise `event`: `None` when no machine answers it; otherwise the playback to
+    /// start (`Some(None)` when nothing needs restarting).
     pub fn send_event(&mut self, event: i32) -> Option<Option<Playback>> {
-        let transition = self.transition(event)?;
-        Some(self.enter(transition.to_state))
+        let before = self.motion_leaf().map(|(path, leaf)| (path, Self::leaf_name(&leaf)));
+        let mut changed = Vec::new();
+        self.dispatch(&mut Vec::new(), event, &mut changed);
+        if changed.is_empty() {
+            return None;
+        }
+        for path in &changed {
+            self.scheduled.retain(|scheduled| !scheduled.path.starts_with(path));
+        }
+        for path in &changed {
+            self.schedule_from(path);
+        }
+        Some(self.playback(Some((&changed, before))))
     }
 
-    /// Seconds from now until `target` is raised, following the machine through
+    /// A looping clip's trigger that just fired comes round again a loop later.
+    fn rearm(&mut self, fired: &Scheduled) {
+        if let Some(period) = fired.period {
+            self.scheduled.push(Scheduled { at: fired.at + period, ..fired.clone() });
+        }
+    }
+
+    /// The earliest scheduled event due by `limit`, removed.
+    fn pop_due(&mut self, limit: f32) -> Option<Scheduled> {
+        let index = self
+            .scheduled
+            .iter()
+            .enumerate()
+            .filter(|(_, scheduled)| scheduled.at <= limit)
+            .min_by(|a, b| a.1.at.total_cmp(&b.1.at))
+            .map(|(index, _)| index)?;
+        Some(self.scheduled.remove(index))
+    }
+
+    /// Seconds from now until `target` is raised, following the machines through
     /// the transitions the schedule's own events take; `None` when it never is.
     pub fn seconds_until(&self, target: i32) -> Option<f32> {
         let mut sim = self.clone();
-        let mut origin = -sim.active.elapsed;
+        let origin = sim.now;
         for _ in 0..64 {
-            let (at, event) = *sim.active.events.first()?;
-            let total = origin + at;
-            if event == target {
-                return Some(total.max(0.0));
+            let due = sim.pop_due(f32::INFINITY)?;
+            sim.now = sim.now.max(due.at);
+            if due.event == target {
+                return Some((due.at - origin).max(0.0));
             }
-            sim.active.events.remove(0);
-            if sim.send_event(event).is_some() {
-                origin = total;
-            }
+            sim.rearm(&due);
+            sim.send_event(due.event);
         }
         None
     }
 
     /// Advance the schedule by `dt`: the events now due raise in order, and each
-    /// that changes the state yields the playback to start.
+    /// that changes a state with something to restart yields the playback to start.
     pub fn step(&mut self, dt: f32) -> Vec<Playback> {
         let mut started = Vec::new();
-        self.active.elapsed += dt.max(0.0);
-        while let Some(&(at, event)) = self.active.events.first() {
-            if at > self.active.elapsed {
-                break;
-            }
-            let carry = self.active.elapsed - at;
-            self.active.events.remove(0);
-            self.note_raised(event);
-            if let Some(Some(playback)) = self.send_event(event) {
-                self.active.elapsed = carry;
+        let limit = self.now + dt.max(0.0);
+        while let Some(due) = self.pop_due(limit) {
+            self.now = self.now.max(due.at);
+            self.note_raised(due.event);
+            self.rearm(&due);
+            if let Some(Some(playback)) = self.send_event(due.event) {
                 started.push(playback);
             }
         }
+        self.now = limit;
         started
     }
 }
@@ -309,7 +536,7 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
         let mut graphs = world.query_mut::<ObjectAnimationGraph>()?;
         let graph = graphs.get_mut(entity)?;
         let id = graph.graph.graph.event_id(event)?;
-        let before = graph.state;
+        let before = graph.state();
         let sent = graph.send_event(id);
         if sent.is_some() {
             graph.note_raised(id);
@@ -317,7 +544,7 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
         log::debug!(
             "PlayAnimation '{event}' on entity {entity}: {} (state {before} -> {})",
             if sent.is_some() { "accepted" } else { "rejected" },
-            graph.state
+            graph.state()
         );
         (graph.root, sent?)
     };
@@ -374,7 +601,7 @@ impl AnimArchetypeOverrides {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_hkx::{ClipTrigger, StateClip, StateMachine};
+    use byroredux_hkx::{ClipTrigger, State};
 
     fn transition(event: i32, to_state: i32) -> Transition {
         Transition { event, to_state, priority: 0, flags: 0 }
@@ -404,12 +631,14 @@ mod tests {
                     name: "Mid".into(),
                     transitions: vec![transition(0, 2)],
                     clip: Some(clip("a/pose.hkx", ClipMode::UserControlled, 1.0, Vec::new())),
+                    content: Default::default(),
                 },
                 State {
                     id: 1,
                     name: "Pulled".into(),
                     transitions: vec![transition(2, 0)],
                     clip: Some(clip("a/pose.hkx", ClipMode::UserControlled, 1.0, Vec::new())),
+                    content: Default::default(),
                 },
                 State {
                     id: 2,
@@ -421,6 +650,7 @@ mod tests {
                         2.0,
                         vec![trigger(1, 0.0, true)],
                     )),
+                    content: Default::default(),
                 },
             ],
             wildcard: vec![transition(3, 0)],
@@ -432,7 +662,7 @@ mod tests {
         let mut clips = HashMap::new();
         clips.insert(("a/pose.hkx".to_owned(), false), GraphClip { handle: 7, duration: 0.8 });
         clips.insert(("a/pull.hkx".to_owned(), false), GraphClip { handle: 9, duration: 0.8 });
-        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips }), 5).unwrap()
+        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new() }), 5).unwrap()
     }
 
     #[test]
@@ -448,6 +678,107 @@ mod tests {
         let started = graph.step(0.2);
         assert_eq!(graph.state(), 1, "the end-of-clip Pulled event moved it on");
         assert_eq!(started[0].hold_at, Some(0.0), "settling into a held pose");
+    }
+
+    /// The swinging blade's shape: a root state holding two inner machines, one
+    /// playing a looping trigger clip that raises `Apex` half a second in, the other
+    /// idling until `Single` starts Gamebryo sequence `playanim01` and `Reset` ends it.
+    fn blade() -> ObjectAnimationGraph {
+        use byroredux_hkx::StateContent;
+        let (single, reset, apex) = (0, 1, 2);
+        let trigger_clip = clip(
+            "a/trigger.hkx",
+            ClipMode::Looping,
+            1.0,
+            vec![ClipTrigger { local_time: 0.5, event: apex, relative_to_end: false, annotation: true }],
+        );
+        let inner_trigger = StateMachine {
+            start_state: 0,
+            states: vec![State {
+                id: 0,
+                name: "State00".into(),
+                transitions: vec![],
+                clip: Some(trigger_clip),
+                content: StateContent::default(),
+            }],
+            wildcard: vec![],
+        };
+        let swing = |id, name: &str, sequence: Option<&str>, transitions| State {
+            id,
+            name: name.into(),
+            transitions,
+            clip: None,
+            content: StateContent { sequences: sequence.map(str::to_owned).into_iter().collect(), ..Default::default() },
+        };
+        let inner_swing = StateMachine {
+            start_state: 6,
+            states: vec![
+                swing(6, "State06", None, vec![transition(single, 3)]),
+                swing(3, "State03", Some("PlayAnim01"), vec![transition(reset, 6)]),
+            ],
+            wildcard: vec![],
+        };
+        let root = StateMachine {
+            start_state: 5,
+            states: vec![State {
+                id: 5,
+                name: "State05".into(),
+                transitions: vec![],
+                clip: None,
+                content: StateContent { machines: vec![inner_trigger, inner_swing], ..Default::default() },
+            }],
+            wildcard: vec![],
+        };
+        let graph = BehaviorGraph { events: vec!["Single".into(), "Reset".into(), "Apex".into()], machine: Some(root) };
+        let mut clips = HashMap::new();
+        clips.insert(("a/trigger.hkx".to_owned(), true), GraphClip { handle: 11, duration: 1.0 });
+        let mut sequences = HashMap::new();
+        sequences.insert("playanim01".to_owned(), GraphClip { handle: 21, duration: 2.0 });
+        let mut graph = ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences }), 5).unwrap();
+        graph.start();
+        graph
+    }
+
+    /// An event the root machine does not answer reaches the nested machines; the
+    /// nested machine that answers it changes state, and the motion becomes the
+    /// Gamebryo sequence (the trigger-only clip stays as the idle pose and
+    /// supplies the schedule); `Reset` returns to the clip.
+    #[test]
+    fn events_reach_nested_machines_and_a_sequence_is_the_motion() {
+        let mut graph = blade();
+        assert_eq!(graph.state(), 5, "the root machine never moves");
+        let swing = graph.send_event(0).expect("the swing machine answers Single").expect("a sequence starts");
+        assert_eq!((swing.handle, swing.speed, swing.hold_at), (21, 1.0, None));
+        assert_eq!(graph.send_event(0), None, "State03 has no Single transition");
+        let back = graph.send_event(1).expect("Reset ends the swing").expect("the idle clip resumes");
+        assert_eq!(back.handle, 11, "the trigger clip is the motion again");
+    }
+
+    /// A graph can name a Gamebryo sequence its NIF does not carry (the swinging
+    /// blade's `playanim01`); that leaf does not play and the clip is the motion.
+    #[test]
+    fn a_sequence_the_nif_lacks_is_not_the_motion() {
+        let mut graph = blade();
+        let mut shared = (*graph.graph).clone();
+        shared.sequences.clear();
+        graph.graph = Arc::new(shared);
+        let swing = graph.send_event(0);
+        assert!(swing.is_some(), "the machine still answers Single");
+        assert_eq!(graph.start().map(|p| p.handle), Some(11), "the trigger clip plays");
+    }
+
+    /// A clip trigger in one nested machine raises its event on schedule while the
+    /// other machine's state changes; the events are not lost when the root idles.
+    #[test]
+    fn nested_clip_triggers_keep_their_schedule_across_a_sibling_transition() {
+        let mut graph = blade();
+        graph.send_event(0).unwrap();
+        assert!(graph.step(0.4).is_empty());
+        graph.take_raised();
+        graph.step(0.2);
+        assert_eq!(graph.take_raised(), ["Apex"], "the trigger clip's 0.5 s event, despite the swing");
+        let seconds = graph.seconds_until(2).expect("the next Apex is 1 s on");
+        assert!((seconds - 0.9).abs() < 1.0e-4 || (seconds - 1.0).abs() < 1.0e-4, "{seconds}");
     }
 
     #[test]

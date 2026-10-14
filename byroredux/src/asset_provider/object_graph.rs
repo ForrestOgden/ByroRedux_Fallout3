@@ -38,7 +38,12 @@ fn mesh_path(relative: &str) -> String {
 }
 
 /// Decode `project` and register its clips.
-fn load_graph(world: &mut World, provider: &TextureProvider, project: &str) -> Option<Arc<LoadedGraph>> {
+fn load_graph(
+    world: &mut World,
+    provider: &TextureProvider,
+    project: &str,
+    sequences: &HashMap<String, GraphClip>,
+) -> Option<Arc<LoadedGraph>> {
     let project_path = mesh_path(project);
     let directory = project_path.rsplit_once('\\')?.0.to_owned();
     let relative = |name: &str| format!("{directory}\\{}", name.trim_start_matches(['\\', '/']));
@@ -62,9 +67,21 @@ fn load_graph(world: &mut World, provider: &TextureProvider, project: &str) -> O
         .map_err(|error| log::debug!("behavior graph '{project_path}': skeleton: {error}"))
         .ok()?;
 
+    // Every clip any state plays, nested machines and blenders included.
+    fn collect<'a>(machine: &'a byroredux_hkx::StateMachine, out: &mut Vec<(&'a str, &'a byroredux_hkx::StateClip)>) {
+        for state in &machine.states {
+            for clip in state.clip.iter().chain(&state.content.blended_clips) {
+                out.push((&state.name, clip));
+            }
+            for inner in &state.content.machines {
+                collect(inner, out);
+            }
+        }
+    }
+    let mut playing = Vec::new();
+    collect(graph.machine.as_ref()?, &mut playing);
     let mut clips = HashMap::new();
-    for state in &graph.machine.as_ref()?.states {
-        let Some(clip) = &state.clip else { continue };
+    for (state_name, clip) in playing {
         let looping = clip.mode == byroredux_hkx::ClipMode::Looping;
         let key = (clip.animation.to_ascii_lowercase(), looping);
         if clips.contains_key(&key) {
@@ -86,7 +103,7 @@ fn load_graph(world: &mut World, provider: &TextureProvider, project: &str) -> O
                 })?;
                 let converted = convert_hkx_clip(
                     &path,
-                    &state.name,
+                    state_name,
                     &skeleton,
                     &animation,
                     &mut world.resource_mut::<StringPool>(),
@@ -102,14 +119,15 @@ fn load_graph(world: &mut World, provider: &TextureProvider, project: &str) -> O
         };
         clips.insert(key, GraphClip { handle, duration });
     }
-    Some(Arc::new(LoadedGraph { graph, clips }))
+    Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone() }))
 }
 
 /// Attach a running behavior graph to every placed object whose NIF names one
 /// and that has none yet. Idempotent and cheap when nothing is pending.
 /// Returns how many objects got a graph.
 pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvider) -> usize {
-    let pending: Vec<(EntityId, Arc<str>)> = {
+    // (entity, project, the sequences of the entity's own NIF). One guard at a time.
+    let wanting: Vec<(EntityId, Arc<str>)> = {
         let Some(refs) = world.query::<BehaviorGraphRef>() else {
             return 0;
         };
@@ -119,6 +137,16 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
             .map(|(entity, reference)| (entity, Arc::clone(&reference.0)))
             .collect()
     };
+    let pending: Vec<(EntityId, Arc<str>, Arc<Vec<(String, GraphClip)>>)> = {
+        let sequences = world.query::<byroredux_scripting::GraphSequences>();
+        wanting
+            .into_iter()
+            .map(|(entity, project)| {
+                let own = sequences.as_ref().and_then(|s| s.get(entity)).map(|s| Arc::clone(&s.0)).unwrap_or_default();
+                (entity, project, own)
+            })
+            .collect()
+    };
     if pending.is_empty() {
         return 0;
     }
@@ -126,18 +154,24 @@ pub(crate) fn populate_object_graphs(world: &mut World, provider: &TextureProvid
         world.insert_resource(ObjectGraphCache::default());
     }
     let mut attached = 0;
-    for (entity, project) in pending {
-        let key = project.to_ascii_lowercase();
+    for (entity, project, own_sequences) in pending {
+        // A project can be shared by NIFs with different sequences (generic
+        // behaviors), so the cache is keyed by both.
+        let mut names: Vec<&str> = own_sequences.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        let key = format!("{}|{}", project.to_ascii_lowercase(), names.join(","));
         let cached = world.resource::<ObjectGraphCache>().0.get(&key).cloned();
         let loaded = match cached {
             Some(loaded) => loaded,
             None => {
-                let loaded = load_graph(world, provider, &project);
+                let sequences: HashMap<String, GraphClip> = own_sequences.iter().cloned().collect();
+                let loaded = load_graph(world, provider, &project, &sequences);
                 match &loaded {
                     Some(graph) => log::info!(
-                        "Behavior graph '{project}': {} events, {} clips",
+                        "Behavior graph '{project}': {} events, {} clips, {} sequences",
                         graph.graph.events.len(),
-                        graph.clips.len()
+                        graph.clips.len(),
+                        graph.sequences.len()
                     ),
                     None => log::debug!("Behavior graph '{project}' unavailable"),
                 }

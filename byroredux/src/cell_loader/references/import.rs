@@ -188,6 +188,7 @@ pub(super) fn parse_and_import_nif(
     let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
         crate::cell_loader::graph_nodes::build(&scene, &meshes, &mut byroredux_core::string::StringPool::new())
     });
+    let graph_sequences = if behavior_graph_file.is_some() { byroredux_nif::anim::import_kf(&scene) } else { Vec::new() };
     Some(Arc::new(CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -197,6 +198,7 @@ pub(super) fn parse_and_import_nif(
         lights,
         particle_emitters,
         embedded_clip,
+        graph_sequences,
         // NIF cell-loader path leaves billboard wiring to a follow-up —
         // imported.nodes here represent the whole scene graph, not the
         // placement root, so we'd need a "which node corresponds to the
@@ -526,6 +528,7 @@ pub(super) fn parse_and_import_spt(
         lights: Vec::new(),
         particle_emitters: Vec::new(),
         embedded_clip: None,
+        graph_sequences: Vec::new(),
         placement_root_billboard,
         speedtree_wind: wind,
         // SpeedTree `.spt` files carry no BSXFlags — they're a

@@ -244,6 +244,9 @@ pub(crate) struct CachedNifImport {
     /// yet attach `Name` components or parent meshes under a placement
     /// root).
     pub(super) embedded_clip: Option<byroredux_nif::anim::AnimationClip>,
+    /// Every `NiControllerSequence` of a NIF that names a behavior graph: the
+    /// clips the graph's Gamebryo sequence generators play, by sequence name.
+    pub(super) graph_sequences: Vec<byroredux_nif::anim::AnimationClip>,
     /// Billboard mode to attach to the spawned placement root entity —
     /// a seam for a future `NiBillboardNode`-rooted NIF producer, not a
     /// live path today. #3076 moved the SpeedTree billboard from the

@@ -16,8 +16,8 @@ pub use animation::{
 };
 
 pub use behavior::{
-    decode_behavior_graph, decode_character, decode_project, BehaviorGraph, Character, ClipMode, ClipTrigger,
-    State, StateClip, StateMachine, Transition, TRANSITION_FLAG_DISABLED,
+    decode_behavior_graph, decode_character, decode_project, dump_objects, BehaviorGraph, Character, ClipMode, ClipTrigger,
+    State, StateClip, StateContent, StateMachine, Transition, TRANSITION_FLAG_DISABLED,
 };
 
 use thiserror::Error;

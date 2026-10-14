@@ -53,6 +53,16 @@ const TRANSITION_EVENT_ID: usize = 0x30;
 const TRANSITION_TO_STATE: usize = 0x34;
 const TRANSITION_PRIORITY: usize = 0x40;
 const TRANSITION_FLAGS: usize = 0x42;
+/// `hkbBlenderGenerator::m_children` (`hkArray<hkbBlenderGeneratorChild*>`) and
+/// `hkbBlenderGeneratorChild::m_generator`.
+const BLENDER_CHILDREN: usize = 0x60;
+const BLENDER_CHILD_GENERATOR: usize = 0x30;
+/// `BGSGamebryoSequenceGenerator::m_pSequence` (`hkStringPtr`): the name of a
+/// `NiControllerSequence` in the object's own NIF.
+const SEQUENCE_NAME: usize = 0x48;
+/// Nested generators are followed this deep (a state machine in a blender in a
+/// state machine ...).
+const MAX_GENERATOR_DEPTH: usize = 8;
 /// `hkbClipGenerator` fields.
 const CLIP_ANIMATION_NAME: usize = 0x48;
 const CLIP_TRIGGERS: usize = 0x50;
@@ -128,9 +138,24 @@ pub struct State {
     pub id: i32,
     pub name: String,
     pub transitions: Vec<Transition>,
-    /// `None` when the state's generator is not a plain clip (a blend tree or a
-    /// nested machine, which are not executed).
+    /// The clip when the state's generator is a clip generator; `None` for any
+    /// other kind (see [`Self::content`] for what a blender or nested machine holds).
     pub clip: Option<StateClip>,
+    /// What a blender or nested-machine generator holds, flattened.
+    pub content: StateContent,
+}
+
+/// What a state's non-clip generator holds: a blender's children and nested state
+/// machines are flattened into these lists (the blender's weights are not kept).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StateContent {
+    /// `BGSGamebryoSequenceGenerator` sequence names: `NiControllerSequence`s in
+    /// the object's own NIF.
+    pub sequences: Vec<String>,
+    /// Nested state machines. Events are answered inside them.
+    pub machines: Vec<StateMachine>,
+    /// Further clips of a blender (the first is the state's own `clip`).
+    pub blended_clips: Vec<StateClip>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -256,33 +281,78 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
     })
 }
 
-fn read_state(file: &Packfile, state: usize) -> Result<State> {
+/// Read the generator at `generator` into `state`: a clip, a Gamebryo sequence, a
+/// nested machine, or a blender over such children.
+fn read_generator(
+    file: &Packfile,
+    generator: usize,
+    clip: &mut Option<StateClip>,
+    content: &mut StateContent,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_GENERATOR_DEPTH {
+        return Ok(());
+    }
+    match file.class_at(generator) {
+        Some("hkbClipGenerator") => {
+            let read = read_clip(file, generator)?;
+            if clip.is_none() {
+                *clip = Some(read);
+            } else {
+                content.blended_clips.push(read);
+            }
+        }
+        Some("BGSGamebryoSequenceGenerator") => {
+            let name = string(file, generator + SEQUENCE_NAME, "sequence name")?;
+            if !name.is_empty() {
+                content.sequences.push(name);
+            }
+        }
+        Some("hkbStateMachine") => content.machines.push(read_machine_at(file, generator, depth + 1)?),
+        Some("hkbBlenderGenerator") => {
+            let (data, len) = array(file, generator + BLENDER_CHILDREN, MAX_STATES, "blender children")?;
+            for index in 0..len {
+                let Some(child) = file.object_pointer(data + index * 8) else { continue };
+                let Some(inner) = file.object_pointer(child + BLENDER_CHILD_GENERATOR) else { continue };
+                read_generator(file, inner, clip, content, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
     let transitions = match file.object_pointer(state + STATE_TRANSITIONS) {
         Some(array_object) => read_transitions(file, array_object)?,
         None => Vec::new(),
     };
-    let clip = match file.object_pointer(state + STATE_GENERATOR) {
-        Some(generator) if file.class_at(generator) == Some("hkbClipGenerator") => {
-            Some(read_clip(file, generator)?)
-        }
-        _ => None,
-    };
+    let mut clip = None;
+    let mut content = StateContent::default();
+    if let Some(generator) = file.object_pointer(state + STATE_GENERATOR) {
+        read_generator(file, generator, &mut clip, &mut content, depth)?;
+    }
     Ok(State {
         id: file.u32(state + STATE_ID, "state id")? as i32,
         name: string(file, state + STATE_NAME, "state name")?,
         transitions,
         clip,
+        content,
     })
 }
 
 fn read_machine(file: &Packfile, machine: usize) -> Result<StateMachine> {
+    read_machine_at(file, machine, 0)
+}
+
+fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<StateMachine> {
     let (data, len) = array(file, machine + MACHINE_STATES, MAX_STATES, "states")?;
     let mut states = Vec::with_capacity(len);
     for index in 0..len {
         let state = file
             .object_pointer(data + index * 8)
             .ok_or(HkxError::InvalidData("state pointer without a target"))?;
-        states.push(read_state(file, state)?);
+        states.push(read_state(file, state, depth)?);
     }
     let wildcard = match file.object_pointer(machine + MACHINE_WILDCARD) {
         Some(array_object) => read_transitions(file, array_object)?,
@@ -314,6 +384,34 @@ pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
         },
     };
     Ok(BehaviorGraph { events, machine })
+}
+
+/// A line-per-slot dump of every object of `class_name` in a packfile: each
+/// 8-byte slot as raw hex, plus what it points at (an object's class, or a local
+/// string). The evidence for a class layout, where the Havok SDK on disk has none
+/// (`examples/graph_dump.rs --objects`).
+#[doc(hidden)]
+pub fn dump_objects(bytes: &[u8], class_name: &str, bytes_per_object: usize) -> Result<Vec<String>> {
+    let file = Packfile::parse(bytes)?;
+    let mut lines = Vec::new();
+    for object in file.objects_of(class_name) {
+        lines.push(format!("{class_name} @ {object:#x}"));
+        for slot in (0..bytes_per_object).step_by(8) {
+            let at = object + slot;
+            let raw = file.u32(at, "slot")? as u64 | (file.u32(at + 4, "slot")? as u64) << 32;
+            let mut note = String::new();
+            if let Some(target) = file.object_pointer(at) {
+                note = format!("-> object {} @ {target:#x}", file.class_at(target).unwrap_or("?"));
+            } else if let Some(target) = file.local_target(at) {
+                note = match file.cstr(target, "dump string") {
+                    Ok(text) if !text.is_empty() && text.len() < 80 && text.is_ascii() => format!("-> local {target:#x} {text:?}"),
+                    _ => format!("-> local {target:#x}"),
+                };
+            }
+            lines.push(format!("  +{slot:#04x}  {raw:#018x}  {note}"));
+        }
+    }
+    Ok(lines)
 }
 
 /// Decode a character packfile (`Characters\\*.hkx`).
@@ -355,6 +453,31 @@ mod tests {
             return None;
         }
         Some(byroredux_bsa::BsaArchive::open(path).unwrap())
+    }
+
+    /// The swinging blade: its single root state holds a blender over two nested
+    /// machines - one swinging the `Trigger` clip (held, looped or played once,
+    /// raising `Apex` / `InWin*` / a sound), one naming Gamebryo sequences.
+    /// `cargo test -p byroredux-hkx -- --ignored`
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn the_swinging_blade_graph_decodes_its_nested_machines() {
+        let Some(archive) = animations_archive() else { return };
+        let bytes = archive.extract(r"meshes\traps\swingingblade\behaviors\behavior00.hkx").expect("extract");
+        let graph = decode_behavior_graph(&bytes).unwrap();
+        let root = graph.machine.as_ref().expect("machine");
+        assert_eq!(root.states.len(), 1);
+        let state = &root.states[0];
+        assert!(state.clip.is_none(), "the root state holds a blender, not a clip");
+        assert_eq!(state.content.machines.len(), 2);
+        let (swing, sequences) = (&state.content.machines[0], &state.content.machines[1]);
+        assert_eq!(swing.states.len(), 3);
+        let modes: Vec<_> = swing.states.iter().map(|s| s.clip.as_ref().unwrap().mode).collect();
+        assert_eq!(modes, [ClipMode::UserControlled, ClipMode::Looping, ClipMode::SinglePlay]);
+        let single = graph.event_id("Single").unwrap();
+        assert!(swing.states[0].transitions.iter().any(|t| t.event == single && t.to_state == 2));
+        let names: Vec<_> = sequences.states.iter().flat_map(|s| s.content.sequences.iter().map(String::as_str)).collect();
+        assert_eq!(names, ["playanim02", "playanim01", "playanim02"]);
     }
 
     /// The Nordic ruins lever: a project -> character -> behavior chain whose

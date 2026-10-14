@@ -153,6 +153,7 @@ pub(crate) fn finish_partial_import(
     let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
         super::graph_nodes::build(&scene, &meshes, &mut byroredux_core::string::StringPool::new())
     });
+    let graph_sequences = if behavior_graph_file.is_some() { byroredux_nif::anim::import_kf(&scene) } else { Vec::new() };
     let cached = Arc::new(CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -162,6 +163,7 @@ pub(crate) fn finish_partial_import(
         lights,
         particle_emitters,
         embedded_clip,
+        graph_sequences,
         // Partial NIFs are decoded from streamed bytes — no SpeedTree
         // placeholder path runs through here, so no billboard mode.
         placement_root_billboard: None,

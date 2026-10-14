@@ -32,16 +32,31 @@ fn main() {
             println!("(no state machine)");
             continue;
         };
-        println!("start {} ; wildcard {:?}", machine.start_state, machine.wildcard);
-        for state in &machine.states {
-            println!("state {} '{}'", state.id, state.name);
-            for t in &state.transitions {
-                println!("    on {:?} -> {} (flags {:#x}, priority {})", graph.event_name(t.event), t.to_state, t.flags, t.priority);
-            }
-            match &state.clip {
-                Some(clip) => println!("    clip {:?} mode {:?} speed {} triggers {}", clip.animation, clip.mode, clip.playback_speed, clip.triggers.len()),
-                None => println!("    (no clip)"),
+        fn show(graph: &byroredux_hkx::BehaviorGraph, machine: &byroredux_hkx::StateMachine, indent: usize) {
+            let pad = " ".repeat(indent);
+            let wildcard: Vec<_> = machine.wildcard.iter().map(|t| (graph.event_name(t.event), t.to_state)).collect();
+            println!("{pad}start {} ; wildcard {wildcard:?}", machine.start_state);
+            for state in &machine.states {
+                println!("{pad}state {} '{}'", state.id, state.name);
+                for t in &state.transitions {
+                    println!("{pad}    on {:?} -> {} (flags {:#x}, priority {})", graph.event_name(t.event), t.to_state, t.flags, t.priority);
+                }
+                if let Some(clip) = &state.clip {
+                    let triggers: Vec<_> = clip.triggers.iter().map(|t| (graph.event_name(t.event), t.local_time, t.relative_to_end)).collect();
+                    println!("{pad}    clip {:?} mode {:?} speed {} triggers {triggers:?}", clip.animation, clip.mode, clip.playback_speed);
+                }
+                for clip in &state.content.blended_clips {
+                    println!("{pad}    blended clip {:?} mode {:?}", clip.animation, clip.mode);
+                }
+                for sequence in &state.content.sequences {
+                    println!("{pad}    sequence {sequence:?}");
+                }
+                for inner in &state.content.machines {
+                    println!("{pad}    nested machine:");
+                    show(graph, inner, indent + 8);
+                }
             }
         }
+        show(&graph, machine, 0);
     }
 }

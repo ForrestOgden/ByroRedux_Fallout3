@@ -1078,6 +1078,42 @@ fn spawn_placement_root(
     // `asset_provider::populate_object_graphs` once an archive provider is at hand.
     if let Some(project) = &cached.behavior_graph_file {
         world.insert(placement_root, byroredux_scripting::BehaviorGraphRef(std::sync::Arc::clone(project)));
+        // The NIF's own `NiControllerSequence`s, which the graph's Gamebryo sequence
+        // generators play by name: registered once per project and sequence.
+        if !cached.graph_sequences.is_empty() {
+            let mut registered = Vec::with_capacity(cached.graph_sequences.len());
+            for sequence in &cached.graph_sequences {
+                let key = format!("{}#seq#{}", project.to_ascii_lowercase(), sequence.name.to_ascii_lowercase());
+                let existing = world.resource::<byroredux_core::animation::AnimationClipRegistry>().get_by_path(&key);
+                let handle = match existing {
+                    Some(handle) => handle,
+                    None => {
+                        let converted = {
+                            let mut pool = world.resource_mut::<byroredux_core::string::StringPool>();
+                            crate::anim_convert::convert_nif_clip(sequence, &mut pool)
+                        };
+                        world
+                            .resource_mut::<byroredux_core::animation::AnimationClipRegistry>()
+                            .get_or_insert_by_path(key, || converted)
+                    }
+                };
+                let duration = world
+                    .resource::<byroredux_core::animation::AnimationClipRegistry>()
+                    .get(handle)
+                    .map_or(0.0, |clip| clip.duration);
+                log::debug!(
+                    "graph '{project}' sequence '{}': {duration:.2} s, {} transform channels, {} float channels",
+                    sequence.name,
+                    sequence.channels.len(),
+                    sequence.float_channels.len()
+                );
+                registered.push((
+                    sequence.name.to_ascii_lowercase(),
+                    byroredux_scripting::GraphClip { handle, duration },
+                ));
+            }
+            world.insert(placement_root, byroredux_scripting::GraphSequences(std::sync::Arc::new(registered)));
+        }
     }
     // #1235 / LC-D1-NEW-01 — attach SceneFlags on the placement root for
     // parity with the loose-NIF loader (`scene/nif_loader.rs:450-452`).
