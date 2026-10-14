@@ -29,7 +29,7 @@ jobs:
         run: git merge-base --is-ancestor ea2d94a1921592ccd3f18d991950a5b868458405 HEAD
       - name: Reject proprietary game data and signing files
         run: bash scripts/ios/check-no-game-assets.sh
-      - name: Unit-test Fallout: New Vegas local metadata auditor (synthetic data only)
+      - name: 'Unit-test Fallout New Vegas local metadata auditor (synthetic data only)'
         run: python3 -m unittest discover -s ios/tests -p 'test_*.py' -v
 
   rust-baseline:
