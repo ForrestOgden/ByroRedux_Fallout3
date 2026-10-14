@@ -2628,6 +2628,8 @@ impl Vm<'_> {
                     | "getrace"
                     | "getscale"
                     | "setnofavorallowed"
+                    | "ignorefriendlyhits"
+                    | "setcandocommand"
                     | "setactorcause"
                     | "getfactionowner"
                     | "getactorowner"
@@ -2730,6 +2732,21 @@ impl Vm<'_> {
                 self.deferred
                     .reference_flag_changes
                     .push(crate::ReferenceFlagChange::NoFavor { reference: *reference, no_favor });
+                Some(Value::None)
+            }
+            // CK *IgnoreFriendlyHits* / *SetCanDoCommand - Actor*: boolean flags
+            // (default True) recorded for the systems that will read them.
+            (Value::Form(reference), "ignorefriendlyhits" | "setcandocommand") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                let on = values.first().map_or(true, Value::truthy);
+                let flag = if name == "ignorefriendlyhits" {
+                    crate::ReferenceFlag::IgnoreFriendlyHits
+                } else {
+                    crate::ReferenceFlag::CanDoCommand
+                };
+                self.deferred
+                    .reference_flag_changes
+                    .push(crate::ReferenceFlagChange::Flag { reference: *reference, flag, on });
                 Some(Value::None)
             }
             // CK *SetActorCause*: the actor responsible for this object; None
@@ -3590,6 +3607,15 @@ impl Vm<'_> {
         }
         if matches!(guard_call(&callee.node), Some(GuardCall::Lock | GuardCall::Unlock)) {
             return Ok(Flow::Normal);
+        }
+        // CK *StopDialogueCamera - Game*: "Stops all dialogue cameras". The
+        // engine never starts one (a conversation here has no camera of its
+        // own), so there is nothing to stop.
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if static_class(&object.node) == Some("game") && member.node.0.eq_ignore_ascii_case("stopdialoguecamera") {
+                self.eval_args(frame, args)?;
+                return Ok(Flow::Normal);
+            }
         }
         if help_message_housekeeping(&callee.node).is_some() {
             self.eval_args(frame, args)?;
@@ -4914,6 +4940,14 @@ impl<'l> Checker<'l> {
             if class == "game" && name == "getplayer" {
                 return Some(Kind::Player);
             }
+            if class == "game"
+                && name == "stopdialoguecamera"
+                && statement
+                && arg_kinds.len() <= 2
+                && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)))
+            {
+                return Some(Kind::None);
+            }
             if class == "game" && matches!(name.as_str(), "getcaps" | "getcredits") && arg_kinds.is_empty() {
                 return Some(Kind::Object);
             }
@@ -5220,6 +5254,11 @@ impl<'l> Checker<'l> {
             (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "getscale") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "setnofavorallowed")
+                if statement && arg_kinds.len() <= 1 && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "ignorefriendlyhits" | "setcandocommand")
                 if statement && arg_kinds.len() <= 1 && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
             {
                 return Some(Kind::None);

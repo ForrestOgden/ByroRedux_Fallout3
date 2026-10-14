@@ -3438,6 +3438,31 @@ fn is_in_location_includes_the_ancestors() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "Dragonsreach is within the hold");
 }
 
+/// `IgnoreFriendlyHits` and `SetCanDoCommand` record their flags (default True),
+/// and `Game.StopDialogueCamera` has no camera to stop.
+#[test]
+fn reference_flags_and_the_dialogue_camera() {
+    use crate::ReferenceFlag;
+    let script = parsed_source(
+        "ScriptName QF_VmFlags extends Quest\n\
+         Actor Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Marker.IgnoreFriendlyHits()\n\
+           Marker.SetCanDoCommand(False)\n\
+           Game.StopDialogueCamera(False, False)\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    let flags = world.resource::<crate::ReferenceFlags>();
+    assert!(flags.is_set(MARKER, ReferenceFlag::IgnoreFriendlyHits));
+    assert!(!flags.is_set(MARKER, ReferenceFlag::CanDoCommand));
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.

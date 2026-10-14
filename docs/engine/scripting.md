@@ -780,6 +780,11 @@ runtime:
 - **IsInLocation.** `ObjectReference.IsInLocation(akLocation)` follows the CK page's own script:
   false without a current location, else the location asked about or one of its descendants
   (`LocationTable::is_within` over `current_location`; the player's is the published one).
+- **Reference flags and the dialogue camera.** `IgnoreFriendlyHits([abIgnore])` ("won't turn hostile
+  after several hits from a friendly opponent") and `SetCanDoCommand([abCanDoCommand])` record their
+  flag (default True) in the saved `ReferenceFlags`, state the friendly-hit and command systems will
+  read. `Game.StopDialogueCamera` ("Stops all dialogue cameras") is a no-op: the engine never
+  starts one, so there is nothing to stop (`StartDialogueCameraOrCenterOnTarget` stays declined).
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

@@ -502,7 +502,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v97 -> v98 (M47.2): the `SpeechcraftOutcomes` (`SetBribed` /
 /// `SetIntimidated`), `AnimArchetypeOverrides` (`ChangeAnimArchetype`) and
 /// `ScannedReferences` (`SetScanned` / `AddToMapScanned`) resource columns.
-pub const FORMAT_MAJOR: u16 = 98;
+///
+/// v98 -> v99 (M47.2): `ReferenceFlags` gained the `IgnoreFriendlyHits` and
+/// `SetCanDoCommand` sets.
+pub const FORMAT_MAJOR: u16 = 99;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

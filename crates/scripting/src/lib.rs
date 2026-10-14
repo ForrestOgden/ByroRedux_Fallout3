@@ -167,7 +167,7 @@ pub use encounter_level::{
 };
 pub use ownership::{actor_owner, faction_owner, install_owner_kinds, ExplicitOwner, OwnerKinds};
 pub use sound_requests::{PendingSoundPlays, SoundPlay};
-pub use reference_flags::{ReferenceFlagChange, ReferenceFlags};
+pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
 pub use input_layers::{Control, InputLayers};
 pub use crime_faction::{crime_faction, install_crime_factions, CrimeFactionOverrides, CrimeFactions};
 pub use linked_refs::{linked_ref, linked_ref_children, LinkedRefOverrides};
