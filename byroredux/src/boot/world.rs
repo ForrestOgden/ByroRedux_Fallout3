@@ -333,6 +333,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<crate::components::FootstepEmitter>();
     world.register::<crate::components::AnimationTarget>();
     world.register::<byroredux_core::animation::AnimationPlayer>();
+    // `apply_playback_for` stores a behavior graph's blended pose (a locomotion
+    // blend, a fading transition) as a stack through `query_mut`, which finds no
+    // storage that was never registered and would drop the pose silently.
+    world.register::<byroredux_core::animation::AnimationStack>();
     world.register::<byroredux_core::animation::RootMotionDelta>();
 
     // M42 — pre-register the Sandbox marker storages so

@@ -265,6 +265,19 @@ impl<'a> Packfile<'a> {
             .collect()
     }
 
+    /// Object count per class name, most numerous first (ties by name).
+    pub(crate) fn class_census(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for (_, start, len) in &self.objects {
+            if let Some(name) = self.bytes.get(*start..*start + *len as usize).and_then(|n| std::str::from_utf8(n).ok()) {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
+        let mut counts: Vec<_> = counts.into_iter().collect();
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        counts
+    }
+
     /// The class of the object that starts at `offset`.
     pub(crate) fn class_at(&self, offset: usize) -> Option<&'a str> {
         self.objects

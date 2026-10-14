@@ -24,6 +24,31 @@ const MAX_EVENTS: usize = 4096;
 const MAX_STATES: usize = 1024;
 const MAX_TRANSITIONS: usize = 4096;
 const MAX_TRIGGERS: usize = 1024;
+const MAX_VARIABLES: usize = 4096;
+
+/// `hkbVariableValueSet::m_wordVariableValues` (`hkArray<hkInt32>`): the initial value
+/// of every variable that fits a word (bool, int8/16/32, real), in variable order.
+const VALUE_SET_WORDS: usize = 0x10;
+/// `hkbBehaviorGraphData::m_variableInfos` element: `hkbRoleAttribute` (role, flags: two
+/// `hkInt16`), then the `VariableType` byte, padded to 6 bytes.
+const VARIABLE_INFO_STRIDE: usize = 6;
+const VARIABLE_INFO_TYPE: usize = 4;
+/// `hkbBindable::m_variableBindingSet` and its `m_bindings` array; a binding names the
+/// member (`blendParameter`, `playbackSpeed`, ...) a variable drives.
+const BINDABLE_BINDING_SET: usize = 0x10;
+const BINDING_SET_BINDINGS: usize = 0x10;
+const BINDING_STRIDE: usize = 0x28;
+const BINDING_MEMBER_PATH: usize = 0x00;
+const BINDING_VARIABLE_INDEX: usize = 0x1C;
+/// `hkbStateMachineTransitionInfoArray` element: the transition effect pointer.
+const TRANSITION_EFFECT: usize = 0x20;
+/// `hkbBlenderGeneratorChild::m_weight` (the child's position on a parametric blender's
+/// axis, or its weight) and the `hkbBindable` base of its fields.
+const BLENDER_CHILD_WEIGHT: usize = 0x40;
+/// `hkbBlenderGenerator::m_flags`.
+const BLENDER_FLAG_SYNC: u16 = 0x01;
+const BLENDER_FLAG_PARAMETRIC: u16 = 0x10;
+const BLENDER_FLAG_CYCLIC: u16 = 0x20;
 
 // ── 64-bit field offsets ──────────────────────────────────────────────
 
@@ -34,8 +59,14 @@ const MAX_TRIGGERS: usize = 1024;
 /// plain data classes did not move. The clip generator moved by 0x48, then 0x4C
 /// after its trigger array (one more 4-byte member before the start time).
 struct Layout {
-    /// `hkbBehaviorGraphStringData::m_eventNames` (`hkArray<hkStringPtr>`).
+    /// `hkbBehaviorGraphStringData::m_eventNames` / `m_variableNames`
+    /// (`hkArray<hkStringPtr>`).
     string_data_event_names: usize,
+    string_data_variable_names: usize,
+    /// `hkbBehaviorGraphData::m_variableInfos` and `m_variableInitialValues` (an
+    /// `hkbVariableValueSet`, whose word array is at [`VALUE_SET_WORDS`]).
+    graph_data_variable_infos: usize,
+    graph_data_initial_values: usize,
     /// `hkbBehaviorGraph::m_rootGenerator` / `m_data`.
     graph_root_generator: usize,
     graph_data: usize,
@@ -57,6 +88,14 @@ struct Layout {
     transition_to_state: usize,
     transition_priority: usize,
     transition_flags: usize,
+    /// `hkbBlenderGenerator::m_blendParameter`, `m_minCyclicBlendParameter`,
+    /// `m_maxCyclicBlendParameter` and `m_flags`.
+    blender_parameter: usize,
+    blender_min_cyclic: usize,
+    blender_max_cyclic: usize,
+    blender_flags: usize,
+    /// `hkbBlendingTransitionEffect::m_duration`.
+    effect_duration: usize,
     /// `hkbBlenderGenerator::m_children` and `hkbBlenderGeneratorChild::m_generator`.
     blender_children: usize,
     blender_child_generator: usize,
@@ -82,6 +121,9 @@ struct Layout {
 
 const LAYOUT_2010: Layout = Layout {
     string_data_event_names: 0x10,
+    string_data_variable_names: 0x30,
+    graph_data_variable_infos: 0x20,
+    graph_data_initial_values: 0x70,
     graph_root_generator: 0x80,
     graph_data: 0x88,
     graph_data_string_data: 0x78,
@@ -98,6 +140,11 @@ const LAYOUT_2010: Layout = Layout {
     transition_to_state: 0x34,
     transition_priority: 0x40,
     transition_flags: 0x42,
+    blender_parameter: 0x4C,
+    blender_min_cyclic: 0x50,
+    blender_max_cyclic: 0x54,
+    blender_flags: 0x5A,
+    effect_duration: 0x50,
     blender_children: 0x60,
     blender_child_generator: 0x30,
     sequence_name: 0x48,
@@ -120,6 +167,9 @@ const LAYOUT_2010: Layout = Layout {
 /// 0x4C after it. Fallout 4 has no `BGSGamebryoSequenceGenerator`.
 const LAYOUT_2014: Layout = Layout {
     string_data_event_names: 0x10,
+    string_data_variable_names: 0x30,
+    graph_data_variable_infos: 0x20,
+    graph_data_initial_values: 0x60,
     graph_root_generator: 0xC0,
     graph_data: 0xC8,
     graph_data_string_data: 0x68,
@@ -136,6 +186,11 @@ const LAYOUT_2014: Layout = Layout {
     transition_to_state: 0x34,
     transition_priority: 0x40,
     transition_flags: 0x42,
+    blender_parameter: 0x8C,
+    blender_min_cyclic: 0x90,
+    blender_max_cyclic: 0x94,
+    blender_flags: 0x9A,
+    effect_duration: 0xA8,
     blender_children: 0xA0,
     blender_child_generator: 0x30,
     sequence_name: 0,
@@ -212,16 +267,23 @@ pub struct StateClip {
     /// Where a [`ClipMode::UserControlled`] clip is held, as a fraction of its length.
     pub user_fraction: f32,
     pub triggers: Vec<ClipTrigger>,
+    /// The variable bound to the clip's `playbackSpeed`: it replaces `playback_speed`.
+    pub playback_speed_variable: Option<usize>,
 }
 
 /// A state's (or the machine's wildcard) transition on an event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Transition {
     /// Index into [`BehaviorGraph::events`]; negative for none.
     pub event: i32,
     pub to_state: i32,
     pub priority: i16,
     pub flags: u16,
+    /// Seconds the old pose fades out over after the transition fires: the blending
+    /// effect's authored duration, 0 for an instant transition (or none).
+    pub blend_duration: f32,
+    /// The variable that supplies the duration instead, when the effect binds one.
+    pub blend_duration_variable: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +312,41 @@ pub struct StateContent {
     /// Sub-behavior packfiles an `hkbBehaviorReferenceGenerator` names (Fallout 4:
     /// a state that runs another graph, e.g. `Behaviors\\DialogueBehavior.hkx`).
     pub behavior_references: Vec<String>,
+    /// The state's blender with its weights and bound variables, when its generator
+    /// holds one (the flattened lists above keep the first clip only).
+    pub blend: Option<BlendNode>,
+}
+
+/// One node of a blend tree: a clip or a blender over such nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BlendNode {
+    Clip(StateClip),
+    Blender(Blender),
+}
+
+/// An `hkbBlenderGenerator`. A *parametric* blender's child weights are positions on
+/// one axis and the blend parameter picks the two neighbours to mix (in the vanilla
+/// 8-way locomotion graph the children sit at 80 and 370 for `Speed`, and at
+/// 0, 0.125 ... 0.875 for a cyclic direction); any other blender uses the weights
+/// themselves. `sync` blenders keep their children's clips in step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Blender {
+    pub parametric: bool,
+    pub cyclic: bool,
+    pub sync: bool,
+    /// The authored `blendParameter`, replaced by `parameter_variable` when bound.
+    pub parameter: f32,
+    pub parameter_variable: Option<usize>,
+    pub min_cyclic: f32,
+    pub max_cyclic: f32,
+    pub children: Vec<BlendChild>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlendChild {
+    pub weight: f32,
+    pub weight_variable: Option<usize>,
+    pub node: BlendNode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -260,9 +357,30 @@ pub struct StateMachine {
     pub wildcard: Vec<Transition>,
 }
 
+/// What a behavior variable holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableKind {
+    Bool,
+    Int,
+    Real,
+    /// A vector, quaternion or pointer variable: not modelled.
+    Other,
+}
+
+/// A behavior variable (`hkbBehaviorGraphData`): the named inputs `Speed` and
+/// `Direction` give a locomotion blender, the flags a transition's condition tests.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variable {
+    pub name: String,
+    pub kind: VariableKind,
+    /// The authored initial value (bool as 0/1, int as its value).
+    pub initial: f32,
+}
+
 /// A decoded behavior graph.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BehaviorGraph {
+    pub variables: Vec<Variable>,
     pub events: Vec<String>,
     /// The graph's root state machine, when it has one.
     pub machine: Option<StateMachine>,
@@ -324,6 +442,43 @@ fn remap_machine_events(machine: &mut StateMachine, map: &[i32]) {
     }
 }
 
+fn remap_blend_variables(node: &mut BlendNode, map: &[usize]) {
+    let remap = |variable: &mut Option<usize>| *variable = variable.and_then(|index| map.get(index).copied());
+    match node {
+        BlendNode::Clip(clip) => remap(&mut clip.playback_speed_variable),
+        BlendNode::Blender(blender) => {
+            remap(&mut blender.parameter_variable);
+            for child in &mut blender.children {
+                remap(&mut child.weight_variable);
+                remap_blend_variables(&mut child.node, map);
+            }
+        }
+    }
+}
+
+/// Renumber the variables `machine` names (blend parameters, weights, clip speeds and
+/// transition durations) through `map`.
+fn remap_machine_variables(machine: &mut StateMachine, map: &[usize]) {
+    let remap = |variable: &mut Option<usize>| *variable = variable.and_then(|index| map.get(index).copied());
+    for transition in machine.wildcard.iter_mut() {
+        remap(&mut transition.blend_duration_variable);
+    }
+    for state in &mut machine.states {
+        for transition in &mut state.transitions {
+            remap(&mut transition.blend_duration_variable);
+        }
+        for clip in state.clip.iter_mut().chain(state.content.blended_clips.iter_mut()) {
+            remap(&mut clip.playback_speed_variable);
+        }
+        if let Some(node) = &mut state.content.blend {
+            remap_blend_variables(node, map);
+        }
+        for inner in &mut state.content.machines {
+            remap_machine_variables(inner, map);
+        }
+    }
+}
+
 impl BehaviorGraph {
     /// The id of `name` in this graph's events, adding it when it has none: behaviors
     /// share event *names*, so a referenced graph's events join its parent's table.
@@ -335,6 +490,23 @@ impl BehaviorGraph {
                 (self.events.len() - 1) as i32
             }
         }
+    }
+
+    /// The index of `variable` in this graph's variables (by name), adding it when it has
+    /// none: a referenced behavior's variables join its parent's table like its events.
+    fn intern_variable(&mut self, variable: &Variable) -> usize {
+        match self.variable_id(&variable.name) {
+            Some(id) => id,
+            None => {
+                self.variables.push(variable.clone());
+                self.variables.len() - 1
+            }
+        }
+    }
+
+    /// The index of the variable named `name` (case-insensitive).
+    pub fn variable_id(&self, name: &str) -> Option<usize> {
+        self.variables.iter().position(|variable| variable.name.eq_ignore_ascii_case(name))
     }
 
     /// Replace every state's sub-behavior reference with the referenced graph's root
@@ -373,6 +545,8 @@ impl BehaviorGraph {
                 let Some(mut inner_machine) = inner.machine.take() else { continue };
                 let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(name)).collect();
                 remap_machine_events(&mut inner_machine, &map);
+                let variable_map: Vec<usize> = inner.variables.iter().map(|variable| self.intern_variable(variable)).collect();
+                remap_machine_variables(&mut inner_machine, &variable_map);
                 state.content.machines.push(inner_machine);
             }
             for inner in &mut state.content.machines {
@@ -457,17 +631,50 @@ fn string_array(file: &Packfile, field: usize, cap: usize, label: &'static str) 
     (0..len).map(|index| string(file, data + index * 8, label)).collect()
 }
 
+/// The variable the `member` of the bindable at `bindable` is bound to, when it is.
+fn bound_variable(file: &Packfile, bindable: usize, member: &str) -> Result<Option<usize>> {
+    let Some(set) = file.object_pointer(bindable + BINDABLE_BINDING_SET) else {
+        return Ok(None);
+    };
+    let (data, len) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "variable bindings")?;
+    for index in 0..len {
+        let element = data + index * BINDING_STRIDE;
+        if string(file, element + BINDING_MEMBER_PATH, "binding member")?.eq_ignore_ascii_case(member) {
+            let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
+            return Ok(usize::try_from(variable).ok());
+        }
+    }
+    Ok(None)
+}
+
+/// The blending effect's duration, and the variable that overrides it.
+fn read_transition_effect(file: &Packfile, effect: usize) -> Result<(f32, Option<usize>)> {
+    let l = layout(file);
+    if file.class_at(effect) != Some("hkbBlendingTransitionEffect") {
+        return Ok((0.0, None));
+    }
+    let duration = file.f32(effect + l.effect_duration, "transition duration")?;
+    let duration = if duration.is_finite() && duration > 0.0 { duration } else { 0.0 };
+    Ok((duration, bound_variable(file, effect, "duration")?))
+}
+
 fn read_transitions(file: &Packfile, array_object: usize) -> Result<Vec<Transition>> {
     let l = layout(file);
     let (data, len) = array(file, array_object + l.transitions_array, MAX_TRANSITIONS, "transitions")?;
     (0..len)
         .map(|index| {
             let element = data + index * l.transition_stride;
+            let (blend_duration, blend_duration_variable) = match file.object_pointer(element + TRANSITION_EFFECT) {
+                Some(effect) => read_transition_effect(file, effect)?,
+                None => (0.0, None),
+            };
             Ok(Transition {
                 event: file.u32(element + l.transition_event_id, "transition event")? as i32,
                 to_state: file.u32(element + l.transition_to_state, "transition target")? as i32,
                 priority: file.u16(element + l.transition_priority, "transition priority")? as i16,
                 flags: file.u16(element + l.transition_flags, "transition flags")?,
+                blend_duration,
+                blend_duration_variable,
             })
         })
         .collect()
@@ -502,7 +709,71 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
         start_time: file.f32(clip + l.clip_start_time, "clip start time")?,
         user_fraction: file.f32(clip + l.clip_user_fraction, "clip user fraction")?,
         triggers,
+        playback_speed_variable: bound_variable(file, clip, "playbackSpeed")?,
     })
+}
+
+/// The blend tree rooted at `generator`: a clip, or a blender over such nodes, seen
+/// through the wrapper generators that only add tags or modifiers. `None` for any other
+/// generator (a nested machine, a sequence): such a child is not blended.
+fn read_blend_node(file: &Packfile, generator: usize, depth: usize) -> Result<Option<BlendNode>> {
+    if depth > MAX_GENERATOR_DEPTH {
+        return Ok(None);
+    }
+    let l = layout(file);
+    match file.class_at(generator) {
+        Some("hkbClipGenerator") => Ok(Some(BlendNode::Clip(read_clip(file, generator)?))),
+        Some("hkbBlenderGenerator") => {
+            let flags = file.u16(generator + l.blender_flags, "blender flags")?;
+            let (data, len) = array(file, generator + l.blender_children, MAX_STATES, "blender children")?;
+            let mut children = Vec::with_capacity(len);
+            for index in 0..len {
+                let Some(child) = file.object_pointer(data + index * 8) else { continue };
+                let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
+                let Some(node) = read_blend_node(file, inner, depth + 1)? else { continue };
+                children.push(BlendChild {
+                    weight: file.f32(child + BLENDER_CHILD_WEIGHT, "blender child weight")?,
+                    weight_variable: bound_variable(file, child, "weight")?,
+                    node,
+                });
+            }
+            Ok(Some(BlendNode::Blender(Blender {
+                parametric: flags & BLENDER_FLAG_PARAMETRIC != 0,
+                cyclic: flags & BLENDER_FLAG_CYCLIC != 0,
+                sync: flags & BLENDER_FLAG_SYNC != 0,
+                parameter: file.f32(generator + l.blender_parameter, "blend parameter")?,
+                parameter_variable: bound_variable(file, generator, "blendParameter")?,
+                min_cyclic: file.f32(generator + l.blender_min_cyclic, "min cyclic parameter")?,
+                max_cyclic: file.f32(generator + l.blender_max_cyclic, "max cyclic parameter")?,
+                children,
+            })))
+        }
+        Some(
+            "hkbModifierGenerator"
+            | "BSiStateTaggingGenerator"
+            | "DynamicAnimationTaggingGenerator"
+            | "BSOffsetAnimationGenerator",
+        ) => match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
+            Some(inner) => read_blend_node(file, inner, depth + 1),
+            None => Ok(None),
+        },
+        // The cyclic blend wrapper is what takes the direction variable (its
+        // `fBlendParameter` binding) and feeds the blender it wraps, which carries no
+        // binding of its own (the vanilla 8-way graph: 4 wrappers, 4 unbound blenders).
+        Some("BSCyclicBlendTransitionGenerator") => {
+            let Some(inner) = l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) else {
+                return Ok(None);
+            };
+            let mut node = read_blend_node(file, inner, depth + 1)?;
+            if let Some(BlendNode::Blender(blender)) = &mut node {
+                if blender.parameter_variable.is_none() {
+                    blender.parameter_variable = bound_variable(file, generator, "fBlendParameter")?;
+                }
+            }
+            Ok(node)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Read the generator at `generator` into `state`: a clip, a Gamebryo sequence, a
@@ -518,6 +789,12 @@ fn read_generator(
         return Ok(());
     }
     let l = layout(file);
+    // The first blender reached (through its wrappers) is the state's blend tree.
+    if content.blend.is_none() {
+        if let Some(blender @ BlendNode::Blender(_)) = read_blend_node(file, generator, depth)? {
+            content.blend = Some(blender);
+        }
+    }
     match file.class_at(generator) {
         Some("hkbClipGenerator") => {
             let read = read_clip(file, generator)?;
@@ -623,6 +900,45 @@ fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<Stat
     })
 }
 
+/// The graph's variables: names, kinds and initial values.
+fn read_variables(file: &Packfile, graph: usize, string_data: usize) -> Result<Vec<Variable>> {
+    let l = layout(file);
+    let Some(data) = file.object_pointer(graph + l.graph_data) else {
+        return Ok(Vec::new());
+    };
+    let names = string_array(file, string_data + l.string_data_variable_names, MAX_VARIABLES, "variable names")?;
+    let (infos, count) = array(file, data + l.graph_data_variable_infos, MAX_VARIABLES, "variable infos")?;
+    let words = match file.object_pointer(data + l.graph_data_initial_values) {
+        Some(set) => array(file, set + VALUE_SET_WORDS, MAX_VARIABLES, "variable words")?,
+        None => (0, 0),
+    };
+    let mut variables = Vec::with_capacity(count);
+    let mut next_word = 0;
+    for index in 0..count {
+        // BOOL, INT8, INT16, INT32 and REAL each take one word of the initial values; a
+        // vector, quaternion or pointer lives elsewhere and takes none.
+        let (kind, in_words) = match file.u8(infos + index * VARIABLE_INFO_STRIDE + VARIABLE_INFO_TYPE, "variable type")? {
+            0 => (VariableKind::Bool, true),
+            1..=3 => (VariableKind::Int, true),
+            4 => (VariableKind::Real, true),
+            _ => (VariableKind::Other, false),
+        };
+        let mut initial = 0.0;
+        if in_words {
+            if next_word < words.1 {
+                let word = file.u32(words.0 + next_word * 4, "variable value")?;
+                initial = match kind {
+                    VariableKind::Real => f32::from_bits(word),
+                    _ => word as i32 as f32,
+                };
+            }
+            next_word += 1;
+        }
+        variables.push(Variable { name: names.get(index).cloned().unwrap_or_default(), kind, initial });
+    }
+    Ok(variables)
+}
+
 /// Decode a behavior-graph packfile (`Behaviors\\*.hkx`).
 pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
     let file = Packfile::parse(bytes)?;
@@ -642,7 +958,16 @@ pub fn decode_behavior_graph(bytes: &[u8]) -> Result<BehaviorGraph> {
             None => None,
         },
     };
-    Ok(BehaviorGraph { events, machine })
+    let variables = read_variables(&file, graph, string_data)?;
+    Ok(BehaviorGraph { variables, events, machine })
+}
+
+/// How many objects of each class a packfile holds, most numerous first: the first
+/// look at a graph before a class layout is derived (`examples/dump_objects.rs`).
+#[doc(hidden)]
+pub fn class_census(bytes: &[u8]) -> Result<Vec<(String, usize)>> {
+    let file = Packfile::parse(bytes)?;
+    Ok(file.class_census())
 }
 
 /// A line-per-slot dump of every object of `class_name` in a packfile: each
@@ -864,6 +1189,7 @@ mod tests {
                 start_time: 0.0,
                 user_fraction: 0.0,
                 triggers: Vec::new(),
+                playback_speed_variable: None,
             }),
             content,
         }
@@ -874,6 +1200,7 @@ mod tests {
     #[test]
     fn start_clip_follows_start_states_nested_machines_and_references() {
         let leaf = BehaviorGraph {
+            variables: Vec::new(),
             events: Vec::new(),
             machine: Some(machine_of(
                 1,
@@ -881,6 +1208,7 @@ mod tests {
             )),
         };
         let root = BehaviorGraph {
+            variables: Vec::new(),
             events: Vec::new(),
             machine: Some(machine_of(
                 0,
@@ -907,6 +1235,7 @@ mod tests {
         assert_eq!(loaded, ["Behaviors\\Leaf.hkx"]);
 
         let looping = BehaviorGraph {
+            variables: Vec::new(),
             events: Vec::new(),
             machine: Some(machine_of(
                 0,
@@ -927,12 +1256,13 @@ mod tests {
     /// the parent's table by name, so an event of the parent reaches its transitions.
     #[test]
     fn inline_references_nests_the_sub_behavior_and_renumbers_its_events_by_name() {
-        let transition = |event, to_state| Transition { event, to_state, priority: 0, flags: 0 };
+        let transition = |event, to_state| Transition { event, to_state, priority: 0, flags: 0, ..Default::default() };
         let mut child_state = state_of(0, Some("Animations\\Idle.hkt"), StateContent::default());
         child_state.transitions = vec![transition(1, 1)]; // "C" in the child's own table
         let mut child_wildcard = Vec::new();
         child_wildcard.push(transition(0, 0)); // "B"
         let child = BehaviorGraph {
+            variables: Vec::new(),
             events: vec!["B".into(), "C".into()],
             machine: Some(StateMachine {
                 start_state: 0,
@@ -941,6 +1271,7 @@ mod tests {
             }),
         };
         let mut parent = BehaviorGraph {
+            variables: Vec::new(),
             events: vec!["A".into(), "B".into()],
             machine: Some(machine_of(
                 0,
@@ -956,6 +1287,7 @@ mod tests {
         assert_eq!(inner.wildcard[0].event, 1, "B is the parent's existing event 1");
         // An unloadable reference stays a reference.
         let mut orphan = BehaviorGraph {
+            variables: Vec::new(),
             events: Vec::new(),
             machine: Some(machine_of(
                 0,

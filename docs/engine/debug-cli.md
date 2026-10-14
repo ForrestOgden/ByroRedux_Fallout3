@@ -331,7 +331,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**114**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**116**) grouped by
 purpose:
 
 ```
@@ -444,6 +444,8 @@ script.var <e> <name>       → read a Papyrus variable the VM wrote on a refere
 cndf <form> <e> [t]         → ConditionForm.IsTrue from the console (Starfield); `cndf list`
 bribe.info <e>              → GetBribeAmount's inputs (levels, Speechcraft, Morality) and result
 anim.event <e> <event>      → PlayAnimation from the console (props, and Fallout 4 actors' graphs)
+anim.var <e> [name [value]]  → a behavior graph's variables: list, read or write (Get/SetAnimationVariable*)
+anim.pose <e>               → what a reference plays: the clip, or the blended layers with live weights
 anim.archetype <e> [kw|none]   → ChangeAnimArchetype from the console (Fallout 4: the actor's idle follows)
 cond                        → evaluate a CTDA condition against live ECS state
 water.dump / water.contacts → inspect water surfaces and physics contacts

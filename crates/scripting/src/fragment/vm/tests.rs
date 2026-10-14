@@ -2997,6 +2997,94 @@ fn animation_graph_natives_report_no_graph() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// `SetAnimationVariable*` writes the reference's behavior-graph variable and
+/// `GetAnimationVariable*` reads it back (CK: "the value of a variable on the
+/// reference's animation graph"); an int keeps whole numbers and a bool is a flag.
+#[test]
+fn animation_variables_are_written_and_read_on_the_graph() {
+    use byroredux_hkx::{BehaviorGraph, State, StateMachine};
+    const OTHER: u32 = 0x0001_0F91;
+    let script = parsed_source(
+        "ScriptName QF_VmAnimVars extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         ObjectReference Property Bare Auto\n\
+         Float SeenSpeed\n\
+         Int SeenMode\n\
+         Int FlagSeen\n\
+         Float BareSeen\n\
+         Function Fragment_1()\n\
+           Marker.SetAnimationVariableFloat(\"Speed\", 3.5)\n\
+           Marker.SetAnimationVariableInt(\"iMode\", 7)\n\
+           Marker.SetAnimationVariableBool(\"bFlag\", True)\n\
+           SeenSpeed = Marker.GetAnimationVariableFloat(\"Speed\")\n\
+           SeenMode = Marker.GetAnimationVariableInt(\"iMode\")\n\
+           If Marker.GetAnimationVariableBool(\"bFlag\")\n\
+             FlagSeen = 1\n\
+           EndIf\n\
+           Bare.SetAnimationVariableFloat(\"Speed\", 9.0)\n\
+           BareSeen = Bare.GetAnimationVariableFloat(\"Speed\")\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.register::<FormIdComponent>();
+    world.register::<crate::ObjectAnimationGraph>();
+    let mut pool = FormIdPool::default();
+    let marker_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    let bare_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(OTHER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(marker_id));
+    let bare = world.spawn();
+    world.insert(bare, FormIdComponent(bare_id));
+    let variable = |name: &str, kind, initial| byroredux_hkx::Variable { name: name.into(), kind, initial };
+    let graph = BehaviorGraph {
+        variables: vec![
+            variable("Speed", byroredux_hkx::VariableKind::Real, 0.0),
+            variable("iMode", byroredux_hkx::VariableKind::Int, 0.0),
+            variable("bFlag", byroredux_hkx::VariableKind::Bool, 0.0),
+        ],
+        events: Vec::new(),
+        machine: Some(StateMachine {
+            start_state: 0,
+            states: vec![State { id: 0, name: "Idle".into(), transitions: Vec::new(), clip: None, content: Default::default() }],
+            wildcard: Vec::new(),
+        }),
+    };
+    world.insert(
+        marker,
+        crate::ObjectAnimationGraph::new(
+            Arc::new(crate::LoadedGraph { graph, clips: Default::default(), sequences: Default::default(), lazy: None }),
+            marker,
+        )
+        .unwrap(),
+    );
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        let mut vmad = vmad();
+        for (name, form_id) in [("Marker", MARKER), ("Bare", OTHER)] {
+            vmad.scripts[0].properties.push(ScriptProperty {
+                name: name.into(),
+                status: 1,
+                value: PropertyValue::Object { form_id, alias: -1 },
+            });
+        }
+        fragments.insert_vmad(Q, vmad);
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let seen = |name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    assert_eq!(seen("SeenSpeed"), Some(3.5));
+    assert_eq!(seen("SeenMode"), Some(7.0));
+    assert_eq!(seen("FlagSeen"), Some(1.0));
+    assert_eq!(seen("BareSeen"), Some(0.0), "a reference with no graph reads zero and takes the write for nothing");
+    assert_eq!(crate::animation_graph::variable_value(&world, marker, "speed"), Some(3.5));
+    assert_eq!(crate::animation_graph::variable_value(&world, bare, "Speed"), None);
+}
+
 /// `SetBribed` / `SetIntimidated` flag the actor (visible to `IsBribed` in the
 /// same run and afterwards), and `ChangeAnimArchetype` records the keyword.
 #[test]
@@ -3275,9 +3363,11 @@ fn play_animation_drives_the_objects_behavior_graph() {
         start_time: 0.0,
         user_fraction: 0.0,
         triggers: Vec::new(),
+            playback_speed_variable: None,
     };
-    let transition = Transition { event: 0, to_state: 1, priority: 0, flags: 0 };
+    let transition = Transition { event: 0, to_state: 1, priority: 0, flags: 0, ..Default::default() };
     let graph = BehaviorGraph {
+        variables: Vec::new(),
         events: vec!["Go".into(), "Done".into()],
         machine: Some(StateMachine {
             start_state: 0,
@@ -3357,13 +3447,15 @@ fn wait_for_animation_event_waits_for_the_graphs_event() {
                 start_time: 0.0,
                 user_fraction: 0.0,
                 triggers: vec![ClipTrigger { local_time: 0.5, event: 1, relative_to_end: false, annotation: false }],
+            playback_speed_variable: None,
             };
             let graph = BehaviorGraph {
+                variables: Vec::new(),
                 events: vec!["Go".into(), "Done".into()],
                 machine: Some(StateMachine {
                     start_state: 0,
                     states: vec![
-                        State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0 }], clip: None, content: Default::default() },
+                        State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0, ..Default::default() }], clip: None, content: Default::default() },
                         State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip), content: Default::default() },
                     ],
                     wildcard: Vec::new(),
@@ -5096,13 +5188,15 @@ fn animation_events_reach_registered_scripts() {
         start_time: 0.0,
         user_fraction: 0.0,
         triggers: vec![ClipTrigger { local_time: 0.5, event: 1, relative_to_end: false, annotation: false }],
+            playback_speed_variable: None,
     };
     let graph = BehaviorGraph {
+        variables: Vec::new(),
         events: vec!["Go".into(), "Done".into()],
         machine: Some(StateMachine {
             start_state: 0,
             states: vec![
-                State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0 }], clip: None, content: Default::default() },
+                State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0, ..Default::default() }], clip: None, content: Default::default() },
                 State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip), content: Default::default() },
             ],
             wildcard: Vec::new(),

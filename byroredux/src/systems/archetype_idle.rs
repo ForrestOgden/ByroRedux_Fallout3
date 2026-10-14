@@ -9,7 +9,7 @@
 
 use crate::asset_provider::ArchetypeIdleClips;
 use crate::components::AnimationTarget;
-use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
+use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer, AnimationStack};
 use byroredux_core::ecs::components::Dead;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
@@ -113,6 +113,10 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         // to the actor (`PlayAnimation`) move it (`asset_provider::actor_graph`).
         if let Some(mut pending) = world.try_resource_mut::<crate::asset_provider::PendingActorGraphs>() {
             pending.0.push((actor, entry.clone()));
+        }
+        // A graph that was blending this actor (a stack) gives way to the new player.
+        if let Some(mut stacks) = world.query_mut::<AnimationStack>() {
+            stacks.remove(actor);
         }
         if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
             players.insert(actor, player);
@@ -246,6 +250,10 @@ mod tests {
     fn the_engine_world_registers_the_marker_and_the_pass_state() {
         let world = crate::boot::build_world(false, &[]);
         assert!(world.query::<ArchetypeIdle>().is_some(), "ArchetypeIdle is registered");
+        assert!(
+            world.query::<AnimationStack>().is_some(),
+            "AnimationStack is registered: the graph's blended pose is stored through query_mut"
+        );
         assert!(world.try_resource::<ArchetypeIdleSeen>().is_some());
     }
 }

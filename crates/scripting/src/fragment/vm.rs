@@ -2717,6 +2717,9 @@ impl Vm<'_> {
                     | "setanimationvariablefloat"
                     | "setanimationvariablebool"
                     | "setanimationvariableint"
+                    | "getanimationvariablefloat"
+                    | "getanimationvariablebool"
+                    | "getanimationvariableint"
                     | "play"
                     | "enablelinkchain"
                     | "disablelinkchain"
@@ -3051,11 +3054,37 @@ impl Vm<'_> {
                 }
                 Some(Value::None)
             }
-            (Value::Form(_), "setanimationvariablefloat" | "setanimationvariablebool" | "setanimationvariableint")
+            // CK *SetAnimationVariable\** / *GetAnimationVariable\**: "the value of a variable
+            // on the reference's animation graph". A reference with no graph, or a graph
+            // without that variable, takes the write for nothing and reads as zero.
+            (Value::Form(reference), "setanimationvariablefloat" | "setanimationvariablebool" | "setanimationvariableint")
                 if args.len() == 2 =>
             {
-                self.eval_args(frame, args)?;
+                let values = self.eval_args(frame, args)?;
+                let value = match &values[1] {
+                    Value::Bool(flag) => f32::from(*flag),
+                    Value::Int(whole) => *whole as f32,
+                    Value::Float(real) => *real,
+                    _ => return stop(format!("{name} with a non-number")),
+                };
+                if let Some(entity) = self.entity_of(*reference) {
+                    crate::animation_graph::set_variable_value(self.world, entity, &values[0].text(), value);
+                }
                 Some(Value::None)
+            }
+            (Value::Form(reference), "getanimationvariablefloat" | "getanimationvariablebool" | "getanimationvariableint")
+                if args.len() == 1 =>
+            {
+                let values = self.eval_args(frame, args)?;
+                let value = self
+                    .entity_of(*reference)
+                    .and_then(|entity| crate::animation_graph::variable_value(self.world, entity, &values[0].text()))
+                    .unwrap_or(0.0);
+                Some(match name.as_str() {
+                    "getanimationvariablebool" => Value::Bool(value != 0.0),
+                    "getanimationvariableint" => Value::Int(value as i32),
+                    _ => Value::Float(value),
+                })
             }
             // CK *GetGoldAmount - Actor*: "the amount of gold on this actor's
             // person" — the count of Skyrim's `Gold001` in its inventory.
@@ -5677,6 +5706,16 @@ impl<'l> Checker<'l> {
                     ) =>
             {
                 return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "getanimationvariablefloat" | "getanimationvariableint")
+                if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]) =>
+            {
+                return Some(Kind::Num);
+            }
+            (Kind::Object | Kind::Player, "getanimationvariablebool")
+                if matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]) =>
+            {
+                return Some(Kind::Bool);
             }
             (Kind::Object | Kind::Player, "setanimationvariablebool")
                 if statement

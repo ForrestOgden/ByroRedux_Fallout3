@@ -32,6 +32,112 @@ impl ConsoleCommand for AnimEventCommand {
         let clip = world
             .get::<byroredux_core::animation::AnimationPlayer>(entity)
             .map(|player| player.clip_handle);
-        CommandOutput::line(format!("{event}: {} (clip {clip:?})", if accepted { "accepted" } else { "rejected" }))
+        let layers = world.get::<byroredux_core::animation::AnimationStack>(entity).map(|stack| stack.layers.len());
+        CommandOutput::line(format!(
+            "{event}: {} (clip {clip:?}, blended layers {layers:?})",
+            if accepted { "accepted" } else { "rejected" }
+        ))
+    }
+}
+
+/// `anim.var <entity|.> [name [value]]`: the reference's behavior-graph variables
+/// (`GetAnimationVariable*` / `SetAnimationVariable*` from the console) - all of them, one,
+/// or one set.
+pub(crate) struct AnimVarCommand;
+
+impl ConsoleCommand for AnimVarCommand {
+    fn name(&self) -> &str {
+        "anim.var"
+    }
+
+    fn description(&self) -> &str {
+        "Behavior-graph variables: anim.var <entity|.> [name [value]]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let Some(entity_token) = tokens.next() else {
+            return CommandOutput::error("usage: anim.var <entity|.> [name [value]]");
+        };
+        let entity = match resolve_console_entity(world, entity_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("anim.var: {message}")),
+        };
+        let (name, value) = (tokens.next(), tokens.next());
+        match (name, value) {
+            (None, _) => {
+                let Some(graphs) = world.query::<byroredux_scripting::ObjectAnimationGraph>() else {
+                    return CommandOutput::error("anim.var: the reference runs no behavior graph");
+                };
+                let Some(graph) = graphs.get(entity) else {
+                    return CommandOutput::error("anim.var: the reference runs no behavior graph");
+                };
+                CommandOutput::lines(graph.variables().map(|(name, value)| format!("{name} = {value}")).collect())
+            }
+            (Some(name), None) => match byroredux_scripting::animation_graph::variable_value(world, entity, name) {
+                Some(value) => CommandOutput::line(format!("{name} = {value}")),
+                None => CommandOutput::error(format!("anim.var: no variable `{name}` on that graph")),
+            },
+            (Some(name), Some(value)) => {
+                let Ok(value) = value.parse::<f32>() else {
+                    return CommandOutput::error(format!("anim.var: `{value}` is not a number"));
+                };
+                if byroredux_scripting::animation_graph::set_variable_value(world, entity, name, value) {
+                    let now = byroredux_scripting::animation_graph::variable_value(world, entity, name).unwrap_or(value);
+                    CommandOutput::line(format!("{name} = {now}"))
+                } else {
+                    CommandOutput::error(format!("anim.var: no settable variable `{name}` on that graph"))
+                }
+            }
+        }
+    }
+}
+
+/// `anim.pose <entity|.>`: what the reference's graph is playing - the single clip, or the
+/// blended layers with their live weights and speeds.
+pub(crate) struct AnimPoseCommand;
+
+impl ConsoleCommand for AnimPoseCommand {
+    fn name(&self) -> &str {
+        "anim.pose"
+    }
+
+    fn description(&self) -> &str {
+        "The animation playing on a reference: anim.pose <entity|.>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(entity_token) = args.split_whitespace().next() else {
+            return CommandOutput::error("usage: anim.pose <entity|.>");
+        };
+        let entity = match resolve_console_entity(world, entity_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("anim.pose: {message}")),
+        };
+        if let Some(stack) = world.get::<byroredux_core::animation::AnimationStack>(entity) {
+            let mut lines = vec![format!("stack of {} layers", stack.layers.len())];
+            for (index, layer) in stack.layers.iter().enumerate() {
+                lines.push(format!(
+                    "  {index:2} clip {} weight {:.3} (fading in {:.2}s / out {:.2}s) speed {:.3} time {:.3}",
+                    layer.clip_handle,
+                    layer.effective_weight(),
+                    layer.blend_in_remaining,
+                    layer.blend_out_remaining,
+                    layer.speed,
+                    layer.local_time
+                ));
+            }
+            return CommandOutput::lines(lines);
+        }
+        match world.get::<byroredux_core::animation::AnimationPlayer>(entity) {
+            Some(player) => CommandOutput::line(format!(
+                "player: clip {} speed {:.3} time {:.3}{}",
+                player.clip_handle,
+                player.speed,
+                player.local_time,
+                if player.playing { "" } else { " (held)" }
+            )),
+            None => CommandOutput::line("nothing playing"),
+        }
     }
 }
