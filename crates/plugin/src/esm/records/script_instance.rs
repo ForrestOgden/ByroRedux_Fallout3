@@ -366,6 +366,24 @@ pub fn parse_quest_fragments(vmad: &[u8]) -> Vec<QuestScriptFragment> {
     out
 }
 
+/// The fragment script of a version-6 (Fallout 4, Starfield) QUST `VMAD` as an attached
+/// script: its name and the properties (its alias and quest bindings) the fragment section
+/// embeds, which Skyrim keeps in the scripts section. `None` for Skyrim and for a quest
+/// whose fragment script has no name. FormIDs are promoted through `remap` like the scripts
+/// section's.
+pub fn parse_quest_fragment_script_with_remap(
+    vmad: &[u8],
+    remap: &Option<crate::esm::reader::FormIdRemap>,
+) -> Option<ScriptInstance> {
+    let mut script = quest_tail(vmad).fragment_script?;
+    if let Some(remap) = remap {
+        for property in &mut script.properties {
+            remap_property_value(&mut property.value, remap);
+        }
+    }
+    Some(script)
+}
+
 /// The scripts attached to one quest alias (the QUST `VMAD` alias section).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QuestAliasScripts {
@@ -423,6 +441,9 @@ pub fn quest_alias_section(vmad: &[u8]) -> (Vec<QuestAliasScripts>, bool) {
 /// What a QUST `VMAD`'s trailing section holds: the stage fragments and the alias scripts.
 #[derive(Default)]
 struct QuestTail {
+    /// Version 6: the fragment script (`QF_...`) as an attached script, with the properties
+    /// (its aliases and quests) the section embeds before the fragments.
+    fragment_script: Option<ScriptInstance>,
     fragments: Vec<QuestScriptFragment>,
     aliases: Vec<QuestAliasScripts>,
     /// Whether the section was walked to the very last byte.
@@ -446,39 +467,52 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
     let (Some(_unknown), Some(fragment_count), Some(file_name)) = (c.u8(), c.u16(), c.wstring()) else {
         return QuestTail::default();
     };
+    let mut fragment_script = None;
     if data.version >= 6 && !file_name.is_empty() {
         // Fallout 4 and later: the fragment script's own flags and properties.
         let has_status = data.version >= 4;
-        if has_status && c.u8().is_none() {
-            return QuestTail::default();
-        }
+        let status = if has_status {
+            let Some(status) = c.u8() else {
+                return QuestTail::default();
+            };
+            status
+        } else {
+            0
+        };
         let Some(property_count) = c.u16() else {
             return QuestTail::default();
         };
+        let mut properties = Vec::with_capacity(usize::from(property_count));
         for _ in 0..property_count {
-            let (Some(_name), Some(ptype)) = (c.wstring(), c.u8()) else {
+            let (Some(name), Some(ptype)) = (c.wstring(), c.u8()) else {
                 return QuestTail::default();
             };
-            if has_status && c.u8().is_none() {
-                return QuestTail::default();
-            }
+            let property_status = if has_status {
+                let Some(status) = c.u8() else {
+                    return QuestTail::default();
+                };
+                status
+            } else {
+                0
+            };
             match c.property_value(ptype, data.object_format) {
                 Some(PropertyValue::Unknown(_)) | None => return QuestTail::default(),
-                Some(_) => {}
+                Some(value) => properties.push(ScriptProperty { name, status: property_status, value }),
             }
         }
+        fragment_script = Some(ScriptInstance { name: file_name.clone(), status, properties });
     }
     let mut fragments = Vec::with_capacity(usize::from(fragment_count));
     for _ in 0..fragment_count {
         let (Some(stage), Some(_), Some(_), Some(_), Some(script_name), Some(fragment_name)) =
             (c.u16(), c.i16(), c.i32(), c.u8(), c.wstring(), c.wstring())
         else {
-            return QuestTail { fragments, ..QuestTail::default() };
+            return QuestTail { fragment_script, fragments, ..QuestTail::default() };
         };
         fragments.push(QuestScriptFragment { stage, script_name, fragment_name });
     }
     let Some(alias_count) = c.u16() else {
-        return QuestTail { fragments, ..QuestTail::default() };
+        return QuestTail { fragment_script, fragments, ..QuestTail::default() };
     };
     let mut aliases = Vec::with_capacity(usize::from(alias_count));
     for _ in 0..alias_count {
@@ -498,7 +532,7 @@ fn quest_tail(vmad: &[u8]) -> QuestTail {
         }
     }
     let exact = c.pos == section.len();
-    QuestTail { fragments, aliases, exact }
+    QuestTail { fragment_script, fragments, aliases, exact }
 }
 
 /// Event that invokes one compiled Papyrus fragment attached to a `SCEN`.

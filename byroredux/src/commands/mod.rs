@@ -64,7 +64,7 @@ use anim_archetype::AnimArchetypeCommand;
 use cndf::CndfCommand;
 use bribe_info::BribeInfoCommand;
 use anim_event::AnimEventCommand;
-use script_var::{ScanInfoCommand, ScriptCallCommand, ScriptExecCommand, ScriptQuestCallCommand, ScriptVarCommand};
+use script_var::{QuestForceAliasCommand, ScanInfoCommand, ScriptCallCommand, ScriptExecCommand, ScriptQuestCallCommand, ScriptVarCommand};
 use assets::*;
 use condition::*;
 use depth::*;
@@ -100,6 +100,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(ScriptVarCommand);
     registry.register(ScriptCallCommand);
     registry.register(ScriptExecCommand);
+    registry.register(QuestForceAliasCommand);
     registry.register(ScanInfoCommand);
     registry.register(ScriptQuestCallCommand);
     registry.register(ModAvCommand);

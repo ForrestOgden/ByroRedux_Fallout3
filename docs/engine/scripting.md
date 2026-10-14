@@ -1643,8 +1643,7 @@ a Cydonia boot logs `populated 8206 quest-stage fragments from 1012 scripted que
 (`Alias_MarcoStarshipMapMarker.GetRef().AddToMapScanned(true)` beside `SetMarkerVisibleOnStarMap(true)`) needed
 `SetMarkerVisibleOnStarMap`, a native with no body in the game's `ObjectReference.pex`, now a per-marker
 flag in `MapMarkers` (its name is the whole grounding; nothing reads it, there is no star map; `FORMAT_MAJOR` 104).
-It stops at `getref on None` because the quest's alias is not filled in a console-set stage, so the scan
-itself is exercised through `script.exec` on the player (above). Starfield's profile has no scripts archive:
+It first stopped at `getref on None` for two reasons: the QF script's alias properties (`Alias_*`) live in the version-6 fragment section, which the walker read and dropped (they are now attached to the quest's `script_instance` as the fragment script, `parse_quest_fragment_script_with_remap`), and the alias was unfilled. With the properties the fragment runs without a stop, but `quest.force 0x1F0267 26 <entity>` (`ForceRefTo` from the console) leaves alias 26 `unbound: no-eligible-loaded-candidate` (a forced reference must be a loaded alias candidate, and a map marker static is not), so the scan itself is still exercised through `script.exec` on the player (above). Starfield's profile has no scripts archive:
 `--scripts-bsa "Starfield - Misc.ba2"` is what lets its VM run.
 
 ### ObjectReference.Activate (M47.2)

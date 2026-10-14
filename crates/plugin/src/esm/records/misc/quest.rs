@@ -573,7 +573,17 @@ fn parse_qust_header(
         // effect resolves to a FormID).
         b"VMAD" => {
             out.fragments = parse_quest_fragments(&sub.data);
-            out.script_instance = Some(ScriptInstanceData::parse_with_remap(&sub.data, remap));
+            let mut instance = ScriptInstanceData::parse_with_remap(&sub.data, remap);
+            // Fallout 4 / Starfield keep the QF script's alias properties in the fragment
+            // section; the VM resolves them like any attached script's.
+            if let Some(fragment_script) =
+                crate::esm::records::script_instance::parse_quest_fragment_script_with_remap(&sub.data, remap)
+            {
+                if instance.script(&fragment_script.name).is_none() {
+                    instance.scripts.push(fragment_script);
+                }
+            }
+            out.script_instance = Some(instance);
             out.alias_scripts = parse_quest_alias_scripts_with_remap(&sub.data, remap);
         }
         b"ANAM" if sub.data.len() >= 4 => {

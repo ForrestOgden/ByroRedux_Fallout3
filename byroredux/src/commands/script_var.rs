@@ -141,6 +141,51 @@ impl ConsoleCommand for ScanInfoCommand {
     }
 }
 
+/// `quest.force <quest> <alias_id> <entity|.>`: `ReferenceAlias.ForceRefTo` from the console
+/// (an alias override, as the VM records; dropped when the quest stops).
+pub(crate) struct QuestForceAliasCommand;
+
+impl ConsoleCommand for QuestForceAliasCommand {
+    fn name(&self) -> &str {
+        "quest.force"
+    }
+
+    fn description(&self) -> &str {
+        "ForceRefTo from the console: quest.force <quest_formid> <alias_id> <entity|.>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let (Some(quest_token), Some(alias_token), Some(entity_token)) = (tokens.next(), tokens.next(), tokens.next())
+        else {
+            return CommandOutput::error("usage: quest.force <quest_formid> <alias_id> <entity|.>");
+        };
+        let (Some(quest), Ok(alias)) = (parse_console_u32(quest_token), alias_token.parse::<i32>()) else {
+            return CommandOutput::error("quest.force: bad quest or alias id");
+        };
+        let entity = match resolve_console_entity(world, entity_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("quest.force: {message}")),
+        };
+        let player = world
+            .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+            .map(|player| player.0);
+        let form = if Some(entity) == player {
+            Some(byroredux_scripting::PLAYER_REFERENCE)
+        } else {
+            byroredux_scripting::condition::entity_global_form_id(world, entity)
+        };
+        let Some(form) = form else {
+            return CommandOutput::error("quest.force: the entity is not a placed reference");
+        };
+        let Some(mut overrides) = world.try_resource_mut::<byroredux_scripting::AliasOverrides>() else {
+            return CommandOutput::error("quest.force: no AliasOverrides resource");
+        };
+        overrides.set(byroredux_scripting::QuestFormId(quest), alias, byroredux_scripting::AliasOverride::Forced(form));
+        CommandOutput::line(format!("alias {alias} of {quest:08X} forced to {form:08X}"))
+    }
+}
+
 /// `script.var <entity|.> <name>`: the value the VM's scripts wrote to `<name>`
 /// (a property or variable) on the reference's script, else its authored value.
 pub(crate) struct ScriptVarCommand;
