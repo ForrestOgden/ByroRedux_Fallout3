@@ -1547,6 +1547,17 @@ modelled, and a base with a health of 0 or less takes any damage straight to 0% 
 nothing about it). Census: `refr_script_coverage` on Skyrim 61.1% to 62.6% of scripted references
 (`MineOreScript` now stops on `Activate`, not `DamageObject`).
 
+### ModFavorPoints stays declined (M47.2)
+
+`Actor.ModFavorPoints(float)` is called by about a hundred vanilla Skyrim fragments (the Thieves
+Guild, Mages College and Dark Brotherhood quest rewards, e.g. `akSpeaker.ModFavorPoints(50)`), and no
+local CK page, wiki or xEdit definition describes it. SkyrimSE.exe does not define it either: a
+case-insensitive search of the binary for `modfavor` finds nothing, while the neighbouring natives
+(`SetDoingFavor`) and the favor data (the `FavorPointsBonus` actor value, the `iFavorPointsRestore`
+setting) are there. So there is no engine behaviour to port, and what the retail runtime does with
+a call to a method it does not have is not something the files settle; the call stays declined
+rather than guessed at.
+
 ### Utility.GetCurrentRealTime (M47.2)
 
 CK: "the number of real-world seconds that have elapsed since the game has launched", with time in
