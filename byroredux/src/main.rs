@@ -77,6 +77,9 @@ use winit::window::{CursorGrabMode, Window};
 
 use crate::components::InputState;
 
+// Only the feature-gated boot path (and its test) call this; without the
+// gate the `--no-default-features` CI lane warns it is dead (#5327).
+#[cfg(any(test, feature = "debug-server"))]
 fn debug_server_allowed(debug_build: bool, opt_in: Option<&str>) -> bool {
     debug_build || matches!(opt_in, Some("1" | "true" | "yes"))
 }
@@ -1050,7 +1053,7 @@ impl App {
             // and content path available for diagnostics or recovery.
             log::error!("executable extension profile was not activated: {error:#}");
         }
-        let mut scheduler = boot::build_scheduler();
+        let scheduler = boot::build_scheduler();
 
         // Start debug server (feature-gated, zero cost when disabled).
         // The returned handle's Drop signals shutdown + joins the
@@ -1068,6 +1071,11 @@ impl App {
         // launch — `debug_server::start`'s own doc comment already
         // states this precondition ("Call this after all systems have
         // been added to the scheduler").
+        // Only `debug_server::start` mutates the scheduler here; rebinding
+        // under the gate keeps the no-feature build free of an unused `mut`
+        // (#5327).
+        #[cfg(feature = "debug-server")]
+        let mut scheduler = scheduler;
         #[cfg(feature = "debug-server")]
         let debug_server = if debug_server_allowed(
             cfg!(debug_assertions),
