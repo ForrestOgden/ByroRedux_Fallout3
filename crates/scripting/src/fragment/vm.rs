@@ -2656,6 +2656,11 @@ impl Vm<'_> {
                     | "getfactionowner"
                     | "getactorowner"
                     | "calculateencounterlevel"
+                    | "damageobject"
+                    | "getcurrentdestructionstage"
+                    | "cleardestruction"
+                    | "setdestroyed"
+                    | "isdestroyed"
                     | "getbribeamount"
                     | "getgoldamount"
                     | "setbribed"
@@ -3300,6 +3305,49 @@ impl Vm<'_> {
                     }
                 });
                 Some(crime.map_or(Value::None, Value::Form))
+            }
+            // Destructible objects (see [`crate::destruction`]): CK *DamageObject*
+            // ("damages this object, which may fire OnDestructionStageChanged"),
+            // *GetCurrentDestructionStage* (-1 undamaged), *ClearDestruction* (no
+            // event), *SetDestroyed* ("sets or clears this object's destroyed
+            // flag", default True) and *IsDestroyed*.
+            (Value::Form(reference), "damageobject") if args.len() == 1 => {
+                let values = self.eval_args(frame, args)?;
+                let amount = values.first().and_then(Value::number).unwrap_or(0.0);
+                if let Some(entity) = self.entity_of(*reference) {
+                    if let Some(outcome) = crate::destruction::damage_object(self.world, entity, *reference, amount) {
+                        if outcome.new_stage != outcome.old_stage {
+                            super::raise_reference_event(
+                                self.world,
+                                entity,
+                                "OnDestructionStageChanged",
+                                vec![VmStored::Int(outcome.old_stage), VmStored::Int(outcome.new_stage)],
+                            );
+                        }
+                        if outcome.disable {
+                            self.deferred.reference_enable_changes.push((*reference, false));
+                        }
+                    }
+                }
+                Some(Value::None)
+            }
+            (Value::Form(reference), "getcurrentdestructionstage") if args.is_empty() => {
+                let stage = self
+                    .entity_of(*reference)
+                    .map_or(-1, |entity| crate::destruction::destruction_stage(self.world, entity, *reference));
+                Some(Value::Int(stage))
+            }
+            (Value::Form(reference), "cleardestruction") if args.is_empty() => {
+                crate::destruction::clear_destruction(self.world, *reference);
+                Some(Value::None)
+            }
+            (Value::Form(reference), "setdestroyed") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                crate::destruction::set_destroyed(self.world, *reference, values.first().is_none_or(Value::truthy));
+                Some(Value::None)
+            }
+            (Value::Form(reference), "isdestroyed") if args.is_empty() => {
+                Some(Value::Bool(crate::destruction::is_destroyed(self.world, *reference)))
             }
             // CK *SetBribed* / *SetIntimidated* ("flags this actor as bribed /
             // intimidated by the player", default True) and *IsBribed* /
@@ -5345,6 +5393,21 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "damageobject")
+                if statement
+                    && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "getcurrentdestructionstage") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "cleardestruction") if statement && arg_kinds.is_empty() => return Some(Kind::None),
+            (Kind::Object | Kind::Player, "setdestroyed")
+                if statement
+                    && matches!(arg_kinds.as_slice(), [] | [Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "isdestroyed") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "isbribed" | "isintimidated") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "isscanned") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "applyhavokimpulse")

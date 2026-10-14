@@ -2402,6 +2402,7 @@ mod tests {
                 // this fixture exercises the VMAD lane.
                 script_form_id: 0,
                 visible_when_distant: false,
+                destruction: None,
             },
         );
 
@@ -2433,6 +2434,7 @@ mod tests {
                 script_instance: None,
                 script_form_id: 0,
                 visible_when_distant: false,
+                destruction: None,
             },
         );
         assert!(idx.base_record_script_instance(PLAIN).is_none());
@@ -2471,6 +2473,7 @@ mod tests {
                 script_instance: None,
                 script_form_id: SCPT,
                 visible_when_distant: false,
+                destruction: None,
             },
         );
 
@@ -2506,6 +2509,7 @@ mod tests {
                 script_instance: None,
                 script_form_id: 0,
                 visible_when_distant: false,
+                destruction: None,
             },
         );
 

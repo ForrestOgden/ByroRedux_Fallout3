@@ -56,7 +56,7 @@ pub const DELIVERED_EVENTS: [&str; 14] = [
 pub(super) fn is_delivered_event(name: &str) -> bool {
     DELIVERED_EVENTS
         .iter()
-        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent"])
+        .chain(&["OnUpdate", "OnUpdateGameTime", "OnTimer", "OnTimerGameTime", "OnAnimationEvent", "OnDestructionStageChanged"])
         .any(|event| event.eq_ignore_ascii_case(name))
 }
 
@@ -279,6 +279,39 @@ pub fn raise_unload_events(world: &World, victims: &[EntityId]) {
     }
     if !aliases.is_empty() {
         raise_alias_unloads(world, victims, &aliases);
+    }
+}
+
+/// Queue `event` with `args` for the scripts on `entity` that handle it, delivered
+/// by the next [`reference_script_event_system`] run (an event the engine raises
+/// outside a script run, such as a destruction stage changing).
+pub fn raise_reference_event(world: &World, entity: EntityId, event: &'static str, args: Vec<VmStored>) {
+    let Some(owner) = crate::condition::entity_global_form_id(world, entity) else {
+        return;
+    };
+    let pending: Vec<Delivery> = {
+        let Some(attached) = world.query::<PapyrusReferenceScripts>() else {
+            return;
+        };
+        let Some(scripts) = attached.get(entity) else {
+            return;
+        };
+        scripts
+            .0
+            .iter()
+            .filter(|script| script.handles(event))
+            .map(|script| Delivery {
+                owner,
+                script: script.script.clone(),
+                vmad: Arc::clone(&script.vmad),
+                event,
+                args: args.clone(),
+                init_gated: false,
+            })
+            .collect()
+    };
+    if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+        queue.0.extend(pending);
     }
 }
 

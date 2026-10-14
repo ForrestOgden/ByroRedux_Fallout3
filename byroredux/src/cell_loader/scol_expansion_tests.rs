@@ -26,6 +26,7 @@ fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
         // Oblivion / FO3 / FNV ObScript attachment and never appears.
         script_form_id: 0,
         visible_when_distant: false,
+        destruction: None,
     }
 }
 

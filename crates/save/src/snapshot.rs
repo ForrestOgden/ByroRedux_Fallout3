@@ -511,7 +511,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v100 -> v101 (M47.2): the `AnimationEventRegistrations` resource column
 /// (`RegisterForAnimationEvent`).
-pub const FORMAT_MAJOR: u16 = 101;
+///
+/// v101 -> v102 (M47.2): the `DestructionStates` resource column
+/// (`DamageObject`, `SetDestroyed`).
+pub const FORMAT_MAJOR: u16 = 102;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -1019,6 +1019,9 @@ pub(crate) fn populate_scene_runtime(
     // HasKeyword.
     let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
     log::info!("Installed keyword table: {keyworded} base objects");
+    // M47.2 — base objects' destructible data, for DamageObject.
+    let destructible = byroredux_scripting::destruction::install_destruction_table(world, index);
+    log::info!("Installed destruction table: {destructible} destructible base objects");
     // M47.2 — RACE subgraph data and the archetype keywords, for
     // ChangeAnimArchetype and the actor's graph selection.
     let archetypes = byroredux_scripting::anim_subgraph::install_subgraph_table(world, index);

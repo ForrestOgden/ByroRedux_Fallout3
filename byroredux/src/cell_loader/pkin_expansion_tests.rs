@@ -316,6 +316,7 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
             // Oblivion / FO3 / FNV ObScript attachment and never appears.
             script_form_id: 0,
             visible_when_distant: false,
+            destruction: None,
         },
     );
     index.scols.insert(

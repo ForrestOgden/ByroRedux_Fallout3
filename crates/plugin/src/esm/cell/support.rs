@@ -61,10 +61,28 @@ pub(crate) fn build_static_object_from_subs(
     let mut script_instance = None;
     let mut script_form_id: u32 = 0;
     let mut xpwr_form_id: Option<u32> = None;
+    let mut destruction: Option<DestructionData> = None;
 
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => editor_id = read_zstring(&sub.data),
+            // xEdit `wbDEST`: `DEST` is health (i32), stage count (u8), VATS
+            // flag (u8) and two unknown bytes; each `DSTD` opens with health %
+            // (u8), index (u8), model damage stage (u8) and flags (u8).
+            b"DEST" if sub.data.len() >= 4 => {
+                let health = i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
+                destruction = Some(DestructionData { health, stages: Vec::new() });
+            }
+            b"DSTD" if sub.data.len() >= 4 => {
+                if let Some(data) = destruction.as_mut() {
+                    data.stages.push(DestructionStage {
+                        health_percent: sub.data[0],
+                        index: sub.data[1],
+                        model_damage_stage: sub.data[2],
+                        flags: sub.data[3],
+                    });
+                }
+            }
             b"MODL" if is_armor && sub.data.len() == 4 => {
                 // Consumed by `parse_armo` as an ARMA FormID. ARMO records
                 // are inventory definitions, not world-placement meshes, so
@@ -371,6 +389,7 @@ pub(crate) fn build_static_object_from_subs(
             script_instance,
             script_form_id,
             visible_when_distant,
+            destruction,
         })
     } else {
         None
@@ -832,6 +851,7 @@ fn parse_scol_group_inner(
                         // ObScript attachment and never appears on them.
                         script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
+                        destruction: None,
                     },
                 );
             }
@@ -916,6 +936,7 @@ fn parse_pkin_group_inner(
                         // the flag rides the real PKIN header for completeness,
                         // though the synthetic child placements are what render.
                         visible_when_distant: header.is_visible_when_distant(),
+                        destruction: None,
                     },
                 );
             }
@@ -1001,6 +1022,7 @@ fn parse_movs_group_inner(
                         // ObScript attachment and never appears on them.
                         script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
+                        destruction: None,
                     },
                 );
             }

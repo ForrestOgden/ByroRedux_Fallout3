@@ -5069,6 +5069,67 @@ fn animation_events_reach_registered_scripts() {
     assert!(world.resource::<crate::AnimationEventRegistrations>().entries().is_empty());
 }
 
+/// `DamageObject` walks a destructible object through its stages: the damage
+/// accumulates under the reference's FormID, `GetCurrentDestructionStage` reads
+/// the model damage stage (-1 undamaged), a Destroy stage sets the destroyed
+/// flag and disables the reference, `ClearDestruction` resets all of it, and an
+/// object whose base has no destructible data takes nothing.
+#[test]
+fn damage_object_walks_the_destruction_stages() {
+    use byroredux_plugin::esm::cell::{DestructionData, DestructionStage};
+    const BASE: u32 = 0x0001_0F90;
+    let script = parsed_source(
+        "ScriptName QF_VmDamage extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Marker.GetCurrentDestructionStage() == -1 && !Marker.IsDestroyed()\n\
+             Marker.DamageObject(60.0)\n\
+             If Marker.GetCurrentDestructionStage() == 1\n\
+               Marker.DamageObject(50)\n\
+               If Marker.GetCurrentDestructionStage() == 2 && Marker.IsDestroyed()\n\
+                 Self.SetStage(20)\n\
+               EndIf\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Marker.ClearDestruction()\n\
+           Marker.SetDestroyed(False)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_2", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(marker, crate::scene::SceneAliasCandidate { base_form_id: BASE, ..Default::default() });
+    let stage = |percent, model, flags| DestructionStage { health_percent: percent, index: model, model_damage_stage: model, flags };
+    world.insert_resource(crate::destruction::DestructionTable(
+        [(
+            BASE,
+            DestructionData {
+                health: 100,
+                stages: vec![stage(50, 1, 0), stage(0, 2, DestructionStage::DESTROY | DestructionStage::DISABLE)],
+            },
+        )]
+        .into(),
+    ));
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(MARKER, true);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(crate::destruction::is_destroyed(&world, MARKER));
+    assert!(!crate::fragment::reference_enabled(&world, MARKER), "the Disable flag disabled it");
+    crate::destruction::clear_destruction(&world, MARKER);
+    crate::destruction::set_destroyed(&world, MARKER, false);
+    assert!(world.resource::<crate::destruction::DestructionStates>().0.is_empty());
+    assert_eq!(crate::destruction::destruction_stage(&world, marker, MARKER), -1);
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

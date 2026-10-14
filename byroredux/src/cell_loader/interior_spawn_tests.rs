@@ -41,6 +41,7 @@ fn stat(form_id: u32, editor_id: &str) -> StaticObject {
         script_instance: None,
         script_form_id: 0,
         visible_when_distant: false,
+        destruction: None,
     }
 }
 

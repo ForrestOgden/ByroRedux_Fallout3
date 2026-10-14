@@ -17,6 +17,7 @@ fn make_static(form_id: u32, model: &str) -> StaticObject {
         script_instance: None,
         script_form_id: 0,
         visible_when_distant: false,
+        destruction: None,
     }
 }
 

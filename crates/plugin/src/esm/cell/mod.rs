@@ -1094,6 +1094,37 @@ pub struct StaticObject {
     /// full-model cull has the signal without re-reading the ESM — the runtime
     /// consumer #1731 parsed the flag for. See #1889 / EXAL §5.2.
     pub visible_when_distant: bool,
+    /// The record's destructible data (`DEST` + `DSTD` stages), when authored.
+    pub destruction: Option<DestructionData>,
+}
+
+/// A base object's destructible data (xEdit `wbDEST`): its health and the
+/// stages it passes through as damage lowers that health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestructionData {
+    /// `DEST` health: how much damage the object takes to reach 0%.
+    pub health: i32,
+    /// `DSTD` stages, in authored order.
+    pub stages: Vec<DestructionStage>,
+}
+
+/// One `DSTD` stage. CK *Destructible Objects*: a stage with Health Percentage
+/// 90 is entered when the object reaches 90% health; its Model Damage Stage is
+/// the number scripts reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DestructionStage {
+    pub health_percent: u8,
+    pub index: u8,
+    pub model_damage_stage: u8,
+    /// Bit 0 Cap Damage, 1 Disable, 2 Destroy, 3 Ignore External Dmg.
+    pub flags: u8,
+}
+
+impl DestructionStage {
+    pub const CAP_DAMAGE: u8 = 1 << 0;
+    pub const DISABLE: u8 = 1 << 1;
+    pub const DESTROY: u8 = 1 << 2;
+    pub const IGNORE_EXTERNAL_DAMAGE: u8 = 1 << 3;
 }
 
 /// Full Skyrim+ Texture Set — eight named slots from a single TXST

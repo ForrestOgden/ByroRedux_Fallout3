@@ -1022,6 +1022,7 @@ mod tests {
                 script_instance: None,
                 script_form_id: 0,
                 visible_when_distant: false,
+                destruction: None,
             },
         );
         let (_, verdict) = first_backend_load_screen(&index).unwrap();

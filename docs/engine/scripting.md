@@ -1333,9 +1333,9 @@ behavior graph (see *Animation graphs of placed objects*), so `PhysicsTrap` (451
 references) and `TrapBear` (182) now run: live in Irkngthand04, `PhysicsTrap.OnCellAttach` runs
 `ResolveLeveledDamage` on all of them with no stop, and in HonningbrewMeadery01 the four bear
 traps attach `BearTrap01.hkx`, run `OnLoad`, and answer `OnActivate` with `Reset01` / `Trigger01`
-accepted by the graph. What still stops trap scripts is `DamageObject` (no destruction runtime;
-`MineOreScript`, `TrapHitBase`), `Weapon.Fire` (`DartTrap`: no projectile launcher) and
-`TrapHitBase`'s receiver expression.
+accepted by the graph. What still stops trap scripts is `Weapon.Fire` (`DartTrap`: no projectile
+launcher), the trap-hit events `TrapHitBase` / `PhysicsTrapHit` handle (nothing delivers them) and
+`ObjectReference.Activate` (`MineOreScript`, once `DamageObject` passes).
 
 ### CalculateEncounterLevel (M47.2)
 
@@ -1527,6 +1527,25 @@ state:
   table calls `IsScanned` "check if a object has been scanned". The `AddToMap` half is the
   existing map-marker state. The scanner itself has no player-side runtime, so only scripts
   set the flag.
+
+### Destructible objects (M47.2, FORMAT 102)
+
+`ObjectReference.DamageObject`, `GetCurrentDestructionStage`, `ClearDestruction`, `SetDestroyed`,
+`IsDestroyed` and the `OnDestructionStageChanged(aiOldStage, aiCurrentStage)` event
+(`destruction.rs`). The data is a base record's destructible block, which the plugin now keeps on
+the `StaticObject` (xEdit `wbDEST`: `DEST` health, `DSTD` stages with health %, index, model damage
+stage and flags; 615 base objects in Skyrim.esm). The rules are the CK's *Destructible Objects*
+tutorial and the function pages: a stage is entered when the object's remaining health falls to its
+percentage, the stage number scripts see is the *model damage stage*, an undamaged object is -1,
+Cap Damage stops a hit at the capped stage ("if you've got 20 health on your object and you cap with
+a health percentage of 80%, the first hit only brings health down to 80%"), Ignore External Dmg
+makes the stage ignore `DamageObject`, Destroy sets the destroyed flag and Disable disables the
+reference; skipped stages are why the event carries both numbers, and `ClearDestruction` raises
+none. Each reference's damage and destroyed flag is a saved `DestructionStates` by FormID. The
+visible side (replacement models, explosions, debris, a stage's self damage per second) is not
+modelled, and a base with a health of 0 or less takes any damage straight to 0% (the CK says
+nothing about it). Census: `refr_script_coverage` on Skyrim 61.1% to 62.6% of scripted references
+(`MineOreScript` now stops on `Activate`, not `DamageObject`).
 
 ### Utility.GetCurrentRealTime (M47.2)
 

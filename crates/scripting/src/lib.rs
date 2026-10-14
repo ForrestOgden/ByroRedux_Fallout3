@@ -33,6 +33,7 @@ pub mod globals;
 pub mod load_order;
 pub mod map_markers;
 pub mod anim_subgraph;
+pub mod destruction;
 pub mod keywords;
 pub mod menus;
 pub mod alias_collections;
@@ -141,7 +142,7 @@ pub use fragment::{
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
     animation_event_system, AnimationEventRegistration, AnimationEventRegistrations, AnimationEventRequest,
-    raise_unload_events, ActorWatch, PendingUnloadDeliveries,
+    raise_unload_events, raise_reference_event, ActorWatch, PendingUnloadDeliveries,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,
     AliasScriptOwners, QuestAliasScripts, ALIAS_OWNER_BASE, DELIVERED_ALIAS_EVENTS,
     package_fragment_system, populate_fragments, populate_package_fragments, FragmentSet, FragmentTable, report_package_end, report_package_transition, ActivePackages, PackageEnd, PackageFragmentSet,
@@ -367,6 +368,10 @@ pub fn register(world: &mut World) {
     // M47.2 — keyword data scripts attached to locations (saved).
     if world.try_resource::<LocationKeywordData>().is_none() {
         world.insert_resource(LocationKeywordData::default());
+    }
+    // M47.2 — destructible objects' damage (saved).
+    if world.try_resource::<destruction::DestructionStates>().is_none() {
+        world.insert_resource(destruction::DestructionStates::default());
     }
     // M47.2 — Papyrus animation event registrations (saved).
     if world.try_resource::<AnimationEventRegistrations>().is_none() {
