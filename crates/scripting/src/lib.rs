@@ -156,7 +156,10 @@ pub use editor_location::EditorLocation;
 pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListChange, FormLists};
-pub use animation_graph::AnimArchetypeOverrides;
+pub use animation_graph::{
+    object_graph_step_system, AnimArchetypeOverrides, BehaviorGraphRef, GraphClip, LoadedGraph, ObjectAnimationGraph,
+    Playback,
+};
 pub use scanning::ScannedReferences;
 pub use speechcraft::{SpeechcraftOutcome, SpeechcraftOutcomes};
 pub use condition_form::{install_condition_forms, is_true as condition_form_is_true, ConditionForms};

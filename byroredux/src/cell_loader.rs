@@ -60,6 +60,7 @@ use crate::components::{
 pub(crate) mod created;
 mod euler;
 mod exterior;
+mod graph_nodes;
 mod index;
 mod interior_spawn;
 mod load;

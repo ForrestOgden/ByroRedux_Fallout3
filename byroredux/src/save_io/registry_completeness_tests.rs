@@ -653,6 +653,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // longer allowlisted here.
         ("KeystoneInventory", "forward-latent — its only mutator only fires for MG07LabyrinthianDoor entities, which have no live production spawn site"),
         ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
+        ("BehaviorGraphRef", "M47.2 — the behavior-graph project a placed NIF names, stamped by the cell loader at every spawn; authored data, re-derived"),
+        ("ObjectAnimationGraph", "M47.2 — a placed prop's running behavior-graph state machine, re-attached in its start state at every spawn; the props' own OnLoad scripts replay PlayAnimation from their saved script state (the game's design: its graphs reset on load too)"),
+        ("ObjectGraphCache", "M47.2 — decoded behavior graphs and their registered clips, rebuilt from the archives; process-lifetime cache"),
         ("HavokImpulseRequest", "one-shot request, applied and drained same-tick by scripted_havok_impulse_system"),
         ("HavokImpulseRules", "M47.2 — fGameplayImpulse* settings for ApplyHavokImpulse; rebuilt from the load order every boot"),
         ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),

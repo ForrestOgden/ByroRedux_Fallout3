@@ -491,6 +491,21 @@ pub fn extract_bsx_flags(scene: &NifScene) -> u32 {
     0
 }
 
+/// The behavior-graph project a NIF names (`BSBehaviorGraphExtraData` on the
+/// root node), relative to `meshes\\` — Skyrim's animated props (levers, doors,
+/// traps) run a Havok behavior graph from it. `None` when the root authors none.
+pub fn extract_behavior_graph_file(scene: &NifScene) -> Option<String> {
+    let root_block = scene.blocks.get(scene.root_index?)?;
+    let node = root_block.as_any().downcast_ref::<crate::blocks::node::NiNode>()?;
+    node.av.net.extra_data_refs.iter().find_map(|reference| {
+        let block = scene.blocks.get(reference.index()?)?;
+        let extra = block
+            .as_any()
+            .downcast_ref::<crate::blocks::extra_data::BsBehaviorGraphExtraData>()?;
+        extra.behaviour_graph_file.as_ref().map(|file| file.to_string()).filter(|file| !file.is_empty())
+    })
+}
+
 /// Extract `NiAVObject.flags` from the root NiNode. Returns 0 if the
 /// scene has no root or the root is not a NiNode (e.g. a malformed NIF
 /// with no scene graph). Mirrors [`extract_bsx_flags`] — captured at

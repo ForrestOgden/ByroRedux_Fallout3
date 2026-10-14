@@ -865,6 +865,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
+ "byroredux-hkx",
  "byroredux-papyrus",
  "byroredux-pex",
  "byroredux-plugin",

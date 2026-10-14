@@ -7,11 +7,17 @@
 //! executing a behavior graph.
 
 mod animation;
+mod behavior;
 mod packfile;
 
 pub use animation::{
     decode_skeleton, decode_spline_animation, HkxAnimation, HkxAnnotation, HkxBone, HkxSkeleton,
     HkxTransform,
+};
+
+pub use behavior::{
+    decode_behavior_graph, decode_character, decode_project, BehaviorGraph, Character, ClipMode, ClipTrigger,
+    State, StateClip, StateMachine, Transition, TRANSITION_FLAG_DISABLED,
 };
 
 use thiserror::Error;

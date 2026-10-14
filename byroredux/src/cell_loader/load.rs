@@ -675,6 +675,7 @@ pub fn load_cell_with_masters(
     // interior unload cannot despawn a running cross-cell scene.
     crate::asset_provider::populate_scene_runtime(world, &index);
     crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
+    crate::asset_provider::populate_object_graphs(world, tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
     // P2 combat tail — the --cell route must install the combat family
     // too: the P2 gate smoke drives exactly this route, and both spawn
@@ -1080,6 +1081,7 @@ impl InteriorCellApplyJob {
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::asset_provider::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
+        crate::asset_provider::populate_object_graphs(world, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
         crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 

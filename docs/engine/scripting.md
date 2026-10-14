@@ -1409,21 +1409,64 @@ The list is evaluated only when every condition is modeled end to end (`is_model
 reads state the interpreter holds locked (quest stages, alias bindings); any other form
 stops the run rather than answering with the fail-open pass. 338 of 899 forms qualify.
 
-### Animation-graph natives (M47.2)
+### Animation graphs of placed objects (M47.2)
 
-`PlayAnimation`, `PlayAnimationAndWait`, `RegisterForAnimationEvent`,
-`UnregisterForAnimationEvent` and `SetAnimationVariable{Float,Bool,Int}` drive a reference's
-Havok behavior graph ("sends the named event to the object's animation graph", CK
-*PlayAnimation*). The engine decodes skeletons and clips from `.hkx` but executes no behavior
-graph (`crates/hkx`), so no reference has a graph to take an event. `animation_graph.rs`
-answers with the results the CK documents for exactly that case: `PlayAnimation` false ("true
-if the animation successfully started"), `PlayAnimationAndWait` false without waiting ("if the
-animation unloads before the end event is received, the function will abort and return false"),
-`RegisterForAnimationEvent` false ("something went wrong — the animation graph may not be
-loaded"), the other two a no-op. The scripts around them run their own logic (states, stages,
-enable / disable) with the animation absent, which is what these references show today. A
-behavior-graph runtime replaces `graph_loaded()` with its per-reference answer. Skyrim
-scripted references on the VM: 42.9% → 52.9%.
+`PlayAnimation`, `PlayAnimationAndWait` and `RegisterForAnimationEvent` send events to a
+reference's Havok behavior graph ("sends the named event to the object's animation graph", CK
+*PlayAnimation*). Skyrim drives its levers, pull chains, pillars, portcullises, pressure plates
+and wall traps that way; the engine now runs those graphs.
+
+**The data.** A NIF's `BSBehaviorGraphExtraData` names a *project* packfile
+(`meshes\Dungeons\Nordic\Levers\RuinsLever01\NorLever01.hkx`). The project lists a *character*;
+the character names its *skeleton*, its *animations* and a *behavior* packfile; the behavior is a
+state machine whose transitions fire on named events and whose states each play one clip
+(`crates/hkx/src/behavior.rs`, Havok 2010.2, 64-bit — Skyrim SE only; the Havok SDK on disk has
+no Behavior headers, so every field offset was derived from the data and checked: the decoder
+reads 420 of 423 vanilla graphs, `examples/behavior_census.rs`, and the three that do not carry no
+string table; `examples/probe_behavior.rs` prints a graph). What is decoded: the event names, the
+root state machine (states, their transitions, the wildcard transitions), each state's clip
+(animation, playback mode, speed, start time, held fraction) and the clip's trigger events.
+
+**The runtime** (`animation_graph.rs`, `asset_provider/object_graph.rs`). The cell loader stamps a
+`BehaviorGraphRef` on the placement root; `populate_object_graphs` (run after interior loads, the
+exterior bootstrap and every streaming step) resolves the project from the archives, registers the
+state clips in the animation registry (a once-playing and a looping variant per animation) and
+attaches an `ObjectAnimationGraph` in the machine's start state, dropping the NIF's own embedded
+controller player, which would override the graph. An event takes the state's own transition on it
+(else a wildcard one; `DISABLED` transitions never fire), enters the new state, and starts its clip
+on the object's `AnimationPlayer`: single play holds the last pose, looping loops, a user-controlled
+clip is held at its authored fraction. The clip's trigger events are scheduled in real time
+(`(clip time − start time) / speed`, end-relative ones from the clip's length) and raised by
+`object_graph_step_system`, so a lever that finishes `PullDown` raises `Pulled` and settles in the
+"Pulled" state with no script involved. Transitions are instantaneous (no blends), blend trees and
+nested machines have no clip, transition conditions and variables are not evaluated, and the
+`SoundPlay.*` events the triggers carry are not played.
+
+**The natives.** `PlayAnimation` returns whether the graph took the event. `PlayAnimationAndWait`
+is a latent statement: the schedule is deterministic, so the seconds until the named event is
+raised (following the machine through the transitions the clip events take) are computed up front
+and the run suspends for them; the CK's "if the event you send it doesn't exist, the function will
+never return" becomes an immediate return, and a reference with no graph (or an event the graph
+never raises) also returns at once, the CK's false. Used as a value it is refused (a latent call
+cannot sit inside an expression). `RegisterForAnimationEvent` still answers false:
+`OnAnimationEvent` delivery to registered scripts is not built. `UnregisterForAnimationEvent` and
+`SetAnimationVariable*` have no graph variable to act on and do nothing.
+
+**Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's
+skeleton bones are NiNodes (`Lever01`). A NIF with a behavior graph keeps its node tree
+(`cell_loader/graph_nodes.rs`): a hierarchical import records the nodes, the node entities are
+spawned under the placement root with the bone names, and each mesh hangs from its node at the
+transform the hierarchical import gives it (the meshes' world poses are unchanged, so a prop at rest
+renders as before). A NIF whose hierarchical and flat imports do not line up keeps the flat spawn.
+
+**Saves.** The running graph is not saved: a loaded prop starts in the machine's start state, which
+is the game's own behaviour too — the props' `OnLoad` scripts replay `PlayAnimation` from their
+saved script state (`NorLever01Script.SetDefaultState`).
+
+Verified live on Bleak Falls Barrow: activating the Nordic lever runs `FullPush` (state Pulled →
+PulledToPushed), the `Lever01` node turns from −44.96° to +44.96° over ~0.8 s, the clip's
+`FullPushedUp` trigger settles the machine in "Pushed", and the next activation's `FullPull` is
+accepted from there. 43 animated props attach in that cell.
 
 ### Speech outcomes, anim archetype, scanned references (M47.2, FORMAT 98)
 

@@ -666,6 +666,8 @@ pub fn register(world: &mut World) {
     world.register::<HorseTetherState>();
     world.register::<MotionTypeChangeRequest>();
     world.register::<crate::HavokImpulseRequest>();
+    world.register::<crate::BehaviorGraphRef>();
+    world.register::<crate::ObjectAnimationGraph>();
     if world.try_resource::<CinematicPresentationState>().is_none() {
         world.insert_resource(CinematicPresentationState::default());
     }

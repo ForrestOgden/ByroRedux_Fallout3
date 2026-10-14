@@ -159,6 +159,7 @@ fn spawn_template(
             prepared,
             &mut blas_specs,
             &mut proxy,
+            None,
         );
     }
     let children: Vec<EntityId> = world

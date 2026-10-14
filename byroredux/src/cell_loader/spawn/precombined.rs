@@ -144,6 +144,7 @@ impl PrecombinedPlacement {
                     prepared,
                     &mut specs,
                     &mut synthesized,
+                    None,
                 ) {
                     self.count += 1;
                 }

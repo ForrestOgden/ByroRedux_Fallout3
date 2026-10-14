@@ -224,6 +224,42 @@ impl<'a> Packfile<'a> {
             .ok_or(HkxError::MissingClass(class_name))
     }
 
+    /// Every object of `class_name`, in file order.
+    pub(crate) fn objects_of(&self, class_name: &str) -> Vec<usize> {
+        self.objects
+            .iter()
+            .filter(|(_, start, len)| {
+                self.bytes.get(*start..*start + *len as usize) == Some(class_name.as_bytes())
+            })
+            .map(|(offset, _, _)| *offset)
+            .collect()
+    }
+
+    /// The class of the object that starts at `offset`.
+    pub(crate) fn class_at(&self, offset: usize) -> Option<&'a str> {
+        self.objects
+            .iter()
+            .find(|(object, _, _)| *object == offset)
+            .and_then(|(_, start, len)| std::str::from_utf8(self.bytes.get(*start..*start + *len as usize)?).ok())
+    }
+
+    /// A pointer field to another object of the data section: the object's
+    /// offset. Object-to-object pointers are *global* fixups in a Havok 2010
+    /// packfile (local fixups are the string and array-data pointers).
+    pub(crate) fn object_pointer(&self, source: usize) -> Option<usize> {
+        let (section, target) = self.global_target(source)?;
+        (section == self.data_section).then_some(target)
+    }
+
+    pub(crate) fn u8(&self, relative_offset: usize, label: &'static str) -> Result<u8> {
+        Ok(self.data_slice(relative_offset, 1, label)?[0])
+    }
+
+    pub(crate) fn u16(&self, relative_offset: usize, label: &'static str) -> Result<u16> {
+        let data = self.data_slice(relative_offset, 2, label)?;
+        Ok(u16::from_le_bytes(data.try_into().unwrap()))
+    }
+
     pub(crate) fn local_target(&self, source: usize) -> Option<usize> {
         self.local_fixups
             .binary_search_by_key(&source, |entry| entry.0)
@@ -242,7 +278,6 @@ impl<'a> Packfile<'a> {
     /// accessor is the read half of data we decode either way. The first
     /// object type with a pointer that crosses a section boundary is its
     /// consumer.
-    #[allow(dead_code)]
     pub(crate) fn global_target(&self, source: usize) -> Option<(usize, usize)> {
         self.global_fixups
             .binary_search_by_key(&source, |entry| entry.0)

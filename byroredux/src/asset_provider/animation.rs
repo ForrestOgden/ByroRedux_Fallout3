@@ -411,7 +411,7 @@ fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.
 ///   `NPC COM [COM ]`) as the accumulation root; `None` keeps the
 ///   boundary default of binding COM only for cart-exit completion
 ///   events. A name the rig doesn't have warns and binds nothing.
-fn convert_hkx_clip(
+pub(super) fn convert_hkx_clip(
     path: &str,
     idle_event: &str,
     skeleton: &HkxSkeleton,

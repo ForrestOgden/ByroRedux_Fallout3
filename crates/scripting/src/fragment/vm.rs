@@ -2647,7 +2647,6 @@ impl Vm<'_> {
                     | "isscanned"
                     | "addtomapscanned"
                     | "playanimation"
-                    | "playanimationandwait"
                     | "registerforanimationevent"
                     | "unregisterforanimationevent"
                     | "setanimationvariablefloat"
@@ -2931,25 +2930,22 @@ impl Vm<'_> {
                     _ => return stop(format!("{name} as written")),
                 }
             }
-            // Animation-graph natives (CK *PlayAnimation*, *PlayAnimationAndWait*,
-            // *RegisterForAnimationEvent*, *SetAnimationVariable\**): they drive a
-            // reference's Havok behavior graph, which this engine does not run
-            // (see [`crate::animation_graph`]). The CK's own failure results are the
-            // honest answer for a reference whose graph is not loaded: the event is
-            // not delivered, the play / wait calls return false at once (the latent
-            // one does not wait), the registration returns false, and a variable set
-            // has nothing to write.
-            (Value::Form(_), "playanimation") if args.len() == 1 => {
-                self.eval_args(frame, args)?;
-                Some(Value::Bool(crate::animation_graph::graph_loaded()))
-            }
-            (Value::Form(_), "playanimationandwait") if args.len() == 2 => {
-                self.eval_args(frame, args)?;
-                Some(Value::Bool(crate::animation_graph::graph_loaded()))
+            // Animation-graph natives (CK *PlayAnimation*, *RegisterForAnimationEvent*,
+            // *SetAnimationVariable\**): see [`crate::animation_graph`]. `PlayAnimation`
+            // sends the event to the object's behavior graph; the registration
+            // answers false (`OnAnimationEvent` delivery is not built) and a
+            // variable set has no graph variable to write.
+            (Value::Form(reference), "playanimation") if args.len() == 1 => {
+                let values = self.eval_args(frame, args)?;
+                let event = values[0].text();
+                let accepted = self
+                    .entity_of(*reference)
+                    .is_some_and(|entity| crate::animation_graph::play_animation(self.world, entity, &event));
+                Some(Value::Bool(accepted))
             }
             (Value::Form(_), "registerforanimationevent") if args.len() == 2 => {
                 self.eval_args(frame, args)?;
-                Some(Value::Bool(crate::animation_graph::graph_loaded()))
+                Some(Value::Bool(false))
             }
             (Value::Form(_), "unregisterforanimationevent") if args.len() == 2 => {
                 self.eval_args(frame, args)?;
@@ -3655,6 +3651,31 @@ impl Vm<'_> {
                     return stop("Utility.Wait beyond MAX_PROVIDER_WAIT_SECONDS");
                 }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
+            }
+        }
+        // CK *PlayAnimationAndWait*: send the event and wait until the graph raises
+        // the named one (the schedule is deterministic, so the wait is computed
+        // now). A graph that rejects the event, or never raises the other, makes
+        // the call return false at once: no wait.
+        if let Expr::MemberAccess { object, member } = &callee.node {
+            if member.node.0.eq_ignore_ascii_case("playanimationandwait")
+                && args.len() == 2
+                && static_class(&object.node).is_none()
+            {
+                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                    let values = self.eval_args(frame, args)?;
+                    let (event, wait_event) = (values[0].text(), values[1].text());
+                    let seconds = self.entity_of(reference).and_then(|entity| {
+                        crate::animation_graph::play_animation_and_wait(self.world, entity, &event, &wait_event)
+                    });
+                    return match seconds {
+                        Some(seconds) if seconds > MAX_PROVIDER_WAIT_SECONDS => {
+                            stop("PlayAnimationAndWait beyond MAX_PROVIDER_WAIT_SECONDS")
+                        }
+                        Some(seconds) => Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new())),
+                        None => Ok(Flow::Normal),
+                    };
+                }
             }
         }
         // Help-message housekeeping names the `Message` class or a message: the
@@ -5273,12 +5294,15 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Bool);
             }
             (Kind::Object | Kind::Player, "playanimationandwait")
-                if matches!(
-                    arg_kinds.as_slice(),
-                    [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]
-                ) =>
+                if statement
+                    && matches!(
+                        arg_kinds.as_slice(),
+                        [Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str), Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)]
+                    ) =>
             {
-                return Some(Kind::Bool);
+                // Latent: it waits for the graph's event, so only as a statement.
+                self.waits = true;
+                return Some(Kind::None);
             }
             (Kind::Object | Kind::Player, "registerforanimationevent" | "unregisterforanimationevent")
                 if matches!(

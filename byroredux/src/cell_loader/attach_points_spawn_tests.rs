@@ -31,6 +31,8 @@ fn cached_with_attach(
         placement_root_billboard: None,
         speedtree_wind: None,
         bsx_flags: 0,
+        behavior_graph_file: None,
+        graph_nodes: None,
         phantom_bounds: None,
         root_flags: 0,
         attach_light_offset: None,

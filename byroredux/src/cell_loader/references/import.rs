@@ -182,6 +182,12 @@ pub(super) fn parse_and_import_nif(
         }
     };
 
+    // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
+    let behavior_graph_file: Option<Arc<str>> =
+        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
+    let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
+        crate::cell_loader::graph_nodes::build(&scene, &meshes, &mut byroredux_core::string::StringPool::new())
+    });
     Some(Arc::new(CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -203,6 +209,8 @@ pub(super) fn parse_and_import_nif(
         // MultiBound metadata; the walker has already culled individual
         // editor-marker children without discarding their real siblings.
         bsx_flags: bsx,
+        behavior_graph_file,
+        graph_nodes,
         phantom_bounds,
         // #1235 / LC-D1-NEW-01 — root-node NiAVObject.flags for
         // placement-root SceneFlags parity with the loose-NIF loader.
@@ -523,6 +531,8 @@ pub(super) fn parse_and_import_spt(
         // SpeedTree `.spt` files carry no BSXFlags — they're a
         // separate format outside the NIF block hierarchy. #1214.
         bsx_flags: 0,
+        behavior_graph_file: None,
+        graph_nodes: None,
         phantom_bounds: None,
         // SpeedTree `.spt` placeholders have no NiAVObject root, so no
         // NiAVObject.flags to propagate. #1235 / LC-D1-NEW-01.

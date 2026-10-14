@@ -88,6 +88,9 @@ impl App {
             &mut self.world,
             &state.loaded,
         );
+        // M47.2 — animated props the streamed cells spawned get their Havok
+        // behavior graph (a cheap no-op while none is waiting).
+        crate::asset_provider::populate_object_graphs(&mut self.world, &state.tex_provider);
         // #2451 / EXAL-03 — a cell may pin its own CLMT via XCCM, which
         // re-resolves sky + weather (through the same crossfade a
         // worldspace change uses) when it differs from what is installed.

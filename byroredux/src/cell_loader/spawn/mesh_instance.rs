@@ -1062,6 +1062,7 @@ pub(super) fn spawn_mesh_instance(
     prepared: PreparedMeshUpload,
     blas_specs: &mut Vec<(u32, u32, u32)>,
     synthesized_collision_proxy: &mut bool,
+    node_parent: Option<(byroredux_core::ecs::EntityId, super::super::graph_nodes::MeshNodeLocal)>,
 ) -> bool {
     use byroredux_core::ecs::{Name, Parent};
     let PlacementCtx {
@@ -1227,7 +1228,12 @@ pub(super) fn spawn_mesh_instance(
     let entity = world.spawn();
     // NIF-local Transform for hierarchy propagation; world-space
     // GlobalTransform for first-tick consumers. See #544.
-    world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale));
+    // M47.2 — a mesh of an animated prop hangs from its NiNode, at the
+    // transform the hierarchical import gives it relative to that node.
+    match node_parent {
+        Some((_, local)) => world.insert(entity, Transform::new(local.translation, local.rotation, local.scale)),
+        None => world.insert(entity, Transform::new(nif_pos, nif_quat, mesh.scale)),
+    }
     world.insert(
         entity,
         GlobalTransform::new(final_pos, final_rot, final_scale),
@@ -1297,8 +1303,9 @@ pub(super) fn spawn_mesh_instance(
     }
     // Parent/Children edge → embedded animation clip's subtree
     // walk discovers this mesh through `placement_root`.
-    world.insert(entity, Parent(placement_root));
-    crate::helpers::add_child(world, placement_root, entity);
+    let mesh_parent = node_parent.map_or(placement_root, |(node, _)| node);
+    world.insert(entity, Parent(mesh_parent));
+    crate::helpers::add_child(world, mesh_parent, entity);
     // Name from `ImportedMesh.name` so the clip's node-keyed
     // channels (`FixedString` interned at parse time, #340)
     // resolve through `build_subtree_name_map` to this entity.

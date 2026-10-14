@@ -2881,7 +2881,8 @@ fn animation_graph_natives_report_no_graph() {
         "ScriptName QF_VmAnim extends Quest\n\
          ObjectReference Property Marker Auto\n\
          Function Fragment_1()\n\
-           If !Marker.PlayAnimation(\"flip\") && !Marker.PlayAnimationAndWait(\"flip\", \"done\") && !Marker.RegisterForAnimationEvent(Marker, \"reset\")\n\
+           If !Marker.PlayAnimation(\"flip\") && !Marker.RegisterForAnimationEvent(Marker, \"reset\")\n\
+             Marker.PlayAnimationAndWait(\"flip\", \"done\")\n\
              Marker.SetAnimationVariableFloat(\"Speed\", 1.0)\n\
              Marker.SetAnimationVariableBool(\"bOpen\", True)\n\
              Marker.UnregisterForAnimationEvent(Marker, \"reset\")\n\
@@ -3128,6 +3129,92 @@ fn apply_havok_impulse_queues_a_request() {
     assert_eq!(run(&world), 20);
     let pending = world.get::<crate::HavokImpulseRequest>(marker).expect("queued");
     assert_eq!(pending.vector, [0.0, 0.0, -15.0]);
+}
+
+/// `PlayAnimation` sends the event to the object's behavior graph: true when the
+/// graph took it, with the new state's clip on the object's animation player;
+/// `PlayAnimationAndWait` is a latent statement only.
+#[test]
+fn play_animation_drives_the_objects_behavior_graph() {
+    use byroredux_core::animation::AnimationPlayer;
+    use byroredux_hkx::{BehaviorGraph, ClipMode, State, StateClip, StateMachine, Transition};
+    let script = parsed_source(
+        "ScriptName QF_VmGraph extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If !Marker.PlayAnimation(\"Nope\") && Marker.PlayAnimation(\"Go\")\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Marker.PlayAnimationAndWait(\"Go\", \"Done\")\n\
+           Self.SetStage(30)\n\
+         EndFunction\n\
+         Function Fragment_3()\n\
+           If Marker.PlayAnimationAndWait(\"Go\", \"Done\")\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_2", None).err(), None, "latent as a statement");
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_3", None).is_err(), "latent for its value is refused");
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmGraph".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    world.register::<AnimationPlayer>();
+    world.register::<crate::ObjectAnimationGraph>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    let clip = StateClip {
+        animation: "a/go.hkx".into(),
+        mode: ClipMode::SinglePlay,
+        playback_speed: 1.0,
+        start_time: 0.0,
+        user_fraction: 0.0,
+        triggers: Vec::new(),
+    };
+    let transition = Transition { event: 0, to_state: 1, priority: 0, flags: 0 };
+    let graph = BehaviorGraph {
+        events: vec!["Go".into(), "Done".into()],
+        machine: Some(StateMachine {
+            start_state: 0,
+            states: vec![
+                State { id: 0, name: "Idle".into(), transitions: vec![transition], clip: None },
+                State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip) },
+            ],
+            wildcard: Vec::new(),
+        }),
+    };
+    let mut clips = std::collections::HashMap::new();
+    clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
+    world.insert(
+        marker,
+        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips }), marker).unwrap(),
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "the graph took Go and refused Nope");
+    let player = world.get::<AnimationPlayer>(marker).expect("the Going clip is playing");
+    assert_eq!((player.clip_handle, player.root_entity), (4, Some(marker)));
 }
 
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.

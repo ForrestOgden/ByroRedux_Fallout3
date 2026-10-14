@@ -268,6 +268,14 @@ pub(crate) struct CachedNifImport {
     /// placement root without re-reading the scene. See #1214 /
     /// D1-NEW-03. `0` when the NIF authors no BSXFlags.
     pub(super) bsx_flags: u32,
+    /// The behavior-graph project the NIF names (`BSBehaviorGraphExtraData`),
+    /// stamped on the placement root as a `BehaviorGraphRef` for the animation
+    /// graph loader. `None` for NIFs without one and for generated imports.
+    pub(super) behavior_graph_file: Option<std::sync::Arc<str>>,
+    /// The node tree of a behavior-graph NIF, so the spawn can keep the
+    /// NiNodes the graph's clips animate (see `graph_nodes`). `None` for every
+    /// other NIF.
+    pub(super) graph_nodes: Option<std::sync::Arc<super::graph_nodes::GraphNodes>>,
     /// `(min, max)` of the scene's `bhkSimpleShapePhantom` in NIF-root Y-up
     /// space — Skyrim's authored water volume for placed water meshes, read
     /// at spawn by `attach_mesh_water`. `None` for NIFs without one and for

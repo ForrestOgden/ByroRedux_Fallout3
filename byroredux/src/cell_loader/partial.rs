@@ -147,6 +147,12 @@ pub(crate) fn finish_partial_import(
         }
     };
 
+    // M47.2 — an animated prop keeps its NiNode tree (see `graph_nodes`).
+    let behavior_graph_file: Option<Arc<str>> =
+        byroredux_nif::import::extract_behavior_graph_file(&scene).map(Into::into);
+    let graph_nodes = behavior_graph_file.as_ref().and_then(|_| {
+        super::graph_nodes::build(&scene, &meshes, &mut byroredux_core::string::StringPool::new())
+    });
     let cached = Arc::new(CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -165,6 +171,8 @@ pub(crate) fn finish_partial_import(
         // MultiBound metadata on later content), never that the whole NIF
         // is a marker. The shared walker culls marker children individually.
         bsx_flags: bsx,
+        behavior_graph_file,
+        graph_nodes,
         phantom_bounds: byroredux_nif::import::collision::extract_phantom_bounds(&scene),
         // #1235 / LC-D1-NEW-01 — root NiAVObject.flags surfaced from
         // the streaming partial for placement-root SceneFlags parity.

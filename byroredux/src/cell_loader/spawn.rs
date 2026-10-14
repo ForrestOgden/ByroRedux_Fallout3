@@ -810,7 +810,17 @@ pub(super) fn spawn_placed_instances(
         spawned_nif_lights,
     };
     let prepared_meshes = prepare_mesh_uploads(ctx, &pc, cached, &resolved_paths);
+    // M47.2 — an animated prop (behavior graph) keeps the NiNodes its clips move.
+    let graph_nodes = cached.graph_nodes.as_deref().map(|graph| {
+        (
+            graph,
+            super::graph_nodes::spawn_nodes(world, graph, placement_root, ref_pos, ref_rot, ref_scale),
+        )
+    });
     for (sub_mesh_index, (mesh, prepared)) in imported.iter().zip(prepared_meshes).enumerate() {
+        let node_parent = graph_nodes
+            .as_ref()
+            .and_then(|(graph, spawned)| spawned.mesh_parent(graph, sub_mesh_index));
         if spawn_mesh_instance(
             world,
             ctx,
@@ -822,6 +832,7 @@ pub(super) fn spawn_placed_instances(
             prepared,
             &mut blas_specs,
             &mut synthesized_collision_proxy,
+            node_parent,
         ) {
             count += 1;
         }
@@ -1062,6 +1073,11 @@ fn spawn_placement_root(
     // generated path with `bsx_flags = 0`.
     if cached.bsx_flags != 0 {
         world.insert(placement_root, BSXFlags(cached.bsx_flags));
+    }
+    // M47.2 — an animated prop's Havok behavior graph, resolved and attached by
+    // `asset_provider::populate_object_graphs` once an archive provider is at hand.
+    if let Some(project) = &cached.behavior_graph_file {
+        world.insert(placement_root, byroredux_scripting::BehaviorGraphRef(std::sync::Arc::clone(project)));
     }
     // #1235 / LC-D1-NEW-01 — attach SceneFlags on the placement root for
     // parity with the loose-NIF loader (`scene/nif_loader.rs:450-452`).

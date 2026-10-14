@@ -28,6 +28,9 @@ byroredux-papyrus = { workspace = true }
 # papyrus only, so this stays acyclic.
 byroredux-pex = { workspace = true }
 byroredux-sdk = { workspace = true }
+# M47.2 — decoded Havok behavior graphs (the placed-object animation graphs
+# `PlayAnimation` drives). hkx is standalone (packfile reader), so no cycle.
+byroredux-hkx = { workspace = true }
 log = { workspace = true }
 rustc-hash = { workspace = true }
 

@@ -1134,6 +1134,7 @@ pub(crate) fn assemble_exterior_streaming(
     );
     crate::asset_provider::populate_scene_runtime(world, &wctx.record_index);
     crate::asset_provider::populate_idle_clip_runtime(world, &wctx.record_index, &tex_provider);
+    crate::asset_provider::populate_object_graphs(world, &tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &wctx.record_index, &tex_provider);
     // P2 combat tail — the Draugr combat takes (attack/hit/death), beside
     // the walk clip and under the same idempotence + silent-downgrade
