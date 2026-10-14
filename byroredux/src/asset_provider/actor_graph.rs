@@ -173,6 +173,7 @@ pub(crate) fn populate_actor_graphs(world: &mut World, provider: &TextureProvide
         let Some(loaded) = world.resource::<ActorGraphCache>().graphs.get(&key).and_then(|g| g.as_ref().map(|g| Arc::clone(&g.loaded))) else {
             continue;
         };
+        provide_bones(world, &key);
         let Some(skeleton_root) = world.get::<crate::components::AnimationTarget>(actor).map(|target| target.skeleton_root) else {
             continue;
         };
@@ -190,6 +191,41 @@ pub(crate) fn populate_actor_graphs(world: &mut World, provider: &TextureProvide
     }
     resolve_wanted(world, provider);
     attached
+}
+
+/// Give a graph's clips the skeleton's bone index (bone channel name -> index) its layered
+/// blends' bone weights are addressed by, once.
+fn provide_bones(world: &World, key: &str) {
+    let (lazy, skeleton) = {
+        let cache = world.resource::<ActorGraphCache>();
+        match cache.graphs.get(key).and_then(Option::as_ref) {
+            Some(graph) if !graph.lazy.has_bones() => (Arc::clone(&graph.lazy), graph.skeleton.clone()),
+            _ => return,
+        }
+    };
+    let Some(skeleton) = skeleton else { return };
+    let mut pool = world.resource_mut::<StringPool>();
+    let bones: rustc_hash::FxHashMap<_, _> =
+        skeleton.bones.iter().enumerate().map(|(index, bone)| (pool.intern(&bone.name), index as u16)).collect();
+    lazy.provide_bones(Arc::new(bones));
+}
+
+/// The times of a clip's `SyncLeft` and `SyncRight` annotations, when it has exactly one of
+/// each: the points a synced blend aligns its clips by. Locomotion clips carry them
+/// alternately, left first or right first (Fallout 4: 1,357 of the humanoid clips).
+fn sync_points(clip: &byroredux_core::animation::AnimationClip, pool: &StringPool) -> Option<[f32; 2]> {
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for (time, label) in &clip.text_keys {
+        match pool.resolve(*label) {
+            Some(name) if name.eq_ignore_ascii_case("SyncLeft") => left.push(*time),
+            Some(name) if name.eq_ignore_ascii_case("SyncRight") => right.push(*time),
+            _ => {}
+        }
+    }
+    match (left.as_slice(), right.as_slice()) {
+        ([left], [right]) if left.is_finite() && right.is_finite() && left != right => Some([*left, *right]),
+        _ => None,
+    }
 }
 
 /// Decode the clips the running graphs asked for and restart the graphs that were
@@ -250,6 +286,13 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
             match resolved {
                 Some(clip) => {
                     log::debug!("actor graph clip '{}' (looping {}) -> handle {} ({:.2} s)", key.0, key.1, clip.handle, clip.duration);
+                    let points = {
+                        let pool = world.resource::<StringPool>();
+                        world.resource::<AnimationClipRegistry>().get(clip.handle).and_then(|registered| sync_points(registered, &pool))
+                    };
+                    if let Some(points) = points {
+                        job.lazy.provide_sync(clip.handle, points);
+                    }
                     job.lazy.provide(key, clip);
                     provided += 1;
                 }
@@ -274,5 +317,44 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
         for (owner, animated, playback) in restarts {
             byroredux_scripting::animation_graph::apply_playback_for(world, owner, animated, playback);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::animation::{AnimationClip, CycleType};
+
+    fn clip_with(labels: &[(f32, &str)], pool: &mut StringPool) -> AnimationClip {
+        AnimationClip {
+            name: "test".into(),
+            duration: 1.0,
+            cycle_type: CycleType::Loop,
+            frequency: 1.0,
+            phase: 0.0,
+            weight: 1.0,
+            accum_root_name: None,
+            channels: Default::default(),
+            float_channels: Vec::new(),
+            color_channels: Vec::new(),
+            bool_channels: Vec::new(),
+            texture_flip_channels: Vec::new(),
+            text_keys: labels.iter().map(|(time, label)| (*time, pool.intern(label))).collect(),
+        }
+    }
+
+    /// A locomotion clip's sync points are its one `SyncLeft` and one `SyncRight`, in either
+    /// order; a clip with more or fewer of them is not synced by point.
+    #[test]
+    fn sync_points_are_the_one_left_and_one_right_annotation() {
+        let mut pool = StringPool::new();
+        let walk = clip_with(&[(0.33, "FootLeft"), (0.33, "SyncLeft"), (0.93, "SyncRight")], &mut pool);
+        assert_eq!(sync_points(&walk, &pool), Some([0.33, 0.93]));
+        let run = clip_with(&[(0.27, "syncright"), (0.63, "SYNCLEFT")], &mut pool);
+        assert_eq!(sync_points(&run, &pool), Some([0.63, 0.27]), "left first, whatever the order in the file");
+        let only_left = clip_with(&[(0.3, "SyncLeft")], &mut pool);
+        assert_eq!(sync_points(&only_left, &pool), None);
+        let four = clip_with(&[(0.1, "SyncLeft"), (0.2, "SyncRight"), (0.3, "SyncLeft"), (0.4, "SyncRight")], &mut pool);
+        assert_eq!(sync_points(&four, &pool), None, "a multi-step cycle falls back to even phase");
     }
 }

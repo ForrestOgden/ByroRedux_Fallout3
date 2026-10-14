@@ -707,6 +707,7 @@ mod tests {
             AnimationStack {
                 layers: Vec::new(),
                 root_entity: Some(never_spawned),
+            bone_index: None,
             },
         );
 
@@ -728,6 +729,7 @@ mod tests {
             AnimationStack {
                 layers: vec![AnimationLayer::new(999)],
                 root_entity: None,
+            bone_index: None,
             },
         );
 
@@ -794,6 +796,7 @@ mod tests {
             AnimationStack {
                 layers: vec![AnimationLayer::new(handle)],
                 root_entity: Some(root),
+            bone_index: None,
             },
         );
 

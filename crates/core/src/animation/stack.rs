@@ -4,6 +4,8 @@ use crate::ecs::sparse_set::SparseSetStorage;
 use crate::ecs::storage::{Component, EntityId};
 use crate::math::{Quat, Vec3};
 use crate::string::FixedString;
+use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use super::interpolation::{sample_rotation, sample_scale, sample_translation};
 use super::player::{finite_time_delta, fold_reverse_time};
@@ -55,6 +57,12 @@ pub struct AnimationLayer {
     /// unchanged, so no `FORMAT_MAJOR` bump (SAVE-D2-01 / #1714).
     #[cfg_attr(feature = "inspect", serde(skip))]
     pub last_delta: f32,
+    /// How much of each skeleton bone this layer contributes, by the bone's index in
+    /// [`AnimationStack::bone_index`] (a layered blend's mask: upper body from one clip,
+    /// lower body from another). `None`: every bone fully. Runtime only - the behavior
+    /// graph that owns the pose rebuilds it.
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub bone_weights: Option<Arc<Vec<f32>>>,
 }
 
 impl AnimationLayer {
@@ -73,6 +81,7 @@ impl AnimationLayer {
             blend_out_total: 0.0,
             prev_time: 0.0,
             last_delta: 0.0,
+            bone_weights: None,
         }
     }
 
@@ -125,6 +134,10 @@ pub struct AnimationStack {
     pub layers: Vec<AnimationLayer>,
     /// Root entity of the subtree to animate (scoped name lookup).
     pub root_entity: Option<EntityId>,
+    /// The index of each skeleton bone a layer's [`AnimationLayer::bone_weights`] is
+    /// addressed by, from the bone's channel name. Runtime only.
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub bone_index: Option<Arc<FxHashMap<FixedString, u16>>>,
 }
 
 impl Default for AnimationStack {
@@ -138,6 +151,7 @@ impl AnimationStack {
         Self {
             layers: Vec::new(),
             root_entity: None,
+            bone_index: None,
         }
     }
 
@@ -375,6 +389,25 @@ fn channel_has_keys(channel: &TransformChannel) -> bool {
         && channel.scale_keys.is_empty())
 }
 
+/// A layer's weight on one bone: its fade-modulated weight, the clip's own, and - for a
+/// masked layer - the mask's weight for that bone (a bone the mask does not index counts
+/// in full).
+#[inline]
+fn bone_layer_weight(
+    stack: &AnimationStack,
+    layer: &AnimationLayer,
+    clip_weight: f32,
+    channel_name: FixedString,
+) -> f32 {
+    let mut weight = layer.effective_weight() * clip_weight;
+    if let (Some(weights), Some(index)) = (&layer.bone_weights, &stack.bone_index) {
+        if let Some(bone_weight) = index.get(&channel_name).and_then(|&bone| weights.get(usize::from(bone))) {
+            weight *= bone_weight;
+        }
+    }
+    weight
+}
+
 /// Sample a blended transform from all layers in a stack for a given node.
 ///
 /// Layers with higher priority override lower. Within the same priority,
@@ -403,7 +436,7 @@ pub fn sample_blended_transform(
     if let [layer] = stack.layers.as_slice() {
         let clip = registry.get(layer.clip_handle)?;
         // `clip.weight` pre-attenuates the layer per #469.
-        let ew = layer.effective_weight() * clip.weight;
+        let ew = bone_layer_weight(stack, layer, clip.weight, channel_name);
         // #3432 — NaN-safe: see the identical guard's own comment below.
         // Written as `is_nan() || <` rather than `!(ew >= 0.001)` per
         // clippy::neg_cmp_op_on_partial_ord (#4090) — equivalent for a
@@ -435,7 +468,7 @@ pub fn sample_blended_transform(
             continue;
         };
         // `clip.weight` pre-attenuates the layer per #469.
-        let ew = layer.effective_weight() * clip.weight;
+        let ew = bone_layer_weight(stack, layer, clip.weight, channel_name);
         // #3432 — NaN-safe: `NaN < 0.001` is false, so a plain `<` guard is
         // NaN-*transparent* and lets a poisoned weight through into
         // `total_weight`, poisoning every blended transform on this
@@ -485,7 +518,7 @@ pub fn sample_blended_transform(
             continue;
         };
         // `clip.weight` pre-attenuates the layer per #469.
-        let ew = layer.effective_weight() * clip.weight;
+        let ew = bone_layer_weight(stack, layer, clip.weight, channel_name);
         // #3432 — NaN-safe twin of the identical guard in the weight pass
         // above. `is_nan() || <` form, not `!(ew >= 0.001)`, per
         // clippy::neg_cmp_op_on_partial_ord (#4090).

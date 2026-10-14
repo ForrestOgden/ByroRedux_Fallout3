@@ -238,7 +238,51 @@ impl Expression {
     }
 }
 
+/// One line of an `hkbEvaluateExpressionModifier`: `variablename = expression` or
+/// `eventname = boolean expression` (the form in the engine's description of the field).
+/// The Skyrim graphs also write the event form as `eventname if (boolean expression)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Statement {
+    /// The variable assigned, or the event raised: the graph tells which by what it has.
+    pub target: String,
+    pub value: Condition,
+}
+
+impl Statement {
+    /// `None` when the text has neither form or its right-hand side cannot be read.
+    pub fn parse(source: &str) -> Option<Self> {
+        let (target, value) = match split_assignment(source) {
+            Some(parts) => parts,
+            None => {
+                let at = source.find(" if ")?;
+                (&source[..at], &source[at + 4..])
+            }
+        };
+        let target = target.trim();
+        let valid = !target.is_empty() && target.chars().all(|c| c.is_alphanumeric() || c == '_');
+        let value = Condition::parse(value);
+        (valid && value.is_readable()).then(|| Self { target: target.to_owned(), value })
+    }
+}
+
+/// Split `left = right` at the first `=` that is not part of `==`, `!=`, `<=` or `>=`.
+fn split_assignment(source: &str) -> Option<(&str, &str)> {
+    let bytes = source.as_bytes();
+    (0..bytes.len()).find_map(|at| {
+        let lone = bytes[at] == b'='
+            && bytes.get(at + 1) != Some(&b'=')
+            && !matches!(at.checked_sub(1).map(|before| bytes[before]), Some(b'=' | b'!' | b'<' | b'>'));
+        lone.then(|| (&source[..at], &source[at + 1..]))
+    })
+}
+
 impl Condition {
+    /// The expression's numeric value (a comparison is 1 or 0); `None` when the text was
+    /// not understood.
+    pub fn value(&self, variable: &dyn Fn(&str) -> Option<f32>) -> Option<f32> {
+        self.expression.as_ref().map(|expression| expression.value(variable))
+    }
+
     pub fn parse(source: &str) -> Self {
         let expression = tokenize(source).and_then(|tokens| {
             let mut parser = Parser { tokens, at: 0 };
@@ -289,6 +333,23 @@ mod tests {
         assert!(holds("Speed >= fMinSpeed", &[("Speed", 80.0), ("fMinSpeed", 50.0)]), "variables on both sides");
         assert!(holds("(iRightHandType == 8) || (iRightHandType == 9)", &[("iRightHandType", 9.0)]));
         assert!(holds("iRightHandEquipped != 0", &[("iRightHandEquipped", 3.0)]));
+    }
+
+    #[test]
+    fn statements_assign_a_variable_or_raise_an_event() {
+        let assign = Statement::parse("iCombatStance = 1 ").expect("an assignment");
+        assert_eq!(assign.target, "iCombatStance");
+        assert_eq!(assign.value.value(&|_| None), Some(1.0));
+        let event = Statement::parse("weaponDraw = (iCombatStance == 1)").expect("an event");
+        assert_eq!(event.target, "weaponDraw");
+        let held = |name: &str| (name == "iCombatStance").then_some(1.0);
+        assert_eq!(event.value.value(&held), Some(1.0), "the comparison is the value, `==` is not split");
+        let legacy = Statement::parse("weaponSheathe if (iCombatStance == 0)").expect("the older event form");
+        assert_eq!(legacy.target, "weaponSheathe");
+        assert_eq!(legacy.value.value(&held), Some(0.0));
+        assert!(Statement::parse("no operator").is_none());
+        assert!(Statement::parse("x = (").is_none());
+        assert_eq!(Statement::parse("a = b >= 2").unwrap().value.value(&|_| Some(3.0)), Some(1.0), ">= is not an assignment");
     }
 
     #[test]

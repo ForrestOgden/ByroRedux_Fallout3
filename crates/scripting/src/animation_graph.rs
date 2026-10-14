@@ -39,12 +39,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::animation_modifiers::{coerce, ModifierState, Vars};
+
 use byroredux_core::animation::{AnimationLayer, AnimationPlayer, AnimationStack};
+use byroredux_core::string::FixedString;
+use rustc_hash::FxHashMap;
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
 use byroredux_hkx::{
-    BehaviorGraph, BlendNode, Blender, ClipMode, StateClip, StateMachine, Transition, VariableKind, TRANSITION_FLAG_DISABLED,
+    BehaviorGraph, Blender, ClipMode, BlendChild, BoneWeights, Generator, ModifierNode, State, StateClip, StateMachine, Transition, VariableKind,
+    TRANSITION_FLAG_DISABLED,
 };
 
 /// The project file a placed object's NIF names (`BSBehaviorGraphExtraData`),
@@ -97,6 +102,11 @@ pub struct LazyClips {
     ready: std::sync::Mutex<HashMap<(String, bool), GraphClip>>,
     wanted: std::sync::Mutex<Vec<(String, bool)>>,
     missing: std::sync::Mutex<std::collections::HashSet<(String, bool)>>,
+    /// Sync points of the provided clips by handle: the times of their `SyncLeft` and
+    /// `SyncRight` annotations (see [`sync_time`]).
+    sync: std::sync::Mutex<HashMap<u32, [f32; 2]>>,
+    /// The skeleton's bones by channel name, for the bone masks of layered blends.
+    bones: std::sync::Mutex<Option<Arc<FxHashMap<FixedString, u16>>>>,
 }
 
 impl LazyClips {
@@ -132,6 +142,34 @@ impl LazyClips {
         }
     }
 
+    /// The sync points of the clip registered as `handle`.
+    pub fn provide_sync(&self, handle: u32, points: [f32; 2]) {
+        if let Ok(mut sync) = self.sync.lock() {
+            sync.insert(handle, points);
+        }
+    }
+
+    fn sync_of(&self, handle: u32) -> Option<[f32; 2]> {
+        self.sync.lock().ok()?.get(&handle).copied()
+    }
+
+    /// The skeleton the graph's clips animate: bone channel name -> bone index, which
+    /// the bone weights of a layered blend are addressed by.
+    pub fn provide_bones(&self, bones: Arc<FxHashMap<FixedString, u16>>) {
+        if let Ok(mut slot) = self.bones.lock() {
+            *slot = Some(bones);
+        }
+    }
+
+    /// Whether the skeleton has been provided.
+    pub fn has_bones(&self) -> bool {
+        self.bones.lock().map(|bones| bones.is_some()).unwrap_or(false)
+    }
+
+    fn bones(&self) -> Option<Arc<FxHashMap<FixedString, u16>>> {
+        self.bones.lock().ok()?.clone()
+    }
+
     /// The host could not resolve `key`: it is not asked for again.
     pub fn fail(&self, key: (String, bool)) {
         if let Ok(mut missing) = self.missing.lock() {
@@ -151,19 +189,34 @@ impl LoadedGraph {
         Some((clip, registered))
     }
 
+    /// Where the clip registered as `handle` has its `SyncLeft` and `SyncRight` points.
+    fn sync_of(&self, handle: u32) -> Option<[f32; 2]> {
+        self.lazy.as_ref()?.sync_of(handle)
+    }
+
+    fn bones(&self) -> Option<Arc<FxHashMap<FixedString, u16>>> {
+        self.lazy.as_ref()?.bones()
+    }
+
     fn sequence(&self, name: &str) -> Option<GraphClip> {
         self.sequences.get(&name.to_ascii_lowercase()).copied()
     }
 }
 
 /// One clip of a blended pose: how much of the pose it is and how fast it runs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PoseLayer {
     pub handle: u32,
     pub weight: f32,
-    /// Playback speed multiplier (the clip's, scaled so every layer of a synced blend
-    /// advances through its own length at the same rate).
+    /// Playback speed multiplier (the clip's, scaled so every layer of an unsynced blend
+    /// advances through its own length at the same rate). 0 for a synced layer.
     pub speed: f32,
+    /// The clip time a synced layer is at: the graph's shared sync phase mapped through
+    /// the clip's own sync points. `None` for a layer that advances by `speed`.
+    pub time: Option<f32>,
+    /// A layered blend's per-bone weights for this layer (see
+    /// [`byroredux_core::animation::AnimationLayer::bone_weights`]).
+    pub mask: Option<Arc<Vec<f32>>>,
 }
 
 /// How the animation player must run after a state change.
@@ -181,6 +234,8 @@ pub struct Playback {
     /// A blended pose (a state whose generator is a blender): one layer per clip of
     /// the blend tree, which replaces `handle`/`speed`. Empty for a single clip.
     pub pose: Vec<PoseLayer>,
+    /// The skeleton index the pose's masks are addressed by.
+    pub bones: Option<Arc<FxHashMap<FixedString, u16>>>,
 }
 
 /// One state machine's current state, and the runs of the nested machines of that
@@ -193,15 +248,33 @@ struct MachineRun {
 
 impl MachineRun {
     /// `machine` in `state`, its nested machines at their start states.
-    fn enter(machine: &StateMachine, state: i32) -> Self {
+    fn enter(machine: &StateMachine, state: i32, variables: &[f32]) -> Self {
         let nested = machine
             .states
             .iter()
             .find(|candidate| candidate.id == state)
-            .map(|state| state.content.machines.iter().map(|inner| Self::enter(inner, inner.start_state)).collect())
+            .map(|state| {
+                state
+                    .content
+                    .machines
+                    .iter()
+                    .map(|inner| Self::enter(inner, start_state_of(inner, variables), variables))
+                    .collect()
+            })
             .unwrap_or_default();
         Self { state, nested }
     }
+}
+
+/// The state `machine` starts in: the one its `startStateId` variable names (the vanilla
+/// graphs pick the idle / locomotion / sneak entry that way), else the authored one.
+fn start_state_of(machine: &StateMachine, variables: &[f32]) -> i32 {
+    machine
+        .start_state_variable
+        .and_then(|variable| variables.get(variable))
+        .map(|value| *value as i32)
+        .filter(|id| machine.states.iter().any(|state| state.id == *id))
+        .unwrap_or(machine.start_state)
 }
 
 /// An event waiting for its time: raised by a clip trigger of the machine at
@@ -216,11 +289,56 @@ struct Scheduled {
     period: Option<f32>,
 }
 
-/// What a state plays, in the order the runtime prefers: a Gamebryo sequence
-/// (the motion of a graph that blends it with trigger-only clips), else a clip.
-enum Leaf<'a> {
-    Sequence(&'a str),
-    Clip(&'a StateClip),
+/// One clip (or Gamebryo sequence) of the active generator tree, with everything the pose
+/// needs of it: the weight the blenders above give it, the bone mask they apply, whether it
+/// is in a synced group, and - for the plain single-clip case - how its generator plays it.
+#[derive(Debug, Clone)]
+struct Term {
+    handle: u32,
+    weight: f32,
+    /// The clip's playback speed (its bound variable, else authored).
+    speed: f32,
+    duration: f32,
+    /// Where the clip has its `SyncLeft` and `SyncRight` annotations.
+    sync: Option<[f32; 2]>,
+    /// Whether a synced blender is above it.
+    synced: bool,
+    mask: Option<Arc<Vec<f32>>>,
+    /// The machine whose current state holds it (indices into nested machines).
+    path: Vec<u16>,
+    sequence: bool,
+    start_time: f32,
+    /// A user-controlled clip: held at this clip time instead of playing.
+    hold_at: Option<f32>,
+}
+
+/// The active generator tree: its clips, and the modifiers on the active path.
+#[derive(Debug, Default)]
+struct Evaluation {
+    terms: Vec<Term>,
+    modifiers: Vec<Arc<ModifierNode>>,
+}
+
+/// What the blenders above a generator contribute to its clips.
+#[derive(Debug, Clone)]
+struct TermScope {
+    weight: f32,
+    mask: Option<Arc<Vec<f32>>>,
+    synced: bool,
+}
+
+impl Default for TermScope {
+    fn default() -> Self {
+        Self { weight: 1.0, mask: None, synced: false }
+    }
+}
+
+/// What [`ObjectAnimationGraph::pose_now`] found: the same clips with new weights and
+/// times, or a different set of clips that must be started.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PoseUpdate {
+    Layers(Vec<PoseLayer>),
+    Restart(Playback),
 }
 
 /// A placed object's running behavior graph.
@@ -242,9 +360,20 @@ pub struct ObjectAnimationGraph {
     variables: Vec<f32>,
     /// The longest blend duration among the transitions the last event(s) took.
     pending_fade: f32,
+    /// The shared phase of a synced blend: 0 at the clips' `SyncLeft`, 1 at their
+    /// `SyncRight`, wrapping at 2.
+    sync_phase: f32,
     /// Whether the state the graph is in plays a blended pose (the weights follow the
     /// variables every frame).
     blend_active: bool,
+    /// The clips of the pose last started, in order: a change means a new pose.
+    applied: Vec<u32>,
+    /// A variable changed since the pose was last evaluated.
+    dirty: bool,
+    /// The modifiers on the active path and what they remember.
+    modifiers: ModifierState,
+    /// Whether the pose has clips in a synced group (their times are written every frame).
+    synced_pose: bool,
     /// Events the graph raised since [`take_raised`](Self::take_raised): the
     /// ones a script's accepted `PlayAnimation` sent and the ones a clip's
     /// triggers fired (a trigger raises its event whether or not a transition
@@ -282,8 +411,8 @@ impl ObjectAnimationGraph {
     /// The graph in its start state, with the start state's clip not yet playing.
     pub fn new(graph: Arc<LoadedGraph>, root: EntityId) -> Option<Self> {
         let machine = graph.graph.machine.as_ref()?;
-        let run = MachineRun::enter(machine, machine.start_state);
-        let variables = graph.graph.variables.iter().map(|variable| variable.initial).collect();
+        let variables: Vec<f32> = graph.graph.variables.iter().map(|variable| variable.initial).collect();
+        let run = MachineRun::enter(machine, start_state_of(machine, &variables), &variables);
         Some(Self {
             graph,
             root,
@@ -294,7 +423,12 @@ impl ObjectAnimationGraph {
             raised: Vec::new(),
             variables,
             pending_fade: 0.0,
+            sync_phase: 0.0,
             blend_active: false,
+            applied: Vec::new(),
+            dirty: true,
+            synced_pose: false,
+            modifiers: ModifierState::default(),
         })
     }
 
@@ -340,22 +474,26 @@ impl ObjectAnimationGraph {
     /// of a kind the graph does not evaluate (a vector) is left alone.
     pub fn set_variable(&mut self, name: &str, value: f32) -> bool {
         let Some(index) = self.graph.graph.variable_id(name) else { return false };
-        if !value.is_finite() {
-            return false;
+        let Some(value) = coerce(self.graph.graph.variables[index].kind, value) else { return false };
+        if self.variables[index] != value {
+            self.variables[index] = value;
+            self.dirty = true;
         }
-        let value = match self.graph.graph.variables[index].kind {
-            VariableKind::Bool => f32::from(value != 0.0),
-            VariableKind::Int => value.trunc(),
-            VariableKind::Real => value,
-            VariableKind::Other => return false,
-        };
-        self.variables[index] = value;
         true
     }
 
-    /// The clip's playback speed: its bound variable's value, else the authored speed.
-    fn clip_speed(&self, clip: &StateClip) -> f32 {
-        clip_speed_of(&self.variables, clip)
+    /// Run `f` with the graph's variables as the modifiers see them.
+    fn with_modifiers<R>(&mut self, f: impl FnOnce(&mut ModifierState, &mut Vars) -> R) -> R {
+        let graph = Arc::clone(&self.graph);
+        let mut vars = Vars { values: &mut self.variables, dirty: &mut self.dirty, graph: &graph.graph };
+        f(&mut self.modifiers, &mut vars)
+    }
+
+    /// Bring the active modifiers in line with the active path: new ones activate (their
+    /// assignments land), gone ones deactivate. Events they raise go to `events`.
+    fn refresh_modifiers(&mut self, events: &mut Vec<i32>) {
+        let active = self.evaluate().modifiers;
+        self.with_modifiers(|state, vars| state.sync(active, vars, events));
     }
 
     /// The seconds a taken transition fades the old pose out over: the blending
@@ -372,27 +510,242 @@ impl ObjectAnimationGraph {
         }
     }
 
-    /// The blend tree of the state the machine at `path` is in.
-    fn state_blend_at(&self, path: &[u16]) -> Option<&BlendNode> {
-        let root = self.graph.graph.machine.as_ref()?;
-        let (machine, run) = locate(root, &self.run, path)?;
-        machine.states.iter().find(|state| state.id == run.state)?.content.blend.as_ref()
+    /// The clips of the active generator tree (see [`Term`]) under the current variables.
+    fn terms(&self) -> Vec<Term> {
+        self.evaluate().terms
     }
 
-    /// The layers of `blend` under the current variables, in tree order.
-    fn pose_of(&self, blend: &BlendNode) -> Vec<PoseLayer> {
-        pose_layers(&self.graph, &self.variables, blend)
+    /// The active generator tree: its clips and the modifiers on the active path.
+    fn evaluate(&self) -> Evaluation {
+        let Some(root) = self.graph.graph.machine.as_ref() else { return Evaluation::default() };
+        let mut out = Evaluation::default();
+        let mut path = Vec::new();
+        self.eval_machine(root, &self.run, &mut path, &TermScope::default(), &mut out);
+        // A graph that blends a Gamebryo sequence with trigger-only clips plays the
+        // sequence: the clips are there for their events.
+        if let Some(first) = out.terms.iter().position(|term| term.sequence) {
+            let sequence = out.terms.swap_remove(first);
+            out.terms = vec![sequence];
+        }
+        out
     }
 
-    /// The pose the current state plays right now when it is a blend (the weights move
-    /// with the variables), else `None`.
-    pub fn pose_now(&self) -> Option<Vec<PoseLayer>> {
+    fn eval_machine(
+        &self,
+        machine: &StateMachine,
+        run: &MachineRun,
+        path: &mut Vec<u16>,
+        scope: &TermScope,
+        out: &mut Evaluation,
+    ) {
+        let Some(state) = machine.states.iter().find(|state| state.id == run.state) else { return };
+        match &state.content.generator {
+            Some(generator) => self.eval_generator(generator, state, run, path, scope, out),
+            // A state built by hand (no decoded tree): its first sequence, else first clip.
+            None => {
+                let mut leaves = Evaluation::default();
+                for clip in state.clip.iter().chain(&state.content.blended_clips) {
+                    leaves.terms.extend(self.clip_term(clip, path, scope));
+                }
+                for name in &state.content.sequences {
+                    leaves.terms.extend(self.sequence_term(name, path, scope));
+                }
+                for (index, inner) in state.content.machines.iter().enumerate() {
+                    if let Some(inner_run) = run.nested.get(index) {
+                        path.push(index as u16);
+                        self.eval_machine(inner, inner_run, path, scope, &mut leaves);
+                        path.pop();
+                    }
+                }
+                let chosen = leaves.terms.iter().position(|term| term.sequence).or(if leaves.terms.is_empty() { None } else { Some(0) });
+                if let Some(index) = chosen {
+                    out.terms.push(leaves.terms.swap_remove(index));
+                }
+                out.modifiers.extend(leaves.modifiers);
+            }
+        }
+    }
+
+    fn clip_term(&self, clip: &StateClip, path: &[u16], scope: &TermScope) -> Option<Term> {
+        let (clip, registered) = self.graph.clip_for(clip)?;
+        let hold = (clip.mode == ClipMode::UserControlled).then(|| clip.user_fraction.clamp(0.0, 1.0) * registered.duration);
+        let sync = self.graph.sync_of(registered.handle).filter(|_| registered.duration > 0.0);
+        Some(Term {
+            handle: registered.handle,
+            weight: scope.weight,
+            speed: clip_speed_of(&self.variables, clip),
+            duration: registered.duration,
+            sync,
+            // Only a clip that has sync points takes part in a synced group; the others
+            // play on at their own pace.
+            synced: scope.synced && sync.is_some(),
+            mask: scope.mask.clone(),
+            path: path.to_vec(),
+            sequence: false,
+            start_time: clip.start_time,
+            hold_at: hold,
+        })
+    }
+
+    fn sequence_term(&self, name: &str, path: &[u16], scope: &TermScope) -> Option<Term> {
+        let registered = self.graph.sequence(name)?;
+        Some(Term {
+            handle: registered.handle,
+            weight: scope.weight,
+            speed: 1.0,
+            duration: registered.duration,
+            sync: None,
+            synced: false,
+            mask: scope.mask.clone(),
+            path: path.to_vec(),
+            sequence: true,
+            start_time: 0.0,
+            hold_at: None,
+        })
+    }
+
+    fn eval_generator(
+        &self,
+        generator: &Generator,
+        state: &State,
+        run: &MachineRun,
+        path: &mut Vec<u16>,
+        scope: &TermScope,
+        out: &mut Evaluation,
+    ) {
+        match generator {
+            Generator::Clip(clip) => out.terms.extend(self.clip_term(clip, path, scope)),
+            Generator::Sequence(name) => out.terms.extend(self.sequence_term(name, path, scope)),
+            Generator::Modified { modifiers, inner } => {
+                out.modifiers.extend(modifiers.iter().cloned());
+                if let Some(inner) = inner {
+                    self.eval_generator(inner, state, run, path, scope, out);
+                }
+            }
+            Generator::Machine(index) => self.eval_nested(state, run, *index, path, scope, out),
+            Generator::Reference(ordinal) => {
+                if let Some(Some(index)) = state.content.reference_machines.get(*ordinal) {
+                    self.eval_nested(state, run, *index, path, scope, out);
+                }
+            }
+            Generator::Selector { index, index_variable, children } => {
+                let picked = index_variable.and_then(|variable| self.variables.get(variable)).map_or(*index, |value| *value as i32);
+                if let Some(child) = usize::try_from(picked).ok().and_then(|picked| children.get(picked)).or(children.first()) {
+                    self.eval_generator(child, state, run, path, scope, out);
+                }
+            }
+            Generator::Blender(blender) => {
+                let weights = blender_weights(blender, &self.variables);
+                let synced = scope.synced || blender.sync;
+                for (child, share) in blender.children.iter().zip(weights) {
+                    // A boolean bound to the child's `boneWeights` switches the child
+                    // (see [`BlendChild::bone_weights_variable`]).
+                    let share = share * self.child_switch(child);
+                    let mask = match &child.bone_weights {
+                        Some(bones) => Some(combine_masks(scope.mask.as_ref(), &bone_weights_now(bones, &self.variables))),
+                        None => scope.mask.clone(),
+                    };
+                    let inner = TermScope { weight: scope.weight * share, mask, synced };
+                    self.eval_generator(&child.generator, state, run, path, &inner, out);
+                }
+            }
+        }
+    }
+
+    /// 1 or 0: whether a blender child is switched on by the boolean bound to its
+    /// `boneWeights`. A child with no such binding, or a binding to an int or a real (whose
+    /// meaning the files do not give), is always on.
+    fn child_switch(&self, child: &BlendChild) -> f32 {
+        let Some(variable) = child.bone_weights_variable else { return 1.0 };
+        let is_bool = self.graph.graph.variables.get(variable).is_some_and(|variable| variable.kind == VariableKind::Bool);
+        match (is_bool, self.variables.get(variable)) {
+            (true, Some(value)) => f32::from(*value != 0.0),
+            _ => 1.0,
+        }
+    }
+
+    /// The nested machine `index` of `state`, in the state the run has it in.
+    fn eval_nested(
+        &self,
+        state: &State,
+        run: &MachineRun,
+        index: usize,
+        path: &mut Vec<u16>,
+        scope: &TermScope,
+        out: &mut Evaluation,
+    ) {
+        let (Some(inner), Some(inner_run)) = (state.content.machines.get(index), run.nested.get(index)) else { return };
+        path.push(index as u16);
+        self.eval_machine(inner, inner_run, path, scope, out);
+        path.pop();
+    }
+
+    /// How the clips of `terms` play: one plain clip as before, anything else (a blend, a
+    /// layered mask) as a pose that fades in over `fade`.
+    fn playback_of(&self, terms: &[Term], fade: f32) -> Option<Playback> {
+        let first = terms.first()?;
+        if terms.len() == 1 && first.mask.is_none() {
+            return Some(match first.hold_at {
+                Some(at) => Playback { handle: first.handle, speed: first.speed, start_time: 0.0, hold_at: Some(at), fade, ..Default::default() },
+                None => Playback { handle: first.handle, speed: first.speed, start_time: first.start_time, fade, ..Default::default() },
+            });
+        }
+        let eval = pose_layers(terms, self.sync_phase_start());
+        Some(Playback {
+            handle: first.handle,
+            speed: 1.0,
+            fade,
+            pose: eval.layers,
+            bones: self.graph.bones(),
+            ..Default::default()
+        })
+    }
+
+    /// Where a pose's sync phase starts: 0, the clips' `SyncLeft`.
+    fn sync_phase_start(&self) -> f32 {
+        0.0
+    }
+
+    /// The clips a graph plays in order, for telling a changed pose from a re-weighted one.
+    fn signature(terms: &[Term]) -> Vec<u32> {
+        terms.iter().map(|term| term.handle).collect()
+    }
+
+    /// The pose the graph plays right now when it is a blend (the weights move with the
+    /// variables), else `None`. A synced blend's shared phase moves on by `dt` first, at
+    /// the weighted mean of its clips' rates. When the clips themselves changed without
+    /// an event (a selector's variable moved, a machine's start state was picked), the
+    /// new pose is returned as a restart.
+    pub fn pose_now(&mut self, dt: f32) -> Option<PoseUpdate> {
+        // Nothing moves a pose between events except the variables and a synced phase.
+        if !self.dirty && !(self.blend_active && self.synced_pose) {
+            return None;
+        }
+        self.dirty = false;
+        let terms = self.terms();
+        if terms.is_empty() {
+            return None;
+        }
+        if Self::signature(&terms) != self.applied {
+            let playback = self.playback_of(&terms, 0.0)?;
+            self.applied = Self::signature(&terms);
+            self.blend_active = !playback.pose.is_empty();
+            self.sync_phase = 0.0;
+            self.synced_pose = terms.iter().any(|term| term.synced);
+            return Some(PoseUpdate::Restart(playback));
+        }
         if !self.blend_active {
             return None;
         }
-        let (path, _) = self.motion_leaf()?;
-        let pose = self.pose_of(self.state_blend_at(&path)?);
-        (!pose.is_empty()).then_some(pose)
+        let rate = pose_layers(&terms, self.sync_phase).sync_rate;
+        self.synced_pose = rate.is_some();
+        if let Some(rate) = rate {
+            let phase = (self.sync_phase + rate * dt.max(0.0)).rem_euclid(2.0);
+            if phase.is_finite() {
+                self.sync_phase = phase;
+            }
+        }
+        Some(PoseUpdate::Layers(pose_layers(&terms, self.sync_phase).layers))
     }
 
     /// The events raised since the last call, oldest first.
@@ -410,42 +763,6 @@ impl ObjectAnimationGraph {
         if let Some(name) = self.graph.graph.event_name(event) {
             self.raised.push(name.to_owned());
         }
-    }
-
-    /// The root machine and the leaves of the current configuration, each with
-    /// the path of the machine whose current state holds it.
-    fn leaves(&self) -> Vec<(Vec<u16>, Leaf<'_>)> {
-        fn walk<'a>(
-            machine: &'a StateMachine,
-            run: &MachineRun,
-            path: &mut Vec<u16>,
-            out: &mut Vec<(Vec<u16>, Leaf<'a>)>,
-        ) {
-            let Some(state) = machine.states.iter().find(|state| state.id == run.state) else {
-                return;
-            };
-            if let Some(clip) = &state.clip {
-                out.push((path.clone(), Leaf::Clip(clip)));
-            }
-            for name in &state.content.sequences {
-                out.push((path.clone(), Leaf::Sequence(name)));
-            }
-            for clip in &state.content.blended_clips {
-                out.push((path.clone(), Leaf::Clip(clip)));
-            }
-            for (index, inner) in state.content.machines.iter().enumerate() {
-                if let Some(inner_run) = run.nested.get(index) {
-                    path.push(index as u16);
-                    walk(inner, inner_run, path, out);
-                    path.pop();
-                }
-            }
-        }
-        let mut out = Vec::new();
-        if let Some(machine) = self.graph.graph.machine.as_ref() {
-            walk(machine, &self.run, &mut Vec::new(), &mut out);
-        }
-        out
     }
 
     /// Schedule the trigger events of every clip in the state(s) `path`'s machine
@@ -495,84 +812,27 @@ impl ObjectAnimationGraph {
         self.scheduled.extend(fresh);
     }
 
-    /// The motion leaf of the current configuration - a Gamebryo sequence if there
-    /// is one, else the first clip - with its owning machine's path and a name
-    /// that tells it from the others.
-    fn motion_leaf(&self) -> Option<(Vec<u16>, Leaf<'_>)> {
-        // Only leaves that can play: a sequence the object's NIF has, a clip that
-        // was registered (a graph can name sequences its NIF does not carry).
-        let mut leaves: Vec<_> = self
-            .leaves()
-            .into_iter()
-            .filter(|(_, leaf)| match leaf {
-                Leaf::Sequence(name) => self.graph.sequence(name).is_some(),
-                Leaf::Clip(clip) => self.graph.clip_for(clip).is_some(),
-            })
-            .collect();
-        let index = leaves
-            .iter()
-            .position(|(_, leaf)| matches!(leaf, Leaf::Sequence(_)))
-            .or_else(|| leaves.iter().position(|(_, leaf)| matches!(leaf, Leaf::Clip(_))))?;
-        Some(leaves.swap_remove(index))
-    }
-
-    fn leaf_name(leaf: &Leaf<'_>) -> String {
-        match leaf {
-            Leaf::Sequence(name) => format!("seq:{}", name.to_ascii_lowercase()),
-            Leaf::Clip(clip) => format!("clip:{}", clip.animation.to_ascii_lowercase()),
-        }
-    }
-
-    /// How the motion leaf plays. With `after` set (an event just changed the
-    /// machines at those paths, and `before` was the motion leaf's identity), it is
-    /// described only if it is a different leaf now or sits under a machine that
-    /// changed state; otherwise it is already running and nothing restarts.
-    fn playback(&self, after: Option<(&[Vec<u16>], Option<(Vec<u16>, String)>)>) -> Option<Playback> {
-        let (path, leaf) = self.motion_leaf()?;
-        let fade = self.pending_fade;
-        let blended = self.state_blend_at(&path).map(|blend| self.pose_of(blend)).filter(|pose| !pose.is_empty());
-        if let Some((changed, before)) = after {
-            let same_leaf = before.as_ref().is_some_and(|(before_path, before_name)| {
-                *before_path == path && *before_name == Self::leaf_name(&leaf)
-            });
-            if same_leaf && !changed.iter().any(|change| path.starts_with(change)) {
-                return None;
-            }
-        }
-        match leaf {
-            Leaf::Sequence(name) => {
-                let registered = self.graph.sequence(name)?;
-                Some(Playback { handle: registered.handle, speed: 1.0, start_time: 0.0, fade, ..Default::default() })
-            }
-            Leaf::Clip(clip) => {
-                let (clip, registered) = self.graph.clip_for(clip)?;
-                if let Some(pose) = blended {
-                    return Some(Playback { handle: registered.handle, speed: 1.0, fade, pose, ..Default::default() });
-                }
-                let speed = self.clip_speed(clip);
-                if clip.mode == ClipMode::UserControlled {
-                    return Some(Playback {
-                        handle: registered.handle,
-                        speed,
-                        start_time: 0.0,
-                        hold_at: Some(clip.user_fraction.clamp(0.0, 1.0) * registered.duration),
-                        fade,
-                        ..Default::default()
-                    });
-                }
-                Some(Playback { handle: registered.handle, speed, start_time: clip.start_time, fade, ..Default::default() })
-            }
-        }
-    }
-
     /// The playback of the current configuration, started fresh (every trigger
     /// of every clip in it scheduled from now).
     pub fn start(&mut self) -> Option<Playback> {
         self.scheduled.clear();
         self.schedule_from(&[]);
         self.pending_fade = 0.0;
-        let playback = self.playback(None);
+        self.sync_phase = 0.0;
+        // The modifiers of the start path activate (their assignments land) before the
+        // pose is read; an event they raise is answered at once.
+        let mut raised = Vec::new();
+        self.refresh_modifiers(&mut raised);
+        if !raised.is_empty() {
+            let mut changed = Vec::new();
+            self.run_events(raised, &mut changed);
+        }
+        let terms = self.terms();
+        let playback = self.playback_of(&terms, 0.0);
         self.blend_active = playback.as_ref().is_some_and(|playback| !playback.pose.is_empty());
+        self.applied = Self::signature(&terms);
+        self.synced_pose = terms.iter().any(|term| term.synced);
+        self.dirty = false;
         playback
     }
 
@@ -601,7 +861,7 @@ impl ObjectAnimationGraph {
         let Some((machine, run)) = locate(root, &self.run, path) else { return };
         if let Some(transition) = self.transition_of(machine, run, event) {
             self.pending_fade = self.pending_fade.max(self.transition_fade(&transition));
-            let entered = MachineRun::enter(machine, transition.to_state);
+            let entered = MachineRun::enter(machine, transition.to_state, &self.variables);
             if let Some(slot) = locate_mut(&mut self.run, path) {
                 *slot = entered;
             }
@@ -619,24 +879,66 @@ impl ObjectAnimationGraph {
     /// Raise `event`: `None` when no machine answers it; otherwise the playback to
     /// start (`Some(None)` when nothing needs restarting).
     pub fn send_event(&mut self, event: i32) -> Option<Option<Playback>> {
-        let before = self.motion_leaf().map(|(path, leaf)| (path, Self::leaf_name(&leaf)));
+        let before = Self::signature(&self.terms());
         let mut changed = Vec::new();
-        self.dispatch(&mut Vec::new(), event, &mut changed);
+        self.run_events(vec![event], &mut changed);
         if changed.is_empty() {
             return None;
         }
+        self.dirty = true;
         for path in &changed {
             self.scheduled.retain(|scheduled| !scheduled.path.starts_with(path));
         }
         for path in &changed {
             self.schedule_from(path);
         }
-        let playback = self.playback(Some((&changed, before)));
+        // Something restarts when the clips differ, or a clip sits under a machine that
+        // changed state (a transition back into the same state plays it again).
+        let terms = self.terms();
+        let signature = Self::signature(&terms);
+        let restarts = signature != before || terms.iter().any(|term| changed.iter().any(|change| term.path.starts_with(change)));
+        let playback = if restarts {
+            self.sync_phase = 0.0;
+            let playback = self.playback_of(&terms, self.pending_fade);
+            self.applied = signature;
+            self.synced_pose = terms.iter().any(|term| term.synced);
+            if let Some(playback) = &playback {
+                self.blend_active = !playback.pose.is_empty();
+            }
+            playback
+        } else {
+            None
+        };
         self.pending_fade = 0.0;
-        if let Some(playback) = &playback {
-            self.blend_active = !playback.pose.is_empty();
-        }
         Some(playback)
+    }
+
+    /// Give `events` to the graph, and the events the modifiers raise in answer to them to
+    /// it in turn (a bounded chain): the modifiers see each event, the machines take their
+    /// transitions, and the modifiers of the new active path activate. The paths of the
+    /// machines that changed state are appended to `changed`.
+    fn run_events(&mut self, events: Vec<i32>, changed: &mut Vec<Vec<u16>>) {
+        const MAX_CHAIN: usize = 32;
+        let mut queue: std::collections::VecDeque<i32> = events.into();
+        let mut handled = 0;
+        while let Some(event) = queue.pop_front() {
+            handled += 1;
+            if handled > MAX_CHAIN {
+                log::debug!("behavior graph: event chain cut after {MAX_CHAIN} events");
+                break;
+            }
+            let mut raised = Vec::new();
+            self.with_modifiers(|state, vars| state.on_event(event, vars, &mut raised));
+            let known = changed.len();
+            self.dispatch(&mut Vec::new(), event, changed);
+            if changed.len() > known {
+                self.refresh_modifiers(&mut raised);
+            }
+            for event in raised {
+                self.note_raised(event);
+                queue.push_back(event);
+            }
+        }
     }
 
     /// A looping clip's trigger that just fired comes round again a loop later.
@@ -689,6 +991,16 @@ impl ObjectAnimationGraph {
             }
         }
         self.now = limit;
+        // The modifiers that watch the variables run once a frame; what they raise is
+        // taken like a trigger's event.
+        let mut raised = Vec::new();
+        self.with_modifiers(|state, vars| state.tick(vars, &mut raised));
+        for event in raised {
+            self.note_raised(event);
+            if let Some(Some(playback)) = self.send_event(event) {
+                started.push(playback);
+            }
+        }
         started
     }
 }
@@ -720,8 +1032,15 @@ pub(crate) fn blender_weights(blender: &Blender, variables: &[f32]) -> Vec<f32> 
     if count == 0 {
         return weights;
     }
-    if !blender.parametric || count == 1 {
+    if count == 1 {
         weights[0] = 1.0;
+        return weights;
+    }
+    if !blender.parametric {
+        for (weight, child) in weights.iter_mut().zip(&blender.children) {
+            let value = child.weight_variable.and_then(|variable| variables.get(variable)).copied().unwrap_or(child.weight);
+            *weight = if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+        }
         return weights;
     }
     let value = |variable: Option<usize>, authored: f32| variable.and_then(|index| variables.get(index)).copied().unwrap_or(authored);
@@ -770,54 +1089,102 @@ pub(crate) fn blender_weights(blender: &Blender, variables: &[f32]) -> Vec<f32> 
     weights
 }
 
-/// A blend tree's clips as a pose: every clip the graph has (the zero-weight ones too,
-/// so a clip that comes into the blend is already in step), weighted by the product of
-/// the blenders above it. The clips advance through their own lengths at one common
-/// rate - the weighted mean of their cycles per second - so a walk and a run
-/// blended together stay in phase (an approximation of Havok's sync points).
-fn pose_layers(graph: &LoadedGraph, variables: &[f32], blend: &BlendNode) -> Vec<PoseLayer> {
-    struct Raw {
-        handle: u32,
-        weight: f32,
-        speed: f32,
-        duration: f32,
+/// The clip time at sync phase `phase` for a clip of `duration` whose `SyncLeft` and
+/// `SyncRight` points are at `sync`: phase 0 is its `SyncLeft`, 1 its `SyncRight`, and 2
+/// comes back round to `SyncLeft` (the clip loops), moving evenly between the points.
+pub(crate) fn sync_time(sync: [f32; 2], duration: f32, phase: f32) -> f32 {
+    let [left, right] = sync;
+    let first = (right - left).rem_euclid(duration);
+    let phase = phase.rem_euclid(2.0);
+    let time = if phase < 1.0 { left + phase * first } else { right + (phase - 1.0) * (duration - first) };
+    time.rem_euclid(duration)
+}
+
+/// How long the clip takes to cross the sync segment `phase` is in, at speed 1.
+fn sync_segment(sync: [f32; 2], duration: f32, phase: f32) -> f32 {
+    let first = (sync[1] - sync[0]).rem_euclid(duration);
+    if phase.rem_euclid(2.0) < 1.0 {
+        first
+    } else {
+        duration - first
     }
-    fn collect(graph: &LoadedGraph, variables: &[f32], node: &BlendNode, weight: f32, out: &mut Vec<Raw>) {
-        match node {
-            BlendNode::Clip(clip) => {
-                if let Some((clip, registered)) = graph.clip_for(clip) {
-                    out.push(Raw {
-                        handle: registered.handle,
-                        weight,
-                        speed: clip_speed_of(variables, clip),
-                        duration: registered.duration,
-                    });
-                }
-            }
-            BlendNode::Blender(blender) => {
-                let weights = blender_weights(blender, variables);
-                for (child, share) in blender.children.iter().zip(weights) {
-                    collect(graph, variables, &child.node, weight * share, out);
-                }
-            }
+}
+
+/// A pose: its layers, and how fast its shared sync phase runs.
+struct PoseEval {
+    layers: Vec<PoseLayer>,
+    /// Sync phase units a second when the pose has synced clips.
+    sync_rate: Option<f32>,
+}
+
+/// The per-bone weights of a blender child now: its authored array, with the elements a
+/// variable drives replaced by the variable.
+fn bone_weights_now(bones: &BoneWeights, variables: &[f32]) -> Arc<Vec<f32>> {
+    if bones.bound.is_empty() {
+        return Arc::clone(&bones.weights);
+    }
+    let mut weights = (*bones.weights).clone();
+    for &(bone, variable) in &bones.bound {
+        if let (Some(slot), Some(value)) = (weights.get_mut(bone), variables.get(variable)) {
+            *slot = *value;
         }
     }
-    let mut raw = Vec::new();
-    collect(graph, variables, blend, 1.0, &mut raw);
-    let total: f32 = raw.iter().map(|layer| layer.weight).sum();
-    let cycles = |layer: &Raw| if layer.duration > 0.0 { layer.speed / layer.duration } else { 0.0 };
-    let rate = if total > 0.0 {
-        raw.iter().map(|layer| layer.weight * cycles(layer)).sum::<f32>() / total
-    } else {
-        raw.first().map_or(0.0, cycles)
+    Arc::new(weights)
+}
+
+/// A child's mask under the mask of the layers above it: bone by bone, the product.
+fn combine_masks(outer: Option<&Arc<Vec<f32>>>, inner: &Arc<Vec<f32>>) -> Arc<Vec<f32>> {
+    match outer {
+        None => Arc::clone(inner),
+        Some(outer) => Arc::new(inner.iter().enumerate().map(|(bone, weight)| weight * outer.get(bone).copied().unwrap_or(1.0)).collect()),
+    }
+}
+
+/// The clips of the active generator tree as a pose, every clip the graph has (the
+/// zero-weight ones too, so a clip that comes into the blend is already in step).
+///
+/// A *synced* group (clips with a `SyncLeft` and a `SyncRight` annotation under a blender
+/// with the sync flag) shares one phase: 0 at each clip's `SyncLeft`, 1 at its `SyncRight`,
+/// wrapping at 2, so a walk that plants its left foot at 0.33 s and a run that plants its
+/// right foot first stay foot-for-foot together. Each clip is put at the time that phase
+/// maps to through its own sync points, and the phase runs at the weighted mean of the
+/// group's clips' rates. Every other clip (an idle pose, a gesture) plays at its own speed.
+fn pose_layers(terms: &[Term], phase: f32) -> PoseEval {
+    let group: Vec<&Term> = terms.iter().filter(|term| term.synced).collect();
+    let group_weight: f32 = group.iter().map(|term| term.weight).sum();
+    // Phase units a second for one clip: its speed over the length of the sync segment it
+    // is in (a clip with no sync pair crosses both in one cycle).
+    let rate_of = |term: &Term| -> f32 {
+        if term.duration <= 0.0 {
+            return 0.0;
+        }
+        match term.sync {
+            Some(sync) => term.speed / sync_segment(sync, term.duration, phase).max(1e-3),
+            None => 2.0 * term.speed / term.duration,
+        }
     };
-    raw.into_iter()
-        .map(|layer| PoseLayer {
-            handle: layer.handle,
-            weight: layer.weight,
-            speed: if layer.duration > 0.0 { rate * layer.duration } else { layer.speed },
+    let sync_rate = (!group.is_empty()).then(|| {
+        if group_weight > 0.0 {
+            group.iter().map(|term| term.weight * rate_of(term)).sum::<f32>() / group_weight
+        } else {
+            rate_of(group[0])
+        }
+    });
+    let layers = terms
+        .iter()
+        .map(|term| match term.sync.filter(|_| term.synced) {
+            Some(sync) => PoseLayer {
+                handle: term.handle,
+                weight: term.weight,
+                speed: 0.0,
+                time: Some(sync_time(sync, term.duration, phase)),
+                mask: term.mask.clone(),
+            },
+            // A clip outside the synced group plays at its own speed.
+            None => PoseLayer { handle: term.handle, weight: term.weight, speed: term.speed, time: None, mask: term.mask.clone() },
         })
-        .collect()
+        .collect();
+    PoseEval { layers, sync_rate }
 }
 
 /// Start `playback` on the graph's root: the object's `AnimationPlayer`.
@@ -862,6 +1229,9 @@ pub fn apply_playback_for(world: &World, owner: EntityId, animated: EntityId, pl
         .and_then(|mut stacks| stacks.remove(root))
         .unwrap_or_default();
     stack.root_entity = Some(animated);
+    if playback.bones.is_some() {
+        stack.bone_index = playback.bones.clone();
+    }
     // A plain playing clip is the pose that fades out.
     if let Some(player) = world.query_mut::<AnimationPlayer>().and_then(|mut players| players.remove(root)) {
         let mut layer = AnimationLayer::new(player.clip_handle);
@@ -904,6 +1274,11 @@ pub fn apply_playback_for(world: &World, owner: EntityId, animated: EntityId, pl
                 let mut layer = AnimationLayer::new(pose.handle);
                 layer.speed = pose.speed;
                 layer.weight = pose.weight;
+                layer.bone_weights = pose.mask.clone();
+                if let Some(time) = pose.time {
+                    layer.local_time = time;
+                    layer.prev_time = time;
+                }
                 layer
             })
             .collect()
@@ -924,7 +1299,7 @@ fn settle_stack(world: &World, root: EntityId) {
         let Some(stacks) = world.query::<AnimationStack>() else { return };
         let Some(stack) = stacks.get(root) else { return };
         let [layer] = stack.layers.as_slice() else { return };
-        if layer.blend_in_remaining > 0.0 || layer.blend_out_remaining > 0.0 {
+        if layer.blend_in_remaining > 0.0 || layer.blend_out_remaining > 0.0 || layer.bone_weights.is_some() {
             return;
         }
         (layer.clone(), stack.root_entity)
@@ -957,6 +1332,11 @@ fn update_pose(stack: &mut AnimationStack, pose: &[PoseLayer]) {
     }
     for (layer, target) in stack.layers[first..].iter_mut().zip(pose) {
         layer.speed = target.speed;
+        layer.bone_weights = target.mask.clone();
+        if let Some(time) = target.time {
+            layer.prev_time = layer.local_time;
+            layer.local_time = time;
+        }
         layer.blend_in_target = target.weight;
         if layer.blend_in_remaining <= 0.0 {
             layer.weight = target.weight;
@@ -1032,7 +1412,8 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
 /// Step every object graph's trigger schedule (a clip's end raises its
 /// completion event, which moves the machine on). Run each frame.
 pub fn object_graph_step_system(world: &World, dt: f32) {
-    let (started, poses, plain): (Vec<(EntityId, EntityId, Playback)>, Vec<(EntityId, Vec<PoseLayer>)>, Vec<EntityId>) = {
+    type Poses = Vec<(EntityId, Vec<PoseLayer>)>;
+    let (started, poses, plain): (Vec<(EntityId, EntityId, Playback)>, Poses, Vec<EntityId>) = {
         let Some(mut graphs) = world.query_mut::<ObjectAnimationGraph>() else {
             return;
         };
@@ -1042,11 +1423,14 @@ pub fn object_graph_step_system(world: &World, dt: f32) {
         for (_, graph) in graphs.iter_mut() {
             if let Some(playback) = graph.step(dt).pop() {
                 started.push((graph.root, graph.animated(), playback));
-            } else if let Some(pose) = graph.pose_now() {
+                continue;
+            }
+            match graph.pose_now(dt) {
                 // The variables move the weights of a blended pose between events.
-                poses.push((graph.root, pose));
-            } else {
-                plain.push(graph.root);
+                Some(PoseUpdate::Layers(pose)) => poses.push((graph.root, pose)),
+                // The clips themselves changed (a selector, a start state).
+                Some(PoseUpdate::Restart(playback)) => started.push((graph.root, graph.animated(), playback)),
+                None => plain.push(graph.root),
             }
         }
         (started, poses, plain)
@@ -1131,6 +1515,7 @@ mod tests {
         let trigger = |event, local_time, relative_to_end| ClipTrigger { local_time, event, relative_to_end, annotation: false };
         let machine = StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![
                 State {
                     id: 0,
@@ -1176,15 +1561,15 @@ mod tests {
 
     use byroredux_hkx::{BlendChild, Variable};
 
-    fn blend_clip(animation: &str) -> BlendNode {
-        BlendNode::Clip(clip(animation, ClipMode::Looping, 1.0, Vec::new()))
+    fn blend_clip(animation: &str) -> Generator {
+        Generator::Clip(clip(animation, ClipMode::Looping, 1.0, Vec::new()))
     }
 
     /// The vanilla locomotion shape: a cyclic direction blender (children at 0, 0.25, 0.5,
     /// 0.75 of a turn) over speed blenders (walk at 80, run at 370 units/s).
-    fn locomotion_blend() -> BlendNode {
+    fn locomotion_blend() -> Generator {
         let speed = |walk: &str, run: &str| {
-            BlendNode::Blender(Blender {
+            Generator::Blender(Blender {
                 parametric: true,
                 cyclic: false,
                 sync: true,
@@ -1193,12 +1578,12 @@ mod tests {
                 min_cyclic: 0.0,
                 max_cyclic: 1.0,
                 children: vec![
-                    BlendChild { weight: 80.0, weight_variable: None, node: blend_clip(walk) },
-                    BlendChild { weight: 370.0, weight_variable: None, node: blend_clip(run) },
+                    BlendChild { weight: 80.0, weight_variable: None, bone_weights: None, bone_weights_variable: None, generator: blend_clip(walk) },
+                    BlendChild { weight: 370.0, weight_variable: None, bone_weights: None, bone_weights_variable: None, generator: blend_clip(run) },
                 ],
             })
         };
-        BlendNode::Blender(Blender {
+        Generator::Blender(Blender {
             parametric: true,
             cyclic: true,
             sync: true,
@@ -1212,7 +1597,9 @@ mod tests {
                 .map(|(index, name)| BlendChild {
                     weight: index as f32 * 0.25,
                     weight_variable: None,
-                    node: speed(&format!("walk_{name}"), &format!("run_{name}")),
+                    bone_weights: None,
+                    bone_weights_variable: None,
+                    generator: speed(&format!("walk_{name}"), &format!("run_{name}")),
                 })
                 .collect(),
         })
@@ -1225,6 +1612,7 @@ mod tests {
         let fading = |event, to_state, blend_duration| Transition { blend_duration, ..transition(event, to_state) };
         let machine = StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![
                 State {
                     id: 0,
@@ -1238,7 +1626,7 @@ mod tests {
                     name: "Move".into(),
                     transitions: vec![fading(1, 0, 0.1)],
                     clip: Some(clip("walk_forward", ClipMode::Looping, 1.0, Vec::new())),
-                    content: byroredux_hkx::StateContent { blend: Some(locomotion_blend()), ..Default::default() },
+                    content: byroredux_hkx::StateContent { generator: Some(locomotion_blend()), ..Default::default() },
                 },
             ],
             wildcard: Vec::new(),
@@ -1263,6 +1651,14 @@ mod tests {
         ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new(), lazy: None }), 3).unwrap()
     }
 
+    /// The re-weighted layers of a pose update (the clips did not change).
+    fn layers_of(update: Option<PoseUpdate>) -> Vec<PoseLayer> {
+        match update {
+            Some(PoseUpdate::Layers(layers)) => layers,
+            other => panic!("expected re-weighted layers, got {other:?}"),
+        }
+    }
+
     fn weight_of(pose: &[PoseLayer], handle: u32) -> f32 {
         pose.iter().find(|layer| layer.handle == handle).map_or(0.0, |layer| layer.weight)
     }
@@ -1272,8 +1668,8 @@ mod tests {
     /// child to the first.
     #[test]
     fn parametric_blenders_mix_the_neighbours_and_cyclic_ones_wrap() {
-        let BlendNode::Blender(direction) = locomotion_blend() else { unreachable!() };
-        let BlendNode::Blender(speed) = &direction.children[0].node else { unreachable!() };
+        let Generator::Blender(direction) = locomotion_blend() else { unreachable!() };
+        let Generator::Blender(speed) = &direction.children[0].generator else { unreachable!() };
         let speeds = |value: f32| blender_weights(speed, &[value, 0.0]);
         assert_eq!(speeds(0.0), vec![1.0, 0.0], "slower than the walk: the walk");
         assert_eq!(speeds(80.0), vec![1.0, 0.0]);
@@ -1290,9 +1686,9 @@ mod tests {
         assert_eq!(headings(1.0), headings(0.0), "a full turn is no turn");
         assert_eq!(headings(-0.25), headings(0.75), "negative headings wrap");
 
-        // Not parametric: the first child has the pose.
+        // Not parametric: each child's own weight (0..1), here the positions 0, .25, .5, .75.
         let layered = Blender { parametric: false, ..direction.clone() };
-        assert_eq!(blender_weights(&layered, &[0.0, 0.5]), vec![1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(blender_weights(&layered, &[0.0, 0.5]), vec![0.0, 0.25, 0.5, 0.75]);
     }
 
     #[test]
@@ -1311,15 +1707,34 @@ mod tests {
         assert_eq!(graph.variable("Speed"), Some(225.0));
     }
 
+    /// Set the sync flag of every blender of `node`.
+    fn set_sync(node: &mut Generator, sync: bool) {
+        if let Generator::Blender(blender) = node {
+            blender.sync = sync;
+            for child in &mut blender.children {
+                set_sync(&mut child.generator, sync);
+            }
+        }
+    }
+
+    /// `locomotion()` with its blend tree synced or not.
+    fn locomotion_synced(sync: bool) -> ObjectAnimationGraph {
+        let graph = locomotion();
+        let mut shared = (*graph.graph).clone();
+        let state = &mut shared.graph.machine.as_mut().unwrap().states[1];
+        set_sync(state.content.generator.as_mut().unwrap(), sync);
+        ObjectAnimationGraph::new(Arc::new(shared), 3).unwrap()
+    }
+
     /// Entering the locomotion state yields a blended pose (every clip of the tree,
     /// weighted by its variables), faded in over the transition's duration; the
-    /// variables then move the weights without another event, and the clips advance
-    /// at one common rate so they stay in phase.
+    /// variables then move the weights without another event; unsynced clips each play at
+    /// their own speed.
     #[test]
     fn a_blend_state_plays_a_weighted_pose_that_follows_its_variables() {
-        let mut graph = locomotion();
+        let mut graph = locomotion_synced(false);
         graph.start();
-        assert!(graph.pose_now().is_none(), "the idle is a single clip");
+        assert!(graph.pose_now(0.0).is_none(), "the idle is a single clip");
         graph.set_variable("Speed", 225.0);
         graph.set_variable("Direction", 0.125);
         let playback = graph.send_event(0).expect("Move is taken").expect("the state plays");
@@ -1332,17 +1747,62 @@ mod tests {
         assert_eq!(weight_of(&playback.pose, 12), 0.0);
         let total: f32 = playback.pose.iter().map(|layer| layer.weight).sum();
         assert!((total - 1.0).abs() < 1e-5);
-        // Every layer crosses its own length at the same rate (walk 1 s, run 0.5 s).
-        let rate = |handle: u32, duration: f32| playback.pose.iter().find(|l| l.handle == handle).unwrap().speed / duration;
-        assert!((rate(10, 1.0) - rate(20, 0.5)).abs() < 1e-5, "walk and run stay in phase");
-        // The mean of one cycle per second (walk) and two (run), half and half.
-        assert!((rate(10, 1.0) - 1.5).abs() < 1e-5);
+        // Unsynced clips play on at their own speed: a blend does not couple them.
+        assert!(playback.pose.iter().all(|layer| layer.speed == 1.0 && layer.time.is_none()));
 
         graph.set_variable("Speed", 370.0);
         graph.set_variable("Direction", 0.5);
-        let moved = graph.pose_now().expect("still blending");
+        let moved = layers_of(graph.pose_now(0.0));
         assert_eq!(weight_of(&moved, 22), 1.0, "running backwards");
         assert_eq!(weight_of(&moved, 10), 0.0);
+    }
+
+    /// A synced tree keeps one phase (0 at `SyncLeft`, 1 at `SyncRight`): each clip is
+    /// put at the time that phase maps to through its own sync points, whichever foot it
+    /// plants first, and the phase runs at the weighted mean of the clips' rates.
+    #[test]
+    fn a_synced_blend_aligns_clips_by_their_sync_points() {
+        // Walk: 1.2 s, SyncLeft at 0.33, SyncRight at 0.93 (the vanilla WalkForward
+        // shape). Run: 0.9 s, SyncRight first at 0.27, SyncLeft at 0.63.
+        let (walk, run) = ([0.33, 0.93], [0.63, 0.27]);
+        assert!((sync_time(walk, 1.2, 0.0) - 0.33).abs() < 1e-5, "phase 0 is the left plant");
+        assert!((sync_time(walk, 1.2, 1.0) - 0.93).abs() < 1e-5, "phase 1 is the right plant");
+        assert!((sync_time(walk, 1.2, 0.5) - 0.63).abs() < 1e-5, "half way between");
+        assert!((sync_time(walk, 1.2, 1.5) - 0.03).abs() < 1e-4, "half way from the right plant round to the left: wraps the loop");
+        assert!((sync_time(walk, 1.2, 2.0) - 0.33).abs() < 1e-5, "two units is a full loop");
+        assert!((sync_time(run, 0.9, 0.0) - 0.63).abs() < 1e-5, "the run's left plant is its later point");
+        assert!((sync_time(run, 0.9, 1.0) - 0.27).abs() < 1e-5);
+        // From the run's left plant (0.63) the next right plant is 0.54 s later (wrapping the loop to 0.27).
+        assert!((sync_time(run, 0.9, 0.25) - 0.765).abs() < 1e-4);
+
+        let mut graph = locomotion_synced(true);
+        {
+            let lazy = Arc::new(LazyClips::default());
+            let mut shared = (*graph.graph).clone();
+            shared.lazy = Some(Arc::clone(&lazy));
+            lazy.provide_sync(10, [0.2, 0.7]); // walk_forward: left 0.2 s, right 0.7 s of 1 s
+            lazy.provide_sync(20, [0.35, 0.1]); // run_forward: right first, 0.5 s
+            graph.graph = Arc::new(shared);
+        }
+        graph.start();
+        graph.set_variable("Speed", 80.0);
+        let playback = graph.send_event(0).unwrap().unwrap();
+        let time = |pose: &[PoseLayer], handle: u32| pose.iter().find(|l| l.handle == handle).unwrap().time.unwrap();
+        // Phase 0: the synced clips sit on their left plants; a clip without sync points
+        // is not part of the group and just plays on.
+        assert!((time(&playback.pose, 10) - 0.2).abs() < 1e-5);
+        assert!((time(&playback.pose, 20) - 0.35).abs() < 1e-5);
+        let loose = playback.pose.iter().find(|layer| layer.handle == 11).unwrap();
+        assert_eq!((loose.time, loose.speed), (None, 1.0));
+        assert!(playback.pose.iter().filter(|layer| layer.time.is_some()).all(|layer| layer.speed == 0.0), "synced layers are placed, not advanced");
+
+        // The phase advances at the mean rate: forward walk only (80 units a second):
+        // 1 phase unit takes 0.5 s (left plant 0.2 to right plant 0.7), so 0.25 s is half way.
+        let layers = layers_of(graph.pose_now(0.25));
+        assert!((time(&layers, 10) - 0.45).abs() < 1e-4, "{}", time(&layers, 10));
+        // The run clip, at weight 0, is carried to the same point of its own stride: half way
+        // from its left plant (0.35) to its right plant (0.1 of the next loop = 0.6): 0.475.
+        assert!((time(&layers, 20) - 0.475).abs() < 1e-4, "{}", time(&layers, 20));
     }
 
     /// A transition with a duration fades: the old pose's layers fade out and the new
@@ -1374,7 +1834,7 @@ mod tests {
 
         // Between events, the variables retarget the newest layers.
         graph.set_variable("Speed", 370.0);
-        let pose = graph.pose_now().unwrap();
+        let pose = layers_of(graph.pose_now(0.0));
         update_pose(&mut world.get_mut::<AnimationStack>(3).unwrap(), &pose);
         let stack = world.get::<AnimationStack>(3).unwrap();
         assert_eq!(stack.layers[1].blend_in_target, 0.0, "no longer the walk");
@@ -1452,6 +1912,250 @@ mod tests {
         assert!(graph.send_event(0).is_some());
     }
 
+    /// A graph in one state (id 0) whose generator is `generator` over `machines`, with
+    /// `variables` (name, initial), every clip of `clips` registered (handle = 100 + index,
+    /// 1 s long).
+    fn rooted(
+        generator: Generator,
+        machines: Vec<StateMachine>,
+        variables: &[(&str, f32)],
+        clips: &[&str],
+    ) -> ObjectAnimationGraph {
+        let state = State {
+            id: 0,
+            name: "Root".into(),
+            transitions: Vec::new(),
+            clip: None,
+            content: byroredux_hkx::StateContent { machines, generator: Some(generator), ..Default::default() },
+        };
+        let graph = BehaviorGraph {
+            variables: variables
+                .iter()
+                .map(|(name, initial)| Variable { name: (*name).into(), kind: byroredux_hkx::VariableKind::Real, initial: *initial })
+                .collect(),
+            events: vec!["Wave".into(), "Select".into()],
+            machine: Some(StateMachine { start_state: 0, start_state_variable: None, states: vec![state], wildcard: Vec::new() }),
+        };
+        let mut registered = HashMap::new();
+        for (index, name) in clips.iter().enumerate() {
+            registered.insert((name.to_string(), true), GraphClip { handle: 100 + index as u32, duration: 1.0 });
+        }
+        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips: registered, sequences: HashMap::new(), lazy: None }), 7).unwrap()
+    }
+
+    /// A machine of plain looping-clip states; state `i` plays `clips[i]`, and event 0 takes
+    /// state 0 to state 1.
+    fn machine_of(clips: &[&str]) -> StateMachine {
+        let states = clips
+            .iter()
+            .enumerate()
+            .map(|(index, name)| State {
+                id: index as i32,
+                name: name.to_string(),
+                transitions: if index == 0 && clips.len() > 1 { vec![transition(0, 1)] } else { Vec::new() },
+                clip: Some(clip(name, ClipMode::Looping, 1.0, Vec::new())),
+                content: byroredux_hkx::StateContent { generator: Some(Generator::Clip(clip(name, ClipMode::Looping, 1.0, Vec::new()))), ..Default::default() },
+            })
+            .collect();
+        StateMachine { start_state: 0, start_state_variable: None, states, wildcard: Vec::new() }
+    }
+
+    /// The vanilla `MTRoot` shape: a layered (non-parametric) blender whose children are
+    /// whole nested machines, each through a bone mask. The pose is the active clip of
+    /// every machine, masked bone by bone; an event inside one machine swaps only its clip.
+    #[test]
+    fn a_layered_blend_masks_the_active_clips_of_nested_machines() {
+        let child = |weight: f32, mask: Vec<f32>, machine: usize| BlendChild {
+            weight,
+            weight_variable: None,
+            bone_weights: Some(byroredux_hkx::BoneWeights { weights: Arc::new(mask), bound: Vec::new() }),
+            bone_weights_variable: None,
+            generator: Generator::Machine(machine),
+        };
+        let blender = Generator::Blender(Blender {
+            parametric: false,
+            cyclic: false,
+            sync: false,
+            parameter: 0.0,
+            parameter_variable: None,
+            min_cyclic: 0.0,
+            max_cyclic: 1.0,
+            children: vec![child(1.0, vec![1.0, 1.0, 0.0, 0.0], 0), child(1.0, vec![0.0, 0.0, 1.0, 1.0], 1)],
+        });
+        let mut graph = rooted(blender, vec![machine_of(&["upper_idle", "upper_wave"]), machine_of(&["lower_stand"])], &[], &["upper_idle", "upper_wave", "lower_stand"]);
+        let playback = graph.start().expect("plays");
+        assert_eq!(playback.pose.len(), 2, "one clip from each machine");
+        assert_eq!((playback.pose[0].handle, playback.pose[1].handle), (100, 102));
+        let mask = |layer: &PoseLayer| layer.mask.as_ref().map(|mask| mask.to_vec());
+        assert_eq!(mask(&playback.pose[0]), Some(vec![1.0, 1.0, 0.0, 0.0]), "the upper machine owns the upper bones");
+        assert_eq!(mask(&playback.pose[1]), Some(vec![0.0, 0.0, 1.0, 1.0]));
+
+        // `Wave` moves the upper machine only; the lower clip is untouched.
+        let waved = graph.send_event(0).expect("Wave is answered").expect("a clip changed");
+        assert_eq!((waved.pose[0].handle, waved.pose[1].handle), (101, 102));
+    }
+
+    /// A mask element can be driven by a variable (the vanilla upper-body mask follows
+    /// `bEquipOk`); the layer's mask moves with it between events.
+    #[test]
+    fn a_bone_weight_bound_to_a_variable_follows_it() {
+        let blender = Generator::Blender(Blender {
+            parametric: false,
+            cyclic: false,
+            sync: false,
+            parameter: 0.0,
+            parameter_variable: None,
+            min_cyclic: 0.0,
+            max_cyclic: 1.0,
+            children: vec![
+                BlendChild {
+                    weight: 1.0,
+                    weight_variable: None,
+                    bone_weights: Some(byroredux_hkx::BoneWeights { weights: Arc::new(vec![1.0, 1.0]), bound: vec![(1, 0)] }),
+                    bone_weights_variable: None,
+                    generator: Generator::Clip(clip("a", ClipMode::Looping, 1.0, Vec::new())),
+                },
+                BlendChild { weight: 1.0, weight_variable: None, bone_weights: None, bone_weights_variable: None, generator: Generator::Clip(clip("b", ClipMode::Looping, 1.0, Vec::new())) },
+            ],
+        });
+        let mut graph = rooted(blender, Vec::new(), &[("bEquipOk", 1.0)], &["a", "b"]);
+        let playback = graph.start().unwrap();
+        assert_eq!(playback.pose[0].mask.as_ref().unwrap().to_vec(), vec![1.0, 1.0]);
+        graph.set_variable("bEquipOk", 0.0);
+        let layers = layers_of(graph.pose_now(0.0));
+        assert_eq!(layers[0].mask.as_ref().unwrap().to_vec(), vec![1.0, 0.0], "bone 1 now follows the variable");
+    }
+
+    /// A selector picks its child by a variable, and a machine starts in the state its
+    /// `startStateId` variable names; a variable that changes which clip plays restarts the
+    /// pose without any event.
+    #[test]
+    fn selectors_and_start_state_variables_choose_what_plays() {
+        let selector = Generator::Selector {
+            index: 0,
+            index_variable: Some(0),
+            children: vec![
+                Generator::Clip(clip("npc", ClipMode::Looping, 1.0, Vec::new())),
+                Generator::Clip(clip("player", ClipMode::Looping, 1.0, Vec::new())),
+            ],
+        };
+        let mut graph = rooted(selector, Vec::new(), &[("iIsPlayer", 0.0)], &["npc", "player"]);
+        assert_eq!(graph.start().unwrap().handle, 100, "child 0 while the variable is 0");
+        graph.set_variable("iIsPlayer", 1.0);
+        match graph.pose_now(0.016) {
+            Some(PoseUpdate::Restart(playback)) => assert_eq!(playback.handle, 101),
+            other => panic!("the selector's variable changed the clip: {other:?}"),
+        }
+        assert!(graph.pose_now(0.016).is_none(), "nothing moved since");
+
+        // Start state by variable: the machine's states 0 and 1 play different clips.
+        let mut machine = machine_of(&["walk", "sneak"]);
+        machine.start_state_variable = Some(0);
+        let mut graph = rooted(Generator::Machine(0), vec![machine], &[("iIsInSneak", 1.0)], &["walk", "sneak"]);
+        assert_eq!(graph.start().unwrap().handle, 101, "started in the state the variable names");
+    }
+
+    /// A boolean bound to a blender child's `boneWeights` switches the child (the camera
+    /// machine of the vanilla root blender is off while `bAnimationDriven` is 0); a real
+    /// bound there is not interpreted.
+    #[test]
+    fn a_boolean_bound_to_a_childs_bone_weights_switches_it() {
+        let child = |name: &str, variable: Option<usize>| BlendChild {
+            weight: 1.0,
+            weight_variable: None,
+            bone_weights: None,
+            bone_weights_variable: variable,
+            generator: Generator::Clip(clip(name, ClipMode::Looping, 1.0, Vec::new())),
+        };
+        let blender = Generator::Blender(Blender {
+            parametric: false,
+            cyclic: false,
+            sync: false,
+            parameter: 0.0,
+            parameter_variable: None,
+            min_cyclic: 0.0,
+            max_cyclic: 1.0,
+            children: vec![child("body", None), child("camera", Some(0)), child("lean", Some(1))],
+        });
+        let mut graph = rooted(blender, Vec::new(), &[("bAnimationDriven", 0.0), ("Speed", 0.0)], &["body", "camera", "lean"]);
+        let mut shared = (*graph.graph).clone();
+        shared.graph.variables[0].kind = byroredux_hkx::VariableKind::Bool;
+        graph.graph = Arc::new(shared);
+        let weights = |graph: &mut ObjectAnimationGraph| graph.start().unwrap().pose.iter().map(|layer| layer.weight).collect::<Vec<_>>();
+        assert_eq!(weights(&mut graph), vec![1.0, 0.0, 1.0], "the camera child is off, the real-bound one is left alone");
+        graph.set_variable("bAnimationDriven", 1.0);
+        assert_eq!(weights(&mut graph), vec![1.0, 1.0, 1.0]);
+    }
+
+    /// The graph moves itself: an events-from-range modifier on the idle state watches
+    /// `SpeedSmoothed` and raises `walkStart` when it enters the walk range, which the
+    /// idle's own transition takes - no script and no host event involved. Entering the walk
+    /// state activates its assign-variables modifier.
+    #[test]
+    fn a_modifier_raises_the_event_that_moves_the_graph() {
+        use byroredux_hkx::{EventRange, Modifier, ModifierNode};
+        let idle_clip = clip("idle", ClipMode::Looping, 1.0, Vec::new());
+        let walk_clip = clip("walk", ClipMode::Looping, 1.0, Vec::new());
+        let watch = Arc::new(ModifierNode {
+            id: 1,
+            kind: Modifier::EventsFromRange {
+                input: 0.0,
+                input_variable: Some(0),
+                lower_bound: 0.0,
+                ranges: vec![EventRange { upper: 150.0, event: 0, when_in_range: false }],
+            },
+        });
+        let assign = Arc::new(ModifierNode { id: 2, kind: Modifier::AssignVariables { floats: Vec::new(), ints: vec![(1, 5)] } });
+        let state = |id, name: &str, transitions, generator| State {
+            id,
+            name: name.into(),
+            transitions,
+            clip: None,
+            content: byroredux_hkx::StateContent { generator: Some(generator), ..Default::default() },
+        };
+        let machine = StateMachine {
+            start_state: 0,
+            start_state_variable: None,
+            states: vec![
+                state(
+                    0,
+                    "Idle",
+                    vec![transition(0, 1)],
+                    Generator::Modified { modifiers: vec![watch], inner: Some(Box::new(Generator::Clip(idle_clip))) },
+                ),
+                state(
+                    1,
+                    "Walk",
+                    Vec::new(),
+                    Generator::Modified { modifiers: vec![assign], inner: Some(Box::new(Generator::Clip(walk_clip))) },
+                ),
+            ],
+            wildcard: Vec::new(),
+        };
+        let variable = |name: &str, kind| Variable { name: name.into(), kind, initial: 0.0 };
+        let graph = BehaviorGraph {
+            variables: vec![variable("SpeedSmoothed", byroredux_hkx::VariableKind::Real), variable("iState", byroredux_hkx::VariableKind::Int)],
+            events: vec!["walkStart".into()],
+            machine: Some(machine),
+        };
+        let mut clips = HashMap::new();
+        clips.insert(("idle".to_owned(), true), GraphClip { handle: 1, duration: 2.0 });
+        clips.insert(("walk".to_owned(), true), GraphClip { handle: 2, duration: 1.0 });
+        let mut graph = ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new(), lazy: None }), 9).unwrap();
+        assert_eq!(graph.start().unwrap().handle, 1);
+        assert_eq!(graph.state(), 0);
+        // A watcher raises an event when the input is *in* a range, so the input starts past
+        // every range (a standing actor at speed 0 would be in the walk range already).
+        graph.set_variable("SpeedSmoothed", 400.0);
+        assert!(graph.step(0.016).is_empty(), "past every range: nothing raised");
+        assert_eq!(graph.state(), 0);
+        graph.set_variable("SpeedSmoothed", 80.0);
+        let started = graph.step(0.016);
+        assert_eq!(graph.state(), 1, "entering the walk range raised walkStart and the idle took it");
+        assert_eq!(started.last().map(|playback| playback.handle), Some(2));
+        assert_eq!(graph.variable("iState"), Some(5.0), "the walk state's assign-variables modifier activated");
+    }
+
     /// A transition's duration comes from its bound variable when it has one.
     #[test]
     fn a_bound_duration_reads_its_variable() {
@@ -1495,6 +2199,7 @@ mod tests {
         );
         let inner_trigger = StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![State {
                 id: 0,
                 name: "State00".into(),
@@ -1513,6 +2218,7 @@ mod tests {
         };
         let inner_swing = StateMachine {
             start_state: 6,
+            start_state_variable: None,
             states: vec![
                 swing(6, "State06", None, vec![transition(single, 3)]),
                 swing(3, "State03", Some("PlayAnim01"), vec![transition(reset, 6)]),
@@ -1521,6 +2227,7 @@ mod tests {
         };
         let root = StateMachine {
             start_state: 5,
+            start_state_variable: None,
             states: vec![State {
                 id: 5,
                 name: "State05".into(),
@@ -1640,6 +2347,7 @@ mod tests {
             events: vec!["go".into()],
             machine: Some(StateMachine {
                 start_state: 0,
+                start_state_variable: None,
                 states: vec![
                     State {
                         id: 0,

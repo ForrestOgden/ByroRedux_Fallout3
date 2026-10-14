@@ -50,6 +50,45 @@ const CONDITION_TEXT: usize = 0x10;
 /// `hkbBlenderGeneratorChild::m_weight` (the child's position on a parametric blender's
 /// axis, or its weight) and the `hkbBindable` base of its fields.
 const BLENDER_CHILD_WEIGHT: usize = 0x40;
+/// `hkbBlenderGeneratorChild::m_boneWeights`; `hkbBoneWeightArray::m_boneWeights`;
+/// `hkbManualSelectorGenerator::m_selectedGeneratorIndex` (an `hkInt8` right after the
+/// generators array); a binding's `offsetInArrayPlusOne`.
+const BLENDER_CHILD_BONE_WEIGHTS: usize = 0x38;
+const BONE_WEIGHTS: usize = 0x30;
+const SELECTOR_INDEX_AFTER_ARRAY: usize = 0x10;
+const BINDING_OFFSET_IN_ARRAY: usize = 0x14;
+const MAX_BONES: usize = 1024;
+/// Havok 2014 modifier layouts (members start at 0x58, after `hkbModifier::m_enable`): the
+/// offsets are read off the vanilla graphs' objects; the member order is the engine's own.
+const MODIFIER_GENERATOR_MODIFIER: usize = 0x88;
+const MODIFIER_LIST_MODIFIERS: usize = 0x58;
+const EVENT_DRIVEN_MODIFIER: usize = 0x58;
+const EVENT_DRIVEN_ACTIVATE: usize = 0x60;
+const EVENT_DRIVEN_DEACTIVATE: usize = 0x64;
+const EVENT_DRIVEN_BY_DEFAULT: usize = 0x68;
+const EVENT_ON_DEACTIVATE_EVENT: usize = 0x58;
+const EVENTS_FROM_RANGE_INPUT: usize = 0x58;
+const EVENTS_FROM_RANGE_LOWER: usize = 0x5C;
+const EVENTS_FROM_RANGE_RANGES: usize = 0x60;
+const EVENT_RANGES_ARRAY: usize = 0x10;
+const EVENT_RANGE_STRIDE: usize = 0x20;
+const EVENT_RANGE_EVENT: usize = 0x08;
+const EVENT_RANGE_MODE: usize = 0x18;
+const EVALUATE_EXPRESSION_EXPRESSIONS: usize = 0x58;
+const EXPRESSION_ARRAY: usize = 0x10;
+const EXPRESSION_STRIDE: usize = 0x18;
+const EXPRESSION_MODE: usize = 0x10;
+const EVERY_N_CHECK: usize = 0x58;
+const EVERY_N_SEND: usize = 0x68;
+const EVERY_N_COUNT: usize = 0x78;
+const MODIFY_ONCE_ON_ACTIVATE: usize = 0x60;
+const MODIFY_ONCE_ON_DEACTIVATE: usize = 0x68;
+/// `BSAssignVariablesModifier`: 20 `(floatVariableN, floatValueN)` pairs from 0x58, then 4
+/// `(intVariableN, intValueN)` pairs; the variable of a pair is named by a binding.
+const ASSIGN_FLOATS: usize = 0x58;
+const ASSIGN_INTS: usize = 0xF8;
+const ASSIGN_PAIR: usize = 8;
+const MAX_MODIFIER_DEPTH: usize = 16;
 /// `hkbBlenderGenerator::m_flags`.
 const BLENDER_FLAG_SYNC: u16 = 0x01;
 const BLENDER_FLAG_PARAMETRIC: u16 = 0x10;
@@ -306,7 +345,8 @@ pub struct State {
 }
 
 /// What a state's non-clip generator holds: a blender's children and nested state
-/// machines are flattened into these lists (the blender's weights are not kept).
+/// machines are flattened into these lists (for the event schedule and the start clip);
+/// [`Self::generator`] keeps the tree itself.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StateContent {
     /// `BGSGamebryoSequenceGenerator` sequence names: `NiControllerSequence`s in
@@ -317,25 +357,98 @@ pub struct StateContent {
     /// Further clips of a blender (the first is the state's own `clip`).
     pub blended_clips: Vec<StateClip>,
     /// Sub-behavior packfiles an `hkbBehaviorReferenceGenerator` names (Fallout 4:
-    /// a state that runs another graph, e.g. `Behaviors\\DialogueBehavior.hkx`).
+    /// a state that runs another graph, e.g. `Behaviors\\DialogueBehavior.hkx`), in the
+    /// order [`Generator::Reference`] numbers them.
     pub behavior_references: Vec<String>,
-    /// The state's blender with its weights and bound variables, when its generator
-    /// holds one (the flattened lists above keep the first clip only).
-    pub blend: Option<BlendNode>,
+    /// For each reference, the index in [`Self::machines`] of the sub-behavior's machine
+    /// once `BehaviorGraph::inline_references` has loaded it.
+    pub reference_machines: Vec<Option<usize>>,
+    /// The state's generator tree: how its clips, blenders and nested machines combine
+    /// into the pose. `None` for a state with no generator.
+    pub generator: Option<Generator>,
 }
 
-/// One node of a blend tree: a clip or a blender over such nodes.
+/// One node of a state's generator tree.
 #[derive(Debug, Clone, PartialEq)]
-pub enum BlendNode {
+pub enum Generator {
     Clip(StateClip),
+    /// A Gamebryo `NiControllerSequence` of the object's own NIF.
+    Sequence(String),
+    /// A nested state machine: an index into the owning state's [`StateContent::machines`].
+    Machine(usize),
+    /// A sub-behavior: an index into [`StateContent::behavior_references`].
+    Reference(usize),
     Blender(Blender),
+    /// `hkbManualSelectorGenerator`: one child, picked by an index (the authored one, or
+    /// its bound variable).
+    Selector { index: i32, index_variable: Option<usize>, children: Vec<Generator> },
+    /// `hkbModifierGenerator`: modifiers that run while the generator is active.
+    Modified { modifiers: Vec<Arc<ModifierNode>>, inner: Option<Box<Generator>> },
+}
+
+/// A modifier of a graph. `id` is unique within the graph (it keys the runtime state a
+/// modifier keeps: whether it was active last frame, the range it was in, its count).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModifierNode {
+    pub id: u32,
+    pub kind: Modifier,
+}
+
+/// The modifiers that change what the graph itself does - the variables it holds and the
+/// events it raises. (The ones that pose the skeleton - look-at, twist, foot IK, ragdoll -
+/// and `BSIsActiveModifier`, whose booleans are for the engine, are not modelled.) The
+/// semantics are the engine's own description strings: "set on activate",
+/// "Expression of the form 'variablename = expression' or 'eventname = boolean
+/// expression'", "The event to send when this range is entered", "Event to be raised when
+/// this modifier deactivates", "Number of times to get m_eventToCheckFor before sending
+/// m_eventToSend", "Event used to activate the wrapped modifier".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Modifier {
+    /// `BSAssignVariablesModifier`: on activation, each variable is set to its value.
+    AssignVariables { floats: Vec<(usize, f32)>, ints: Vec<(usize, i32)> },
+    /// `BSModifyOnceModifier`: runs `on_activate` when it activates and `on_deactivate`
+    /// when it deactivates.
+    ModifyOnce { on_activate: Option<Arc<ModifierNode>>, on_deactivate: Option<Arc<ModifierNode>> },
+    /// `hkbEventsFromRangeModifier`: sends the event of the range the input falls in.
+    EventsFromRange { input: f32, input_variable: Option<usize>, lower_bound: f32, ranges: Vec<EventRange> },
+    /// `hkbEvaluateExpressionModifier`.
+    EvaluateExpression { expressions: Vec<ExpressionData> },
+    /// `BSEventOnDeactivateModifier`.
+    EventOnDeactivate { event: i32 },
+    /// `BSEventEveryNEventsModifier`: sends `send` once `check` has been raised `count` times.
+    EventEveryNEvents { check: i32, send: i32, count: u32 },
+    /// `hkbEventDrivenModifier`: the wrapped modifier runs only between its activate and
+    /// deactivate events (and from the start when `active_by_default`).
+    EventDriven { activate: i32, deactivate: i32, active_by_default: bool, inner: Option<Arc<ModifierNode>> },
+    /// `hkbModifierList`.
+    List(Vec<Arc<ModifierNode>>),
+}
+
+/// One range of an `hkbEventsFromRangeModifier`: from the previous range's upper bound (or
+/// the modifier's lower bound) up to `upper`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventRange {
+    pub upper: f32,
+    pub event: i32,
+    /// Send every frame the input is in the range (else when it enters it).
+    pub when_in_range: bool,
+}
+
+/// One expression of an `hkbEvaluateExpressionModifier`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpressionData {
+    pub text: String,
+    /// `EVENT_MODE_SEND_ONCE`, `SEND_ON_TRUE`, `SEND_ON_FALSE_TO_TRUE`,
+    /// `SEND_EVERY_FRAME_ONCE_TRUE`: 0..=3.
+    pub event_mode: u8,
 }
 
 /// An `hkbBlenderGenerator`. A *parametric* blender's child weights are positions on
 /// one axis and the blend parameter picks the two neighbours to mix (in the vanilla
 /// 8-way locomotion graph the children sit at 80 and 370 for `Speed`, and at
-/// 0, 0.125 ... 0.875 for a cyclic direction); any other blender uses the weights
-/// themselves. `sync` blenders keep their children's clips in step.
+/// 0, 0.125 ... 0.875 for a cyclic direction); any other blender mixes its children by
+/// their weights (the engine checks they are between 0 and 1), each scaled bone by bone
+/// by the child's bone weights. `sync` blenders keep their children's clips in step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Blender {
     pub parametric: bool,
@@ -353,12 +466,100 @@ pub struct Blender {
 pub struct BlendChild {
     pub weight: f32,
     pub weight_variable: Option<usize>,
-    pub node: BlendNode,
+    /// `hkbBoneWeightArray`: how much of each skeleton bone this child contributes.
+    pub bone_weights: Option<BoneWeights>,
+    /// A variable bound to the child's `boneWeights` member. The vanilla graphs bind
+    /// `bEquipOk` and `bAllowHeadTracking` (booleans, on the children that layer a weapon
+    /// pose or a head-tracking pose) and `bAnimationDriven` (on the camera machine of the
+    /// root blender, which must not reach the body at its default 0): a boolean there
+    /// reads as a switch. Integers and reals bound there (`iSyncIdleLocomotion`, `Speed`,
+    /// `Direction`) have no meaning the files or the engine's strings give.
+    pub bone_weights_variable: Option<usize>,
+    pub generator: Generator,
+}
+
+/// A child's per-bone weights (indexed by skeleton bone), and the elements a variable
+/// drives (`boneWeights` bindings: an upper-body mask that follows `bEquipOk`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoneWeights {
+    pub weights: Arc<Vec<f32>>,
+    /// `(bone index, variable)` for each element a variable supplies.
+    pub bound: Vec<(usize, usize)>,
+}
+
+impl Generator {
+    /// Every clip of the tree (not those inside nested machines).
+    fn for_each_clip_mut(&mut self, f: &mut dyn FnMut(&mut StateClip)) {
+        match self {
+            Self::Clip(clip) => f(clip),
+            Self::Blender(blender) => blender.children.iter_mut().for_each(|child| child.generator.for_each_clip_mut(f)),
+            Self::Selector { children, .. } => children.iter_mut().for_each(|child| child.for_each_clip_mut(f)),
+            Self::Modified { inner, .. } => {
+                if let Some(inner) = inner {
+                    inner.for_each_clip_mut(f);
+                }
+            }
+            Self::Sequence(_) | Self::Machine(_) | Self::Reference(_) => {}
+        }
+    }
+
+    /// Every modifier of the tree (not those inside nested machines).
+    fn for_each_modifier_mut(&mut self, f: &mut dyn FnMut(&mut Arc<ModifierNode>)) {
+        match self {
+            Self::Blender(blender) => blender.children.iter_mut().for_each(|child| child.generator.for_each_modifier_mut(f)),
+            Self::Selector { children, .. } => children.iter_mut().for_each(|child| child.for_each_modifier_mut(f)),
+            Self::Modified { modifiers, inner } => {
+                modifiers.iter_mut().for_each(&mut *f);
+                if let Some(inner) = inner {
+                    inner.for_each_modifier_mut(f);
+                }
+            }
+            Self::Clip(_) | Self::Sequence(_) | Self::Machine(_) | Self::Reference(_) => {}
+        }
+    }
+
+    /// Every variable index the tree names.
+    fn for_each_variable_mut(&mut self, f: &mut dyn FnMut(&mut Option<usize>)) {
+        match self {
+            Self::Clip(clip) => f(&mut clip.playback_speed_variable),
+            Self::Blender(blender) => {
+                f(&mut blender.parameter_variable);
+                for child in &mut blender.children {
+                    f(&mut child.weight_variable);
+                    f(&mut child.bone_weights_variable);
+                    if let Some(bones) = &mut child.bone_weights {
+                        for (_, variable) in &mut bones.bound {
+                            let mut wrapped = Some(*variable);
+                            f(&mut wrapped);
+                            match wrapped {
+                                Some(new) => *variable = new,
+                                None => *variable = usize::MAX,
+                            }
+                        }
+                    }
+                    child.generator.for_each_variable_mut(f);
+                }
+            }
+            Self::Selector { index_variable, children, .. } => {
+                f(index_variable);
+                children.iter_mut().for_each(|child| child.for_each_variable_mut(f));
+            }
+            Self::Modified { inner, .. } => {
+                if let Some(inner) = inner {
+                    inner.for_each_variable_mut(f);
+                }
+            }
+            Self::Sequence(_) | Self::Machine(_) | Self::Reference(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateMachine {
     pub start_state: i32,
+    /// The variable that picks the start state when the machine activates
+    /// (`startStateId` binding: `iSyncIdleLocomotion` and the like).
+    pub start_state_variable: Option<usize>,
     pub states: Vec<State>,
     /// Transitions taken from any state.
     pub wildcard: Vec<Transition>,
@@ -411,7 +612,10 @@ impl StateMachine {
                 return Some(clip);
             }
         }
-        for reference in &state.content.behavior_references {
+        for (ordinal, reference) in state.content.behavior_references.iter().enumerate() {
+            if state.content.reference_machines.get(ordinal).is_some_and(Option::is_some) {
+                continue;
+            }
             if *hops >= MAX_REFERENCE_HOPS {
                 return None;
             }
@@ -428,6 +632,50 @@ impl StateMachine {
 /// (a graph can refer to the same few behaviors from many states).
 const MAX_INLINED_REFERENCES: usize = 64;
 
+/// A number a modifier holds that names something of its graph.
+enum Slot<'a> {
+    Event(&'a mut i32),
+    Variable(&'a mut usize),
+    Id(&'a mut u32),
+}
+
+/// Visit every event, variable and id a modifier (and the modifiers inside it) names.
+fn visit_modifier(node: &mut Arc<ModifierNode>, f: &mut dyn FnMut(Slot<'_>)) {
+    let node = Arc::make_mut(node);
+    f(Slot::Id(&mut node.id));
+    match &mut node.kind {
+        Modifier::AssignVariables { floats, ints } => {
+            floats.iter_mut().for_each(|(variable, _)| f(Slot::Variable(variable)));
+            ints.iter_mut().for_each(|(variable, _)| f(Slot::Variable(variable)));
+        }
+        Modifier::ModifyOnce { on_activate, on_deactivate } => {
+            for inner in on_activate.iter_mut().chain(on_deactivate.iter_mut()) {
+                visit_modifier(inner, f);
+            }
+        }
+        Modifier::EventsFromRange { input_variable, ranges, .. } => {
+            if let Some(variable) = input_variable {
+                f(Slot::Variable(variable));
+            }
+            ranges.iter_mut().for_each(|range| f(Slot::Event(&mut range.event)));
+        }
+        Modifier::EvaluateExpression { .. } => {}
+        Modifier::EventOnDeactivate { event } => f(Slot::Event(event)),
+        Modifier::EventEveryNEvents { check, send, .. } => {
+            f(Slot::Event(check));
+            f(Slot::Event(send));
+        }
+        Modifier::EventDriven { activate, deactivate, inner, .. } => {
+            f(Slot::Event(activate));
+            f(Slot::Event(deactivate));
+            if let Some(inner) = inner {
+                visit_modifier(inner, f);
+            }
+        }
+        Modifier::List(items) => items.iter_mut().for_each(|item| visit_modifier(item, f)),
+    }
+}
+
 /// Renumber the events `machine` names (transitions and clip triggers) through `map`.
 fn remap_machine_events(machine: &mut StateMachine, map: &[i32]) {
     let remap = |event: i32| usize::try_from(event).ok().and_then(|index| map.get(index)).copied().unwrap_or(event);
@@ -443,30 +691,72 @@ fn remap_machine_events(machine: &mut StateMachine, map: &[i32]) {
                 trigger.event = remap(trigger.event);
             }
         }
+        if let Some(generator) = &mut state.content.generator {
+            generator.for_each_clip_mut(&mut |clip| {
+                for trigger in &mut clip.triggers {
+                    trigger.event = remap(trigger.event);
+                }
+            });
+            generator.for_each_modifier_mut(&mut |modifier| {
+                visit_modifier(modifier, &mut |slot| {
+                    if let Slot::Event(event) = slot {
+                        *event = remap(*event);
+                    }
+                })
+            });
+        }
         for inner in &mut state.content.machines {
             remap_machine_events(inner, map);
         }
     }
 }
 
-fn remap_blend_variables(node: &mut BlendNode, map: &[usize]) {
-    let remap = |variable: &mut Option<usize>| *variable = variable.and_then(|index| map.get(index).copied());
-    match node {
-        BlendNode::Clip(clip) => remap(&mut clip.playback_speed_variable),
-        BlendNode::Blender(blender) => {
-            remap(&mut blender.parameter_variable);
-            for child in &mut blender.children {
-                remap(&mut child.weight_variable);
-                remap_blend_variables(&mut child.node, map);
-            }
+/// Add `offset` to the id of every modifier of `machine`.
+fn offset_machine_modifier_ids(machine: &mut StateMachine, offset: u32) {
+    for state in &mut machine.states {
+        if let Some(generator) = &mut state.content.generator {
+            generator.for_each_modifier_mut(&mut |modifier| {
+                visit_modifier(modifier, &mut |slot| {
+                    if let Slot::Id(id) = slot {
+                        *id += offset;
+                    }
+                })
+            });
+        }
+        for inner in &mut state.content.machines {
+            offset_machine_modifier_ids(inner, offset);
         }
     }
 }
 
-/// Renumber the variables `machine` names (blend parameters, weights, clip speeds and
-/// transition durations) through `map`.
+/// One past the highest modifier id of `machine`.
+fn machine_modifier_id_bound(machine: &StateMachine) -> u32 {
+    let mut bound = 0;
+    for state in &machine.states {
+        if let Some(generator) = &state.content.generator {
+            // `for_each_modifier_mut` needs a mutable tree; clone the (small) generator.
+            let mut copy = generator.clone();
+            copy.for_each_modifier_mut(&mut |modifier| {
+                let mut node = Arc::clone(modifier);
+                visit_modifier(&mut node, &mut |slot| {
+                    if let Slot::Id(id) = slot {
+                        bound = bound.max(*id + 1);
+                    }
+                });
+            });
+        }
+        for inner in &state.content.machines {
+            bound = bound.max(machine_modifier_id_bound(inner));
+        }
+    }
+    bound
+}
+
+/// Renumber the variables `machine` names (blend parameters, weights, clip speeds,
+/// transition durations, start states) through `map`.
 fn remap_machine_variables(machine: &mut StateMachine, map: &[usize]) {
     let remap = |variable: &mut Option<usize>| *variable = variable.and_then(|index| map.get(index).copied());
+    remap(&mut machine.start_state_variable);
     for transition in machine.wildcard.iter_mut() {
         remap(&mut transition.blend_duration_variable);
     }
@@ -477,8 +767,18 @@ fn remap_machine_variables(machine: &mut StateMachine, map: &[usize]) {
         for clip in state.clip.iter_mut().chain(state.content.blended_clips.iter_mut()) {
             remap(&mut clip.playback_speed_variable);
         }
-        if let Some(node) = &mut state.content.blend {
-            remap_blend_variables(node, map);
+        if let Some(generator) = &mut state.content.generator {
+            generator.for_each_modifier_mut(&mut |modifier| {
+                visit_modifier(modifier, &mut |slot| {
+                    if let Slot::Variable(variable) = slot {
+                        *variable = map.get(*variable).copied().unwrap_or(*variable);
+                    }
+                })
+            });
+            generator.for_each_variable_mut(&mut |variable| {
+                // `usize::MAX` marks a bone-weight binding whose variable did not map.
+                *variable = variable.and_then(|index| if index == usize::MAX { None } else { map.get(index).copied() });
+            });
         }
         for inner in &mut state.content.machines {
             remap_machine_variables(inner, map);
@@ -525,7 +825,8 @@ impl BehaviorGraph {
     pub fn inline_references(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) {
         let Some(mut machine) = self.machine.take() else { return };
         let mut budget = MAX_INLINED_REFERENCES;
-        self.inline_machine(&mut machine, resolve, &mut budget);
+        let mut ids = machine_modifier_id_bound(&machine);
+        self.inline_machine(&mut machine, resolve, &mut budget, &mut ids);
         self.machine = Some(machine);
     }
 
@@ -534,37 +835,45 @@ impl BehaviorGraph {
         machine: &mut StateMachine,
         resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>,
         budget: &mut usize,
+        ids: &mut u32,
     ) {
         for state in &mut machine.states {
-            let references = std::mem::take(&mut state.content.behavior_references);
-            for reference in references {
-                if *budget == 0 {
-                    state.content.behavior_references.push(reference);
+            let wanted = state.content.behavior_references.len();
+            state.content.reference_machines.resize(wanted, None);
+            for ordinal in 0..wanted {
+                if state.content.reference_machines[ordinal].is_some() {
                     continue;
                 }
+                if *budget == 0 {
+                    break;
+                }
                 *budget -= 1;
-                let Some(mut inner) = resolve(&reference) else {
-                    state.content.behavior_references.push(reference);
-                    continue;
-                };
+                let reference = state.content.behavior_references[ordinal].clone();
+                let Some(mut inner) = resolve(&reference) else { continue };
                 // The referenced graph's own references first (its events are its own).
                 inner.inline_references_with(resolve, budget);
+                let inner_bound = inner.machine.as_ref().map_or(0, machine_modifier_id_bound);
                 let Some(mut inner_machine) = inner.machine.take() else { continue };
                 let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(name)).collect();
                 remap_machine_events(&mut inner_machine, &map);
                 let variable_map: Vec<usize> = inner.variables.iter().map(|variable| self.intern_variable(variable)).collect();
                 remap_machine_variables(&mut inner_machine, &variable_map);
+                // Keep the sub-behavior's modifier ids apart from everything inlined so far.
+                offset_machine_modifier_ids(&mut inner_machine, *ids);
+                *ids += inner_bound;
                 state.content.machines.push(inner_machine);
+                state.content.reference_machines[ordinal] = Some(state.content.machines.len() - 1);
             }
             for inner in &mut state.content.machines {
-                self.inline_machine(inner, resolve, budget);
+                self.inline_machine(inner, resolve, budget, ids);
             }
         }
     }
 
     fn inline_references_with(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, budget: &mut usize) {
         let Some(mut machine) = self.machine.take() else { return };
-        self.inline_machine(&mut machine, resolve, budget);
+        let mut ids = machine_modifier_id_bound(&machine);
+        self.inline_machine(&mut machine, resolve, budget, &mut ids);
         self.machine = Some(machine);
     }
 
@@ -727,16 +1036,131 @@ fn read_clip(file: &Packfile, clip: usize) -> Result<StateClip> {
     })
 }
 
-/// The blend tree rooted at `generator`: a clip, or a blender over such nodes, seen
-/// through the wrapper generators that only add tags or modifiers. `None` for any other
-/// generator (a nested machine, a sequence): such a child is not blended.
-fn read_blend_node(file: &Packfile, generator: usize, depth: usize) -> Result<Option<BlendNode>> {
+/// `hkbBoneWeightArray`: its weights (`boneWeights` at the bindable base's end), and the
+/// elements variables drive (bindings on the array whose member is `boneWeights`, the
+/// element being the binding's `offsetInArrayPlusOne`).
+fn read_bone_weights(file: &Packfile, array_object: usize) -> Result<BoneWeights> {
+    let (data, len) = array(file, array_object + BONE_WEIGHTS, MAX_BONES, "bone weights")?;
+    let weights = (0..len).map(|index| file.f32(data + index * 4, "bone weight")).collect::<Result<Vec<_>>>()?;
+    let mut bound = Vec::new();
+    if let Some(set) = file.object_pointer(array_object + BINDABLE_BINDING_SET) {
+        let (bindings, count) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "bone weight bindings")?;
+        for index in 0..count {
+            let element = bindings + index * BINDING_STRIDE;
+            if !string(file, element + BINDING_MEMBER_PATH, "binding member")?.eq_ignore_ascii_case("boneWeights") {
+                continue;
+            }
+            let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
+            let offset = file.u32(element + BINDING_OFFSET_IN_ARRAY, "binding array offset")? as i32;
+            if let (Ok(variable), Some(bone)) = (usize::try_from(variable), usize::try_from(offset - 1).ok()) {
+                if bone < weights.len() {
+                    bound.push((bone, variable));
+                }
+            }
+        }
+    }
+    Ok(BoneWeights { weights: Arc::new(weights), bound })
+}
+
+/// Read the generator at `generator` into the generator tree, and - the same walk - into
+/// the state's flattened lists (`clip` is the first clip met; the event schedule and the
+/// start-clip search use the lists, the pose uses the tree). `None` for a kind of
+/// generator the runtime has no meaning for.
+fn read_generator(
+    file: &Packfile,
+    generator: usize,
+    clip: &mut Option<StateClip>,
+    content: &mut StateContent,
+    depth: usize,
+) -> Result<Option<Generator>> {
     if depth > MAX_GENERATOR_DEPTH {
         return Ok(None);
     }
     let l = layout(file);
-    match file.class_at(generator) {
-        Some("hkbClipGenerator") => Ok(Some(BlendNode::Clip(read_clip(file, generator)?))),
+    Ok(match file.class_at(generator) {
+        Some("hkbClipGenerator") => {
+            let read = read_clip(file, generator)?;
+            if clip.is_none() {
+                *clip = Some(read.clone());
+            } else {
+                content.blended_clips.push(read.clone());
+            }
+            Some(Generator::Clip(read))
+        }
+        Some("BGSGamebryoSequenceGenerator") => {
+            let name = string(file, generator + l.sequence_name, "sequence name")?;
+            if name.is_empty() {
+                None
+            } else {
+                content.sequences.push(name.clone());
+                Some(Generator::Sequence(name))
+            }
+        }
+        Some("hkbStateMachine") => {
+            content.machines.push(read_machine_at(file, generator, depth + 1)?);
+            Some(Generator::Machine(content.machines.len() - 1))
+        }
+        Some("hkbModifierGenerator") => {
+            let inner = match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
+                Some(inner) => read_generator(file, inner, clip, content, depth + 1)?,
+                None => None,
+            };
+            let modifier = match file.object_pointer(generator + MODIFIER_GENERATOR_MODIFIER) {
+                Some(modifier) => read_modifier(file, modifier, 0)?,
+                None => None,
+            };
+            match modifier {
+                Some(modifier) => Some(Generator::Modified { modifiers: vec![modifier], inner: inner.map(Box::new) }),
+                None => inner,
+            }
+        }
+        Some("BSiStateTaggingGenerator" | "DynamicAnimationTaggingGenerator" | "BSOffsetAnimationGenerator") => {
+            match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
+                Some(inner) => read_generator(file, inner, clip, content, depth + 1)?,
+                None => None,
+            }
+        }
+        // The cyclic blend wrapper is what takes the direction variable (its
+        // `fBlendParameter` binding) and feeds the blender it wraps, which carries no
+        // binding of its own (the vanilla 8-way graph: 4 wrappers, 4 unbound blenders;
+        // the engine's description: "The blend parameter to pass into the cyclic blend
+        // generator. DO NOT SET A VARIABLE ON THE REFERENCED BLENDER GENERATOR").
+        Some("BSCyclicBlendTransitionGenerator") => {
+            let Some(inner) = l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) else {
+                return Ok(None);
+            };
+            let mut node = read_generator(file, inner, clip, content, depth + 1)?;
+            if let Some(Generator::Blender(blender)) = &mut node {
+                if blender.parameter_variable.is_none() {
+                    blender.parameter_variable = bound_variable(file, generator, "fBlendParameter")?;
+                }
+            }
+            node
+        }
+        Some("hkbManualSelectorGenerator") => {
+            let Some(field) = l.selector_generators else { return Ok(None) };
+            let (data, len) = array(file, generator + field, MAX_STATES, "selector generators")?;
+            let mut children = Vec::with_capacity(len);
+            for index in 0..len {
+                if let Some(inner) = file.object_pointer(data + index * 8) {
+                    if let Some(child) = read_generator(file, inner, clip, content, depth + 1)? {
+                        children.push(child);
+                    }
+                }
+            }
+            let index = i32::from(file.u8(generator + field + SELECTOR_INDEX_AFTER_ARRAY, "selected generator")? as i8);
+            Some(Generator::Selector { index, index_variable: bound_variable(file, generator, "selectedGeneratorIndex")?, children })
+        }
+        Some("hkbBehaviorReferenceGenerator") => {
+            let Some(field) = l.reference_behavior_name else { return Ok(None) };
+            let name = string(file, generator + field, "behavior reference")?;
+            if name.is_empty() {
+                None
+            } else {
+                content.behavior_references.push(name);
+                Some(Generator::Reference(content.behavior_references.len() - 1))
+            }
+        }
         Some("hkbBlenderGenerator") => {
             let flags = file.u16(generator + l.blender_flags, "blender flags")?;
             let (data, len) = array(file, generator + l.blender_children, MAX_STATES, "blender children")?;
@@ -744,14 +1168,20 @@ fn read_blend_node(file: &Packfile, generator: usize, depth: usize) -> Result<Op
             for index in 0..len {
                 let Some(child) = file.object_pointer(data + index * 8) else { continue };
                 let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
-                let Some(node) = read_blend_node(file, inner, depth + 1)? else { continue };
+                let Some(node) = read_generator(file, inner, clip, content, depth + 1)? else { continue };
+                let bone_weights = match file.object_pointer(child + BLENDER_CHILD_BONE_WEIGHTS) {
+                    Some(array_object) => Some(read_bone_weights(file, array_object)?),
+                    None => None,
+                };
                 children.push(BlendChild {
                     weight: file.f32(child + BLENDER_CHILD_WEIGHT, "blender child weight")?,
                     weight_variable: bound_variable(file, child, "weight")?,
-                    node,
+                    bone_weights,
+                    bone_weights_variable: bound_variable(file, child, "boneWeights")?,
+                    generator: node,
                 });
             }
-            Ok(Some(BlendNode::Blender(Blender {
+            Some(Generator::Blender(Blender {
                 parametric: flags & BLENDER_FLAG_PARAMETRIC != 0,
                 cyclic: flags & BLENDER_FLAG_CYCLIC != 0,
                 sync: flags & BLENDER_FLAG_SYNC != 0,
@@ -760,113 +1190,115 @@ fn read_blend_node(file: &Packfile, generator: usize, depth: usize) -> Result<Op
                 min_cyclic: file.f32(generator + l.blender_min_cyclic, "min cyclic parameter")?,
                 max_cyclic: file.f32(generator + l.blender_max_cyclic, "max cyclic parameter")?,
                 children,
-            })))
+            }))
         }
-        Some(
-            "hkbModifierGenerator"
-            | "BSiStateTaggingGenerator"
-            | "DynamicAnimationTaggingGenerator"
-            | "BSOffsetAnimationGenerator",
-        ) => match l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) {
-            Some(inner) => read_blend_node(file, inner, depth + 1),
-            None => Ok(None),
-        },
-        // The cyclic blend wrapper is what takes the direction variable (its
-        // `fBlendParameter` binding) and feeds the blender it wraps, which carries no
-        // binding of its own (the vanilla 8-way graph: 4 wrappers, 4 unbound blenders).
-        Some("BSCyclicBlendTransitionGenerator") => {
-            let Some(inner) = l.wrapped_generator.and_then(|field| file.object_pointer(generator + field)) else {
-                return Ok(None);
-            };
-            let mut node = read_blend_node(file, inner, depth + 1)?;
-            if let Some(BlendNode::Blender(blender)) = &mut node {
-                if blender.parameter_variable.is_none() {
-                    blender.parameter_variable = bound_variable(file, generator, "fBlendParameter")?;
-                }
-            }
-            Ok(node)
-        }
-        _ => Ok(None),
-    }
+        _ => None,
+    })
 }
 
-/// Read the generator at `generator` into `state`: a clip, a Gamebryo sequence, a
-/// nested machine, or a blender over such children.
-fn read_generator(
-    file: &Packfile,
-    generator: usize,
-    clip: &mut Option<StateClip>,
-    content: &mut StateContent,
-    depth: usize,
-) -> Result<()> {
-    if depth > MAX_GENERATOR_DEPTH {
-        return Ok(());
+/// The event id of an `hkbEvent` field (its `m_id`; negative for none).
+fn event_at(file: &Packfile, field: usize) -> Result<i32> {
+    Ok(file.u32(field, "event id")? as i32)
+}
+
+/// A graph's modifier at `object`: `None` for the kinds the runtime has no use for, and for
+/// any Havok 2010 file (their layouts are not measured).
+fn read_modifier(file: &Packfile, object: usize, depth: usize) -> Result<Option<Arc<ModifierNode>>> {
+    if file.version() != 11 || depth > MAX_MODIFIER_DEPTH {
+        return Ok(None);
     }
-    let l = layout(file);
-    // The first blender reached (through its wrappers) is the state's blend tree.
-    if content.blend.is_none() {
-        if let Some(blender @ BlendNode::Blender(_)) = read_blend_node(file, generator, depth)? {
-            content.blend = Some(blender);
+    let id = object as u32;
+    let child = |field: usize| -> Result<Option<Arc<ModifierNode>>> {
+        match file.object_pointer(object + field) {
+            Some(inner) => read_modifier(file, inner, depth + 1),
+            None => Ok(None),
         }
-    }
-    match file.class_at(generator) {
-        Some("hkbClipGenerator") => {
-            let read = read_clip(file, generator)?;
-            if clip.is_none() {
-                *clip = Some(read);
-            } else {
-                content.blended_clips.push(read);
-            }
-        }
-        Some("BGSGamebryoSequenceGenerator") => {
-            let name = string(file, generator + l.sequence_name, "sequence name")?;
-            if !name.is_empty() {
-                content.sequences.push(name);
-            }
-        }
-        Some("hkbStateMachine") => content.machines.push(read_machine_at(file, generator, depth + 1)?),
-        Some(
-            "hkbModifierGenerator"
-            | "BSiStateTaggingGenerator"
-            | "DynamicAnimationTaggingGenerator"
-            | "BSOffsetAnimationGenerator"
-            | "BSCyclicBlendTransitionGenerator",
-        ) => {
-            if let Some(field) = l.wrapped_generator {
-                if let Some(inner) = file.object_pointer(generator + field) {
-                    read_generator(file, inner, clip, content, depth + 1)?;
-                }
-            }
-        }
-        Some("hkbManualSelectorGenerator") => {
-            if let Some(field) = l.selector_generators {
-                let (data, len) = array(file, generator + field, MAX_STATES, "selector generators")?;
-                for index in 0..len {
-                    if let Some(inner) = file.object_pointer(data + index * 8) {
-                        read_generator(file, inner, clip, content, depth + 1)?;
+    };
+    let kind = match file.class_at(object) {
+        Some("BSAssignVariablesModifier") => {
+            let (mut floats, mut ints) = (Vec::new(), Vec::new());
+            if let Some(set) = file.object_pointer(object + BINDABLE_BINDING_SET) {
+                let (bindings, count) = array(file, set + BINDING_SET_BINDINGS, MAX_VARIABLES, "assign bindings")?;
+                for index in 0..count {
+                    let element = bindings + index * BINDING_STRIDE;
+                    let path = string(file, element + BINDING_MEMBER_PATH, "binding member")?;
+                    let variable = file.u32(element + BINDING_VARIABLE_INDEX, "binding variable")? as i32;
+                    let Ok(variable) = usize::try_from(variable) else { continue };
+                    let number = path.trim_start_matches(|c: char| c.is_alphabetic()).parse::<usize>().ok().filter(|n| *n >= 1);
+                    let Some(number) = number else { continue };
+                    if path.starts_with("floatVariable") && number <= 20 {
+                        let at = object + ASSIGN_FLOATS + (number - 1) * ASSIGN_PAIR + 4;
+                        floats.push((variable, file.f32(at, "assigned float")?));
+                    } else if path.starts_with("intVariable") && number <= 4 {
+                        let at = object + ASSIGN_INTS + (number - 1) * ASSIGN_PAIR + 4;
+                        ints.push((variable, file.u32(at, "assigned int")? as i32));
                     }
                 }
             }
+            Modifier::AssignVariables { floats, ints }
         }
-        Some("hkbBehaviorReferenceGenerator") => {
-            if let Some(field) = l.reference_behavior_name {
-                let name = string(file, generator + field, "behavior reference")?;
-                if !name.is_empty() {
-                    content.behavior_references.push(name);
+        Some("BSModifyOnceModifier") => {
+            Modifier::ModifyOnce { on_activate: child(MODIFY_ONCE_ON_ACTIVATE)?, on_deactivate: child(MODIFY_ONCE_ON_DEACTIVATE)? }
+        }
+        Some("hkbEventsFromRangeModifier") => {
+            let mut ranges = Vec::new();
+            if let Some(array_object) = file.object_pointer(object + EVENTS_FROM_RANGE_RANGES) {
+                let (data, len) = array(file, array_object + EVENT_RANGES_ARRAY, MAX_STATES, "event ranges")?;
+                for index in 0..len {
+                    let element = data + index * EVENT_RANGE_STRIDE;
+                    ranges.push(EventRange {
+                        upper: file.f32(element, "range upper bound")?,
+                        event: event_at(file, element + EVENT_RANGE_EVENT)?,
+                        when_in_range: file.u8(element + EVENT_RANGE_MODE, "range event mode")? == 1,
+                    });
                 }
             }
-        }
-        Some("hkbBlenderGenerator") => {
-            let (data, len) = array(file, generator + l.blender_children, MAX_STATES, "blender children")?;
-            for index in 0..len {
-                let Some(child) = file.object_pointer(data + index * 8) else { continue };
-                let Some(inner) = file.object_pointer(child + l.blender_child_generator) else { continue };
-                read_generator(file, inner, clip, content, depth + 1)?;
+            Modifier::EventsFromRange {
+                input: file.f32(object + EVENTS_FROM_RANGE_INPUT, "range input")?,
+                input_variable: bound_variable(file, object, "inputValue")?,
+                lower_bound: file.f32(object + EVENTS_FROM_RANGE_LOWER, "range lower bound")?,
+                ranges,
             }
         }
-        _ => {}
-    }
-    Ok(())
+        Some("hkbEvaluateExpressionModifier") => {
+            let mut expressions = Vec::new();
+            if let Some(array_object) = file.object_pointer(object + EVALUATE_EXPRESSION_EXPRESSIONS) {
+                let (data, len) = array(file, array_object + EXPRESSION_ARRAY, MAX_STATES, "expressions")?;
+                for index in 0..len {
+                    let element = data + index * EXPRESSION_STRIDE;
+                    expressions.push(ExpressionData {
+                        text: string(file, element, "expression")?,
+                        event_mode: file.u8(element + EXPRESSION_MODE, "expression event mode")?,
+                    });
+                }
+            }
+            Modifier::EvaluateExpression { expressions }
+        }
+        Some("BSEventOnDeactivateModifier") => Modifier::EventOnDeactivate { event: event_at(file, object + EVENT_ON_DEACTIVATE_EVENT)? },
+        Some("BSEventEveryNEventsModifier") => Modifier::EventEveryNEvents {
+            check: event_at(file, object + EVERY_N_CHECK)?,
+            send: event_at(file, object + EVERY_N_SEND)?,
+            count: u32::from(file.u8(object + EVERY_N_COUNT, "events before send")?),
+        },
+        Some("hkbEventDrivenModifier") => Modifier::EventDriven {
+            activate: event_at(file, object + EVENT_DRIVEN_ACTIVATE)?,
+            deactivate: event_at(file, object + EVENT_DRIVEN_DEACTIVATE)?,
+            active_by_default: file.u8(object + EVENT_DRIVEN_BY_DEFAULT, "event driven default")? != 0,
+            inner: child(EVENT_DRIVEN_MODIFIER)?,
+        },
+        Some("hkbModifierList") => {
+            let (data, len) = array(file, object + MODIFIER_LIST_MODIFIERS, MAX_STATES, "modifier list")?;
+            let mut items = Vec::with_capacity(len);
+            for index in 0..len {
+                if let Some(inner) = file.object_pointer(data + index * 8) {
+                    items.extend(read_modifier(file, inner, depth + 1)?);
+                }
+            }
+            Modifier::List(items)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(Arc::new(ModifierNode { id, kind })))
 }
 
 fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
@@ -878,7 +1310,7 @@ fn read_state(file: &Packfile, state: usize, depth: usize) -> Result<State> {
     let mut clip = None;
     let mut content = StateContent::default();
     if let Some(generator) = file.object_pointer(state + l.state_generator) {
-        read_generator(file, generator, &mut clip, &mut content, depth)?;
+        content.generator = read_generator(file, generator, &mut clip, &mut content, depth)?;
     }
     Ok(State {
         id: file.u32(state + l.state_id, "state id")? as i32,
@@ -909,6 +1341,7 @@ fn read_machine_at(file: &Packfile, machine: usize, depth: usize) -> Result<Stat
     };
     Ok(StateMachine {
         start_state: file.u32(machine + l.machine_start_state, "start state")? as i32,
+        start_state_variable: bound_variable(file, machine, "startStateId")?,
         states,
         wildcard,
     })
@@ -1188,7 +1621,7 @@ mod tests {
     }
 
     fn machine_of(start: i32, states: Vec<State>) -> StateMachine {
-        StateMachine { start_state: start, states, wildcard: Vec::new() }
+        StateMachine { start_state: start, start_state_variable: None, states, wildcard: Vec::new() }
     }
 
     fn state_of(id: i32, clip: Option<&str>, content: StateContent) -> State {
@@ -1280,6 +1713,7 @@ mod tests {
             events: vec!["B".into(), "C".into()],
             machine: Some(StateMachine {
                 start_state: 0,
+                start_state_variable: None,
                 states: vec![child_state, state_of(1, Some("Animations\\Other.hkt"), StateContent::default())],
                 wildcard: child_wildcard,
             }),
@@ -1295,7 +1729,7 @@ mod tests {
         parent.inline_references(&mut |path| (path == "Child.hkx").then(|| child.clone()));
         assert_eq!(parent.events, ["A", "B", "C"], "the child's new event joins the table");
         let state = &parent.machine.as_ref().unwrap().states[0];
-        assert!(state.content.behavior_references.is_empty());
+        assert_eq!(state.content.reference_machines, [Some(0)], "the reference now names the nested machine");
         let inner = &state.content.machines[0];
         assert_eq!(inner.states[0].transitions[0].event, 2, "C is the parent's event 2");
         assert_eq!(inner.wildcard[0].event, 1, "B is the parent's existing event 1");
@@ -1309,6 +1743,8 @@ mod tests {
             )),
         };
         orphan.inline_references(&mut |_| None);
-        assert_eq!(orphan.machine.unwrap().states[0].content.behavior_references, ["Gone.hkx"]);
+        let orphan = orphan.machine.unwrap();
+        assert_eq!(orphan.states[0].content.behavior_references, ["Gone.hkx"]);
+        assert_eq!(orphan.states[0].content.reference_machines, [None]);
     }
 }

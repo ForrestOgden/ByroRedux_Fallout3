@@ -3048,6 +3048,7 @@ fn animation_variables_are_written_and_read_on_the_graph() {
         events: Vec::new(),
         machine: Some(StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![State { id: 0, name: "Idle".into(), transitions: Vec::new(), clip: None, content: Default::default() }],
             wildcard: Vec::new(),
         }),
@@ -3430,6 +3431,7 @@ fn play_animation_drives_the_objects_behavior_graph() {
         events: vec!["Go".into(), "Done".into()],
         machine: Some(StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![
                 State { id: 0, name: "Idle".into(), transitions: vec![transition], clip: None, content: Default::default() },
                 State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip), content: Default::default() },
@@ -3513,6 +3515,7 @@ fn wait_for_animation_event_waits_for_the_graphs_event() {
                 events: vec!["Go".into(), "Done".into()],
                 machine: Some(StateMachine {
                     start_state: 0,
+                    start_state_variable: None,
                     states: vec![
                         State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0, ..Default::default() }], clip: None, content: Default::default() },
                         State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip), content: Default::default() },
@@ -5254,6 +5257,7 @@ fn animation_events_reach_registered_scripts() {
         events: vec!["Go".into(), "Done".into()],
         machine: Some(StateMachine {
             start_state: 0,
+            start_state_variable: None,
             states: vec![
                 State { id: 0, name: "Idle".into(), transitions: vec![Transition { event: 0, to_state: 1, priority: 0, flags: 0, ..Default::default() }], clip: None, content: Default::default() },
                 State { id: 1, name: "Going".into(), transitions: Vec::new(), clip: Some(clip), content: Default::default() },

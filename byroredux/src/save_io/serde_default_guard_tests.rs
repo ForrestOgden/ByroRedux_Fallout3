@@ -1028,7 +1028,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Effect::Activate` gained the required `native_only` field.
     // 2026-10-14 (M47.2) — refreshed WITH a major bump (v103 -> v104):
     // `MapMarkers` gained the star-map-visible set.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xe5c5_b413_82a6_6292;
+    // 2026-10-14 (M47.2) — refreshed WITHOUT a major bump, the #3470 class:
+    // `AnimationLayer::bone_weights` and `AnimationStack::bone_index` (a layered
+    // blend's per-bone masks) are runtime-only `serde(skip)` fields the behavior
+    // graph rebuilds every frame; a save's JSON for both types is byte-identical.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xf9f9_1d11_fd1a_1b0f;
     // ---- earlier refresh history (kept for the false-positive record) ----
     // 2026-09-21 (W2.10 flip) — refreshed WITHOUT a major bump, the same
     // `VisibilityMask` tuple-struct sweep class as the two entries below:

@@ -290,6 +290,7 @@ mod tests {
             events: vec!["moveStart".into(), "moveStop".into()],
             machine: Some(StateMachine {
                 start_state: 0,
+                start_state_variable: None,
                 states: vec![state(0, "Idle", vec![go(0, 1)], "idle"), state(1, "Move", vec![go(1, 0)], "walk")],
                 wildcard: Vec::new(),
             }),

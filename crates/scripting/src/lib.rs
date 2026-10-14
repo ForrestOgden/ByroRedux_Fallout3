@@ -20,6 +20,7 @@ pub mod condition;
 pub mod editor_location;
 pub mod created_references;
 pub mod animation_graph;
+mod animation_modifiers;
 pub mod bribe;
 pub mod havok_impulse;
 pub mod condition_form;

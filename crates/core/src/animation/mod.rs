@@ -1484,6 +1484,71 @@ mod tests {
         );
     }
 
+    /// A layered blend masks layers bone by bone: with complementary masks (the vanilla
+    /// upper-body / lower-body pair), each bone is the layer that owns it, and a bone the
+    /// masks split 0.25 / 0.75 is the mix.
+    #[test]
+    fn bone_weights_mask_a_layer_per_bone() {
+        use crate::string::StringPool;
+        use std::sync::Arc;
+
+        let mut pool = StringPool::new();
+        let (spine, leg) = (pool.intern("Spine"), pool.intern("Leg"));
+        let clip = |x: f32| {
+            let mut channels = FxHashMap::default();
+            for node in [spine, leg] {
+                channels.insert(
+                    node,
+                    TransformChannel {
+                        translation_keys: vec![TranslationKey {
+                            time: 0.0,
+                            value: Vec3::new(x, 0.0, 0.0),
+                            forward: Vec3::ZERO,
+                            backward: Vec3::ZERO,
+                            tbc: None,
+                        }],
+                        translation_type: KeyType::Linear,
+                        rotation_keys: Vec::new(),
+                        rotation_type: KeyType::Linear,
+                        scale_keys: Vec::new(),
+                        scale_type: KeyType::Linear,
+                        priority: 0,
+                    },
+                );
+            }
+            AnimationClip {
+                name: "c".to_string(),
+                duration: 1.0,
+                cycle_type: CycleType::Loop,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: None,
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            }
+        };
+        let mut registry = AnimationClipRegistry::new();
+        let (upper, lower) = (registry.add(clip(10.0)), registry.add(clip(30.0)));
+        let mut stack = AnimationStack::new();
+        stack.bone_index = Some(Arc::new([(spine, 0u16), (leg, 1u16)].into_iter().collect()));
+        let mut a = AnimationLayer::new(upper);
+        a.bone_weights = Some(Arc::new(vec![0.25, 0.0]));
+        let mut b = AnimationLayer::new(lower);
+        b.bone_weights = Some(Arc::new(vec![0.75, 1.0]));
+        stack.layers.push(a);
+        stack.layers.push(b);
+
+        let (leg_pos, ..) = sample_blended_transform(&stack, &registry, leg).unwrap();
+        assert!((leg_pos.x - 30.0).abs() < 1e-4, "a bone the upper layer has no part in is the lower's: {leg_pos:?}");
+        let (spine_pos, ..) = sample_blended_transform(&stack, &registry, spine).unwrap();
+        assert!((spine_pos.x - 25.0).abs() < 1e-4, "0.25 of 10 plus 0.75 of 30: {spine_pos:?}");
+    }
+
     /// #3706 (ECS-2026-08-30-D10-06) — the core equivalence proof: a
     /// two-layer stack where the second layer is excluded by the weight
     /// cull (`ew < 0.001`, a below-threshold `clip.weight`, distinct from
