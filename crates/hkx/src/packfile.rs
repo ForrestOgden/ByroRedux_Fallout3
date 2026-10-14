@@ -93,10 +93,26 @@ impl<'a> Packfile<'a> {
         if section_count == 0 || section_count > 64 {
             return Err(HkxError::InvalidData("implausible section count"));
         }
+        // Havok 2014 follows the 0x40-byte header with a predicate area
+        // (`m_predicateArraySizePlusPadding`, u16 @0x3E) before the section table;
+        // the animation clips of Fallout 4 carry one (0x10 bytes), its behavior
+        // graphs none.
+        let table_start = if version == 11 {
+            HEADER_SIZE
+                + usize::from(u16::from_le_bytes(
+                    bytes
+                        .get(0x3E..0x40)
+                        .ok_or(HkxError::Truncated("predicate area size"))?
+                        .try_into()
+                        .unwrap(),
+                ))
+        } else {
+            HEADER_SIZE
+        };
         let section_table_bytes = section_count
             .checked_mul(section_header_size)
             .ok_or(HkxError::InvalidData("section table size overflow"))?;
-        let section_table_end = HEADER_SIZE
+        let section_table_end = table_start
             .checked_add(section_table_bytes)
             .ok_or(HkxError::InvalidData("section table overflow"))?;
         if section_table_end > bytes.len() {
@@ -105,7 +121,7 @@ impl<'a> Packfile<'a> {
 
         let mut sections = Vec::with_capacity(section_count);
         for index in 0..section_count {
-            let base = HEADER_SIZE + index * section_header_size;
+            let base = table_start + index * section_header_size;
             let tag_bytes = &bytes[base..base + 19];
             let tag_end = tag_bytes.iter().position(|byte| *byte == 0).unwrap_or(19);
             let tag = String::from_utf8_lossy(&tag_bytes[..tag_end]).into_owned();

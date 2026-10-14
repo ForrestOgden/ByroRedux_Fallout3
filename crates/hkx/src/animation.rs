@@ -349,7 +349,11 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
     let layout = Layout::new(pack.pointer_size());
     let object = pack.object("hkaSplineCompressedAnimation")?;
     let animation_type = pack.u32(object + layout.animation_type, "animation type")?;
-    if animation_type != 5 {
+    // `hkaAnimation::AnimationType::HK_SPLINE_COMPRESSED_ANIMATION`: 5 in Havok 2010
+    // (Skyrim), 3 in Havok 2014 (Fallout 4), which dropped the delta and wavelet
+    // types from the enum.
+    let spline_type = if pack.version() == 11 { 3 } else { 5 };
+    if animation_type != spline_type {
         return Err(HkxError::InvalidData("animation is not spline-compressed"));
     }
     let duration = pack.f32(object + layout.animation_duration, "animation duration")?;
@@ -983,6 +987,7 @@ fn quaternion_layout(quantization: u8) -> Result<(usize, usize)> {
 fn decode_quaternion(bytes: &[u8], quantization: u8) -> Result<[f32; 4]> {
     match quantization {
         1 => decode_three_component_40(bytes),
+        2 => decode_three_component_48(bytes),
         5 => {
             if bytes.len() != 16 {
                 return Err(HkxError::Truncated("uncompressed quaternion"));
@@ -1106,6 +1111,41 @@ fn bspline_weights(
 /// component index and one sign bit. The stored values cover
 /// `[-1/sqrt(2), +1/sqrt(2)]`; the omitted largest component is recovered
 /// from the unit-length constraint.
+/// `THREECOMP48`: the 40-bit "smallest three" with 15-bit components. Three
+/// little-endian words; each holds one component in its low 15 bits, the omitted
+/// component's index sits in the top bits of the first two words and the sign of
+/// the omitted component in the top bit of the third.
+fn decode_three_component_48(bytes: &[u8]) -> Result<[f32; 4]> {
+    if bytes.len() != 6 {
+        return Err(HkxError::Truncated("48-bit quaternion"));
+    }
+    let words = [
+        u16::from_le_bytes([bytes[0], bytes[1]]),
+        u16::from_le_bytes([bytes[2], bytes[3]]),
+        u16::from_le_bytes([bytes[4], bytes[5]]),
+    ];
+    let factor = 1.0 / (16383.0 * std::f32::consts::SQRT_2);
+    let stored = words.map(|word| ((word & 0x7fff) as i32 - 16383) as f32 * factor);
+    let omitted = usize::from(words[0] >> 15) | usize::from(words[1] >> 15) << 1;
+    let mut missing = (1.0 - stored.iter().map(|value| value * value).sum::<f32>())
+        .max(0.0)
+        .sqrt();
+    if words[2] & 0x8000 != 0 {
+        missing = -missing;
+    }
+    let mut output = [0.0; 4];
+    let mut source = 0;
+    for (index, component) in output.iter_mut().enumerate() {
+        if index == omitted {
+            *component = missing;
+        } else {
+            *component = stored[source];
+            source += 1;
+        }
+    }
+    normalize_quaternion(output)
+}
+
 fn decode_three_component_40(bytes: &[u8]) -> Result<[f32; 4]> {
     if bytes.len() != 5 {
         return Err(HkxError::Truncated("40-bit quaternion"));
@@ -2196,5 +2236,51 @@ mod tests {
         assert!((sample_bspline(&values, 1, &knots, 0.0).unwrap() - 0.0).abs() < 1e-6);
         assert!((sample_bspline(&values, 1, &knots, 0.5).unwrap() - 5.0).abs() < 1e-6);
         assert!((sample_bspline(&values, 1, &knots, 1.0).unwrap() - 10.0).abs() < 1e-6);
+    }
+
+    /// Fallout 4 ships Havok 2014 packfiles (version 11, a predicate area before the
+    /// section table, spline type 3, 48-bit rotations): the player's skeleton and
+    /// the one-handed walk decode to a consistent rig and clip.
+    /// `cargo test -p byroredux-hkx -- --ignored`
+    #[test]
+    #[ignore = "needs Fallout 4 game data on disk"]
+    fn fallout_4_skeleton_and_clip_decode() {
+        let env = byroredux_plugin::esm::test_paths::FO4_ENV;
+        let dir = std::env::var(env)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| byroredux_plugin::esm::test_paths::FO4_DEFAULT.to_owned());
+        let path = std::path::Path::new(&dir).join("Fallout4 - Animations.ba2");
+        if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {path:?} is not a file");
+            }
+            eprintln!("SKIP: {} not found (no game data?)", path.display());
+            return;
+        }
+        let archive = byroredux_bsa::Ba2Archive::open(path).unwrap();
+        let skeleton = decode_skeleton(
+            &archive.extract(r"meshes\actors\character\characterassets\skeleton.hkx").unwrap(),
+        )
+        .unwrap();
+        eprintln!("skeleton {:?}: {} bones, first {:?}", skeleton.name, skeleton.bones.len(), skeleton.bones.iter().take(4).map(|b| &b.name).collect::<Vec<_>>());
+        assert!(skeleton.bones.len() > 50);
+        let clip = decode_spline_animation(
+            &archive.extract(r"meshes\actors\character\animations\1hm\walkforward.hkx").unwrap(),
+        )
+        .unwrap();
+        eprintln!("clip: {} s, {} frames, {} tracks", clip.duration, clip.num_frames, clip.tracks.len());
+        assert!(clip.duration > 0.1 && clip.num_frames > 2);
+        assert_eq!(clip.tracks.len(), clip.track_to_bone.len());
+        assert!(clip.track_to_bone.iter().all(|&bone| usize::from(bone) < skeleton.bones.len()));
+        for track in &clip.tracks {
+            assert_eq!(track.len(), clip.num_frames as usize);
+            for pose in track {
+                let q = pose.rotation;
+                let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+                assert!((length - 1.0).abs() < 1e-3, "{q:?}");
+                assert!(pose.translation.iter().all(|v| v.is_finite()));
+            }
+        }
     }
 }
