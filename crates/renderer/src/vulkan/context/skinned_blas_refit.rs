@@ -277,7 +277,7 @@ impl VulkanContext {
                             continue;
                         }
                         // #3231 — mirrors the `GpuInstance` morph lookup in
-                        // `draw.rs`: gate on `morph_slot_backs_mesh` so a
+                        // `build_and_upload_instances.rs`: gate on `morph_slot_backs_mesh` so a
                         // slot that survived a mesh remap (mod swap, cell
                         // reload reusing an EntityId) never gets read by
                         // `skin_vertices.comp` against the wrong mesh's

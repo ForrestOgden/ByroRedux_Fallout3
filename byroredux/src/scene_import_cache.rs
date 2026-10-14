@@ -22,7 +22,7 @@
 //! than `NifImportRegistry`'s flat `CachedNifImport`. Pre-fix this
 //! cache had no cap at all — every distinct NPC skeleton/body/head/
 //! armor NIF path ever seen (armor joins the population via
-//! `npc_spawn/resumable.rs`'s `hidden_biped_mask == 0` path) stayed
+//! `npc_spawn/resumable/prebaked.rs`'s `hidden_biped_mask == 0` path) stayed
 //! resident until process exit; on Skyrim SE/FO4 that population is
 //! hundreds-to-thousands across a long exterior-streaming session.
 //!

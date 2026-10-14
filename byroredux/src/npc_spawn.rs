@@ -1682,7 +1682,7 @@ pub fn prebaked_facegen_tint_path(plugin_name: &str, form_id: u32) -> Option<Str
 /// with the wrong layer for depth-bias purposes — without this
 /// override every standing NPC z-fights the floor at the foot-plant
 /// patch. Called from each success path of [`NpcSpawnJob::advance`]
-/// (`npc_spawn/resumable.rs`) before yielding a completed placement
+/// (`npc_spawn/resumable/{runtime,prebaked}.rs`) before yielding a completed placement
 /// root, for both the kf-era runtime recipe and the pre-baked-FaceGen
 /// recipe. BFS over `Children`, mirrors
 /// [`crate::anim_convert::build_subtree_name_map`]'s walk shape.

@@ -113,7 +113,7 @@ pub(super) struct CameraView {
 // crosses a cell boundary. A crossing does NOT reset TAA/SVGF temporal
 // history — the renderer tracks `prev_render_origin` and uploads an
 // origin-corrected previous view-projection (`prev_vp · translation(O₂ −
-// O₁)`, see `origin_corrected_prev_view_proj` in `vulkan/context/draw.rs`),
+// O₁)`, see `origin_corrected_prev_view_proj` in `vulkan/context/frame_params.rs`),
 // so motion vectors stay valid across crossings (#1489 / REN2-04).
 
 /// Assemble the active camera's view-projection matrices + frustum.

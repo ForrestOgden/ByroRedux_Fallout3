@@ -1549,7 +1549,7 @@ fn cinematic_trio_survives_save_load_round_trip() {
 #[test]
 fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
     // Persistent gameplay-state components stamped on the placement root by
-    // `NpcSpawnJob::advance` + its `stamp_*` helpers (`npc_spawn/resumable.rs`). Pure
+    // `NpcSpawnJob::advance` + its `stamp_*` helpers (`npc_spawn/resumable/`). Pure
     // placement scaffolding (Parent/Children), GPU handles, and transient
     // markers are out of scope — this guards actor state, the #1834 class.
     const NPC_SPAWN_STAMPED: &[&str] = &[

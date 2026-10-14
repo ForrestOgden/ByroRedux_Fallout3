@@ -11,7 +11,7 @@
 //! consumes — then parents the assembled root under the player capsule.
 //!
 //! Deliberate differences from an NPC spawn (via `NpcSpawnJob`'s
-//! `player_body` flag, threaded through `npc_spawn/resumable.rs`): no
+//! `player_body` flag, threaded through `npc_spawn/resumable/`): no
 //! identity stamps (the player entity already carries FormID sentinel,
 //! ActorValues, Inventory/EquipmentSlots, scene-alias candidate), no
 //! inventory/equipment writes, no AI package, no loot-appearance state, no
@@ -200,7 +200,7 @@ pub(crate) fn attach_player_body(
         Some(&mut mat_provider),
         // No idle pool: the job attaches no idle for the player body —
         // `attach_player_locomotion_animation` below resolves it (see the
-        // finalize skip in resumable.rs).
+        // finalize skip in `npc_spawn/resumable/runtime.rs`).
         &[],
         &index,
         &mut budget,
