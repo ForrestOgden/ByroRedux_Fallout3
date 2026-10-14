@@ -3457,6 +3457,9 @@ impl Vm<'_> {
         if let Some(value) = self.array_call(frame, callee, args)? {
             return Ok(value);
         }
+        if matches!(guard_call(callee), Some(GuardCall::TryLock)) {
+            return Ok(Value::Bool(true));
+        }
         if let Some(value) = self.collection_call(frame, callee, args)? {
             return Ok(value);
         }
@@ -3536,6 +3539,9 @@ impl Vm<'_> {
         if help_message_housekeeping(&callee.node).is_some() {
             self.eval_args(frame, args)?;
             return Ok(Flow::Normal);
+        if matches!(guard_call(&callee.node), Some(GuardCall::Lock | GuardCall::Unlock)) {
+            return Ok(Flow::Normal);
+        }
         }
         if self.array_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
@@ -3660,6 +3666,34 @@ impl Vm<'_> {
 /// `Global.Value = n` as the native it is: `Global.SetValue(n)`.
 fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned<Expr>>, Vec<CallArg>) {
     let callee = spanned(Expr::MemberAccess {
+/// A Starfield guard operation, as the decompiler lifts it.
+enum GuardCall {
+    Lock,
+    Unlock,
+    TryLock,
+}
+
+/// `Guard.lock(...)` / `.unlock(...)` / `.trylock(...)`: the lifted form of
+/// `LockGuards` / `UnlockGuards` / `TryLockGuards`, whose arguments are guard
+/// names, not values. A guard serialises threads that interleave only when a run
+/// suspends; this VM's runs interleave at a wait or a budget slice, and a guard
+/// held across either is not modelled, so every operation succeeds at once (the
+/// try-lock reads True).
+fn guard_call(callee: &Expr) -> Option<GuardCall> {
+    let Expr::MemberAccess { object, member } = callee else {
+        return None;
+    };
+    if !matches!(&object.node, Expr::Ident(id) if id.0 == "Guard") {
+        return None;
+    }
+    match member.node.0.as_str() {
+        "lock" => Some(GuardCall::Lock),
+        "unlock" => Some(GuardCall::Unlock),
+        "trylock" => Some(GuardCall::TryLock),
+        _ => None,
+    }
+}
+
         object: Box::new(global.clone()),
         member: spanned(Identifier("SetValue".into())),
     });
@@ -4629,6 +4663,16 @@ impl<'l> Checker<'l> {
         let mut arg_kinds = Vec::with_capacity(args.len());
         for arg in args {
             let kind = self.kind(frame, &arg.value.node)?;
+        // Starfield guards: the decompiler lifts `LockGuards` / `UnlockGuards` /
+        // `TryLockGuards` to `Guard.lock(...)` / `.unlock(...)` / `.trylock(...)`
+        // whose arguments name guards, which are not values (see `guard_call`).
+        if let Some(call) = guard_call(callee) {
+            return match call {
+                GuardCall::Lock | GuardCall::Unlock if statement => Some(Kind::None),
+                GuardCall::TryLock => Some(Kind::Bool),
+                _ => self.fail(|| "a guard call used for its value".into()),
+            };
+        }
             // A literal argument is checked as written: the run sees it too;
             // so is an engine constant, which the run passes by name.
             let constant = constant_name(&arg.value.node)

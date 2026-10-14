@@ -771,6 +771,12 @@ runtime:
 - **Location loaded.** `Location.IsLoaded()` ("if this location is loaded or not") is true while a
   resident cell is one of the location's own (`location_loaded`); a loaded child location does not
   load its parent, and a form that is not a location stops the run.
+- **Guards (Starfield).** The decompiler lifts `LockGuards` / `UnlockGuards` / `TryLockGuards` to
+  `Guard.lock(...)` / `.unlock(...)` / `.trylock(...)`, whose arguments name guards rather than
+  values (they used to fail as unknown names, 217 Starfield fragments). A guard serialises threads
+  that interleave only when a run suspends; here runs interleave at a wait or a budget slice, and a
+  guard held across either is not modelled, so every operation succeeds at once and the try-lock
+  reads True.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap
