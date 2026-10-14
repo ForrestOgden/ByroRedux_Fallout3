@@ -796,6 +796,10 @@ runtime:
   `GetCrimeGold` = both kinds, `GetCrimeGoldViolent`, `GetCrimeGoldNonViolent`) is the saved
   `FactionCrimeGold`; the engine has no crime system, so scripts' writes are all of it. A modification
   below zero floors at zero, which the CK leaves open. Paying it off (`PlayerPayCrimeGold`) stays declined.
+- **Alias scripts through a cast.** A function of an alias script reached through a cast of the
+  alias property (`(Alias_X as MyScript).Fn()`, where `MyScript` extends `ReferenceAlias`) is checked
+  with an alias as `Self`, as it runs, so its `Self.GetActorRef()` and the like read instead of
+  failing as natives of a reference (43 more Skyrim fragments).
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap

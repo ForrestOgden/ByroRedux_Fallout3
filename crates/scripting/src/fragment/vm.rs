@@ -5450,7 +5450,10 @@ impl<'l> Checker<'l> {
         if receiver_kind == Kind::Object {
             if let Some(script) = self.declared_script(frame, receiver) {
                 if !is_engine_class(&script) && !self.versions(&script, &name).is_empty() {
-                    return self.check_call_into(&script, &name, statement, Kind::Object);
+                    // A script on an alias (`Alias_X as MyAliasScript`) runs with an
+                    // alias as `Self`, so its `GetActorRef()` and the like read.
+                    let self_kind = if self.script_extends_alias(&script) { Kind::Alias } else { Kind::Object };
+                    return self.check_call_into(&script, &name, statement, self_kind);
                 }
             }
         }
@@ -5492,6 +5495,25 @@ impl<'l> Checker<'l> {
 
     /// The script a receiver is declared as — a cast's target type, or a
     /// property's / local's type — registered for the run.
+    /// Whether `script` extends an alias class through its chain.
+    fn script_extends_alias(&mut self, script: &Arc<Script>) -> bool {
+        let mut parent = script.parent.as_ref().map(|p| p.node.0.clone());
+        for _ in 0..16 {
+            let Some(name) = parent else {
+                return false;
+            };
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("alias") {
+                return true;
+            }
+            parent = self
+                .library
+                .and_then(|library| library.script(&lower))
+                .and_then(|script| script.parent.as_ref().map(|p| p.node.0.clone()));
+        }
+        false
+    }
+
     fn declared_script(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<Arc<Script>> {
         let type_name = match receiver {
             Expr::Cast { target_type, .. } => match &target_type.node {

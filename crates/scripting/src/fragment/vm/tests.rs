@@ -3661,6 +3661,31 @@ fn owners_and_crime_gold_follow_their_setters() {
     assert_eq!(world.resource::<crate::FactionCrimeGold>().of(FACTION), (45, 25));
 }
 
+/// A function of a script on an alias, reached through a cast of the alias
+/// property, runs with an alias as `Self`: its `GetActorRef()` checks.
+#[test]
+fn a_cast_alias_script_function_checks_with_an_alias_self() {
+    let helper = parsed_source(
+        "ScriptName GuardHelper extends ReferenceAlias\n\
+         Function Poke()\n\
+           Actor who = Self.GetActorRef()\n\
+           If who\n\
+             who.Disable()\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    let script = parsed_source(
+        "ScriptName QF_VmAliasCast extends Quest\n\
+         ReferenceAlias Property Alias_Guard Auto\n\
+         Function Fragment_1()\n\
+           (Alias_Guard as GuardHelper).Poke()\n\
+         EndFunction\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [("guardhelper".to_owned(), helper)].into();
+    let library = Installed(&scripts);
+    assert_eq!(check_function_reason(script, "Fragment_1", Some(&library)).err(), None);
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.
