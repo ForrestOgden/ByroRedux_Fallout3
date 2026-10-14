@@ -109,6 +109,11 @@ pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
         player.prev_time = start;
         player.speed = speed;
         log::debug!("archetype idle: {actor} -> clip {clip} ({:?})", entry.animation_paths.first());
+        // The actor's behavior graph for this entry takes over its animation: events sent
+        // to the actor (`PlayAnimation`) move it (`asset_provider::actor_graph`).
+        if let Some(mut pending) = world.try_resource_mut::<crate::asset_provider::PendingActorGraphs>() {
+            pending.0.push((actor, entry.clone()));
+        }
         if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
             players.insert(actor, player);
         }

@@ -1067,11 +1067,36 @@ impl App {
         }
     }
 
+    /// Fallout 4 actors' behavior graphs: attach the ones actors are waiting for and
+    /// resolve the clips running graphs asked for, with the streaming session's archive
+    /// provider or, in an interior, one kept for the purpose.
+    fn step_actor_graphs(&mut self) {
+        if !crate::asset_provider::actor_graph_work_pending(&self.world) {
+            return;
+        }
+        if let Some(state) = self.streaming.as_ref() {
+            crate::asset_provider::populate_actor_graphs(&mut self.world, &state.tex_provider);
+            return;
+        }
+        if self.world.try_resource::<crate::asset_provider::ActorClipProvider>().is_none() {
+            let args: Vec<String> = crate::cli_args::effective_args();
+            let provider = crate::asset_provider::build_texture_provider(&args);
+            self.world.insert_resource(crate::asset_provider::ActorClipProvider(provider));
+        }
+        // The provider is taken out of the world for the pass (it reads the world too).
+        let Some(provider) = self.world.remove_resource::<crate::asset_provider::ActorClipProvider>() else {
+            return;
+        };
+        crate::asset_provider::populate_actor_graphs(&mut self.world, &provider.0);
+        self.world.insert_resource(provider);
+    }
+
     pub(crate) fn step_cell_transition(&mut self) {
         // M47.2 — a fragment's player `MoveTo` becomes an in-place move or
         // a queued transition this same call dispatches.
         self.step_player_move_request();
         self.step_created_references();
+        self.step_actor_graphs();
         if self.loading_screen.waiting_for_presentation() || self.loading_screen.owns_save() {
             return;
         }

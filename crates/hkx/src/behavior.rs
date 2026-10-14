@@ -299,7 +299,94 @@ impl StateMachine {
     }
 }
 
+/// How many sub-behaviors [`BehaviorGraph::inline_references`] pulls in before it stops
+/// (a graph can refer to the same few behaviors from many states).
+const MAX_INLINED_REFERENCES: usize = 64;
+
+/// Renumber the events `machine` names (transitions and clip triggers) through `map`.
+fn remap_machine_events(machine: &mut StateMachine, map: &[i32]) {
+    let remap = |event: i32| usize::try_from(event).ok().and_then(|index| map.get(index)).copied().unwrap_or(event);
+    for transition in machine.wildcard.iter_mut() {
+        transition.event = remap(transition.event);
+    }
+    for state in &mut machine.states {
+        for transition in &mut state.transitions {
+            transition.event = remap(transition.event);
+        }
+        for clip in state.clip.iter_mut().chain(state.content.blended_clips.iter_mut()) {
+            for trigger in &mut clip.triggers {
+                trigger.event = remap(trigger.event);
+            }
+        }
+        for inner in &mut state.content.machines {
+            remap_machine_events(inner, map);
+        }
+    }
+}
+
 impl BehaviorGraph {
+    /// The id of `name` in this graph's events, adding it when it has none: behaviors
+    /// share event *names*, so a referenced graph's events join its parent's table.
+    fn intern_event(&mut self, name: &str) -> i32 {
+        match self.event_id(name) {
+            Some(id) => id,
+            None => {
+                self.events.push(name.to_owned());
+                (self.events.len() - 1) as i32
+            }
+        }
+    }
+
+    /// Replace every state's sub-behavior reference with the referenced graph's root
+    /// machine, nested in that state (a state that refers to a behavior runs it as a
+    /// machine of its own): the machine's events are renumbered into this graph's
+    /// table by name, so an event sent to the parent reaches the sub-behavior's
+    /// transitions. `resolve` loads a referenced behavior by the path it names; a
+    /// reference it cannot load is left as it was.
+    pub fn inline_references(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>) {
+        let Some(mut machine) = self.machine.take() else { return };
+        let mut budget = MAX_INLINED_REFERENCES;
+        self.inline_machine(&mut machine, resolve, &mut budget);
+        self.machine = Some(machine);
+    }
+
+    fn inline_machine(
+        &mut self,
+        machine: &mut StateMachine,
+        resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>,
+        budget: &mut usize,
+    ) {
+        for state in &mut machine.states {
+            let references = std::mem::take(&mut state.content.behavior_references);
+            for reference in references {
+                if *budget == 0 {
+                    state.content.behavior_references.push(reference);
+                    continue;
+                }
+                *budget -= 1;
+                let Some(mut inner) = resolve(&reference) else {
+                    state.content.behavior_references.push(reference);
+                    continue;
+                };
+                // The referenced graph's own references first (its events are its own).
+                inner.inline_references_with(resolve, budget);
+                let Some(mut inner_machine) = inner.machine.take() else { continue };
+                let map: Vec<i32> = inner.events.iter().map(|name| self.intern_event(name)).collect();
+                remap_machine_events(&mut inner_machine, &map);
+                state.content.machines.push(inner_machine);
+            }
+            for inner in &mut state.content.machines {
+                self.inline_machine(inner, resolve, budget);
+            }
+        }
+    }
+
+    fn inline_references_with(&mut self, resolve: &mut dyn FnMut(&str) -> Option<BehaviorGraph>, budget: &mut usize) {
+        let Some(mut machine) = self.machine.take() else { return };
+        self.inline_machine(&mut machine, resolve, budget);
+        self.machine = Some(machine);
+    }
+
     /// The clip an actor standing idle in this graph plays: following the start
     /// state of every machine down (and into the sub-behaviors a state refers to,
     /// loaded through `resolve`) to the first clip. Fallout 4's `MTBehavior` reaches
@@ -834,5 +921,48 @@ mod tests {
             })
             .is_none());
         assert!(hops <= MAX_REFERENCE_HOPS);
+    }
+
+    /// A referenced behavior becomes a machine of the referring state; its events join
+    /// the parent's table by name, so an event of the parent reaches its transitions.
+    #[test]
+    fn inline_references_nests_the_sub_behavior_and_renumbers_its_events_by_name() {
+        let transition = |event, to_state| Transition { event, to_state, priority: 0, flags: 0 };
+        let mut child_state = state_of(0, Some("Animations\\Idle.hkt"), StateContent::default());
+        child_state.transitions = vec![transition(1, 1)]; // "C" in the child's own table
+        let mut child_wildcard = Vec::new();
+        child_wildcard.push(transition(0, 0)); // "B"
+        let child = BehaviorGraph {
+            events: vec!["B".into(), "C".into()],
+            machine: Some(StateMachine {
+                start_state: 0,
+                states: vec![child_state, state_of(1, Some("Animations\\Other.hkt"), StateContent::default())],
+                wildcard: child_wildcard,
+            }),
+        };
+        let mut parent = BehaviorGraph {
+            events: vec!["A".into(), "B".into()],
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec!["Child.hkx".into()], ..Default::default() })],
+            )),
+        };
+        parent.inline_references(&mut |path| (path == "Child.hkx").then(|| child.clone()));
+        assert_eq!(parent.events, ["A", "B", "C"], "the child's new event joins the table");
+        let state = &parent.machine.as_ref().unwrap().states[0];
+        assert!(state.content.behavior_references.is_empty());
+        let inner = &state.content.machines[0];
+        assert_eq!(inner.states[0].transitions[0].event, 2, "C is the parent's event 2");
+        assert_eq!(inner.wildcard[0].event, 1, "B is the parent's existing event 1");
+        // An unloadable reference stays a reference.
+        let mut orphan = BehaviorGraph {
+            events: Vec::new(),
+            machine: Some(machine_of(
+                0,
+                vec![state_of(0, None, StateContent { behavior_references: vec!["Gone.hkx".into()], ..Default::default() })],
+            )),
+        };
+        orphan.inline_references(&mut |_| None);
+        assert_eq!(orphan.machine.unwrap().states[0].content.behavior_references, ["Gone.hkx"]);
     }
 }

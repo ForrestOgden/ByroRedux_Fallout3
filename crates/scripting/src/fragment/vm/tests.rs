@@ -3292,7 +3292,7 @@ fn play_animation_drives_the_objects_behavior_graph() {
     clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
     world.insert(
         marker,
-        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default() }), marker).unwrap(),
+        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default(), lazy: None }), marker).unwrap(),
     );
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);
@@ -3373,7 +3373,7 @@ fn wait_for_animation_event_waits_for_the_graphs_event() {
             clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
             world.insert(
                 marker,
-                crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default() }), marker).unwrap(),
+                crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default(), lazy: None }), marker).unwrap(),
             );
         }
         world.resource_mut::<QuestStageState>().set_stage(Q, 10);
@@ -5112,7 +5112,7 @@ fn animation_events_reach_registered_scripts() {
     clips.insert(("a/go.hkx".to_owned(), false), crate::GraphClip { handle: 4, duration: 1.0 });
     world.insert(
         marker,
-        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default() }), marker).unwrap(),
+        crate::ObjectAnimationGraph::new(Arc::new(crate::LoadedGraph { graph, clips, sequences: Default::default(), lazy: None }), marker).unwrap(),
     );
     {
         let mut fragments = world.resource_mut::<crate::QuestStageFragments>();

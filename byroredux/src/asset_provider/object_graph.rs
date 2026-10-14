@@ -119,7 +119,7 @@ fn load_graph(
         };
         clips.insert(key, GraphClip { handle, duration });
     }
-    Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone() }))
+    Some(Arc::new(LoadedGraph { graph, clips, sequences: sequences.clone(), lazy: None }))
 }
 
 /// Attach a running behavior graph to every placed object whose NIF names one

@@ -1584,8 +1584,18 @@ state:
   `humanoid_default_idle_kf_path` is `None` for it). `anim.archetype <entity> <keyword>` (the console twin of the
   script call) swapped Magnolia's idle live through Friendly\Female, Scared\Female, Confident\Female and
   Neutral\Female (a registration bug the unit test could not see, the marker component missing from the
-  engine world, is pinned by `the_engine_world_registers_the_marker_and_the_pass_state`). Not modelled: the rest of the graph (locomotion, the
-  flavor idles `MTIdles` picks, dialogue poses) and root motion.
+  engine world, is pinned by `the_engine_world_registers_the_marker_and_the_pass_state`). The graph itself now runs on the actor
+  (`asset_provider/actor_graph.rs`): `inline_references` nests each sub-behavior (`DialogueBehavior.hkx` under
+  `MTBehavior`'s `MTIdles`) as a machine of the state that refers to it, renumbering its events into the
+  parent's table by name, and an `ObjectAnimationGraph` runs it with `animated_root` the actor's skeleton;
+  its ~250 clips are resolved on demand (`LazyClips`: a state whose clip is not loaded asks for it and the next
+  `populate_actor_graphs` pass, fed by `step_actor_graphs` each frame with the streaming provider or, in an
+  interior, a retained one, decodes it from the actor's folders and restarts the graph). So `PlayAnimation`
+  reaches actors: live in Goodneighbor's Third Rail, `anim.event 2453 dyn_Flavor` (Magnolia) was accepted,
+  `posea_idleflavor2` resolved from her Friendly\Female folders and played its 8.3 s, and the graph's
+  clip-end trigger returned her to her idle; an event the graph does not know is rejected. Not modelled:
+  variables and blends (so locomotion, which `Speed` and `Direction` drive), transition blends, conditions,
+  modifiers, and root motion.
 - **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
   `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines
   `AddToMapScanned(b)` as `Self.SetScanned(true)` then `Self.AddToMap(b)`, and xEdit's condition

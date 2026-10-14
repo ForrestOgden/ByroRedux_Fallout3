@@ -163,7 +163,7 @@ pub use location_keyword_data::{location_keyword_data, LocationKeywordData};
 pub use weather_state::{install_weather_classifications, CurrentWeather, WeatherClassifications};
 pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListChange, FormLists};
 pub use animation_graph::{
-    object_graph_step_system, AnimArchetypeOverrides, BehaviorGraphRef, GraphClip, GraphSequences, LoadedGraph, ObjectAnimationGraph,
+    object_graph_step_system, AnimArchetypeOverrides, BehaviorGraphRef, GraphClip, GraphSequences, LazyClips, LoadedGraph, ObjectAnimationGraph,
     Playback,
 };
 pub use scanning::ScannedReferences;

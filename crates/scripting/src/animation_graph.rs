@@ -78,12 +78,69 @@ pub struct LoadedGraph {
     /// Gamebryo sequence generators (`BGSGamebryoSequenceGenerator`) a graph
     /// plays from the object's own NIF.
     pub sequences: HashMap<String, GraphClip>,
+    /// Clips resolved on demand (an actor's graph names hundreds of clips, and which
+    /// file each is depends on the actor's animation folders): the host provides what
+    /// the graph asked for. `None` for a graph whose clips are all registered.
+    pub lazy: Option<Arc<LazyClips>>,
+}
+
+/// Clips a graph asked for and the host has resolved (or could not).
+#[derive(Debug, Default)]
+pub struct LazyClips {
+    ready: std::sync::Mutex<HashMap<(String, bool), GraphClip>>,
+    wanted: std::sync::Mutex<Vec<(String, bool)>>,
+    missing: std::sync::Mutex<std::collections::HashSet<(String, bool)>>,
+}
+
+impl LazyClips {
+    fn lookup(&self, key: &(String, bool)) -> Option<GraphClip> {
+        if let Some(clip) = self.ready.lock().ok()?.get(key) {
+            return Some(*clip);
+        }
+        let missing = self.missing.lock().ok()?.contains(key);
+        if !missing {
+            let mut wanted = self.wanted.lock().ok()?;
+            if !wanted.contains(key) {
+                wanted.push(key.clone());
+            }
+        }
+        None
+    }
+
+    /// Whether the graph asked for a clip not yet taken.
+    pub fn peek_wanted(&self) -> bool {
+        self.wanted.lock().map(|wanted| !wanted.is_empty()).unwrap_or(false)
+    }
+
+    /// The `(lower-cased animation path, looping)` pairs the graph asked for since the
+    /// last call.
+    pub fn take_wanted(&self) -> Vec<(String, bool)> {
+        self.wanted.lock().map(|mut wanted| std::mem::take(&mut *wanted)).unwrap_or_default()
+    }
+
+    /// The host resolved `key` to `clip`.
+    pub fn provide(&self, key: (String, bool), clip: GraphClip) {
+        if let Ok(mut ready) = self.ready.lock() {
+            ready.insert(key, clip);
+        }
+    }
+
+    /// The host could not resolve `key`: it is not asked for again.
+    pub fn fail(&self, key: (String, bool)) {
+        if let Ok(mut missing) = self.missing.lock() {
+            missing.insert(key);
+        }
+    }
 }
 
 impl LoadedGraph {
     fn clip_for<'a>(&self, clip: &'a StateClip) -> Option<(&'a StateClip, GraphClip)> {
         let looping = clip.mode == ClipMode::Looping;
-        let registered = *self.clips.get(&(clip.animation.to_ascii_lowercase(), looping))?;
+        let key = (clip.animation.to_ascii_lowercase(), looping);
+        let registered = match self.clips.get(&key) {
+            Some(registered) => *registered,
+            None => self.lazy.as_ref()?.lookup(&key)?,
+        };
         Some((clip, registered))
     }
 
@@ -147,8 +204,11 @@ enum Leaf<'a> {
 #[derive(Debug, Clone)]
 pub struct ObjectAnimationGraph {
     graph: Arc<LoadedGraph>,
-    /// The entity whose subtree the clips animate (the placement root).
+    /// The entity that owns the graph and its `AnimationPlayer` (the placement root).
     pub root: EntityId,
+    /// The entity whose subtree the clips animate, when it is not `root` (an actor's
+    /// skeleton root).
+    pub animated_root: Option<EntityId>,
     run: MachineRun,
     /// The graph's own clock, seconds.
     now: f32,
@@ -192,7 +252,18 @@ impl ObjectAnimationGraph {
     pub fn new(graph: Arc<LoadedGraph>, root: EntityId) -> Option<Self> {
         let machine = graph.graph.machine.as_ref()?;
         let run = MachineRun::enter(machine, machine.start_state);
-        Some(Self { graph, root, run, now: 0.0, scheduled: Vec::new(), raised: Vec::new() })
+        Some(Self { graph, root, animated_root: None, run, now: 0.0, scheduled: Vec::new(), raised: Vec::new() })
+    }
+
+    /// The graph animating `animated` (an actor's skeleton root) instead of its owner.
+    pub fn with_animated_root(mut self, animated: EntityId) -> Self {
+        self.animated_root = Some(animated);
+        self
+    }
+
+    /// The entity the graph's clips animate.
+    pub fn animated(&self) -> EntityId {
+        self.animated_root.unwrap_or(self.root)
     }
 
     /// The root machine's current state.
@@ -483,7 +554,13 @@ impl ObjectAnimationGraph {
 
 /// Start `playback` on the graph's root: the object's `AnimationPlayer`.
 pub fn apply_playback(world: &World, root: EntityId, playback: Playback) {
-    let mut player = AnimationPlayer::new(playback.handle).with_root(root);
+    apply_playback_for(world, root, root, playback);
+}
+
+/// [`apply_playback`] for a graph owned by `owner` whose clips animate `animated`.
+pub fn apply_playback_for(world: &World, owner: EntityId, animated: EntityId, playback: Playback) {
+    let root = owner;
+    let mut player = AnimationPlayer::new(playback.handle).with_root(animated);
     player.speed = playback.speed;
     match playback.hold_at {
         Some(at) => {
@@ -532,7 +609,7 @@ pub fn wait_for_animation_event(world: &World, entity: EntityId, event: &str) ->
 }
 
 fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
-    let (root, playback) = {
+    let (root, animated, playback) = {
         let mut graphs = world.query_mut::<ObjectAnimationGraph>()?;
         let graph = graphs.get_mut(entity)?;
         let id = graph.graph.graph.event_id(event)?;
@@ -546,10 +623,10 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
             if sent.is_some() { "accepted" } else { "rejected" },
             graph.state()
         );
-        (graph.root, sent?)
+        (graph.root, graph.animated(), sent?)
     };
     if let Some(playback) = playback {
-        apply_playback(world, root, playback);
+        apply_playback_for(world, root, animated, playback);
     }
     Some(())
 }
@@ -557,17 +634,17 @@ fn send(world: &World, entity: EntityId, event: &str) -> Option<()> {
 /// Step every object graph's trigger schedule (a clip's end raises its
 /// completion event, which moves the machine on). Run each frame.
 pub fn object_graph_step_system(world: &World, dt: f32) {
-    let started: Vec<(EntityId, Playback)> = {
+    let started: Vec<(EntityId, EntityId, Playback)> = {
         let Some(mut graphs) = world.query_mut::<ObjectAnimationGraph>() else {
             return;
         };
         graphs
             .iter_mut()
-            .filter_map(|(_, graph)| graph.step(dt).pop().map(|playback| (graph.root, playback)))
+            .filter_map(|(_, graph)| graph.step(dt).pop().map(|playback| (graph.root, graph.animated(), playback)))
             .collect()
     };
-    for (root, playback) in started {
-        apply_playback(world, root, playback);
+    for (root, animated, playback) in started {
+        apply_playback_for(world, root, animated, playback);
     }
 }
 
@@ -662,7 +739,7 @@ mod tests {
         let mut clips = HashMap::new();
         clips.insert(("a/pose.hkx".to_owned(), false), GraphClip { handle: 7, duration: 0.8 });
         clips.insert(("a/pull.hkx".to_owned(), false), GraphClip { handle: 9, duration: 0.8 });
-        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new() }), 5).unwrap()
+        ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences: HashMap::new(), lazy: None }), 5).unwrap()
     }
 
     #[test]
@@ -734,7 +811,7 @@ mod tests {
         clips.insert(("a/trigger.hkx".to_owned(), true), GraphClip { handle: 11, duration: 1.0 });
         let mut sequences = HashMap::new();
         sequences.insert("playanim01".to_owned(), GraphClip { handle: 21, duration: 2.0 });
-        let mut graph = ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences }), 5).unwrap();
+        let mut graph = ObjectAnimationGraph::new(Arc::new(LoadedGraph { graph, clips, sequences, lazy: None }), 5).unwrap();
         graph.start();
         graph
     }
@@ -827,5 +904,50 @@ mod tests {
         assert_eq!(overrides.get(7), Some(0x22E49));
         overrides.set(7, 0);
         assert_eq!(overrides.get(7), Some(0));
+    }
+
+    /// An actor's graph resolves clips on demand: a state whose clip is not yet provided
+    /// plays nothing and asks for it; once the host provides it, restarting the graph
+    /// starts the clip, and a clip the host cannot resolve is not asked for again.
+    #[test]
+    fn a_lazy_clip_is_requested_then_played_once_provided() {
+        let graph = BehaviorGraph {
+            events: vec!["go".into()],
+            machine: Some(StateMachine {
+                start_state: 0,
+                states: vec![
+                    State {
+                        id: 0,
+                        name: "A".into(),
+                        transitions: vec![transition(0, 1)],
+                        clip: Some(clip("Animations\\A.hkt", ClipMode::Looping, 1.0, Vec::new())),
+                        content: Default::default(),
+                    },
+                    State {
+                        id: 1,
+                        name: "B".into(),
+                        transitions: Vec::new(),
+                        clip: Some(clip("Animations\\B.hkt", ClipMode::SinglePlay, 1.0, Vec::new())),
+                        content: Default::default(),
+                    },
+                ],
+                wildcard: Vec::new(),
+            }),
+        };
+        let lazy = Arc::new(LazyClips::default());
+        let loaded = Arc::new(LoadedGraph { graph, clips: HashMap::new(), sequences: HashMap::new(), lazy: Some(Arc::clone(&lazy)) });
+        let mut run = ObjectAnimationGraph::new(loaded, 5).unwrap().with_animated_root(9);
+        assert_eq!(run.animated(), 9);
+        assert_eq!(run.start(), None, "nothing to play until the clip is provided");
+        assert_eq!(lazy.take_wanted(), [("animations\\a.hkt".to_owned(), true)]);
+        assert!(lazy.take_wanted().is_empty(), "asked once");
+        lazy.provide(("animations\\a.hkt".to_owned(), true), GraphClip { handle: 3, duration: 2.0 });
+        assert_eq!(run.start().map(|playback| playback.handle), Some(3));
+        // The event moves to a clip nobody can resolve: no playback, and it is not re-asked.
+        run.send_event(0);
+        assert_eq!(lazy.take_wanted(), [("animations\\b.hkt".to_owned(), false)]);
+        lazy.fail(("animations\\b.hkt".to_owned(), false));
+        run.start();
+        assert!(lazy.take_wanted().is_empty());
     }
 }

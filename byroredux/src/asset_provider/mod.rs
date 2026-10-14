@@ -1,5 +1,6 @@
 //! BSA/BA2-backed texture and mesh extraction.
 
+mod actor_graph;
 mod animation;
 mod archetype_idle;
 mod archive;
@@ -10,6 +11,7 @@ mod script;
 mod texture;
 mod texture_prefetch;
 
+pub(crate) use actor_graph::*;
 pub(crate) use animation::*;
 pub(crate) use archetype_idle::*;
 pub(crate) use archive::*;
