@@ -158,6 +158,7 @@ pub(super) fn parse_and_import_nif(
     // root-local at parse time because the node array does not survive into
     // `CachedNifImport`. The spawn site parents the ESM-fallback light there.
     let attach_light_offset = byroredux_nif::import::find_attach_light_offset(&scene);
+    let projectile_offset = byroredux_nif::import::find_projectile_node_offset(&scene);
 
     // #985 / #1594 — materialize the FO4+ weapon-mod attach graph. The flat
     // import drops the node array, so pull the `BSConnectPoint` blocks
@@ -218,6 +219,7 @@ pub(super) fn parse_and_import_nif(
         // placement-root SceneFlags parity with the loose-NIF loader.
         root_flags,
         attach_light_offset,
+        projectile_offset,
         attach_points,
         child_attach_connections,
         furniture,
@@ -543,6 +545,7 @@ pub(super) fn parse_and_import_spt(
         // SpeedTree placeholders carry no flame markers — they're
         // pure billboard quads. Phase 18.
         attach_light_offset: None,
+        projectile_offset: None,
         // SpeedTree `.spt` is a separate format with no BSConnectPoint
         // blocks. #1594.
         attach_points: None,

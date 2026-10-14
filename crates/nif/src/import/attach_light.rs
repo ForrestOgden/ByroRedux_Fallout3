@@ -37,9 +37,24 @@ const MAX_DEPTH: u32 = 256;
 /// LOD nodes following only their active child. `None` when the model
 /// authors no such node; the caller then keeps the light at the placement.
 pub fn find_attach_light_offset(scene: &NifScene) -> Option<[f32; 3]> {
+    find_named_node_offset(scene, ATTACH_LIGHT_NODE)
+}
+
+/// The authored name of the node a launcher's projectiles leave from.
+pub const PROJECTILE_NODE: &str = "ProjectileNode";
+
+/// Root-local position of the NIF's `ProjectileNode` (the muzzle of a trap's dart
+/// port: Skyrim's `TrapDartPortSingle01` authors it 16 units ahead of the model
+/// origin), composed like [`find_attach_light_offset`]. `None` when the model
+/// authors none.
+pub fn find_projectile_node_offset(scene: &NifScene) -> Option<[f32; 3]> {
+    find_named_node_offset(scene, PROJECTILE_NODE)
+}
+
+fn find_named_node_offset(scene: &NifScene, name: &str) -> Option<[f32; 3]> {
     let root = scene.root_index?;
     let mut visited = vec![false; scene.blocks.len()];
-    let world = find_node(scene, root, &NiTransform::default(), 0, &mut visited)?;
+    let world = find_node(scene, root, &NiTransform::default(), 0, &mut visited, name)?;
     let mut offset = zup_point_to_yup(&world.translation);
     let scale = units::length_scale(scene);
     if scale != 1.0 {
@@ -56,6 +71,7 @@ fn find_node(
     parent: &NiTransform,
     depth: u32,
     visited: &mut [bool],
+    wanted: &str,
 ) -> Option<NiTransform> {
     if depth > MAX_DEPTH {
         return None;
@@ -79,13 +95,13 @@ fn find_node(
         .net
         .name
         .as_deref()
-        .is_some_and(|name| name.eq_ignore_ascii_case(ATTACH_LIGHT_NODE))
+        .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
     {
         return Some(world);
     }
     children
         .into_iter()
-        .find_map(|child| find_node(scene, child, &world, depth + 1, visited))
+        .find_map(|child| find_node(scene, child, &world, depth + 1, visited, wanted))
 }
 
 #[cfg(test)]

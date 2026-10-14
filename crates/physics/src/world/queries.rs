@@ -337,6 +337,49 @@ impl PhysicsWorld {
             })
     }
 
+    /// [`Self::cast_ray_corridor`] over only the bodies `allow` accepts (a projectile
+    /// sweeps solid geometry with a thin ray and actors with a wider corridor: a
+    /// corridor as wide as a bone box would start inside the wall a launcher is
+    /// mounted in).
+    pub fn cast_ray_corridor_where(
+        &self,
+        origin: byroredux_core::math::Vec3,
+        direction: byroredux_core::math::Vec3,
+        max_distance: f32,
+        corridor_radius: f32,
+        allow: &dyn Fn(rapier3d::prelude::RigidBodyHandle) -> bool,
+    ) -> Option<PhysicsRayHit> {
+        if max_distance <= 0.0 || !max_distance.is_finite() {
+            return None;
+        }
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() == 0.0 {
+            return None;
+        }
+        use rapier3d::parry::query::ShapeCastOptions;
+        use rapier3d::prelude::*;
+        let shape = Ball::new(corridor_radius.max(0.01));
+        let pos = Pose::from_translation(origin);
+        let skip = |_: ColliderHandle, collider: &Collider| collider.parent().is_some_and(allow);
+        let filter = QueryFilter::default().exclude_sensors().predicate(&skip);
+        self.queries(filter)
+            .cast_shape(
+                &pos,
+                direction,
+                &shape,
+                ShapeCastOptions {
+                    target_distance: 0.0,
+                    stop_at_penetration: false,
+                    max_time_of_impact: max_distance,
+                    compute_impact_geometry_on_penetration: false,
+                },
+            )
+            .map(|(collider, hit)| PhysicsRayHit {
+                body: self.colliders.get(collider).and_then(|hit| hit.parent()),
+                distance: hit.time_of_impact,
+            })
+    }
+
     /// #4414 — does solid world geometry block the straight line `from → to`?
     ///
     /// The sight test ambient faction hostility gates an attack on. Uses the

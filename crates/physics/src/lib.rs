@@ -27,6 +27,7 @@ pub mod sync;
 pub mod water;
 pub mod world;
 
+pub use rapier3d::prelude::RigidBodyHandle;
 pub use components::{
     ActorBoneCollider, ActorColliderOwner, CharacterController, Ragdoll, RapierHandles,
 };

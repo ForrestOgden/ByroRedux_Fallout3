@@ -132,6 +132,7 @@ pub(crate) fn finish_partial_import(
     // `&ImportedScene` — false, it takes `&NifScene`, which `scene`
     // (destructured above) already is.
     let attach_light_offset = byroredux_nif::import::find_attach_light_offset(&scene);
+    let projectile_offset = byroredux_nif::import::find_projectile_node_offset(&scene);
 
     // M41.5 Phase B — lift `BSFurnitureMarker` sit/sleep/lean positions
     // to the `Furniture` ECS component, mirroring the synchronous path
@@ -180,6 +181,7 @@ pub(crate) fn finish_partial_import(
         // the streaming partial for placement-root SceneFlags parity.
         root_flags,
         attach_light_offset,
+        projectile_offset,
         // #1594 — the streaming-partial path keeps the FO4+ weapon-mod
         // attach graph `None`; the sync `parse_and_import_nif` path
         // materializes it. Unlike `attach_light_offset` / `furniture`

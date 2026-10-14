@@ -1669,8 +1669,14 @@ rest from its base record's copy (`attach::dedup_vmad_scripts` merges them; Skyr
 ports list the script with no properties and the weapons and sound sit on the base). Live in
 Blindcliff Cave: pulling the Nordic pull bar `00021F4D`, which is a dart port's activate parent,
 runs `DartTrap.OnActivate`, whose loop launches 21 `Weapon.Fire` darts from the chain of linked
-ports (`TrapDartWeapon01`, 1 damage, 1300 u/s); no dart was followed into a target live (the
-flight and hit are tested). Live in Bleak Falls Barrow: stepping on trigger `00086018` (a `TrapTriggerBase`, whose script
+ports (`TrapDartWeapon01`, 1 damage, 1300 u/s). Two things stopped a dart from reaching anything,
+both found live: the port's muzzle is its NIF's `ProjectileNode` (16 units ahead of the model
+origin, `ProjectileMuzzle`), and a dart starting at the origin sat inside the wall the port is
+mounted in; and the sweep's 4-unit corridor (the width melee needs against bone boxes) overlapped
+that wall, so solid geometry is now swept with a thin ray (the projectile's own radius) and actors
+with the corridor, ignoring the launcher's own colliders. With both, standing the player in front of
+a port and firing the trap landed two darts on the player: `HealthAV` damage 2.0 of 100 (the
+`HitEvent`s reach `combat_damage_system` now that it runs after the projectile systems). Live in Bleak Falls Barrow: stepping on trigger `00086018` (a `TrapTriggerBase`, whose script
 `Activate`s itself) passes the activation to the three `TrapBladeSwinging01` references that name it
 as their parent (`0003AC37`, `0003AC35`, `0003AC33`; all Parent Activate Only), whose scripts run.
 Their behavior graph then rejects `PlayAnimation('Single')` from its start state (the graph decodes
@@ -1715,7 +1721,7 @@ that node's entity instead of detached, and a body authored `Static` is made `Ke
 authors the bodies of graph-driven props as fixed and lets the animation move them, and the physics
 sync follows a keyframed body's `GlobalTransform`, so a swinging blade's body swings with it (live,
 its AABB in `phys.census` goes from `[2, 91, 122]` to `[2, 110, 106]` and `[2, 120, 94]` through a
-swing) and an opened portcullis stops blocking. Nothing hit a target live.
+swing) and an opened portcullis stops blocking.
 
 ### Calls on None (M47.2)
 

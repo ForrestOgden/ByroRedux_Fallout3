@@ -1082,6 +1082,10 @@ fn spawn_placement_root(
     if cached.bsx_flags != 0 {
         world.insert(placement_root, BSXFlags(cached.bsx_flags));
     }
+    // A launcher's muzzle (a trap's dart port): where `Weapon.Fire` starts a projectile.
+    if let Some(offset) = cached.projectile_offset {
+        world.insert(placement_root, crate::components::ProjectileMuzzle(Vec3::from_array(offset)));
+    }
     // M47.2 — an animated prop's Havok behavior graph, resolved and attached by
     // `asset_provider::populate_object_graphs` once an archive provider is at hand.
     if let Some(project) = &cached.behavior_graph_file {

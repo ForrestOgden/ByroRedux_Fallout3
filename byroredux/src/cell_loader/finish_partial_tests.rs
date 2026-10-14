@@ -44,6 +44,7 @@ fn dummy_cached() -> Arc<CachedNifImport> {
         phantom_bounds: None,
         root_flags: 0,
         attach_light_offset: None,
+        projectile_offset: None,
         attach_points: None,
         child_attach_connections: None,
         furniture: None,

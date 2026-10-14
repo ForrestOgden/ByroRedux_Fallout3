@@ -96,14 +96,21 @@ fn launch_of(
         .ok_or_else(|| format!("source {:08X} is not loaded", launch.source))?;
     let transform = world
         .get::<GlobalTransform>(source)
-        .map(|t| (t.translation, t.rotation))
+        .map(|t| (t.translation, t.rotation, t.scale))
         .ok_or("the source has no placement")?;
     let direction = (transform.1 * -Vec3::Z).normalize_or_zero();
     if direction == Vec3::ZERO {
         return Err("the source has no forward".into());
     }
+    // The model's own `ProjectileNode` when it authors one (a dart port's muzzle is
+    // 16 units ahead of its origin, outside the wall it is mounted in); else a
+    // short step past the source.
+    let start = match world.get::<crate::components::ProjectileMuzzle>(source) {
+        Some(muzzle) => transform.0 + transform.1 * (muzzle.0 * transform.2),
+        None => transform.0 + direction * MUZZLE_OFFSET_BU,
+    };
     Ok(Projectile {
-        position: transform.0 + direction * MUZZLE_OFFSET_BU,
+        position: start,
         velocity: direction * proj.muzzle_speed,
         range_left: if proj.range > 0.0 { proj.range } else { f32::INFINITY },
         lifetime_left: (proj.lifetime > 0.0).then_some(proj.lifetime),
@@ -197,33 +204,66 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         .query::<byroredux_physics::RapierHandles>()
         .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
         .unwrap_or_default();
+    // The launcher's own colliders (its body, its children's, the bare collision
+    // entities its REFR owns): a projectile starts at the muzzle, inside them.
+    let mut launchers: std::collections::HashMap<EntityId, Vec<byroredux_physics::RigidBodyHandle>> =
+        std::collections::HashMap::new();
+    for projectile in &flying {
+        launchers
+            .entry(projectile.shooter)
+            .or_insert_with(|| launcher_bodies(world, projectile.shooter, &owners));
+    }
+    // Actors' bodies, resolved before the physics world is taken.
+    let actor_bodies: std::collections::HashSet<byroredux_physics::RigidBodyHandle> = owners
+        .iter()
+        .filter(|(entity, _)| resolve_actor(world, *entity).is_some())
+        .map(|(_, body)| *body)
+        .collect();
     let mut remaining = Vec::with_capacity(flying.len());
     let mut hits: Vec<(EntityId, EntityId, f32)> = Vec::new();
     for projectile in flying {
-        let excluded = owners
-            .iter()
-            .find_map(|(entity, body)| (*entity == projectile.shooter).then_some(*body));
+        let excluded = launchers.get(&projectile.shooter).map(Vec::as_slice).unwrap_or(&[]);
         let mut hit_body = None;
         let step = {
             let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
             advance(projectile, dt, |origin, direction, length| {
                 let physics = physics.as_ref()?;
-                let corridor = projectile.radius.max(MIN_HIT_CORRIDOR_BU);
-                let hit = physics.cast_ray_corridor(origin, direction, length, corridor, excluded)?;
+                // Solid geometry with a thin ray (the projectile's own radius): a
+                // corridor as wide as an actor's bone boxes would start inside the
+                // wall the launcher is mounted in. Actors with the wider corridor.
+                let solid = physics.cast_ray_corridor_where(origin, direction, length, projectile.radius, &|body| {
+                    !actor_bodies.contains(&body) && !excluded.contains(&body)
+                });
+                let actor = physics.cast_ray_corridor_where(
+                    origin,
+                    direction,
+                    length,
+                    projectile.radius.max(MIN_HIT_CORRIDOR_BU),
+                    &|body| actor_bodies.contains(&body) && !excluded.contains(&body),
+                );
+                let hit = match (solid, actor) {
+                    (Some(solid), Some(actor)) => Some(if actor.distance <= solid.distance { actor } else { solid }),
+                    (solid, actor) => solid.or(actor),
+                }?;
                 hit_body = hit.body;
                 Some(hit.distance)
             })
         };
         match step {
             Step::Flying(next) => remaining.push(next),
-            Step::Expired => {}
-            Step::Hit { .. } => {
+            Step::Expired => log::debug!("projectile from {} expired at {:?}", projectile.shooter, projectile.position),
+            Step::Hit { distance } => {
                 let target = hit_body.and_then(|body| {
                     owners
                         .iter()
                         .find_map(|(entity, handle)| (*handle == body).then_some(*entity))
                         .and_then(|collider| resolve_actor(world, collider))
                 });
+                log::debug!(
+                    "projectile from {} hit entity {:?} after {distance:.0} u: actor {target:?}",
+                    projectile.shooter,
+                    hit_body.and_then(|body| owners.iter().find_map(|(entity, handle)| (*handle == body).then_some(*entity)))
+                );
                 if let Some(target) = target {
                     hits.push((target, projectile.shooter, projectile.damage));
                 }
@@ -259,6 +299,44 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
             },
         );
     }
+}
+
+/// How many parents up a collider entity is searched for its launcher.
+const MAX_LAUNCHER_HOPS: usize = 16;
+
+/// Every body that belongs to `shooter`'s reference: its own, those of entities
+/// beneath it, and those of the bare collision entities whose `PhysicsSourceForm`
+/// names it.
+fn launcher_bodies(
+    world: &World,
+    shooter: EntityId,
+    owners: &[(EntityId, byroredux_physics::RigidBodyHandle)],
+) -> Vec<byroredux_physics::RigidBodyHandle> {
+    let form = world.get::<byroredux_core::ecs::components::FormIdComponent>(shooter).map(|id| id.0);
+    owners
+        .iter()
+        .filter(|(entity, _)| {
+            if *entity == shooter {
+                return true;
+            }
+            let mut at = *entity;
+            for _ in 0..MAX_LAUNCHER_HOPS {
+                let Some(parent) = world.get::<byroredux_core::ecs::Parent>(at).map(|parent| parent.0) else {
+                    break;
+                };
+                if parent == shooter {
+                    return true;
+                }
+                at = parent;
+            }
+            form.is_some_and(|form| {
+                world
+                    .get::<byroredux_core::ecs::components::PhysicsSourceForm>(*entity)
+                    .is_some_and(|source| source.0 == form)
+            })
+        })
+        .map(|(_, body)| *body)
+        .collect()
 }
 
 /// The actor a collider belongs to, if it belongs to one.
@@ -374,6 +452,15 @@ mod tests {
         assert_eq!(flight.velocity, Vec3::new(0.0, 0.0, -1300.0), "speed along the source's forward");
         assert_eq!(flight.position, Vec3::new(10.0, 20.0, 28.0), "starts past the source");
         assert_eq!((flight.range_left, flight.lifetime_left), (10000.0, None));
+        // A launcher whose model authors a `ProjectileNode` starts there (a dart port's
+        // is 16 units ahead of its origin, outside the wall it is mounted in).
+        world.register::<crate::components::ProjectileMuzzle>();
+        world
+            .query_mut::<crate::components::ProjectileMuzzle>()
+            .unwrap()
+            .insert(port, crate::components::ProjectileMuzzle(Vec3::new(0.0, 0.0, -16.0)));
+        let muzzled = launch_of(&world, &index_with_dart(0.0), launch).expect("a dart flies");
+        assert_eq!(muzzled.position, Vec3::new(10.0, 20.0, 14.0), "the ProjectileNode, 16 units along forward");
         // Gravity has no specified unit: refused. No ammo anywhere: refused.
         assert!(launch_of(&world, &index_with_dart(0.8), launch).is_err());
         assert!(launch_of(&world, &index_with_dart(0.0), ProjectileLaunch { ammo: 0, ..launch }).is_err());

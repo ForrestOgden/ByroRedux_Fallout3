@@ -1103,6 +1103,7 @@ pub(super) fn geometry_only_cached(
         phantom_bounds: None,
         root_flags: 0,
         attach_light_offset: None,
+        projectile_offset: None,
         // Precombines are baked static architecture — no FO4 weapon-mod
         // connect points. #1594.
         attach_points: None,

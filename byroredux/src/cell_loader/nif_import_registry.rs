@@ -303,6 +303,9 @@ pub(crate) struct CachedNifImport {
     /// `None` when the model authors no `AttachLight` — the spawn path then
     /// keeps the ESM light on the placement's first mesh entity.
     pub(super) attach_light_offset: Option<[f32; 3]>,
+    /// The root-local position of the NIF's `ProjectileNode` (the muzzle of a trap's
+    /// dart port), stamped on the placement root as a `ProjectileMuzzle`.
+    pub(super) projectile_offset: Option<[f32; 3]>,
     /// FO4+ weapon-mod / power-armor attach points the NIF *exposes*
     /// (`BSConnectPoint::Parents`). Interned to the `AttachPoints` ECS
     /// component at parse time (the node array doesn't survive into this
