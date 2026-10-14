@@ -294,6 +294,10 @@ pub struct NpcRecord {
     pub disposition_base: i16,
     /// Flags (from ACBS).
     pub acbs_flags: u32,
+    /// Skyrim `DNAM` base skill values (18 bytes, One-handed to Enchanting in actor-value
+    /// index order): what a Skyrim NPC without the auto-calc flag stores (UESP *NPC_*).
+    /// `None` outside Skyrim and when the record carries no `DNAM`.
+    pub skill_values: Option<[u8; 18]>,
     /// True when the NPC record carries a `VMAD` sub-record (Skyrim+
     /// Papyrus VM attached-script blob). Presence flag only; full
     /// decoding deferred to scripting-as-ECS work. See #369.
@@ -479,6 +483,7 @@ pub fn parse_npc(
         health_offset: 0,
         disposition_base: 50,
         acbs_flags: 0,
+        skill_values: None,
         has_script: common.has_script,
         script_form_id: 0,
         script_instance: common.script_instance,
@@ -797,6 +802,11 @@ fn parse_npc_core(
         // byte length hid the mismatch: that arm read magicka/stamina as
         // fatigue/barter, shifted level by two bytes, and interpreted the
         // TES5 tail as karma/disposition/template flags.
+        b"DNAM" if matches!(game, GameKind::Skyrim) && sub.data.len() >= 18 => {
+            let mut values = [0u8; 18];
+            values.copy_from_slice(&sub.data[..18]);
+            record.skill_values = Some(values);
+        }
         b"ACBS" if matches!(game, GameKind::Skyrim) && sub.data.len() >= 24 => {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();

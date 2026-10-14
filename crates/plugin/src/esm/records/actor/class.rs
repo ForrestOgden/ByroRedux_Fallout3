@@ -22,6 +22,10 @@ pub struct ClassRecord {
     /// (which uses [`Self::primary_attributes`] + [`Self::specialization`])
     /// and whenever no `ATTR` is present.
     pub base_attributes: [u8; 7],
+    /// Skyrim `DATA` skill weights (bytes 6..24, one per skill in actor-value-index order
+    /// from One-handed (6) to Enchanting (23)): the weights that distribute an NPC's 8 skill
+    /// points per level (UESP *CLAS*, Weight Calculations). `None` outside Skyrim.
+    pub skyrim_skill_weights: Option<[u8; 18]>,
     /// Tag skill form IDs from FNV DATA. Empty on Oblivion (see
     /// [`Self::major_skills`] for the analogous field).
     pub tag_skills: Vec<u32>,
@@ -66,6 +70,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
         full_name: common.full_name,
         description: String::new(),
         base_attributes: [0u8; 7],
+        skyrim_skill_weights: None,
         tag_skills: Vec::new(),
         primary_attributes: None,
         specialization: None,
@@ -74,6 +79,7 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
     };
 
     let is_oblivion = matches!(game, GameKind::Oblivion);
+    let is_skyrim = matches!(game, GameKind::Skyrim);
     // FO3 splits the 7 base attributes across 7 single-byte `ATTR`
     // subrecords; this tracks the next slot to fill so they accumulate in
     // order. FNV's one 7-byte `ATTR` fills all 7 in a single pass.
@@ -127,6 +133,15 @@ pub fn parse_clas(form_id: u32, subs: &[SubRecord], game: GameKind) -> ClassReco
             // on real content). Gate at `>= 16` — all we consume is the tag
             // block. Stays `!is_oblivion`-gated so the wider Oblivion DATA
             // routes to its own arm above.
+            // Skyrim DATA (36 bytes, UESP *CLAS*): unknown u32, training skill u8, training level u8,
+            // 18 skill weights, bleedout default f32, voice points u32, three attribute
+            // weights, flags. Only the skill weights are read here; the FNV arm below would
+            // take the first words for tag skills.
+            b"DATA" if is_skyrim && sub.data.len() >= 24 => {
+                let mut weights = [0u8; 18];
+                weights.copy_from_slice(&sub.data[6..24]);
+                record.skyrim_skill_weights = Some(weights);
+            }
             b"DATA" if !is_oblivion && sub.data.len() >= 16 => {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..4 {

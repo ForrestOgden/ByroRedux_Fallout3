@@ -73,7 +73,7 @@
 //! time (`parse_npc`'s `remap` param — see #1996), so the `index.classes`
 //! lookup is exact on multi-plugin loads too.
 
-use super::actor::{effective_actor_level, NpcRecord};
+use super::actor::{effective_actor_level, NpcRecord, RaceRecord};
 use super::index::EsmIndex;
 use byroredux_core::character::{Attribute, AttributeSet, CharacterRulesProfile, NpcStatModel};
 
@@ -316,7 +316,7 @@ fn derive_skyrim_actor_values(
     let Some(race) = index.races.get(&traits.race_form_id) else {
         return Vec::new();
     };
-    let mut out = Vec::with_capacity(3);
+    let mut out = Vec::with_capacity(3 + SKYRIM_SKILLS.len());
     for (name, starting, offset) in [
         ("Health", race.starting_health, stats.health_offset),
         ("Magicka", race.starting_magicka, stats.magicka_offset),
@@ -330,7 +330,124 @@ fn derive_skyrim_actor_values(
             out.push((key, value));
         }
     }
+    out.extend(derive_skyrim_skills(stats, race, index));
     out
+}
+
+/// Skyrim's 18 skills in actor-value-index order (One-handed = 6 .. Enchanting = 23): the
+/// order of the class's skill weights, the NPC's `DNAM` skill values and the race's skill
+/// bonus indices, and the editor ids of their `AVIF` records.
+pub const SKYRIM_SKILLS: [&str; 18] = [
+    "OneHanded",
+    "TwoHanded",
+    "Marksman",
+    "Block",
+    "Smithing",
+    "HeavyArmor",
+    "LightArmor",
+    "Pickpocket",
+    "Lockpicking",
+    "Sneak",
+    "Alchemy",
+    "Speechcraft",
+    "Alteration",
+    "Conjuration",
+    "Destruction",
+    "Illusion",
+    "Restoration",
+    "Enchanting",
+];
+
+/// The actor-value index of Skyrim's first skill (One-handed): RACE skill bonuses name
+/// their skill by actor-value index.
+const SKYRIM_FIRST_SKILL_INDEX: u8 = 6;
+/// What every Skyrim NPC's skill starts at (UESP *CLAS*, Weight Calculations: "15 + racial
+/// bonus + ...").
+pub const SKYRIM_BASE_SKILL: i32 = 15;
+/// The skill points a Skyrim NPC gains per level above the first (UESP *CLAS*: "the
+/// fixed 8 skill points per level").
+const SKYRIM_SKILL_POINTS_PER_LEVEL: i32 = 8;
+/// The most a skill reaches.
+const SKYRIM_SKILL_CAP: i32 = 100;
+
+/// The points a class's skill `weights` distribute among its skills for an NPC of `level`
+/// (UESP *CLAS*, Weight Calculations / Skills): first every complete set,
+/// `floor(8 x (level - 1) / sum of weights) x weight`; then the leftover points one at a
+/// time, looping over the skills ordered by weight (higher first) then actor-value index
+/// (lower first), a skill taking no more leftovers than its weight. The page says the
+/// assignment changes once a skill reaches 100 and does not give how; the result is capped
+/// at the skill maximum instead.
+pub fn skyrim_class_skill_points(weights: &[u8; 18], level: i32) -> [i32; 18] {
+    let mut points = [0i32; 18];
+    let total = SKYRIM_SKILL_POINTS_PER_LEVEL * (level - 1).max(0);
+    let sum: i32 = weights.iter().map(|&w| i32::from(w)).sum();
+    if total == 0 || sum == 0 {
+        return points;
+    }
+    let sets = total / sum;
+    for (slot, &weight) in points.iter_mut().zip(weights) {
+        *slot = sets * i32::from(weight);
+    }
+    let mut leftover = total - sets * sum;
+    let mut order: Vec<usize> = (0..18).filter(|&i| weights[i] > 0).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(weights[i]), i));
+    let mut taken = [0i32; 18];
+    while leftover > 0 {
+        let mut progressed = false;
+        for &i in &order {
+            if leftover == 0 {
+                break;
+            }
+            if taken[i] < i32::from(weights[i]) {
+                points[i] += 1;
+                taken[i] += 1;
+                leftover -= 1;
+                progressed = true;
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+    points
+}
+
+/// An NPC's 18 skills. Auto-calc NPCs follow the UESP formula: 15, plus the race's skill
+/// bonus, plus the class's weighted share of 8 points per level
+/// ([`skyrim_class_skill_points`]). An NPC without the auto-calc flag stores its skills in
+/// `DNAM`, used as written; how its race bonus and its `DNAM` skill offsets combine with
+/// them is not documented, so they are not added. Empty when neither source exists.
+fn derive_skyrim_skills(stats: &NpcRecord, race: &RaceRecord, index: &EsmIndex) -> Vec<(u32, f32)> {
+    /// ACBS "Auto-calc stats".
+    const AUTO_CALC: u32 = 0x10;
+    let values: [i32; 18] = if stats.acbs_flags & AUTO_CALC != 0 {
+        // An NPC with no class weights no skill: it keeps 15 plus its race's bonus.
+        let weights = index
+            .classes
+            .get(&stats.class_form_id)
+            .and_then(|class| class.skyrim_skill_weights)
+            .unwrap_or([0; 18]);
+        let points = skyrim_class_skill_points(&weights, i32::from(effective_actor_level(stats)));
+        let mut values = [0i32; 18];
+        for (slot, point) in values.iter_mut().zip(points) {
+            *slot = SKYRIM_BASE_SKILL + point;
+        }
+        for &(skill, bonus) in &race.skill_bonuses {
+            if let Some(slot) = skill.checked_sub(SKYRIM_FIRST_SKILL_INDEX).and_then(|i| values.get_mut(usize::from(i))) {
+                *slot += i32::from(bonus);
+            }
+        }
+        values
+    } else if let Some(stored) = stats.skill_values {
+        stored.map(i32::from)
+    } else {
+        return Vec::new();
+    };
+    SKYRIM_SKILLS
+        .iter()
+        .zip(values)
+        .filter_map(|(name, value)| Some((index.actor_value_form_id(name)?, value.clamp(0, SKYRIM_SKILL_CAP) as f32)))
+        .collect()
 }
 
 /// FO4+ stored actor values: the `PRPS` `(AVIF FormID, value)` pairs
@@ -1784,5 +1901,82 @@ mod tests {
             Some(150.0),
             "LVLC leaf's Health must reach the shell",
         );
+    }
+
+    /// UESP *CLAS*: the priest's weights (Restoration 4, Speech 3, Enchanting / Illusion /
+    /// Alchemy / Smithing 2): at level 2 (8 points, no complete set of 15) the leftover goes
+    /// one per skill in weight order, then lower index first - a first round of one point to
+    /// all six, a second to the two heaviest.
+    #[test]
+    fn skyrim_class_points_follow_the_documented_assignment_order() {
+        let mut weights = [0u8; 18];
+        for (index, weight) in [(22, 4), (17, 3), (23, 2), (21, 2), (16, 2), (10, 2)] {
+            weights[index - 6] = weight;
+        }
+        let points = skyrim_class_skill_points(&weights, 2);
+        assert_eq!(points[22 - 6], 2, "Restoration");
+        assert_eq!(points[17 - 6], 2, "Speech");
+        for index in [23, 21, 16, 10] {
+            assert_eq!(points[index - 6], 1, "weight-2 skill {index}");
+        }
+        assert_eq!(points.iter().sum::<i32>(), 8);
+        // Complete sets first: level 16 is 120 points = 8 sets of 15.
+        let sets = skyrim_class_skill_points(&weights, 16);
+        assert_eq!((sets[22 - 6], sets[17 - 6], sets[10 - 6]), (32, 24, 16));
+        // Level 1 and an empty class gain nothing.
+        assert_eq!(skyrim_class_skill_points(&weights, 1), [0; 18]);
+        assert_eq!(skyrim_class_skill_points(&[0; 18], 30), [0; 18]);
+    }
+
+    /// An auto-calc Skyrim NPC's skills are 15 + the race's bonus + the class's points; one
+    /// without the flag keeps its `DNAM` values as written.
+    #[test]
+    fn skyrim_skills_are_fifteen_plus_race_plus_class_points_or_the_stored_dnam() {
+        let mut index = EsmIndex { character_rules: CharacterRulesProfile::SKYRIM, ..Default::default() };
+        index.actor_values.insert(0x3E8, avif(0x3E8, "AVHealth"));
+        for (offset, name) in SKYRIM_SKILLS.iter().enumerate() {
+            index.actor_values.insert(0x400 + offset as u32, avif(0x400 + offset as u32, name));
+        }
+        let speech = 0x400 + 11;
+        let restoration = 0x400 + 16;
+        index.races.insert(
+            0x13746,
+            RaceRecord {
+                form_id: 0x13746,
+                starting_health: Some(50.0),
+                // Speech +10 (actor-value index 17), Restoration +5 (22).
+                skill_bonuses: vec![(17, 10), (22, 5)],
+                ..Default::default()
+            },
+        );
+        let mut weights = [0u8; 18];
+        weights[17 - 6] = 3;
+        weights[22 - 6] = 4;
+        index.classes.insert(
+            0x2000,
+            crate::esm::records::ClassRecord { form_id: 0x2000, skyrim_skill_weights: Some(weights), ..Default::default() },
+        );
+        let value_of = |values: &[(u32, f32)], id: u32| values.iter().find(|(key, _)| *key == id).map(|(_, v)| *v);
+        let auto = NpcRecord {
+            race_form_id: 0x13746,
+            class_form_id: 0x2000,
+            level: 1,
+            acbs_flags: 0x10,
+            ..Default::default()
+        };
+        let values = derive_npc_actor_values(&auto, &index);
+        assert_eq!(value_of(&values, speech), Some(25.0), "15 + 10 racial at level 1");
+        assert_eq!(value_of(&values, restoration), Some(20.0));
+        assert_eq!(value_of(&values, 0x400), Some(15.0), "an unweighted skill without a bonus");
+        let leveled = NpcRecord { level: 8, ..auto.clone() };
+        let values = derive_npc_actor_values(&leveled, &index);
+        // 56 points over weights 3 + 4: 8 sets, no leftover: Speech +24, Restoration +32.
+        assert_eq!(value_of(&values, speech), Some(15.0 + 10.0 + 24.0));
+        assert_eq!(value_of(&values, restoration), Some(15.0 + 5.0 + 32.0));
+        let mut stored_values = [0u8; 18];
+        stored_values[17 - 6] = 41;
+        let stored = NpcRecord { acbs_flags: 0, skill_values: Some(stored_values), ..auto };
+        let values = derive_npc_actor_values(&stored, &index);
+        assert_eq!(value_of(&values, speech), Some(41.0), "the stored value, no bonus added");
     }
 }
