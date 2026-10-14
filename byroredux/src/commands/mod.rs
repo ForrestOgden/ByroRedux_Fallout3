@@ -58,7 +58,7 @@ mod world_info;
 
 use actor_value::*;
 use anim_archetype::AnimArchetypeCommand;
-use script_var::{ScriptCallCommand, ScriptVarCommand};
+use script_var::{ScriptCallCommand, ScriptQuestCallCommand, ScriptVarCommand};
 use assets::*;
 use condition::*;
 use depth::*;
@@ -90,6 +90,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(AnimArchetypeCommand);
     registry.register(ScriptVarCommand);
     registry.register(ScriptCallCommand);
+    registry.register(ScriptQuestCallCommand);
     registry.register(ModAvCommand);
     registry.register(QuestShowCommand);
     registry.register(QuestEffectsCommand);

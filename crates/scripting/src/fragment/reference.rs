@@ -358,6 +358,40 @@ pub fn raise_reference_call(world: &World, entity: EntityId, function: &str, arg
     count
 }
 
+/// Run `function` of the quest script `script` now, with `args` (the debug console's
+/// `script.qcall`: what a dialogue fragment's call into its quest script does).
+/// The quest is the first whose `VMAD` carries `script`; returns its FormID.
+pub fn run_quest_script_function(world: &World, script: &str, function: &str, args: Vec<VmStored>) -> Result<u32, String> {
+    let (quest, vmad) = {
+        let instances = world
+            .try_resource::<crate::QuestScriptInstances>()
+            .ok_or_else(|| "no quest script instances installed".to_owned())?;
+        instances
+            .0
+            .iter()
+            .filter(|(_, vmad)| vmad.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(script)))
+            .min_by_key(|(quest, _)| quest.0)
+            .map(|(quest, vmad)| (*quest, vmad.clone()))
+            .ok_or_else(|| format!("no quest carries a script named {script}"))?
+    };
+    let effect = Effect::Interpret {
+        script: script.to_owned(),
+        function: function.to_owned(),
+        args,
+        resume: None,
+    };
+    let advances = apply_fragment_guard_free(world, std::slice::from_ref(&effect), quest, Some(&vmad));
+    if !advances.is_empty() {
+        if let Some(player) = world
+            .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()
+            .map(|player| player.0)
+        {
+            crate::quest_stages::push_quest_stage_advances(world, player, advances);
+        }
+    }
+    Ok(quest.0)
+}
+
 /// The events a reference receives when its cell unloads, in order.
 const UNLOAD_EVENTS: [&str; 2] = ["OnCellDetach", "OnUnload"];
 

@@ -1388,6 +1388,12 @@ the `int` Papyrus returns, and a negative base clamps to 0 (engine policy; the s
 silent). `GetGoldAmount` ("the amount of gold on this actor's person") is the count of Skyrim's
 `Gold001` (`0x0F`, checked against the record) in the actor's inventory.
 
+Live in Whiterun's Bannered Mare (`script.qcall FavorDialogueScript Bribe 1`, the console twin of a
+dialogue fragment calling into its quest script): `Bribe` compared `pTarget.GetBribeAmount()` with the
+player's gold and removed 15 gold (5110 to 5095) for Saadia. By hand from the live inputs (Saadia level 4,
+player level 1, neither listing a Speechcraft value, Morality 0): v = 4 x 0.1 + 1 - (0 - 100) x 0.1 = 11.4,
+11.4^1.4 = 30.2, x 0.5 x (0 x 1 + 1) = 15.1, truncated to 15.
+
 ### ApplyHavokImpulse (M47.2)
 
 CK *ApplyHavokImpulse*: the direction is normalized and the magnitude is "how hard"; no unit.

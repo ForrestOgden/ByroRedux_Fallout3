@@ -35,6 +35,43 @@ impl ConsoleCommand for ScriptCallCommand {
     }
 }
 
+/// `script.qcall <script> <function> [entity]`: run a function of a quest script now,
+/// with an actor argument (the console twin of a dialogue fragment calling into its quest
+/// script, e.g. `FavorDialogueScript` `Bribe`).
+pub(crate) struct ScriptQuestCallCommand;
+
+impl ConsoleCommand for ScriptQuestCallCommand {
+    fn name(&self) -> &str {
+        "script.qcall"
+    }
+
+    fn description(&self) -> &str {
+        "Run a quest script function now: script.qcall <script> <function> [actor entity]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let (Some(script), Some(function)) = (tokens.next(), tokens.next()) else {
+            return CommandOutput::error("usage: script.qcall <script> <function> [actor entity]");
+        };
+        let mut call_args = Vec::new();
+        if let Some(entity_token) = tokens.next() {
+            let entity = match resolve_console_entity(world, entity_token) {
+                Ok(entity) => entity,
+                Err(message) => return CommandOutput::error(format!("script.qcall: {message}")),
+            };
+            let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, entity) else {
+                return CommandOutput::error("script.qcall: the entity is not a placed reference");
+            };
+            call_args.push(byroredux_scripting::translate::effects::VmStored::Form(form));
+        }
+        match byroredux_scripting::run_quest_script_function(world, script, function, call_args) {
+            Ok(quest) => CommandOutput::line(format!("ran {script}.{function} on quest {quest:08X}")),
+            Err(message) => CommandOutput::error(format!("script.qcall: {message}")),
+        }
+    }
+}
+
 /// `script.var <entity|.> <name>`: the value the VM's scripts wrote to `<name>`
 /// (a property or variable) on the reference's script, else its authored value.
 pub(crate) struct ScriptVarCommand;
