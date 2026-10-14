@@ -1449,7 +1449,15 @@ clip is held at its authored fraction. The clip's trigger events are scheduled i
 (`(clip time − start time) / speed`, end-relative ones from the clip's length) and raised by
 `object_graph_step_system`, so a lever that finishes `PullDown` raises `Pulled` and settles in the
 "Pulled" state with no script involved. Transitions are instantaneous (no blends), blend trees and
-nested machines have no clip, transition conditions and variables are not evaluated, and the
+nested machines have no clip (`examples/graph_dump.rs` prints a decoded graph: 169 of the 420 vanilla
+behavior graphs carry a clip in a root state, 251 do not, most of them actor and creature graphs;
+the swinging blade `meshes\traps\swingingblade\behaviors\behavior00.hkx` is one: its single root
+state `State05` holds a blender generator `Blend00` over two inner state machines, `Behavior01`
+(states `State00`-`State02` playing `Clip00`-`Clip02` of `TrapBladeSwinging01_Trigger.hkx`) and
+`Behavior02` (`State06`, `State03`, `State04` playing the NIF's own Gamebryo sequences `playanim01` /
+`playanim02`), and a `Single` / `Loop` / `Reset` event is answered inside those inner machines, so
+the root machine rejects it and the blade does not swing; running it needs the nested machines, the
+blender's weights and the NIF sequence generator, none of which is decoded), transition conditions and variables are not evaluated, and the
 `SoundPlay.*` events the triggers carry are not played.
 
 **The natives.** `PlayAnimation` returns whether the graph took the event. `PlayAnimationAndWait`
