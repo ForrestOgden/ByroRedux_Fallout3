@@ -190,6 +190,20 @@ fn cell_location_of(world: &World, entity: EntityId) -> Option<u32> {
     world.try_resource::<LocationTable>()?.cell_location(cell)
 }
 
+/// CK *IsLoaded - Location*: "if this location is loaded or not" — whether a
+/// resident cell is one of the location's own (a loaded child location does not
+/// load its parent). `None` when `location` is not a known `LCTN`.
+pub fn location_loaded(world: &World, location: u32) -> Option<bool> {
+    let table = world.try_resource::<LocationTable>()?;
+    if !table.locations().contains(&location) {
+        return None;
+    }
+    let loaded = world
+        .query::<CellFormId>()
+        .is_some_and(|cells| cells.iter().any(|(_, cell)| table.cell_location(cell.0) == Some(location)));
+    Some(loaded)
+}
+
 fn is_player(world: &World, entity: EntityId) -> bool {
     world
         .try_resource::<crate::papyrus_demo::PapyrusPlayerEntity>()

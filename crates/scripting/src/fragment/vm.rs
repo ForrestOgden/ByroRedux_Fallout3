@@ -2664,6 +2664,7 @@ impl Vm<'_> {
                     | "countlinkedrefchain"
                     | "isindialoguewithplayer"
                     | "dropobject"
+                    | "isloaded"
                     | "isfurnitureinuse"
                     | "isstarting"
                     | "isstopping"
@@ -3094,6 +3095,13 @@ impl Vm<'_> {
                 }
                 crate::fragment::remove_items(self.world, entity, *item, take, None);
                 Some(self.place_at_me(*owner, &[Value::Form(*item), Value::Int(take as i32)])?)
+            }
+            // CK *IsLoaded - Location*: whether the location is loaded.
+            (Value::Form(location), "isloaded") if args.is_empty() => {
+                match crate::location::location_loaded(self.world, *location) {
+                    Some(loaded) => Some(Value::Bool(loaded)),
+                    None => return stop("IsLoaded on a form that is not a location"),
+                }
             }
             // CK *IsFurnitureInUse*: "if any marker on the furniture is in use
             // (or reserved, if we aren't ignoring reservations)". The occupants
@@ -4968,6 +4976,7 @@ impl<'l> Checker<'l> {
             (Kind::Object | Kind::Player, "dropobject")
                 if matches!(arg_kinds.first(), Some(Arg::Kind(Kind::Object | Kind::Player)))
                     && arg_kinds.get(1).is_none_or(|count| matches!(count, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)))
+            (Kind::Object, "isloaded") if arg_kinds.is_empty() => return Some(Kind::Bool),
                     && arg_kinds.len() <= 2 =>
             {
                 return Some(Kind::Object);

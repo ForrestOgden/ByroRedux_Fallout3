@@ -137,6 +137,18 @@ fn current_location_follows_the_cell_root_and_the_published_player_location() {
     assert_eq!(current_location(&world, stray), None);
 }
 
+#[test]
+fn a_location_is_loaded_while_one_of_its_own_cells_is() {
+    let mut world = World::new();
+    install_location_table(&mut world, &whiterun_index());
+    assert_eq!(location_loaded(&world, DRAGONSREACH), Some(false), "no cell is resident");
+    let cell_root = world.spawn();
+    world.insert(cell_root, CellFormId(DRAGONSREACH_CELL));
+    assert_eq!(location_loaded(&world, DRAGONSREACH), Some(true));
+    assert_eq!(location_loaded(&world, WHITERUN), Some(false), "a child's cell does not load its parent");
+    assert_eq!(location_loaded(&world, 0x0DEA_D000), None, "not a location");
+}
+
 mod conditions {
     use super::*;
     use crate::condition::{evaluate_condition, ConditionContext};

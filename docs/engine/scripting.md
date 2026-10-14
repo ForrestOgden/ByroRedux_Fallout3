@@ -768,6 +768,9 @@ runtime:
   the owner's inventory and creates one reference per item at the owner, returning the last; the CK
   stacks a count above one into a single reference, which created references have no count for. An
   item the inventory does not hold drops nothing and reads None.
+- **Location loaded.** `Location.IsLoaded()` ("if this location is loaded or not") is true while a
+  resident cell is one of the location's own (`location_loaded`); a loaded child location does not
+  load its parent, and a form that is not a location stops the run.
 - **Chain counts.** `CountLinkedRefChain(keyword, max)` follows the CK page's own script: from the
   reference each step takes the keyword's link and counts it (a missing link too, so A to B to C
   counts 3) unless the link is the reference itself, and stops once the count passes the cap
