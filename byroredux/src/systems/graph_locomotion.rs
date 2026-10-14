@@ -50,13 +50,20 @@ impl Component for GraphLocomotion {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Which way a behavior-graph actor faces in its own space: the Havok clips' forward is +Y
+/// in Gamebryo's Z-up space, which is -Z once converted (`zup_to_yup_pos`). Measured on a
+/// live Fallout 4 actor: with the root unrotated, the left foot's toe sits 8.4 units further
+/// along -Z than the foot (the skeleton's reference pose agrees, toe at +8.5 Y Z-up). The
+/// body's right-hand side is +X (its right foot is at +X in the same pose).
+pub(crate) const GRAPH_MODEL_FORWARD: Vec3 = Vec3::NEG_Z;
+pub(crate) const GRAPH_MODEL_RIGHT: Vec3 = Vec3::X;
+
 /// The heading of `moved` relative to a body with `rotation`, as a fraction of a turn
 /// clockwise (seen from above) from straight ahead: 0 forward, 0.25 right, 0.5 back, 0.75
-/// left - the positions of the eight-way blenders' children. A body faces +Z at zero yaw
-/// and its right-hand side is -X (the opposite of the camera that looks down -Z).
+/// left - the positions of the eight-way blenders' children.
 pub(crate) fn heading_fraction(moved: Vec3, rotation: Quat) -> f32 {
-    let forward = rotation * Vec3::Z;
-    let right = rotation * Vec3::NEG_X;
+    let forward = rotation * GRAPH_MODEL_FORWARD;
+    let right = rotation * GRAPH_MODEL_RIGHT;
     let angle = moved.dot(right).atan2(moved.dot(forward));
     (angle / std::f32::consts::TAU).rem_euclid(1.0)
 }
@@ -75,8 +82,8 @@ impl Component for ConsoleWalk {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Move every [`ConsoleWalk`] actor along its velocity, facing it. Runs before the
-/// graph's inputs are read.
+/// Move every [`ConsoleWalk`] actor along its velocity (its facing is left alone, so a
+/// strafe or a backward walk reads as one). Runs before the graph's inputs are read.
 pub(crate) fn console_walk_system(world: &World, dt: f32) {
     let Some(mut walks) = world.query_mut::<ConsoleWalk>() else { return };
     if walks.iter().next().is_none() {
@@ -88,9 +95,6 @@ pub(crate) fn console_walk_system(world: &World, dt: f32) {
         let step = dt.min(walk.remaining).max(0.0);
         if let Some(transform) = transforms.get_mut(entity) {
             transform.translation += walk.velocity * step;
-            if walk.velocity.length_squared() > 1e-6 {
-                transform.rotation = Quat::from_rotation_y(walk.velocity.x.atan2(walk.velocity.z));
-            }
         }
         walk.remaining -= step;
         if walk.remaining <= 0.0 {
@@ -180,6 +184,75 @@ pub(crate) fn graph_locomotion_system(world: &World, dt: f32) {
     }
 }
 
+/// Apply the root motion of a graph-driven actor's animation to the actor.
+///
+/// Fallout 4's locomotion clips are authored in place, so the locomotion systems above
+/// move the actor and the graph merely reads that motion. When the graph itself carries
+/// the actor - `bGraphDriven` / `bAnimationDriven` set, as in the transitions that walk it
+/// into a seat or turn it on the spot - the displacement the playing clips extract (the
+/// animation system leaves it in `RootMotionDelta`, blended across the stack's layers) is
+/// the movement: this moves the actor by it, in the actor's own frame, and consumes it.
+/// Yaw in the extracted motion is not applied.
+pub(crate) fn graph_root_motion_system(world: &World, _dt: f32) {
+    use byroredux_core::animation::RootMotionDelta;
+    let actors: Vec<(EntityId, Quat)> = {
+        let Some(graphs) = world.query::<ObjectAnimationGraph>() else { return };
+        let Some(transforms) = world.query::<Transform>() else { return };
+        graphs
+            .iter()
+            .filter_map(|(entity, graph)| {
+                let driven = ["bGraphDriven", "bAnimationDriven"]
+                    .iter()
+                    .any(|name| graph.variable(name).is_some_and(|value| value != 0.0));
+                driven.then(|| transforms.get(entity).map(|transform| (entity, transform.rotation))).flatten()
+            })
+            .collect()
+    };
+    if actors.is_empty() {
+        return;
+    }
+    // The animation system writes only where the component exists.
+    if let Some(mut deltas) = world.query_mut::<RootMotionDelta>() {
+        for (entity, _) in &actors {
+            if deltas.get(*entity).is_none() {
+                deltas.insert(*entity, RootMotionDelta(Vec3::ZERO));
+            }
+        }
+    }
+    let motions: Vec<(EntityId, Vec3, Quat)> = match world.query::<RootMotionDelta>() {
+        Some(deltas) => actors
+            .iter()
+            .filter_map(|(entity, rotation)| {
+                let delta = deltas.get(*entity)?.0;
+                (delta.is_finite() && delta != Vec3::ZERO).then_some((*entity, delta, *rotation))
+            })
+            .collect(),
+        None => return,
+    };
+    if motions.is_empty() {
+        return;
+    }
+    let mut moved = Vec::with_capacity(motions.len());
+    if let Some(mut transforms) = world.query_mut::<Transform>() {
+        for (entity, delta, rotation) in &motions {
+            if let Some(transform) = transforms.get_mut(*entity) {
+                transform.translation += *rotation * (*delta * transform.scale);
+                moved.push((*entity, transform.translation));
+            }
+        }
+    }
+    if let Some(mut deltas) = world.query_mut::<RootMotionDelta>() {
+        for (entity, _, _) in &motions {
+            if let Some(delta) = deltas.get_mut(*entity) {
+                delta.0 = Vec3::ZERO;
+            }
+        }
+    }
+    for (entity, position) in moved {
+        byroredux_physics::set_kinematic_translation(world, entity, position);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,14 +333,14 @@ mod tests {
     #[test]
     fn the_heading_is_a_fraction_of_a_turn_from_straight_ahead() {
         let facing = |yaw: f32| Quat::from_rotation_y(yaw);
-        let ahead = facing(0.0) * Vec3::Z;
-        assert!(heading_fraction(ahead, facing(0.0)).abs() < 1e-5);
-        assert!((heading_fraction(Vec3::NEG_X, facing(0.0)) - 0.25).abs() < 1e-5, "its right is -X");
-        assert!((heading_fraction(-Vec3::Z, facing(0.0)) - 0.5).abs() < 1e-5);
-        assert!((heading_fraction(Vec3::X, facing(0.0)) - 0.75).abs() < 1e-5);
-        // Turned 90 degrees (yaw), forward is +X: walking along +X is straight ahead.
-        let turned = facing(std::f32::consts::FRAC_PI_2);
-        assert!(heading_fraction(Vec3::X, turned).abs() < 1e-5 || (heading_fraction(Vec3::X, turned) - 1.0).abs() < 1e-5);
+        let at = |moved: Vec3, yaw: f32| heading_fraction(moved, facing(yaw));
+        assert!(at(Vec3::NEG_Z, 0.0).abs() < 1e-5, "an unrotated body faces -Z");
+        assert!((at(Vec3::X, 0.0) - 0.25).abs() < 1e-5, "its right is +X");
+        assert!((at(Vec3::Z, 0.0) - 0.5).abs() < 1e-5);
+        assert!((at(Vec3::NEG_X, 0.0) - 0.75).abs() < 1e-5);
+        // Turned a quarter (yaw +90 degrees takes -Z to -X): walking along -X is ahead.
+        let ahead = at(Vec3::NEG_X, std::f32::consts::FRAC_PI_2);
+        assert!(ahead < 1e-5 || ahead > 1.0 - 1e-5, "{ahead}");
     }
 
     /// A moving actor feeds its graph the speed it walks and starts the move state; a
@@ -277,7 +350,7 @@ mod tests {
         let (world, actor) = world_with_actor();
         graph_locomotion_system(&world, 0.016); // baseline
         // 100 units a second, forward.
-        walk(&world, actor, 40, 0.016, Vec3::new(0.0, 0.0, 1.6));
+        walk(&world, actor, 40, 0.016, Vec3::new(0.0, 0.0, -1.6));
         let speed = variable(&world, actor, "Speed");
         assert!((speed - 100.0).abs() < 2.0, "smoothed to the walked speed, got {speed}");
         assert_eq!(variable(&world, actor, "SpeedSmoothed"), speed);
@@ -291,6 +364,33 @@ mod tests {
         assert_eq!(variable(&world, actor, "Speed"), 0.0);
         let graphs = world.query::<ObjectAnimationGraph>().unwrap();
         assert_eq!(graphs.get(actor).unwrap().state(), 0, "moveStop returned it to the idle");
+    }
+
+    /// A graph-driven actor is carried by the root motion its clips extract, in its own
+    /// frame; a locomotion-driven one is not (its movers move it).
+    #[test]
+    fn root_motion_moves_only_a_graph_driven_actor() {
+        use byroredux_core::animation::RootMotionDelta;
+        let (mut world, actor) = world_with_actor();
+        world.register::<RootMotionDelta>();
+        // Rebuild the graph with the driven flag among its variables.
+        let mut shared = (*world.get::<ObjectAnimationGraph>(actor).unwrap().graph_arc()).clone();
+        shared.graph.variables.push(Variable { name: "bGraphDriven".into(), kind: VariableKind::Bool, initial: 0.0 });
+        let mut graph = ObjectAnimationGraph::new(Arc::new(shared), actor).unwrap();
+        graph.root = actor;
+        world.insert(actor, graph);
+        world.insert(actor, RootMotionDelta(Vec3::new(0.0, 0.0, -10.0)));
+        world.query_mut::<Transform>().unwrap().get_mut(actor).unwrap().rotation = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+        graph_root_motion_system(&world, 0.016);
+        assert_eq!(world.get::<Transform>(actor).unwrap().translation, Vec3::ZERO, "not graph-driven: left to the movers");
+
+        byroredux_scripting::animation_graph::set_variable_value(&world, actor, "bGraphDriven", 1.0);
+        graph_root_motion_system(&world, 0.016);
+        let moved = world.get::<Transform>(actor).unwrap().translation;
+        // Forward (-Z) turned a quarter by +90 degrees of yaw is -X.
+        assert!((moved - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-4, "{moved:?}");
+        assert_eq!(world.get::<RootMotionDelta>(actor).unwrap().0, Vec3::ZERO, "consumed");
     }
 
     /// A one-tick jump (a teleport) and a seated actor are not walking.

@@ -849,11 +849,12 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
         stack_events.clear();
         seen_labels.clear();
         let accum_root: Option<FixedString>;
-        // #3703 — the accum-root layer's own `(clip_handle, prev_time,
-        // local_time)`, captured alongside `accum_root` so Phase 3b can
-        // compute a proper per-tick delta via `sampled_root_motion_delta`
-        // instead of treating the blended absolute position as a delta.
-        let accum_root_delta_info: Option<(u32, f32, f32)>;
+        // #3703 — the per-tick accumulation-root delta is computed from each layer's own
+        // `(prev_time, local_time)` (below), never from the blended absolute position.
+        // The accumulation root's displacement this tick across *every* layer that has it,
+        // weighted: a blended pose (a walk mixed into a run) travels the mix of their
+        // extracted motions, not the heaviest layer's alone.
+        let mut blended_root_delta = Vec3::ZERO;
         let dominant_info: Option<(u32, f32)>;
         let stack_root: Option<EntityId>;
         {
@@ -930,9 +931,27 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 }
             }
             accum_root = best.as_ref().map(|(n, ..)| *n);
-            accum_root_delta_info = best.map(|(_, _, clip_handle, prev_time, local_time)| {
-                (clip_handle, prev_time, local_time)
-            });
+            if let Some(name) = accum_root {
+                let mut total = 0.0f32;
+                let mut sum = Vec3::ZERO;
+                for layer in &stack.layers {
+                    let weight = layer.effective_weight();
+                    if weight < 0.001 {
+                        continue;
+                    }
+                    let Some(clip) = registry.get(layer.clip_handle) else { continue };
+                    if clip.accum_root_name != Some(name) {
+                        continue;
+                    }
+                    if let Some(channel) = clip.channels.get(&name) {
+                        sum += sampled_root_motion_delta(clip, channel, layer.prev_time, layer.local_time) * weight;
+                        total += weight;
+                    }
+                }
+                if total > 0.0 {
+                    blended_root_delta = sum / total;
+                }
+            }
 
             // Dominant layer: capture only clip_handle + local_time. The
             // float/color/bool channel Vecs are accessed via the registry
@@ -980,14 +999,7 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                 if is_accum {
                     let (anim_pos, _) = split_root_motion(pos);
                     transform.translation = anim_pos;
-                    if let Some((clip_handle, prev_time, local_time)) = accum_root_delta_info {
-                        if let Some(clip) = registry.get(clip_handle) {
-                            if let Some(channel) = clip.channels.get(&name) {
-                                root_motion +=
-                                    sampled_root_motion_delta(clip, channel, prev_time, local_time);
-                            }
-                        }
-                    }
+                    root_motion += blended_root_delta;
                 } else {
                     transform.translation = pos;
                 }
@@ -1718,6 +1730,68 @@ mod animation_system_e2e_tests {
             Vec3::new(0.0, 105.0, 0.0),
             "COM height remains skeletal pose while horizontal travel is extracted"
         );
+    }
+
+    /// A blended stack travels the weighted mix of its layers' extracted motions, not
+    /// the heaviest layer's alone (a walk half-mixed into a run).
+    #[test]
+    fn animation_stack_root_motion_is_the_weighted_mix_of_its_layers() {
+        let bone_name = "NPC COM [COM ]";
+        let (mut world, root, _bone, _) = build_skeleton_and_clip(bone_name);
+        world.register::<RootMotionDelta>();
+        world.register::<AnimationStack>();
+        world.register::<AnimationPlayer>();
+        let bone_sym = world.resource::<StringPool>().get(bone_name).unwrap();
+        // One second of travel along x at `speed` units a second.
+        let clip_with_speed = |speed: f32| {
+            let key = |time: f32| TranslationKey {
+                time,
+                value: Vec3::new(speed * time, 50.0, 0.0),
+                forward: Vec3::ZERO,
+                backward: Vec3::ZERO,
+                tbc: None,
+            };
+            let channel = TransformChannel {
+                translation_keys: vec![key(0.0), key(1.0)],
+                translation_type: KeyType::Linear,
+                rotation_keys: Vec::new(),
+                rotation_type: KeyType::Linear,
+                scale_keys: Vec::new(),
+                scale_type: KeyType::Linear,
+                priority: 0,
+            };
+            let mut channels = FxHashMap::default();
+            channels.insert(bone_sym, channel);
+            world.resource_mut::<AnimationClipRegistry>().add(AnimationClip {
+                name: format!("travel {speed}"),
+                duration: 1.0,
+                cycle_type: CycleType::Clamp,
+                frequency: 1.0,
+                phase: 0.0,
+                weight: 1.0,
+                accum_root_name: Some(bone_sym),
+                channels,
+                float_channels: Vec::new(),
+                color_channels: Vec::new(),
+                bool_channels: Vec::new(),
+                texture_flip_channels: Vec::new(),
+                text_keys: Vec::new(),
+            })
+        };
+        let (slow, fast) = (clip_with_speed(40.0), clip_with_speed(80.0));
+        let mut stack = AnimationStack::new();
+        stack.root_entity = Some(root);
+        for (handle, weight) in [(slow, 0.5), (fast, 0.5)] {
+            let mut layer = byroredux_core::animation::AnimationLayer::new(handle);
+            layer.weight = weight;
+            stack.layers.push(layer);
+        }
+        world.insert(root, stack);
+        world.insert(root, RootMotionDelta(Vec3::ZERO));
+        animation_system(&world, 0.5);
+        let delta = world.get::<RootMotionDelta>(root).unwrap().0;
+        // Slow travels 20, fast 40 in half a second: the mix is 30.
+        assert!((delta - Vec3::new(30.0, 0.0, 0.0)).length() < 1e-3, "{delta:?}");
     }
 
     /// Regression: #3703 / ECS-2026-08-30-D10-03. The `AnimationStack`

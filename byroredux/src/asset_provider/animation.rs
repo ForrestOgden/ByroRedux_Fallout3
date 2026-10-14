@@ -397,6 +397,19 @@ fn idle_animation_candidates(event: &str) -> Vec<String> {    let event = event.
         .collect()
 }
 
+/// The extracted-motion position of a clip's reference frame at `time`, in engine space.
+/// The samples are spread evenly over the frame's duration; yaw is not applied (a clip that
+/// turns its root plays the turn in the pose).
+fn reference_frame_position(frame: &byroredux_hkx::ReferenceFrame, time: f32) -> Vec3 {
+    let last = frame.samples.len() - 1;
+    let at = if frame.duration > 0.0 { (time / frame.duration).clamp(0.0, 1.0) * last as f32 } else { 0.0 };
+    let (low, high) = (at.floor() as usize, (at.ceil() as usize).min(last));
+    let (a, b) = (frame.samples[low.min(last)], frame.samples[high]);
+    let t = at - at.floor();
+    let lerp = |index: usize| a[index] + (b[index] - a[index]) * t;
+    Vec3::from_array(byroredux_core::math::coord::zup_to_yup_pos([lerp(0), lerp(1), lerp(2)]))
+}
+
 /// #4563 — the one decision point for canonical clip fields on the HKX
 /// path. Caller-declared policy rides in as arguments (`one_shot`,
 /// `accum_root`) instead of install sites mutating the converted clip
@@ -476,7 +489,14 @@ pub(super) fn convert_hkx_clip(
         let mut scale_keys = Vec::with_capacity(samples.len());
         for (frame, sample) in samples.iter().enumerate() {
             let time = (frame as f32 * animation.frame_duration).min(animation.duration);
-            let translation = byroredux_core::math::coord::zup_to_yup_pos(sample.translation);
+            let mut translation = byroredux_core::math::coord::zup_to_yup_pos(sample.translation);
+            // Fallout 4 authors locomotion in place and keeps the travel in the clip's
+            // reference frame: it rides on the root bone, where the accumulation root
+            // splits it back out into root motion.
+            if let (Some(frame), true) = (&animation.reference_frame, bone.parent_index < 0) {
+                let travel = reference_frame_position(frame, time);
+                translation = [translation[0] + travel.x, translation[1] + travel.y, translation[2] + travel.z];
+            }
             let rotation = byroredux_core::math::coord::zup_to_yup_quat_wxyz([
                 sample.rotation[3],
                 sample.rotation[0],
@@ -519,6 +539,11 @@ pub(super) fn convert_hkx_clip(
     }
 
     let completion_events = behavior_completion_events(idle_event);
+    let reference_root = animation
+        .reference_frame
+        .as_ref()
+        .and_then(|_| skeleton.bones.iter().find(|bone| bone.parent_index < 0))
+        .map(|bone| pool.intern(&bone.name));
     let accum_root_name = if let Some(requested) = accum_root {
         let bound = skeleton
             .bones
@@ -534,6 +559,8 @@ pub(super) fn convert_hkx_clip(
             );
         }
         bound
+    } else if reference_root.is_some() {
+        reference_root
     } else if completion_events.is_empty() {
         None
     } else {
@@ -635,6 +662,45 @@ mod tests {
         assert!(behavior_completion_events("IdleCartPrisonerASway").is_empty());
     }
 
+    /// Fallout 4 locomotion clips are authored in place; their travel is the reference
+    /// frame. It rides on the root bone and the root is bound as the accumulation root, so
+    /// the clip yields root motion (Z-up +Y forward is engine -Z) and the pose stays in place.
+    #[test]
+    fn a_reference_frame_becomes_root_bone_travel_and_the_accumulation_root() {
+        use byroredux_hkx::{HkxAnnotation, HkxBone, HkxTransform, ReferenceFrame};
+
+        let skeleton = HkxSkeleton {
+            name: "Rig".to_string(),
+            bones: vec![
+                HkxBone { name: "Root".to_string(), parent_index: -1, reference_pose: HkxTransform::IDENTITY },
+                HkxBone { name: "COM".to_string(), parent_index: 0, reference_pose: HkxTransform::IDENTITY },
+            ],
+        };
+        let frames = vec![HkxTransform::IDENTITY; 3];
+        let animation = HkxAnimation {
+            duration: 1.0,
+            num_frames: 3,
+            frame_duration: 0.5,
+            tracks: vec![frames.clone(), frames],
+            track_to_bone: vec![0, 1],
+            annotations: Vec::<HkxAnnotation>::new(),
+            dropped_bones: Vec::new(),
+            reference_frame: Some(ReferenceFrame {
+                duration: 1.0,
+                samples: vec![[0.0, 0.0, 0.0, 0.0], [0.0, 50.0, 0.0, 0.0], [0.0, 100.0, 0.0, 0.0]],
+            }),
+        };
+        let mut pool = StringPool::new();
+        let clip = convert_hkx_clip("walk.hkx", "walk", &skeleton, &animation, &mut pool, false, None);
+        let root = pool.intern("Root");
+        assert_eq!(clip.accum_root_name, Some(root));
+        let travel = &clip.channels[&root].translation_keys;
+        assert_eq!(travel.last().unwrap().value, Vec3::new(0.0, 0.0, -100.0), "100 units forward, -Z in engine space");
+        assert_eq!(travel[1].value, Vec3::new(0.0, 0.0, -50.0), "evenly sampled");
+        let com = &clip.channels[&pool.intern("COM")].translation_keys;
+        assert!(com.iter().all(|key| key.value == Vec3::ZERO), "only the root carries the travel");
+    }
+
     /// #3013 — a `track_to_bone` entry naming a bone index the decoded
     /// skeleton doesn't have must drop only that track, not panic and not
     /// silently disappear (the drop itself is still asserted here; the
@@ -665,6 +731,7 @@ mod tests {
             track_to_bone: vec![0, 5],
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
+            reference_frame: None,
         };
 
         let mut pool = StringPool::new();
@@ -729,6 +796,7 @@ mod tests {
                 text: "sound: footstep".to_string(),
             }],
             dropped_bones: Vec::new(),
+            reference_frame: None,
         };
 
         let mut pool = StringPool::new();
@@ -831,6 +899,7 @@ mod tests {
             track_to_bone: vec![0],
             annotations: Vec::<HkxAnnotation>::new(),
             dropped_bones: Vec::new(),
+            reference_frame: None,
         };
 
         let mut pool = StringPool::new();
@@ -904,6 +973,7 @@ mod tests {
             track_to_bone: vec![0],
             annotations: Vec::new(),
             dropped_bones: Vec::new(),
+            reference_frame: None,
         };
         let mut pool = StringPool::new();
 

@@ -705,6 +705,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // notifications in the same frame, before Late drains the transient
     // AnimationTextKeyEvents components.
     scheduler.add_exclusive(Stage::Update, crate::systems::cinematic_root_motion_system);
+    // M47.2 — a graph-driven actor is carried by the root motion its clips extract.
+    scheduler.add_exclusive(Stage::Update, crate::systems::graph_root_motion_system);
     // #2391 — the second half of #2269's inverted pair. The body reads
     // text-key events and writes `ActorCinematicState`, then hands the
     // player's events to `dispatch_player_cinematic_animation_event`,

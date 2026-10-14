@@ -176,10 +176,10 @@ impl ConsoleCommand for ActorWalkCommand {
         else {
             return CommandOutput::error("actor.walk: the entity has no Transform");
         };
-        // Clockwise from above, as `heading_fraction` measures: right is -X on the body.
+        // Clockwise from above, as `heading_fraction` measures.
         let angle = turns * std::f32::consts::TAU;
-        let forward = rotation * byroredux_core::math::Vec3::Z;
-        let right = rotation * byroredux_core::math::Vec3::NEG_X;
+        let forward = rotation * crate::systems::GRAPH_MODEL_FORWARD;
+        let right = rotation * crate::systems::GRAPH_MODEL_RIGHT;
         let velocity = (forward * angle.cos() + right * angle.sin()) * speed;
         let Some(mut walks) = world.query_mut::<crate::systems::ConsoleWalk>() else {
             return CommandOutput::error("actor.walk: ConsoleWalk is not registered");

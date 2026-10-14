@@ -49,6 +49,20 @@ pub struct HkxAnimation {
     /// the bone keeps its bind pose; a consumer reports the list with the
     /// clip path, which this decoder never sees.
     pub dropped_bones: Vec<u16>,
+    /// The clip's extracted motion (`hkaDefaultAnimatedReferenceFrame`), when it has
+    /// one: Fallout 4 authors its locomotion clips in place and keeps the travel here,
+    /// where Skyrim keeps it in the root bone's own track.
+    pub reference_frame: Option<ReferenceFrame>,
+}
+
+/// The motion an animation extracts from its pose: the root's path through the world over
+/// the clip, sampled evenly from time 0 to `duration`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceFrame {
+    pub duration: f32,
+    /// `(x, y, z, yaw)` per sample, in the clip's own space (Z up): the root's offset
+    /// from where the clip began, and its turn about the up axis in radians.
+    pub samples: Vec<[f32; 4]>,
 }
 
 /// Bound the decoded transform sample matrix before allocating one `Vec` per
@@ -579,7 +593,42 @@ pub fn decode_spline_animation(bytes: &[u8]) -> Result<HkxAnimation> {
         track_to_bone: kept_bones,
         annotations,
         dropped_bones,
+        reference_frame: read_reference_frame(&pack),
     })
+}
+
+/// `hkaDefaultAnimatedReferenceFrame`: Havok 2014 (Fallout 4) layout - the duration and the
+/// `hkArray<hkVector4>` of samples follow the up and forward vectors. A Havok 2010 packfile
+/// carries no such object in the vanilla clips, so none is read there.
+fn read_reference_frame(pack: &Packfile<'_>) -> Option<ReferenceFrame> {
+    const MAX_SAMPLES: usize = 65_536;
+    const DURATION: usize = 0x40;
+    const SAMPLES: usize = 0x48;
+    if pack.version() != 11 {
+        return None;
+    }
+    let frame = pack.object("hkaDefaultAnimatedReferenceFrame").ok()?;
+    let duration = pack.f32(frame + DURATION, "reference frame duration").ok()?;
+    let count = pack.u32(frame + SAMPLES + 8, "reference frame samples").ok()? as usize;
+    if count == 0 || count > MAX_SAMPLES || !duration.is_finite() || duration <= 0.0 {
+        return None;
+    }
+    let data = pack.local_target(frame + SAMPLES)?;
+    let mut samples = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = data + index * 16;
+        let sample = [
+            pack.f32(at, "reference frame x").ok()?,
+            pack.f32(at + 4, "reference frame y").ok()?,
+            pack.f32(at + 8, "reference frame z").ok()?,
+            pack.f32(at + 12, "reference frame yaw").ok()?,
+        ];
+        if !sample.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+        samples.push(sample);
+    }
+    Some(ReferenceFrame { duration, samples })
 }
 
 fn read_annotations(

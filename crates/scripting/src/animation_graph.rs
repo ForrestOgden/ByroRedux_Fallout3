@@ -318,6 +318,12 @@ impl ObjectAnimationGraph {
         &self.graph
     }
 
+    /// The shared graph, for building a variant of it (tests).
+    #[doc(hidden)]
+    pub fn graph_arc(&self) -> Arc<LoadedGraph> {
+        Arc::clone(&self.graph)
+    }
+
     /// The value of the graph variable named `name` (case-insensitive): bool as 0/1,
     /// int as its value.
     pub fn variable(&self, name: &str) -> Option<f32> {
