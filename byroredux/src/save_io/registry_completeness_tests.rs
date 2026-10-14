@@ -652,6 +652,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // longer allowlisted here.
         ("KeystoneInventory", "forward-latent — its only mutator only fires for MG07LabyrinthianDoor entities, which have no live production spawn site"),
         ("MG07LabyrinthianDoor", "forward-latent — no live production spawn site exists outside tests, despite its systems being scheduler-wired"),
+        ("HavokImpulseRequest", "one-shot request, applied and drained same-tick by scripted_havok_impulse_system"),
+        ("HavokImpulseRules", "M47.2 — fGameplayImpulse* settings for ApplyHavokImpulse; rebuilt from the load order every boot"),
         ("MotionTypeChangeRequest", "one-shot request, applied and drained same-tick by its own consumer system"),
         ("OnCellLoadEvent", "one-shot event marker drained every frame by event_cleanup_system"),
         ("OnDeathEvent", "M47.2 — one-shot death marker (Papyrus OnDeath), drained by its owning consumer reference_script_event_system (Pattern B)"),
@@ -689,6 +691,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ExplicitOwner", "M47.2 — a placed reference's XOWN form, stamped by the cell loader at every spawn; authored data, re-derived"),
         ("ExplicitEncounterZone", "M47.2 — a placed reference's XEZN form, stamped by the cell loader at every spawn; authored data, re-derived"),
         ("EncounterLevelRules", "M47.2 — encounter zones' level bounds + the fLeveledActorMult* difficulty settings for CalculateEncounterLevel; rebuilt from the load order every boot"),
+        ("ConditionForms", "M47.2 — Starfield CNDF condition lists for ConditionForm.IsTrue; rebuilt from the load order every boot"),
         ("BribeRules", "M47.2 — Skyrim's bribe-formula settings and actor values for GetBribeAmount; rebuilt from the load order every boot"),
         ("OwnerKinds", "M47.2 — which forms are factions and which actor bases, for GetFactionOwner / GetActorOwner; rebuilt from the records every boot"),
         ("FormLists", "M47.2 — every FLST record's forms for FormList.GetSize / GetAt / HasForm / Find, rebuilt from the records every boot"),

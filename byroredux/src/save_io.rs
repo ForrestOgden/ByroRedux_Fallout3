@@ -378,6 +378,11 @@ fn keep_reimported_part_surface_materials(
     if incoming.part_surface_materials.is_empty() && !live.part_surface_materials.is_empty() {
         incoming.part_surface_materials = live.part_surface_materials.clone();
     }
+    // `havok_layer` is derived from the NIF the same way (`serde(skip)`): a
+    // deserialized row reads 0, so the re-imported layer is kept.
+    if incoming.havok_layer == 0 {
+        incoming.havok_layer = live.havok_layer;
+    }
 }
 
 /// Build the curated game-state save registry.

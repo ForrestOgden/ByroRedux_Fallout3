@@ -463,6 +463,9 @@ fn extract_from_classic(
         // collider's user-data (Wave 4's "map it per triangle" step,
         // at the per-part granularity the flatten preserves).
         part_surface_materials: leaf_materials.into_boxed_slice(),
+        // The layer byte of the packed `HavokFilter` (see
+        // `havok_filter_is_collidable`).
+        havok_layer: (body.havok_filter & 0xFF) as u8,
     };
 
     Some((shape, body_data))
@@ -1352,6 +1355,18 @@ mod dispatch_tests {
             !body.collidable,
             "havok_filter's Layer=15 (non-collidable) must set collidable=false"
         );
+    }
+
+    /// The authored Havok layer byte reaches `RigidBodyData::havok_layer` —
+    /// `ApplyHavokImpulse` picks its per-layer multiplier from it (Trap = 14).
+    #[test]
+    fn the_authored_layer_byte_is_carried_to_the_body() {
+        let mut scene = empty_scene();
+        scene.blocks.push(classic_collision(BlockRef(1u32))); // [0]
+        scene.blocks.push(rigid_body_with_filter(2, [0.0; 4], [0.0, 0.0, 0.0, 1.0], false, 14)); // [1]
+        scene.blocks.push(Box::new(BhkSphereShape { material: 0, radius: 1.0 })); // [2]
+        let (_shape, body) = extract_collision(&scene, BlockRef(0u32)).expect("shape must resolve");
+        assert_eq!(body.havok_layer, 14);
     }
 
     /// Companion negative guard — an ordinary collidable layer (Static,

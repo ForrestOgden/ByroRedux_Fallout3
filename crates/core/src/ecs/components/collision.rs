@@ -152,6 +152,16 @@ pub struct RigidBodyData {
     /// for every part beyond it.
     #[cfg_attr(feature = "inspect", serde(skip))]
     pub part_surface_materials: Box<[u32]>,
+    /// The Havok collision layer the body was authored on — the low byte of
+    /// its packed `HavokFilter` (Skyrim: 8 Biped, 10 Props, 14 Trap, 20 Debris
+    /// Large, …); `0` (Unidentified) for every non-NIF-derived body.
+    /// `ApplyHavokImpulse` scales its impulse by a per-layer game setting.
+    /// Derived from the NIF at import and NOT saved (`serde(skip)`, the
+    /// `part_surface_materials` class: the save-shape fingerprint moves
+    /// without a FORMAT_MAJOR bump, and the live-load overlay carries the
+    /// re-imported value across).
+    #[cfg_attr(feature = "inspect", serde(skip))]
+    pub havok_layer: u8,
 }
 
 impl RigidBodyData {
@@ -169,6 +179,7 @@ impl RigidBodyData {
             collidable: true,
             surface_material: 0,
             part_surface_materials: Box::new([]),
+            havok_layer: 0,
         }
     }
 }

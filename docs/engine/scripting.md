@@ -852,18 +852,17 @@ Not modelled yet:
 Per-game decline heads behind the remaining fragment gap
 (`VM_REASONS=1`, 2026-10-13 census — the worklist order is this table;
 `VM_REASON_SCRIPTS=<text>` names the fragments behind a reason). Lowered +
-interpreted: Skyrim 87.3%, Fallout 4 83.5%, Starfield 80.1%.
+interpreted: Skyrim 88.1%, Fallout 4 83.6%, Starfield 81.8%.
 - **Skyrim**: `DropObject` (133, inside the `CarryActorScript` carry packages),
   `ModFavorPoints` (99, no CK page), `Say` (66), `Game.ShowTrainingMenu` (57,
   no UI), `IsLoaded`, `UnregisterForUpdate`, `GetActorRef`, `IsInLocation`.
 - **Fallout 4**: `GetWorkshopResourceObjects` (152, the workshop API),
   `GetLinkedRefArray` (99), `Game.GetCommonProperties` (67), `SetCanDoCommand`,
   `Game.StopDialogueCamera`, `IgnoreFriendlyHits`.
-- **Starfield**: `Game.AddToAvailableCrew` (126), `ConditionForm.IsTrue` (93:
-  `IsTrue(akRefObject, akTargetObject)` evaluates a `CNDF` condition form,
-  which the plugin does not parse and whose subject / target mapping the pex
-  does not fix), `SetMarkerVisibleOnStarMap`, `DisableWithGravJump`,
-  `VisualEffect.Play`. The ones with no CK page are not guessed.
+- **Starfield**: `Game.AddToAvailableCrew` (126), `SetMarkerVisibleOnStarMap`,
+  `DisableWithGravJump`, `VisualEffect.Play`, and the `IsTrue` calls on condition forms
+  that use a function the engine does not model. The ones with no CK page are not
+  guessed.
 
 ### The frame budget (M47.2, #5763)
 
@@ -1307,7 +1306,7 @@ and passes Skyrim's 1, 4, 5 and 7 as the `Motion_*` constant they name, into the
 every other game's numbers stop the run instead of being guessed (the Fallout 4 page lists only
 the constant names). The traps (`physicstrap`, `soundtrap`, `tripwire`, `magictrap`) now pass
 this native; `CalculateEncounterLevel` is modelled (below), so what stops them now is
-`ApplyHavokImpulse`, `PlayAnimation` and `DamageObject`.
+`PlayAnimation`'s absent graph and `DamageObject` (no destruction runtime).
 
 ### CalculateEncounterLevel (M47.2)
 
@@ -1354,6 +1353,42 @@ for the three the master overrides, so the slots are the right ones). The result
 the `int` Papyrus returns, and a negative base clamps to 0 (engine policy; the source is
 silent). `GetGoldAmount` ("the amount of gold on this actor's person") is the count of Skyrim's
 `Gold001` (`0x0F`, checked against the record) in the actor's inventory.
+
+### ApplyHavokImpulse (M47.2)
+
+CK *ApplyHavokImpulse*: the direction is normalized and the magnitude is "how hard"; no unit.
+The unit is the game's own, read from `SkyrimSE.exe` (its `.text` is readable): the native
+registered under the `"ApplyHavokImpulse"` string normalizes the direction and queues it with
+the unmodified magnitude; when the command runs, each rigid body of the reference's collision
+gets `direction × magnitude × fGameplayImpulseScale × mult(layer) × 0.0142875` through
+`bhkRigidBody::ApplyLinearImpulse` (Havok metres; `0.0142875` is a constant in the executable,
+the inverse of the `69.99125` Havok scale). `mult` is a game setting picked by the body's
+Havok collision layer: Biped (8, 32, 33) `fGameplayImpulseMultBiped`, Props (10) `…Prop`,
+Trap (14) `…Trap`, Debris Large (20) `…DebrisLarge`, every other layer `…Clutter`; the native
+leaves the helper's mass-normalisation flag clear, so mass does not enter the factor. Defaults
+from the executable's setting table: scale 150, Trap 0.15, Biped 0.2, Prop 0.1, Debris Large
+1.0, Clutter 1.0 (`Skyrim.esm` authors Biped, Prop, Debris Large and Clutter with the same
+values). In the engine's Bethesda-unit physics world the two conversions cancel
+(`0.0142875 × 69.99125 ≈ 1`), so a request is applied as
+`direction × magnitude × scale × mult` as a Rapier impulse.
+
+`RigidBodyData.havok_layer` carries the authored layer (the low byte of the NIF's packed
+`HavokFilter`; `serde(skip)`, re-derived at import, kept across a live load like
+`part_surface_materials`). The VM queues a `HavokImpulseRequest` on the reference (calls in one
+frame add: the impulse is linear) and `scripted_havok_impulse_system` applies it after
+`scripted_motion_type_system` made the body dynamic. A zero-length vector or a reference
+with no physics body is the CK's documented failure: no impulse. Skyrim only; other games'
+natives were not read.
+
+### ConditionForm.IsTrue (M47.2)
+
+Starfield `ConditionForm.IsTrue(akRefObject, akTargetObject)` evaluates a `CNDF` record (the
+plugin now parses it: `EsmIndex.condition_forms`). The argument pairing is read from the corpus
+(`examples/cndf_census.rs`): of the 2 535 conditions in Starfield.esm's 899 forms, 2 334 run
+on the Subject and 7 on the Target, which is how every condition list reads its two references.
+The list is evaluated only when every condition is modeled end to end (`is_modeled`) and none
+reads state the interpreter holds locked (quest stages, alias bindings); any other form
+stops the run rather than answering with the fail-open pass. 338 of 899 forms qualify.
 
 ### Animation-graph natives (M47.2)
 

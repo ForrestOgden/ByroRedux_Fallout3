@@ -1285,6 +1285,32 @@ pub fn parse_eczn(
     out
 }
 
+/// Starfield condition form (`CNDF`): a named, reusable condition list that
+/// Papyrus evaluates with `ConditionForm.IsTrue(akRefObject, akTargetObject)`
+/// and records reference by FormID (xEdit `wbRecord(CNDF)`: `EDID` then the
+/// `CTDA` / `CIS*` list).
+#[derive(Debug, Clone, Default)]
+pub struct CndfRecord {
+    pub form_id: u32,
+    pub editor_id: String,
+    pub conditions: ConditionList,
+}
+
+pub fn parse_cndf(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> CndfRecord {
+    let common = CommonNamedFields::from_subs_with_remap(subs, remap);
+    let mut out = CndfRecord {
+        form_id,
+        editor_id: common.editor_id,
+        conditions: ConditionList::new(),
+    };
+    for sub in subs {
+        if matches!(&sub.sub_type, b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2") {
+            push_ctda(sub, remap, &mut out.conditions);
+        }
+    }
+    out
+}
+
 /// Lighting template (`LGTM`). Provides a named bundle of XCLL-shaped
 /// lighting values that cells can reference via `LTMP` and selectively
 /// override per-field. Full per-field inheritance fallback lands

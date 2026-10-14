@@ -579,6 +579,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // Apply Papyrus SetMotionType requests after both immediate and resumed
     // fragment effects, before the Physics stage consumes body state.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
+    // ApplyHavokImpulse requests, after the motion-type change that made the body dynamic.
+    scheduler.add_exclusive(Stage::Update, crate::systems::scripted_havok_impulse_system);
     // Native cart tethers consume the horse ACHR's XLKR marker chain before
     // the attachment pass copies the resulting pose to carts and riders.
     scheduler.add_exclusive(Stage::Update, crate::systems::cinematic_horse_route_system);

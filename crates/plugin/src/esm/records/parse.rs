@@ -50,7 +50,7 @@ use std::collections::{HashMap, HashSet};
 pub const DISPATCH_HANDLED_FOURCCS: &[[u8; 4]] = &[
     *b"ACTI", *b"ADDN", *b"ALCH", *b"ALOC", *b"AMEF", *b"AMMO", *b"ANIO", *b"AOPF", *b"APPA",
     *b"ARMA", *b"ARMO", *b"ASPC", *b"AVIF", *b"BNDS", *b"BOOK", *b"BPTD", *b"BSGN", *b"CAMS",
-    *b"CCRD", *b"CDCK", *b"CELL", *b"CHAL", *b"CHIP", *b"CLAS", *b"CLMT", *b"CLOT", *b"CMNY",
+    *b"CCRD", *b"CDCK", *b"CELL", *b"CHAL", *b"CHIP", *b"CLAS", *b"CLMT", *b"CLOT", *b"CMNY", *b"CNDF",
     *b"COBJ", *b"CONT", *b"CPTH", *b"CREA", *b"CSNO", *b"CSTY", *b"DEBR", *b"DEHY", *b"DIAL",
     *b"DLBR", *b"DOBJ", *b"DOOR", *b"ECZN", *b"EFSH", *b"ENCH", *b"EXPL", *b"EYES", *b"FACT", *b"FLOR",
     *b"FLST", *b"FURN", *b"GLOB", *b"GMST", *b"GRAS", *b"HAIR", *b"HDPT", *b"HUNG", *b"IDLE",
@@ -401,7 +401,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             b"GLOB" | b"GMST" => {
                 dispatch_global::dispatch_global_group(&label, &mut reader, end, &mut index)?;
             }
-            b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN"
+            b"WTHR" | b"CLMT" | b"SCPT" | b"WATR" | b"NAVI" | b"NAVM" | b"REGN" | b"ECZN" | b"CNDF"
             | b"LGTM" | b"IMGS" | b"HDPT" | b"EYES" | b"HAIR" | b"PACK" | b"QUST" | b"DIAL"
             | b"DLBR" | b"SCEN" | b"MESG" | b"PERK" | b"SMBN" | b"SMEN" | b"SMQN" | b"WTHS" => {
                 dispatch_misc_gameplay_a::dispatch_misc_gameplay_a_group(

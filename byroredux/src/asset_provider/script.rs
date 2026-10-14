@@ -1052,6 +1052,10 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_encounter_level_rules(world, index);
     // M47.2 — Actor.GetBribeAmount (Skyrim's bribe settings).
     byroredux_scripting::install_bribe_rules(world, index);
+    // M47.2 — Starfield ConditionForm.IsTrue (CNDF condition forms).
+    byroredux_scripting::install_condition_forms(world, index);
+    // M47.2 — ObjectReference.ApplyHavokImpulse (Skyrim's gameplay impulse settings).
+    byroredux_scripting::install_havok_impulse_rules(world, index);
     // M47.2 — New Vegas Damage Threshold (armor DT + the DT actor value,
     // perk-composed); absent on load orders without it.
     if crate::combat::install_damage_threshold_rules(world, index) {

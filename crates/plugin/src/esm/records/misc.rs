@@ -100,8 +100,8 @@ pub use scene::{
 pub use story_manager::{parse_sm_node, SmNodeKind, SmNodePolicies, SmNodeRecord, SmQuestLink};
 pub use water::{parse_watr, watr_to_params, WaterParams, WatrRecord};
 pub use world::{
-    parse_acti, parse_eczn, parse_imgs, parse_lgtm, parse_navi, parse_navm, parse_regn, parse_term,
-    select_active_region_sound, ActiRecord, EcznRecord, ImgsRecord, LgtmRecord, NaviRecord,
+    parse_acti, parse_cndf, parse_eczn, parse_imgs, parse_lgtm, parse_navi, parse_navm, parse_regn, parse_term,
+    select_active_region_sound, ActiRecord, CndfRecord, EcznRecord, ImgsRecord, LgtmRecord, NaviRecord,
     NavmExternalConnection, NavmRecord, NavmTriangle, RegionArea, RegionDataEntry, RegionDataKind,
     RegionDataPayload, RegionSound, RegionWeather, RegnRecord, TermRecord,
 };

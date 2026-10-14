@@ -661,6 +661,7 @@ fn rigid_body_data_survives_save_load_round_trip() {
             collidable: true,
             surface_material: 0,
             part_surface_materials: Box::new([]),
+            havok_layer: 0,
         },
     );
 

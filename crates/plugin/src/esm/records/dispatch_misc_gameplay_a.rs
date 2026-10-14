@@ -117,6 +117,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
                     .insert(fid, parse_eczn(fid, subs, game, &eczn_remap));
             })?
         }
+        // Starfield condition forms (`ConditionForm.IsTrue`).
+        b"CNDF" => {
+            let cndf_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"CNDF", &mut |fid, subs| {
+                index.condition_forms.insert(fid, parse_cndf(fid, subs, &cndf_remap));
+            })?
+        }
         // LGTM lighting templates — consumer lands alongside #379
         // (per-field inheritance fallback on cells without XCLL).
         b"LGTM" => extract_records(reader, end, b"LGTM", &mut |fid, subs| {

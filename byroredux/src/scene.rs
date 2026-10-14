@@ -1153,6 +1153,7 @@ fn spawn_player_body(
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         // #1846 / SAVE-03 — attach a FormIdComponent built from the

@@ -1522,6 +1522,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         let origin = Vec3::new(0.0, 2.0, 0.0);
@@ -1613,6 +1614,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         let position = Vec3::new(0.0, 2.0, 0.0);
@@ -2066,6 +2068,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(
@@ -2587,6 +2590,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(
@@ -2687,6 +2691,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(
@@ -2788,6 +2793,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(
@@ -2964,6 +2970,7 @@ mod tests {
                     collidable: true,
                     surface_material: 0,
                     part_surface_materials: Box::new([]),
+                    havok_layer: 0,
                 },
             );
             world.insert(
@@ -2989,6 +2996,7 @@ mod tests {
                     collidable: true,
                     surface_material: 0,
                     part_surface_materials: Box::new([]),
+                    havok_layer: 0,
                 },
             );
             world.insert(
@@ -3100,6 +3108,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(
@@ -3125,6 +3134,7 @@ mod tests {
                 collidable: true,
                 surface_material: 0,
                 part_surface_materials: Box::new([]),
+                havok_layer: 0,
             },
         );
         world.insert(

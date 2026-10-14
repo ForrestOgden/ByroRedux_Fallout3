@@ -1942,7 +1942,9 @@ fn categories_table_row_count_pinned() {
     //   locations can find the `Boss` ref type by name).
     // Bumped 106 → 107 in M47.2 (relationships — RELA, for
     // GetRelationshipRank).
-    assert_eq!(EsmIndex::categories().len(), 107);
+    // Bumped 107 → 108 in M47.2 (condition_forms — Starfield CNDF, the lists
+    //   `ConditionForm.IsTrue` evaluates).
+    assert_eq!(EsmIndex::categories().len(), 108);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

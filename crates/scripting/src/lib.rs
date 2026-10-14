@@ -21,6 +21,8 @@ pub mod editor_location;
 pub mod created_references;
 pub mod animation_graph;
 pub mod bribe;
+pub mod havok_impulse;
+pub mod condition_form;
 pub mod dialogue;
 pub mod encounter_level;
 pub mod equipment;
@@ -155,6 +157,10 @@ pub use form_lists::{forms_of, install_form_lists, FormListAdditions, FormListCh
 pub use animation_graph::AnimArchetypeOverrides;
 pub use scanning::ScannedReferences;
 pub use speechcraft::{SpeechcraftOutcome, SpeechcraftOutcomes};
+pub use condition_form::{install_condition_forms, is_true as condition_form_is_true, ConditionForms};
+pub use havok_impulse::{
+    install_havok_impulse_rules, request_impulse as request_havok_impulse, HavokImpulseRequest, HavokImpulseRules,
+};
 pub use bribe::{bribe_amount, install_bribe_rules, BribeRules};
 pub use encounter_level::{
     calculate_encounter_level, install_encounter_level_rules, EncounterLevelRules, ExplicitEncounterZone,

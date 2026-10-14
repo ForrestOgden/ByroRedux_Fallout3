@@ -2640,6 +2640,7 @@ impl Vm<'_> {
                     | "isintimidated"
                     | "changeanimarchetype"
                     | "setscanned"
+                    | "applyhavokimpulse"
                     | "istrue"
                     | "isscanned"
                     | "addtomapscanned"
@@ -3180,10 +3181,35 @@ impl Vm<'_> {
                 };
                 Some(Value::Bool(flagged))
             }
+            // CK *ApplyHavokImpulse - ObjectReference*: the direction normalized,
+            // the magnitude in the game's own unit (see [`crate::havok_impulse`]).
+            // The binary applies the queued request to the reference's body.
+            (Value::Form(reference), "applyhavokimpulse") if args.len() == 4 => {
+                let values = self.eval_args(frame, args)?;
+                let mut numbers = [0.0_f32; 4];
+                for (slot, value) in numbers.iter_mut().zip(&values) {
+                    *slot = match value.number() {
+                        Some(number) => number,
+                        None => return stop("ApplyHavokImpulse with a non-numeric argument"),
+                    };
+                }
+                if self.world.try_resource::<crate::HavokImpulseRules>().is_none() {
+                    return stop("ApplyHavokImpulse without the game's impulse settings");
+                }
+                if let Some(entity) = self.entity_of(*reference) {
+                    // A reference with no 3D, or a zero-length vector, is the
+                    // CK's documented failure: a warning and no impulse.
+                    crate::request_havok_impulse(self.world, entity, numbers[0], numbers[1], numbers[2], numbers[3]);
+                }
+                Some(Value::None)
+            }
             // Starfield `ConditionForm.IsTrue(akRefObject, akTargetObject)`: the
             // form's conditions with the first reference as subject and the
             // second as target; see [`crate::condition_form`].
-            (Value::Form(form), "istrue") if args.len() == 2 => {
+            (Value::Form(form), "istrue")
+                if args.len() == 2
+                    && self.world.try_resource::<crate::ConditionForms>().is_some_and(|forms| forms.contains(*form)) =>
+            {
                 let values = self.eval_args(frame, args)?;
                 let entity = |value: &Value| match value {
                     Value::Form(reference) => self.entity_of(*reference),
@@ -5052,6 +5078,15 @@ impl<'l> Checker<'l> {
             (Kind::Object | Kind::Player, "getbribeamount" | "getgoldamount") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "isbribed" | "isintimidated") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "isscanned") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "applyhavokimpulse")
+                if statement
+                    && arg_kinds.len() == 4
+                    && arg_kinds
+                        .iter()
+                        .all(|a| matches!(a, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num))) =>
+            {
+                return Some(Kind::None);
+            }
             (Kind::Object, "istrue")
                 if matches!(
                     arg_kinds.as_slice(),

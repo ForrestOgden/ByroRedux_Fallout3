@@ -274,6 +274,62 @@ pub(crate) fn scripted_motion_type_system(world: &World, _dt: f32) {
     }
 }
 
+/// Skyrim's Havok scale (Bethesda units per Havok metre), as the NIF importer
+/// applies it to collision geometry.
+const SKYRIM_HAVOK_SCALE: f32 = 69.99125;
+
+/// Apply the `ApplyHavokImpulse` requests scripts queued: each reference's summed
+/// `direction × magnitude` (Z-up game coordinates), times the game's gameplay
+/// impulse scale and the multiplier of the body's Havok layer
+/// (`byroredux_scripting::havok_impulse`), as a linear impulse on its Rapier body
+/// — Y-up, in Bethesda units. A reference with no live dynamic body is the CK's
+/// "no 3D" failure: the request is dropped. One-shot, drained here.
+pub(crate) fn scripted_havok_impulse_system(world: &World, _dt: f32) {
+    let requests: Vec<(EntityId, byroredux_scripting::HavokImpulseRequest)> = {
+        let Some(request_q) = world.query::<byroredux_scripting::HavokImpulseRequest>() else {
+            return;
+        };
+        request_q.iter().map(|(entity, request)| (entity, *request)).collect()
+    };
+    if requests.is_empty() {
+        return;
+    }
+    let Some(rules) = world.try_resource::<byroredux_scripting::HavokImpulseRules>().map(|rules| *rules) else {
+        return;
+    };
+    let bodies: Vec<(Option<RapierHandles>, u8)> = {
+        let handles_q = world.query::<RapierHandles>();
+        let data_q = world.query::<RigidBodyData>();
+        requests
+            .iter()
+            .map(|(entity, _)| {
+                (
+                    handles_q.as_ref().and_then(|handles| handles.get(*entity).copied()),
+                    data_q.as_ref().and_then(|data| data.get(*entity).map(|body| body.havok_layer)).unwrap_or(0),
+                )
+            })
+            .collect()
+    };
+    if let Some(mut physics) = world.try_resource_mut::<PhysicsWorld>() {
+        for ((entity, request), (handles, layer)) in requests.iter().zip(&bodies) {
+            let Some(handles) = handles else {
+                log::debug!("ApplyHavokImpulse on entity {entity}: no physics body, skipped");
+                continue;
+            };
+            let factor = rules.engine_factor(*layer, SKYRIM_HAVOK_SCALE);
+            let [x, y, z] = request.vector;
+            // Z-up game space to the engine's Y-up: (x, y, z) -> (x, z, -y).
+            let impulse = byroredux_core::math::Vec3::new(x, z, -y) * factor;
+            physics.apply_impulse(handles.body, impulse);
+        }
+    }
+    if let Some(mut request_q) = world.query_mut::<byroredux_scripting::HavokImpulseRequest>() {
+        for (entity, _) in requests {
+            request_q.remove(entity);
+        }
+    }
+}
+
 /// Drive a native Skyrim cart tether along the horse reference's authored
 /// XLKR waypoint chain. The vanilla opening convoy uses invisible XMarkers
 /// for this route; they are intentionally not render entities, so positions
@@ -1262,6 +1318,49 @@ mod tests {
             0.25,
             "the same request serial must not restart every frame"
         );
+    }
+
+    /// `ApplyHavokImpulse(0, 0, -1, 15)` on a Trap-layer body: the impulse is
+    /// `15 × fGameplayImpulseScale (150) × fGameplayImpulseMultTrap (0.15)` along
+    /// Z-down, which is engine -Y; the body's velocity change is that over its mass.
+    #[test]
+    fn havok_impulse_request_pushes_the_body_by_the_traps_scaled_magnitude() {
+        use byroredux_core::ecs::components::collision::CollisionShape;
+        use byroredux_core::ecs::components::GlobalTransform;
+        use byroredux_plugin::esm::{reader::GameKind, records::EsmIndex};
+
+        let mut world = World::new();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<CollisionShape>();
+        world.register::<RigidBodyData>();
+        world.register::<RapierHandles>();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(PhysicsWorld::new());
+        byroredux_scripting::install_havok_impulse_rules(
+            &mut world,
+            &EsmIndex { game: GameKind::Skyrim, ..Default::default() },
+        );
+        let trap = world.spawn();
+        let origin = byroredux_core::math::Vec3::new(0.0, 500.0, 0.0);
+        world.insert(trap, Transform::from_translation(origin));
+        world.insert(trap, GlobalTransform::new(origin, byroredux_core::math::Quat::IDENTITY, 1.0));
+        world.insert(trap, CollisionShape::Cuboid { half_extents: byroredux_core::math::Vec3::splat(16.0) });
+        world.insert(
+            trap,
+            RigidBodyData { motion_type: MotionType::Dynamic, mass: 10.0, havok_layer: 14, ..Default::default() },
+        );
+        byroredux_physics::physics_sync_system(&world, 0.0);
+        let body = world.get::<RapierHandles>(trap).expect("registered").body;
+        let mass = world.resource::<PhysicsWorld>().body_mass(body).expect("mass");
+
+        assert!(byroredux_scripting::request_havok_impulse(&world, trap, 0.0, 0.0, -2.0, 15.0));
+        scripted_havok_impulse_system(&world, 0.0);
+
+        let velocity = world.resource::<PhysicsWorld>().bodies[body].linvel().y;
+        let expected = -15.0 * 150.0 * 0.15 / mass;
+        assert!((velocity - expected).abs() < 0.05 * expected.abs(), "vy {velocity} vs {expected}");
+        assert!(world.query::<byroredux_scripting::HavokImpulseRequest>().unwrap().get(trap).is_none(), "drained");
     }
 
     #[test]

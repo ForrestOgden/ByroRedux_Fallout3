@@ -3010,6 +3010,126 @@ fn add_to_map_scanned_marks_scanned_and_adds_to_the_map() {
     assert!(crate::map_marker_visible(&world, MARKER) && crate::map_marker_fast_travel(&world, MARKER));
 }
 
+/// `ConditionForm.IsTrue(ref, target)` evaluates a loaded condition form with
+/// the first reference as subject, and stops the run on a form it cannot model.
+#[test]
+fn condition_form_is_true_evaluates_modeled_forms() {
+    use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue};
+    use byroredux_plugin::esm::records::CndfRecord;
+    const FORM: u32 = 0x0001_0F71;
+    const GLOBAL: u32 = 0x0001_0F72;
+    let script = parsed_source(
+        "ScriptName QF_VmCndf extends Quest\n\
+         ConditionForm Property Gate Auto\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Gate.IsTrue(Marker, Game.GetPlayer())\n\
+             Self.SetStage(20)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    let property = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmCndf".into(),
+                status: 0,
+                properties: vec![property("Gate", FORM), property("Marker", MARKER)],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Starfield.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.condition_forms.insert(
+        FORM,
+        CndfRecord {
+            form_id: FORM,
+            conditions: vec![Condition {
+                function_index: 74,
+                param_1: GLOBAL,
+                comparator: ComparisonOp::Eq,
+                comparand: ConditionValue::Literal(1.0),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    crate::install_condition_forms(&mut world, &index);
+    world.insert_resource(crate::Globals::default());
+    let run = |world: &World| {
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(&world), 10, "the global is 0");
+    world.resource_mut::<crate::Globals>().set(GLOBAL, 1.0);
+    assert_eq!(run(&world), 20, "the global is 1");
+}
+
+/// `ApplyHavokImpulse` queues the normalized direction times the magnitude on the
+/// reference; without the game's impulse settings the run stops instead.
+#[test]
+fn apply_havok_impulse_queues_a_request() {
+    use byroredux_plugin::esm::{reader::GameKind, records::EsmIndex};
+    let script = parsed_source(
+        "ScriptName QF_VmImpulse extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Marker.ApplyHavokImpulse(0.0, 0.0, -1.0, 15.0)\n\
+           Self.SetStage(20)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmImpulse".into(),
+                status: 0,
+                properties: vec![ScriptProperty {
+                    name: "Marker".into(),
+                    status: 1,
+                    value: PropertyValue::Object { form_id: MARKER, alias: -1 },
+                }],
+            }],
+        },
+    );
+    world.register::<FormIdComponent>();
+    world.register::<crate::HavokImpulseRequest>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    let run = |world: &World| {
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(&world), 10, "no impulse settings: the run stops");
+    crate::install_havok_impulse_rules(&mut world, &EsmIndex { game: GameKind::Skyrim, ..Default::default() });
+    assert_eq!(run(&world), 20);
+    let pending = world.get::<crate::HavokImpulseRequest>(marker).expect("queued");
+    assert_eq!(pending.vector, [0.0, 0.0, -15.0]);
+}
+
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
 #[test]
 fn is_in_dialogue_with_player_follows_the_open_surface() {
