@@ -39,3 +39,22 @@ crates/*/examples/tmp_*
 # catch it.
 *.orig
 *.rej
+
+# Game assets and signing secrets are NEVER committed.
+# This is a public source-only repository.
+/fallout3-data/
+/game-data/
+/ios/imported-game-data/
+/ios/game-data/
+/local-game-data/
+/artifacts/ios-signing/
+*.esm
+*.esp
+*.esl
+*.bsa
+*.ba2
+*.ipa
+*.mobileprovision
+*.p12
+*.p8
+*.xcuserstate

@@ -1,0 +1,53 @@
+name: iOS / Phase 1 source baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'ios/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-phase1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provenance-and-asset-policy:
+    name: Pinned ancestor and asset policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check original upstream snapshot remains in history
+        run: git merge-base --is-ancestor ea2d94a1921592ccd3f18d991950a5b868458405 HEAD
+      - name: Reject proprietary game data and signing files
+        run: bash scripts/ios/check-no-game-assets.sh
+
+  rust-baseline:
+    name: Rust workspace check and tests (no game data)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust compiler
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+          rustc --version
+          cargo --version
+      - name: Install Linux native build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends g++ libasound2-dev libvulkan-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Check every workspace package
+        run: cargo check --workspace --locked
+      - name: Run every workspace unit test, do not stop at first failure
+        run: cargo test --workspace --locked --no-fail-fast
