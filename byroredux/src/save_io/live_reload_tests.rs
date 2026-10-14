@@ -457,6 +457,53 @@ fn saved_resources_are_restored_before_the_cell_reload() {
     assert!(after_reload > 0);
 }
 
+/// #5060 — the post-reload half of the drain is order-critical past the
+/// wholesale restore pinned above, and only unit tests of the individual
+/// steps existed:
+/// - `restore_resident` (#4695) above the post-reload `restore_resources`
+///   runs with the saved reference-state store still absent, a silent no-op
+///   that re-opens the in-cell pickup duplication;
+/// - `reseat_ambient_packages_after_restore` (#4815) after `apply_deltas`
+///   lets the first Update tick clear the overlaid procedure state as a
+///   package change.
+#[test]
+fn post_reload_drain_steps_keep_their_order() {
+    let source = include_str!("../save_io.rs");
+    let start = source
+        .find("pub fn execute_pending_save_loads(")
+        .expect("the live-load drain must exist");
+    let rest = &source[start..];
+    // The drain body only: up to the next item at column 0.
+    let body = &rest[..rest.find("\n}\n").expect("the drain must close")];
+
+    let steps = [
+        "byroredux_save::restore_resources(world, &registry, &snapshot)",
+        "reference_state::restore_resident(world)",
+        "ai_package::reseat_ambient_packages_after_restore(world)",
+        "byroredux_save::build_form_id_remap(world, &registry, &snapshot)",
+        "byroredux_save::apply_deltas(world, &registry, &snapshot, &remap,",
+    ];
+    let positions: Vec<usize> = steps
+        .iter()
+        .map(|step| {
+            assert_eq!(
+                body.matches(step).count(),
+                1,
+                "`{step}` must be called exactly once in the drain"
+            );
+            body.find(step).unwrap()
+        })
+        .collect();
+    for (pair, step) in positions.windows(2).zip(steps.windows(2)) {
+        assert!(
+            pair[0] < pair[1],
+            "`{}` must run before `{}` (#4695 / #4815 / #5060)",
+            step[0],
+            step[1]
+        );
+    }
+}
+
 /// #4135 — a pre-reload restore must not install the saved `ItemInstancePool`
 /// early, because the reload's own teardown
 /// (`cell_loader::release_victim_item_instances`) releases the *live*
