@@ -833,31 +833,20 @@ fn splice_include(
         format!("menus\\{path}"),
         path.to_string(),
     ];
-    // #4650 — cycle detection keys on the RESOLVED archive path, not the
-    // authored spelling: `x.xml`, `prefabs\x.xml` and
-    // `menus\prefabs\x.xml` all reach the same entry, and a fragment
-    // self-including under K spellings used to re-enter ~K! times.
-    // #5007 — check every candidate spelling BEFORE fetching: the
-    // resolved key is the normalized candidate, so any candidate already
-    // on the nesting stack makes this a cycle, and the fetch is skipped
-    // entirely (pre-fix, a self-including fragment paid one extract +
-    // inflate PER include element — O(S²) on a hostile fragment).
     let keys: [String; 3] = candidates
         .each_ref()
         .map(|p| p.replace('/', "\\").to_lowercase());
-    if keys.iter().any(|k| includes.seen.iter().any(|s| s == k)) {
-        includes.warn_once("cycle", path);
-        return;
-    }
-    // #5007 — fetch through the per-document cache: candidates probe in
-    // spelling order exactly as before, but each resolved path (hit or
-    // miss) is probed at most once per document. A repeated include of
-    // an already-fetched fragment is a map hit.
-    let mut resolved: Option<(String, Vec<u8>)> = None;
+    // #5007 — resolve through the per-document cache: candidates probe in
+    // spelling order, but each resolved path (hit or miss) is probed at
+    // most once per document, so a repeated include of an already-fetched
+    // fragment is a map lookup. A hit records only the key; the bytes are
+    // cloned after the cycle check below, so a rejected self-include costs
+    // neither a fetch nor a copy.
+    let mut resolved: Option<String> = None;
     for (cand, key) in candidates.iter().zip(&keys) {
         if let Some(cached) = includes.cache.get(key) {
-            if let Some(bytes) = cached {
-                resolved = Some((key.clone(), bytes.clone()));
+            if cached.is_some() {
+                resolved = Some(key.clone());
                 break;
             }
             continue; // cached miss — try the next spelling
@@ -891,8 +880,8 @@ fn splice_include(
                     includes.warn_once("bytes", path);
                     return;
                 }
-                includes.cache.insert(key.clone(), Some(bytes.clone()));
-                resolved = Some((key.clone(), bytes));
+                includes.cache.insert(key.clone(), Some(bytes));
+                resolved = Some(key.clone());
                 break;
             }
             None => {
@@ -900,9 +889,26 @@ fn splice_include(
             }
         }
     }
-    let Some((resolved, bytes)) = resolved else {
+    let Some(resolved) = resolved else {
         includes.warn_once("missing", path);
         return;
+    };
+    // #4650 — cycle detection keys on the RESOLVED archive path, not the
+    // authored spelling: `x.xml`, `prefabs\x.xml` and
+    // `menus\prefabs\x.xml` all reach the same entry, and a fragment
+    // self-including under K spellings used to re-enter ~K! times.
+    // #5329 — and ONLY the resolved key: #5007 rejected the include when
+    // any lower-priority spelling was on the stack, dropping a distinct
+    // higher-priority file (`menus\x.xml` including `x.xml` while
+    // `menus\prefabs\x.xml` exists). Every key on the stack was fetched
+    // when it was pushed, so a real cycle always resolves from the cache
+    // above and still never touches the source.
+    if includes.seen.contains(&resolved) {
+        includes.warn_once("cycle", path);
+        return;
+    }
+    let Some(Some(bytes)) = includes.cache.get(&resolved).cloned() else {
+        unreachable!("a resolved include key is always a cached hit");
     };
     // #5314 — per-document budget on total spliced bytes: a splice that
     // would push the document over the cap is refused without consuming

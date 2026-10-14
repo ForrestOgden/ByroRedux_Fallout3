@@ -309,6 +309,36 @@ fn include_self_reference_under_two_spellings_terminates() {
     assert_eq!(doc.tiles[x].traits.get("width"), Some(&RawTrait::Num(5.0)));
 }
 
+/// #5329 — only the RESOLVED key is cycle-checked. `menus\x.xml` including
+/// `x.xml` resolves to the distinct, higher-priority `menus\prefabs\x.xml`,
+/// which must splice; #5007 rejected it as a cycle because the
+/// lower-priority spelling `menus\x.xml` was on the nesting stack.
+#[test]
+fn a_distinct_higher_priority_include_is_not_a_cycle() {
+    let mut s = CountingSource {
+        files: [
+            (
+                "menus\\x.xml".to_string(),
+                r#"<rect name="outer"><include src="x.xml"/></rect>"#.to_string(),
+            ),
+            (
+                "menus\\prefabs\\x.xml".to_string(),
+                r#"<rect name="prefab_x"/>"#.to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        probes: Default::default(),
+    };
+    let host = r#"<menu name="root"><include src="menus\x.xml"/></menu>"#;
+    let doc = parse_document(host, &mut s);
+    assert!(doc.name_index.contains_key("outer"));
+    assert!(
+        doc.name_index.contains_key("prefab_x"),
+        "the higher-priority prefab was dropped as a false cycle"
+    );
+}
+
 /// Include cycles must terminate with a warning, not a stack overflow.
 #[test]
 fn include_cycles_terminate() {

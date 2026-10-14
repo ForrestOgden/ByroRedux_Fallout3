@@ -41,6 +41,16 @@ impl MenuAssets for OblivionAssets {
 /// `Document` companion for the corpus-parse test: counts per file.
 struct NoSource;
 
+/// Include-resolving source over the misc archive, so the corpus total
+/// covers spliced `<include>` fragments too (#5329).
+struct MiscSource<'a>(&'a BsaArchive);
+
+impl MenuFileSource for MiscSource<'_> {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.extract(path).ok()
+    }
+}
+
 impl MenuFileSource for NoSource {
     fn menu_xml(&self, _path: &str) -> Option<Vec<u8>> {
         None
@@ -80,6 +90,7 @@ fn vanilla_corpus_parses() {
 
     let mut parsed = 0;
     let mut tiles = 0;
+    let mut spliced_tiles = 0;
     let mut hud: Option<Document> = None;
     for path in &xmls {
         let bytes = misc.extract(path).expect("extract xml");
@@ -88,12 +99,20 @@ fn vanilla_corpus_parses() {
         let doc = parse_document(&text, &mut src);
         assert!(!doc.tiles.is_empty(), "{path} parsed empty");
         tiles += doc.tiles.len();
+        spliced_tiles += parse_document(&text, &mut MiscSource(&misc)).tiles.len();
         parsed += 1;
         if path.to_lowercase().ends_with("hud_main_menu.xml") {
             hud = Some(doc);
         }
     }
-    eprintln!("parsed {parsed} menu XMLs, {tiles} tiles total");
+    eprintln!(
+        "parsed {parsed} menu XMLs, {tiles} tiles total, {spliced_tiles} with includes spliced"
+    );
+    // #5329 — pinned so an include-resolution change that drops (or
+    // fabricates) vanilla content fails here; both measured on the vanilla
+    // Oblivion `Misc.bsa`, unchanged across the #5329 fix.
+    assert_eq!(tiles, 1_868, "un-spliced vanilla tile total moved");
+    assert_eq!(spliced_tiles, 2_773, "include-spliced vanilla tile total moved");
     let hud = hud.expect("hud_main_menu.xml in corpus");
     for name in [
         "hudmain_background",
