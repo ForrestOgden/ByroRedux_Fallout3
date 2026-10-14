@@ -353,7 +353,10 @@ pub const SKYRIM_SKILLS: [&str; 18] = [
     "Alteration",
     "Conjuration",
     "Destruction",
-    "Illusion",
+    // The Illusion skill's AVIF keeps its pre-release editor id (`AVMysticism`); `Skyrim.esm`
+    // has no `AVIllusion` (it names only the `...Mod` / `...SkillAdvance` / `...PowerMod`
+    // helpers), and CHARAL records the same rename (`SkillSet::SKYRIM`).
+    "Mysticism",
     "Restoration",
     "Enchanting",
 ];
@@ -1978,5 +1981,32 @@ mod tests {
         let stored = NpcRecord { acbs_flags: 0, skill_values: Some(stored_values), ..auto };
         let values = derive_npc_actor_values(&stored, &index);
         assert_eq!(value_of(&values, speech), Some(41.0), "the stored value, no bonus added");
+    }
+
+    /// Every one of Skyrim's 18 skills names an `AVIF` in `Skyrim.esm`, and a real
+    /// auto-calc NPC (Saadia) derives all 18 from her class.
+    #[test]
+    #[ignore = "needs Skyrim.esm on disk (~0.5 GB resident)"]
+    fn vanilla_skyrim_skill_names_all_resolve_and_a_vanilla_npc_derives_them() {
+        let path = crate::esm::test_paths::skyrim_se_esm();
+        if !path.is_file() {
+            if std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0") {
+                panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but Skyrim.esm was not found at {path:?}");
+            }
+            return;
+        }
+        let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
+        for name in SKYRIM_SKILLS {
+            assert!(index.actor_value_form_id(name).is_some(), "no AVIF resolves {name}");
+        }
+        let with_weights = index.classes.values().filter(|class| class.skyrim_skill_weights.is_some()).count();
+        assert!(with_weights > 50, "{with_weights} classes parsed skill weights");
+        let npc = index.npcs.values().find(|npc| npc.editor_id == "Saadia").expect("Saadia");
+        let values = derive_npc_actor_values(npc, &index);
+        let skills = SKYRIM_SKILLS.iter().filter(|name| {
+            let id = index.actor_value_form_id(name).unwrap();
+            values.iter().any(|(key, _)| *key == id)
+        });
+        assert_eq!(skills.count(), 18, "all 18 skills derived for an auto-calc NPC: {values:?}");
     }
 }
