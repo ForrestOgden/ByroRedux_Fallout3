@@ -5,15 +5,14 @@
 #   2. Baseline: at the default boot hour the Goodsprings settler's
 #      package is not a Sleep one (`GSSettler04SleepPackage22x8`
 #      runs 22:00-08:00; his Flee/Ambush packs above it are
-#      GetButtonPressed-gated and evaluate FALSE pre-menu) — he
-#      carries no SleepBehavior.
+#      gated on `GetQuestVariable` (fn 79), which reads the quest
+#      script's locals, 0 until a run assigns them, so they evaluate
+#      FALSE) — he carries no SleepBehavior.
 #   3. `time.set 23` drops the clock inside the Sleep window — the
 #      game-minute re-evaluation must hand him `SleepBehavior` (the
-#      M42 dispatch), and the walk-then-seat runtime must eventually
-#      seat him (`[m42] sleep` log; his PLDT bed reference lives in
-#      an unloaded cell, so the documented fallback seats him at the
-#      nearest sleep/sit marker the saloon offers; Eat shares the
-#      same path, unit-gated in `eat_sleep`'s fixture tests).
+#      M42 dispatch). His PLDT is In-Cell for his own house (not
+#      the loaded saloon), so he idles rather than walking or seating
+#      (#5391); the seat runtime is unit-gated in `eat_sleep`'s tests.
 set -euo pipefail
 
 PORT="${BYRO_DEBUG_PORT:-19880}"
@@ -108,10 +107,22 @@ until grep -Fq "Entity $entity" "$LOG_DIR/sleep.log" 2>/dev/null; do
 done
 echo "smoke[m42-eat-sleep]: selection PASS — time.set 23 handed the settler SleepBehavior"
 
-# #5427 — scope the seat leg to the settler the gate found: the log
-# line prints for ANY NPC that sits, and after time.set 23 every
-# Sleep-package NPC in the saloon is a candidate, so an unscoped wait
-# could pass with the target still standing.
-wait_log "$LOG_DIR/session.stderr" "[m42] sleep npc=$entity"
-echo "smoke[m42-eat-sleep]: seat PASS — the walk-then-seat runtime seated her at the bed"
-echo "smoke[m42-eat-sleep]: PASS — Sleep procedure live; artifacts: $LOG_DIR"
+# The seat leg. The settler's Sleep package (`GSSettler04SleepPackage22x8`)
+# is an In-Cell package for `GSHouseInterior02` (0x001055E1) — his own house,
+# not the saloon this fixture loads. Per #5391 an In-Cell package whose cell
+# is not the resident interior idles: no walk and no seat. (An earlier
+# revision of this gate expected him to take the nearest saloon marker; that
+# only held while an unresolvable anchor froze the actor's own position as the
+# destination, which #5500 removed.) So the gate asserts the idle: after the
+# window has had time to act he carries SleepBehavior and no Seated. The
+# walk-then-seat runtime itself is unit-gated in `eat_sleep`'s fixture tests;
+# no NPC loaded in this cell has an In-Cell Eat/Sleep package for it
+# (`GSSettlerCFEatPackage12x1` belongs to `GSSettlerCF`, who is not spawned
+# here), so there is nothing live in this cell to seat.
+sleep 10
+debug_command 'entities(Seated)' "$LOG_DIR/seated.log" || true
+if grep -Fq "Entity $entity" "$LOG_DIR/seated.log"; then
+    fail "the settler's Sleep package is In-Cell for another cell, so he must idle (#5391), yet he was seated: $(sed -n '1,4p' "$LOG_DIR/seated.log")"
+fi
+echo "smoke[m42-eat-sleep]: idle PASS — the In-Cell package for a non-resident cell neither walks nor seats (#5391)"
+echo "smoke[m42-eat-sleep]: PASS — Sleep selection live; artifacts: $LOG_DIR"
