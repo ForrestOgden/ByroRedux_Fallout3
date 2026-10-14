@@ -331,7 +331,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**109**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**110**) grouped by
 purpose:
 
 ```
@@ -438,6 +438,7 @@ setav / modav               → inspect or mutate an actor value
 script.qcall <script> <fn> [e] → run a quest script function now (e.g. FavorDialogueScript Bribe)
 script.call <e> <function>  → call a function of the Papyrus scripts on a reference
 script.var <e> <name>       → read a Papyrus variable the VM wrote on a reference
+bribe.info <e>              → GetBribeAmount's inputs (levels, Speechcraft, Morality) and result
 anim.event <e> <event>      → PlayAnimation from the console (props, and Fallout 4 actors' graphs)
 anim.archetype <e> [kw|none]   → ChangeAnimArchetype from the console (Fallout 4: the actor's idle follows)
 cond                        → evaluate a CTDA condition against live ECS state

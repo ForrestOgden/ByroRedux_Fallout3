@@ -1392,7 +1392,7 @@ Live in Whiterun's Bannered Mare (`script.qcall FavorDialogueScript Bribe 1`, th
 dialogue fragment calling into its quest script): `Bribe` compared `pTarget.GetBribeAmount()` with the
 player's gold and removed 15 gold (5110 to 5095) for Saadia. By hand from the live inputs (Saadia level 4,
 player level 1, neither listing a Speechcraft value, Morality 0): v = 4 x 0.1 + 1 - (0 - 100) x 0.1 = 11.4,
-11.4^1.4 = 30.2, x 0.5 x (0 x 1 + 1) = 15.1, truncated to 15.
+11.4^1.4 = 30.2, x 0.5 x (0 x 1 + 1) = 15.1, truncated to 15. `bribe.info <entity>` reads those inputs from the live actors (Saadia: npc level 4, Speechcraft 0, Morality 0; player level 1, Speechcraft 0; amount 15), so they are read, not assumed. The 0 Speechcraft of both is a gap, not data: Skyrim's skill actor values are not populated for NPCs or the player here (the game gives the player 15 and NPCs their class's), so real bribes would differ by about a tenth of a point of base per skill point of difference.
 
 ### ApplyHavokImpulse (M47.2)
 
