@@ -1589,6 +1589,34 @@ the projectile model, impact force on bodies, and the explosion a record names. 
 `Activate` (`OnActivate` reads the activating `TrapTriggerBase`'s `Type`), so a live test needs a
 trigger crossing, and the flight and hit are covered by tests against a real physics world.
 
+### Activate parents (M47.2)
+
+CK *Reference*, Activate Parents: a reference's activate parents "will 'pass on' an activation event
+to this reference when they are activated"; each has a *Delay* ("the number of seconds to wait
+after the parent's activation"); "for scripting purposes, this reference will be activated by the
+reference which acted as the activate parent, not the originally activating NPC"; and *Parent
+Activate Only* means "this reference can ONLY be activated by an Activate Parent - direct activation
+(e.g. by the player) will not be possible. Scripts can always activate the object". The CK *Traps
+and Prefabs* tutorial: a pull chain opens its portcullis, a tripwire springs its mace trap.
+
+The data is the REFRs' `XAPR` (reference + delay) and `XAPD` (parent only) sub-records, parsed into
+`PlacedRef::{activate_parents, parent_activate_only}`; `ActivateParentTable` keeps them by form id
+over the whole load order (Skyrim.esm: 4388 parent-to-child edges), so a relay does not depend on
+which cell holds the parent. `activate_parent_relay_system` reads the frame's `ActivateEvent`
+markers and queues an activation of every loaded child, at once or once its delay is up, with the
+parent as the activator, through `PendingFragmentActivations` (so every consumer sees it exactly
+once, a frame later). A child that is not loaded when its turn comes is skipped, and a relay that
+would close a cycle is not made. The player's direct activation of a Parent-Activate-Only reference
+is refused in `emit_activate_event`. Before this nothing passed an activation on, so no lever or
+trigger could open anything.
+
+Live in Bleak Falls Barrow: stepping on trigger `00086018` (a `TrapTriggerBase`, whose script
+`Activate`s itself) passes the activation to the three `TrapBladeSwinging01` references that name it
+as their parent (`0003AC37`, `0003AC35`, `0003AC33`; all Parent Activate Only), whose scripts run.
+Their behavior graph then rejects `PlayAnimation('Single')` from its start state (the graph decodes
+with no clips), so the blades do not swing yet; and the barrow's four `DartTrap` ports name no
+activate parent, so their trigger is something else.
+
 ### Trap hits (M47.2)
 
 CK *OnTrapHit* / *OnTrapHitStart* / *OnTrapHitStop* / *ProcessTrapHit* (`systems/trap_hits.rs`).

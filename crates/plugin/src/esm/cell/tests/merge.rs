@@ -60,6 +60,8 @@ fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
         reputation_ref: None,
         primitive: None,
         linked_refs: Vec::new(),
+        activate_parents: Vec::new(),
+        parent_activate_only: false,
         location_ref_types: Vec::new(),
         rooms: Vec::new(),
         portals: Vec::new(),

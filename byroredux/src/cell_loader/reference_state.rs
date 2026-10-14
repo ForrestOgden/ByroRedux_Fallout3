@@ -836,6 +836,8 @@ mod script_kill_tests {
             teleport: None,
             reputation_ref: None,
             primitive: None,
+            activate_parents: Vec::new(),
+            parent_activate_only: false,
             linked_refs: target
                 .map(|target| vec![LinkedRef { keyword: 0, target }])
                 .unwrap_or_default(),

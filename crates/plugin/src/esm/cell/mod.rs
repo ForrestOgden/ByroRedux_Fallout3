@@ -537,6 +537,13 @@ pub struct PlacedRef {
     /// NPC ↔ patrol marker, door ↔ teleport partner, switch ↔ light).
     /// Pre-#412 NPCs didn't patrol and doors didn't pair.
     pub linked_refs: Vec<LinkedRef>,
+    /// The REFR's activate parents (`XAPR`, xEdit `wbREFR`): references that "pass
+    /// on" an activation to this one (CK *Reference*, Activate Parents).
+    pub activate_parents: Vec<ActivateParent>,
+    /// `XAPD` Parent Activate Only: "this reference can ONLY be activated by an
+    /// Activate Parent - direct activation (e.g. by the player) will not be
+    /// possible. Scripts can always activate the object".
+    pub parent_activate_only: bool,
     /// `XLRT` location-reference types attached to this placement. Skyrim
     /// quest aliases with `ALRT` select live references by these `LCRT`
     /// FormIDs (for example MQ101's distinct prisoner/soldier roles).
@@ -702,6 +709,8 @@ impl PlacedRef {
             reputation_ref: None,
             primitive: None,
             linked_refs: Vec::new(),
+            activate_parents: Vec::new(),
+            parent_activate_only: false,
             location_ref_types: Vec::new(),
             rooms: Vec::new(),
             portals: Vec::new(),
@@ -841,6 +850,14 @@ pub struct LinkedRef {
     pub keyword: u32,
     /// Target REFR form ID the keyword links this REFR to.
     pub target: u32,
+}
+
+/// One `XAPR` activate parent: the reference whose activation this one receives,
+/// and the seconds to wait after it ("Delay").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActivateParent {
+    pub reference: u32,
+    pub delay: f32,
 }
 
 /// Portal pair from a single `XPOD` sub-record. Portal REFRs connect

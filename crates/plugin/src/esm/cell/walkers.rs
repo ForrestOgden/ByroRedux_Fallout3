@@ -668,6 +668,8 @@ fn parse_refr_group_inner(
             let mut reputation_ref: Option<u32> = None;
             let mut primitive: Option<PrimitiveBounds> = None;
             let mut linked_refs: Vec<LinkedRef> = Vec::new();
+            let mut activate_parents: Vec<ActivateParent> = Vec::new();
+            let mut parent_activate_only = false;
             let mut location_ref_types: Vec<u32> = Vec::new();
             let mut rooms: Vec<u32> = Vec::new();
             let mut portals: Vec<PortalLink> = Vec::new();
@@ -789,6 +791,14 @@ fn parse_refr_group_inner(
                         let target = reader.remap_form_id(r.u32_or_default());
                         linked_refs.push(LinkedRef { keyword, target });
                     }
+                    // XAPR — one activate parent: reference (FormID) + delay (f32,
+                    // seconds); XAPD — Parent Activate Only (u8 bool).
+                    b"XAPR" if sub.data.len() >= 8 => {
+                        let reference = reader.remap_form_id(r.u32_or_default());
+                        let delay = r.f32_or_default();
+                        activate_parents.push(ActivateParent { reference, delay });
+                    }
+                    b"XAPD" if !sub.data.is_empty() => parent_activate_only = sub.data[0] != 0,
                     // #5223 — FO3/FNV layout: the linked reference's FormID
                     // alone (xEdit `wbFormIDCk`), no keyword half. Measured
                     // on Fallout3.esm's StatesmanHotel02Dismember01REF
@@ -993,6 +1003,8 @@ fn parse_refr_group_inner(
                     reputation_ref,
                     primitive,
                     linked_refs,
+                    activate_parents,
+                    parent_activate_only,
                     location_ref_types,
                     rooms,
                     portals,

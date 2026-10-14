@@ -32,6 +32,7 @@ pub mod fragment;
 pub mod globals;
 pub mod load_order;
 pub mod map_markers;
+pub mod activate_parents;
 pub mod anim_subgraph;
 pub mod destruction;
 pub mod detection_events;
@@ -180,6 +181,9 @@ pub use ownership::{
     OwnerKinds, OwnerOverrides,
 };
 pub use crime_gold::{crime_gold_with, CrimeGoldChange, FactionCrimeGold};
+pub use activate_parents::{
+    activate_parent_relay_system, install_activate_parent_table, ActivateParentTable, PendingParentActivations,
+};
 pub use detection_events::{DetectionEvent, PendingDetectionEvents};
 pub use projectile_requests::{PendingProjectileLaunches, ProjectileLaunch};
 pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, SoundEditorIds, SoundPlay};
@@ -350,6 +354,9 @@ pub fn register(world: &mut World) {
         world.insert_resource(ReferenceFlags::default());
     }
     // M47.2 — Sound.Play requests awaiting the host (transient).
+    if world.try_resource::<PendingParentActivations>().is_none() {
+        world.insert_resource(PendingParentActivations::default());
+    }
     if world.try_resource::<PendingDetectionEvents>().is_none() {
         world.insert_resource(PendingDetectionEvents::default());
     }

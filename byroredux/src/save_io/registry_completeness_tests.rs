@@ -519,6 +519,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SubgraphTable", "RACE subgraph entries, the AnimArchetype keywords and gender flags; rebuilt from the records by install_subgraph_table every boot"),
         ("DestructionTable", "base objects' DEST/DSTD stages; rebuilt from the records by install_destruction_table every boot"),
         ("SoundEditorIds", "sound descriptor editor id -> form; rebuilt from the records by install_sound_editor_ids every boot"),
+        ("ActivateParentTable", "parent -> children activation edges and the parent-activate-only set; rebuilt from the REFR records by install_activate_parent_table every boot"),
+        ("PendingParentActivations", "activations waiting out their XAPR delay; transient"),
         ("TrapContacts", "which trap/actor pairs touched last tick; re-derived from the physics world every tick"),
         ("PendingDetectionEvents", "CreateDetectionEvent calls awaiting a hearing system (capped; none exists yet)"),
         ("PendingProjectileLaunches", "Weapon.Fire requests awaiting the host; drained the frame they are made"),

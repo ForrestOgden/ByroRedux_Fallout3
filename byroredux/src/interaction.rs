@@ -1554,6 +1554,17 @@ pub(crate) fn emit_activate_event(
         .map(|player| player.0)
         .unwrap_or(0);
 
+    // CK *Reference*, Parent Activate Only: the reference "can ONLY be activated by
+    // an Activate Parent - direct activation (e.g. by the player) will not be
+    // possible" (scripts and the parent's relay still can).
+    let parent_only = byroredux_scripting::condition::entity_global_form_id(world, target).is_some_and(|form| {
+        world
+            .try_resource::<byroredux_scripting::ActivateParentTable>()
+            .is_some_and(|table| table.takes_parent_activation_only(form))
+    });
+    if parent_only {
+        return Err("activates only through its activate parents");
+    }
     let mut events = world
         .query_mut::<byroredux_scripting::ActivateEvent>()
         .ok_or("ActivateEvent storage is not registered")?;

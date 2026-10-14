@@ -1019,6 +1019,9 @@ pub(crate) fn populate_scene_runtime(
     // HasKeyword.
     let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
     log::info!("Installed keyword table: {keyworded} base objects");
+    // M47.2 — activate parents (levers, pull chains, tripwires -> what they open).
+    let activate_edges = byroredux_scripting::install_activate_parent_table(world, index);
+    log::info!("Installed activate parents: {activate_edges} parent -> child edges");
     // M47.2 — sound editor ids, for the SoundPlay.<name> notifies of animation graphs.
     byroredux_scripting::install_sound_editor_ids(world, index);
     // M47.2 — base objects' destructible data, for DamageObject.

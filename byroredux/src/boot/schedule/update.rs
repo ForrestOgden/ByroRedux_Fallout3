@@ -548,6 +548,8 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     // `RegisterForHitEvent`), delivered once each while the `HitEvent` markers
     // stand.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::hit_event_system);
+    // M47.2 — activate parents: this frame's activations passed on to the children.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::activate_parent_relay_system);
     // M47.2 — the object graphs' raised events, delivered as `OnAnimationEvent`
     // to the scripts that registered for them.
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::animation_event_system);
