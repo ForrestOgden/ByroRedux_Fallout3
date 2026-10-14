@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! script ::= NEWLINE* script_header NEWLINE script_item*
-//! script_header ::= "ScriptName" IDENT ("Extends" IDENT)? script_flag*
+//! script_header ::= "ScriptName" qualified_ident ("Extends" qualified_ident)? script_flag*
 //! script_item ::= import | property | function | event | state |
 //!                 struct | custom_event | group | variable
 //! property ::= type "Property" IDENT (
@@ -13,7 +13,7 @@
 //!              )
 //! function ::= type? "Function" IDENT "(" param_list? ")" function_flag*
 //!              NEWLINE block "EndFunction" NEWLINE
-//! event ::= "Event" IDENT "(" param_list? ")" function_flag*
+//! event ::= "Event" (qualified_ident ".")? IDENT "(" param_list? ")" function_flag*
 //!           NEWLINE block "EndEvent" NEWLINE
 //! state ::= "Auto"? "State" IDENT NEWLINE state_item* "EndState" NEWLINE
 //! struct ::= "Struct" IDENT NEWLINE variable* "EndStruct" NEWLINE
@@ -58,6 +58,10 @@ impl Parser {
         self.skip_newlines();
         let (name, parent, flags) = self.parse_script_header()?;
         self.expect_eol()?;
+        // #5325 — the script's own doc comment trails the header; `Script`
+        // carries no doc field, so it is consumed here rather than left for
+        // the item loop to mistake for a leading doc of the first item.
+        self.take_trailing_doc();
 
         let mut body = Vec::new();
         loop {
@@ -97,11 +101,16 @@ impl Parser {
     /// header line. Caller has already skipped leading newlines.
     fn parse_script_header(&mut self) -> Result<ScriptHeader, ParseError> {
         self.expect(&Token::KwScriptName, "ScriptName")?;
-        let name = self.expect_ident_raw("script name")?;
+        // #5328 — FO4+ namespaced names (`DLC01:Foo`) are qualified idents
+        // here as in type positions; a bare ident read only `DLC01` and left
+        // `:Foo` as a stray token (a wrong parent, not just a missing one).
+        self.expect_same_line("identifier (script name)")?;
+        let name = self.parse_qualified_ident("script name")?;
         // #4763 — raw: `Extends Bar` on the next line is not this header's.
         let parent = if matches!(self.peek_raw(), Some(Token::KwExtends)) {
             self.advance().unwrap();
-            Some(self.expect_ident_raw("parent script name")?)
+            self.expect_same_line("identifier (parent script name)")?;
+            Some(self.parse_qualified_ident("parent script name")?)
         } else {
             None
         };
@@ -208,7 +217,9 @@ impl Parser {
     /// `Import <qualified_ident> NEWLINE`.
     fn parse_import(&mut self, start_span: Span) -> Result<Spanned<ScriptItem>, ParseError> {
         self.advance().unwrap(); // `Import`
-        let name = self.expect_ident_raw("import target")?;
+                                 // #5328 — `Import DLC01:Utils` names a namespaced script.
+        self.expect_same_line("identifier (import target)")?;
+        let name = self.parse_qualified_ident("import target")?;
         let span = start_span.merge(name.span);
         self.expect_eol()?;
         Ok(Spanned::new(ScriptItem::Import(name.node), span))
@@ -307,6 +318,9 @@ impl Parser {
         let params = self.parse_param_list()?;
         let flags = self.parse_function_flags();
         self.expect_eol()?;
+        // #5325 — the documented position is after the header; the leading
+        // form stays as a fallback.
+        let doc_comment = self.take_trailing_doc().or(doc_comment);
         let body = if flags.contains(FunctionFlags::NATIVE) {
             // Native functions have no body. The header is the
             // entire item.
@@ -335,10 +349,11 @@ impl Parser {
     fn parse_event(&mut self) -> Result<Event, ParseError> {
         let doc_comment = self.skip_newlines_collect_doc();
         self.expect(&Token::KwEvent, "Event")?;
-        let name = self.expect_ident_raw("event name")?;
+        let name = self.parse_event_name()?;
         let params = self.parse_param_list()?;
         let flags = self.parse_function_flags();
         self.expect_eol()?;
+        let doc_comment = self.take_trailing_doc().or(doc_comment);
         let body = self.parse_block(&[Token::KwEndEvent])?;
         self.expect(&Token::KwEndEvent, "EndEvent")?;
         self.expect_eol()?;
@@ -349,6 +364,27 @@ impl Parser {
             body,
             doc_comment,
         })
+    }
+
+    /// An event's name: `IDENT`, or FO4's remote-event handler form
+    /// `Sender.EventName` (`Event Actor.OnDeath(Actor akSender, …)`, also a
+    /// custom event `Event MyQuestScript.MyEvent(…)`; the sender may be
+    /// namespaced). #5328 — the remote form is kept as its dotted source
+    /// spelling in the name, so a name-matching consumer looking for the
+    /// script's own `OnDeath` declines it instead of binding a handler for
+    /// another object's event.
+    fn parse_event_name(&mut self) -> Result<Spanned<Identifier>, ParseError> {
+        self.expect_same_line("identifier (event name)")?;
+        let first = self.parse_qualified_ident("event name")?;
+        if !self.check_raw(&Token::Dot) {
+            return Ok(first);
+        }
+        self.advance_raw().unwrap(); // `.`
+        let event = self.expect_ident_raw("remote event name")?;
+        Ok(Spanned::new(
+            Identifier::new(format!("{}.{}", first.node.0, event.node.0)),
+            first.span.merge(event.span),
+        ))
     }
 
     /// `( [Type IDENT ("=" expr)? ("," ...)?] )`
@@ -424,6 +460,7 @@ impl Parser {
         };
         let flags = self.parse_property_flags();
         self.expect_eol()?;
+        let doc_comment = self.take_trailing_doc().or(doc_comment);
 
         // Auto / AutoReadOnly properties have no body — the
         // declaration ends with the newline. Full-form properties
@@ -684,6 +721,10 @@ impl Parser {
         self.expect(&Token::KwStruct, "Struct")?;
         let name = self.expect_ident_raw("struct name")?;
         self.expect_eol()?;
+        // #5325 — trailing docs on the struct and on each member are
+        // consumed (the AST has no field for them); left in place, the
+        // member loop read each one as a malformed member.
+        self.take_trailing_doc();
         let mut members = Vec::new();
         loop {
             self.skip_newlines();
@@ -721,6 +762,7 @@ impl Parser {
                         self.skip_to_next_line();
                         continue;
                     }
+                    self.take_trailing_doc();
                     members.push(var);
                 }
             }
@@ -752,6 +794,8 @@ impl Parser {
             }
         }
         self.expect_eol()?;
+        // #5325 — consumed like a struct's: `Group` has no doc field.
+        self.take_trailing_doc();
 
         let mut properties = Vec::new();
         loop {
@@ -890,7 +934,9 @@ mod tests {
         let (preprocessed, _map) = preprocess(src);
         let (tokens, _errs) = lex(&preprocessed);
         let mut parser = Parser::new(tokens);
-        parser.parse_script().expect("parse_script must not fail fatally")
+        parser
+            .parse_script()
+            .expect("parse_script must not fail fatally")
     }
 
     #[test]
@@ -993,8 +1039,12 @@ Int Property GoodProp = 5 Auto
             s.flags,
             ScriptFlags::CONST | ScriptFlags::HIDDEN | ScriptFlags::CONDITIONAL
         );
-        assert!(parse("ScriptName T BetaOnly\n").flags.contains(ScriptFlags::BETA_ONLY));
-        assert!(parse("ScriptName T default\n").flags.contains(ScriptFlags::DEFAULT));
+        assert!(parse("ScriptName T BetaOnly\n")
+            .flags
+            .contains(ScriptFlags::BETA_ONLY));
+        assert!(parse("ScriptName T default\n")
+            .flags
+            .contains(ScriptFlags::DEFAULT));
     }
 
     /// #5398 — `Default` / `Collapsed` are contextual, so they stay valid
@@ -1836,8 +1886,7 @@ EndProperty
 
     #[test]
     fn auto_on_its_own_line_does_not_make_an_auto_state() {
-        let (script, errors) =
-            parse_counting_errors("ScriptName T\nAuto\nState S\nEndState\n");
+        let (script, errors) = parse_counting_errors("ScriptName T\nAuto\nState S\nEndState\n");
         for item in &script.body {
             if let ScriptItem::State(st) = &item.node {
                 assert!(!st.is_auto, "`Auto` ⏎ `State S` glued (#5021)");
@@ -1870,6 +1919,218 @@ EndProperty
                    Auto State S\nEndState\n";
         let (script, errors) = parse_counting_errors(src);
         assert_eq!(errors, 0, "{script:#?}");
-        assert!(script.body.iter().any(|i| matches!(&i.node, ScriptItem::State(s) if s.is_auto)));
+        assert!(script
+            .body
+            .iter()
+            .any(|i| matches!(&i.node, ScriptItem::State(s) if s.is_auto)));
+    }
+
+    // ── #5325: doc comments trail the item they document ────────────
+
+    /// `Location.psc:39-41` (FO4 F4SE shape): a bodied function whose doc
+    /// comment sits on the line after its header. Pre-fix the doc became
+    /// the first body "statement", `F` was dropped and its local `x` was
+    /// re-parsed as a script variable.
+    #[test]
+    fn a_doc_comment_after_a_bodied_function_header_documents_it() {
+        let src = "ScriptName Foo\n\
+                   Bool Function F(Location akOther)\n\
+                   {Returns true if the calling location is the same}\n\
+                   Int x = 1\n\
+                   Return x == 1\n\
+                   EndFunction\n\
+                   Function G()\n\
+                   EndFunction\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        let names: Vec<_> = script
+            .body
+            .iter()
+            .map(|item| match &item.node {
+                ScriptItem::Function(f) => f.name.node.0.as_str(),
+                other => panic!("only functions expected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["F", "G"]);
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            unreachable!()
+        };
+        assert_eq!(
+            f.doc_comment.as_deref(),
+            Some("Returns true if the calling location is the same")
+        );
+        assert_eq!(f.body.len(), 2, "the local and the return stay in F's body");
+    }
+
+    #[test]
+    fn a_doc_comment_after_an_event_header_documents_it() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName Foo\nEvent OnInit()\n{doc}\nEndEvent\n");
+        assert_eq!(errors, 0, "{script:#?}");
+        let [item] = script.body.as_slice() else {
+            panic!("one event expected: {script:#?}");
+        };
+        let ScriptItem::Event(e) = &item.node else {
+            panic!("{item:#?}")
+        };
+        assert_eq!(e.doc_comment.as_deref(), Some("doc"));
+    }
+
+    #[test]
+    fn a_doc_comment_after_a_native_function_or_property_documents_it() {
+        let src = "ScriptName Foo\n\
+                   Function F() native\n\
+                   {doc for F}\n\
+                   Int Property P Auto\n\
+                   {doc for P}\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        let ScriptItem::Function(f) = &script.body[0].node else {
+            panic!("{script:#?}")
+        };
+        assert_eq!(f.doc_comment.as_deref(), Some("doc for F"));
+        let ScriptItem::Property(p) = &script.body[1].node else {
+            panic!("{script:#?}")
+        };
+        assert_eq!(p.doc_comment.as_deref(), Some("doc for P"));
+    }
+
+    /// The header, group and struct-member positions have no AST field,
+    /// but their docs must not break the parse: inside a `Group` / `Struct`
+    /// a stray doc read as a malformed member.
+    #[test]
+    fn docs_after_the_header_group_and_struct_members_parse_clean() {
+        let src = "ScriptName Foo Extends Quest\n\
+                   {the script's doc}\n\
+                   Group G\n\
+                   {group doc}\n\
+                   Int Property P Auto\n\
+                   {property doc}\n\
+                   EndGroup\n\
+                   Struct S\n\
+                   {struct doc}\n\
+                   Int a\n\
+                   {member doc}\n\
+                   Float b\n\
+                   EndStruct\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        let ScriptItem::Group(g) = &script.body[0].node else {
+            panic!("{script:#?}")
+        };
+        assert_eq!(g.properties.len(), 1);
+        assert_eq!(
+            g.properties[0].node.doc_comment.as_deref(),
+            Some("property doc")
+        );
+        let ScriptItem::Struct(st) = &script.body[1].node else {
+            panic!("{script:#?}")
+        };
+        assert_eq!(st.members.len(), 2);
+    }
+
+    // ── #5328: FO4+ namespaced headers and remote events ────────────
+
+    #[test]
+    fn namespaced_script_name_parent_and_import_keep_every_segment() {
+        let (script, errors) =
+            parse_counting_errors("ScriptName DLC01:Foo Extends DLC01:Base\nImport DLC01:Utils\n");
+        assert_eq!(errors, 0, "{script:#?}");
+        assert_eq!(script.name.node.0, "DLC01:Foo");
+        assert_eq!(
+            script.parent.as_ref().map(|p| p.node.0.as_str()),
+            Some("DLC01:Base")
+        );
+        assert!(
+            matches!(&script.body[0].node, ScriptItem::Import(i) if i.0 == "DLC01:Utils"),
+            "{script:#?}"
+        );
+    }
+
+    #[test]
+    fn a_namespaced_parent_on_the_next_line_is_still_not_the_parent() {
+        let (preprocessed, _map) = preprocess("ScriptName Foo Extends\nDLC01:Base\n");
+        let (tokens, _errs) = lex(&preprocessed);
+        let mut parser = Parser::new(tokens);
+        if let Ok(script) = parser.parse_script() {
+            assert!(
+                script.parent.is_none(),
+                "`Extends` ⏎ `DLC01:Base` glued (#5021)"
+            );
+        }
+    }
+
+    /// `Event <Sender>.<Event>(…)` keeps its dotted spelling, so a consumer
+    /// matching the script's own `OnDeath` does not bind it.
+    #[test]
+    fn remote_event_handlers_parse_with_their_sender_in_the_name() {
+        let src = "ScriptName Foo\n\
+                   Event Actor.OnDeath(Actor akSender, Actor akKiller)\n\
+                   EndEvent\n\
+                   Event DLC01:QuestScript.MyEvent(DLC01:QuestScript akSender, Var[] akArgs)\n\
+                   EndEvent\n";
+        let (script, errors) = parse_counting_errors(src);
+        assert_eq!(errors, 0, "{script:#?}");
+        let names: Vec<_> = script
+            .body
+            .iter()
+            .map(|item| match &item.node {
+                ScriptItem::Event(e) => (e.name.node.0.as_str(), e.params.len()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [("Actor.OnDeath", 2), ("DLC01:QuestScript.MyEvent", 2)]
+        );
+    }
+
+    #[test]
+    fn a_struct_created_without_a_size_parses() {
+        let (script, errors) = parse_counting_errors(
+            "ScriptName Foo\nFunction F()\nInstanceData:Owner o = new InstanceData:Owner\nEndFunction\n",
+        );
+        assert_eq!(errors, 0, "{script:#?}");
+        assert_eq!(function_bodies(&script).count(), 1);
+    }
+
+    /// Opt-in corpus gate: every vanilla + F4SE `.psc` under
+    /// `$FO4_PSC_DIR` (e.g. `Fallout 4/Data/Scripts/Source`) parses with no
+    /// errors, apart from `KNOWN_GAPS`. Pre-#5325/#5328, 5 of the 29 F4SE
+    /// files failed.
+    #[test]
+    fn fo4_script_sources_parse_clean_when_present() {
+        /// Files with a parse gap outside #5325/#5328. A listed file that
+        /// starts parsing clean fails the gate too, so this cannot rot.
+        const KNOWN_GAPS: &[(&str, &str)] = &[(
+            "ObjectReference.psc",
+            "struct member `string parent` — the `Parent` keyword in a name position",
+        )];
+        let Some(dir) = std::env::var_os("FO4_PSC_DIR") else {
+            return;
+        };
+        let mut failures = Vec::new();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(dir).expect("FO4_PSC_DIR must be readable") {
+            let path = entry.unwrap().path();
+            if !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("psc"))
+            {
+                continue;
+            }
+            seen += 1;
+            let bytes = std::fs::read(&path).unwrap();
+            let (_, errors) = parse_counting_errors(&String::from_utf8_lossy(&bytes));
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let known = KNOWN_GAPS
+                .iter()
+                .any(|(file, _)| file.eq_ignore_ascii_case(&name));
+            if (errors > 0) != known {
+                failures.push(format!("{name}: {errors} error(s), known gap: {known}"));
+            }
+        }
+        assert!(seen > 0, "no .psc files found");
+        assert!(failures.is_empty(), "{seen} files, failures: {failures:#?}");
     }
 }

@@ -156,6 +156,29 @@ impl Parser {
         doc
     }
 
+    /// #5325 — Papyrus puts a doc comment on the line *after* the item it
+    /// documents (script header, property, group, struct member, function;
+    /// FO4 CK *Script File Structure* § Documentation Comments), or as a
+    /// same-line trailer. Call right after the item header's
+    /// [`expect_eol`](Self::expect_eol): consumes one `{…}` doc comment at
+    /// the current raw position plus the line break after it, and returns
+    /// its text. Without this a bodied function's doc became the first body
+    /// "statement" and the whole function was dropped.
+    ///
+    /// Only the immediately-next line counts: a doc comment after a blank
+    /// line is left where it is.
+    pub fn take_trailing_doc(&mut self) -> Option<String> {
+        let Some(Token::DocComment(text)) = self.peek_raw() else {
+            return None;
+        };
+        let text = text.clone();
+        self.pos += 1;
+        if self.check_raw(&Token::Newline) {
+            self.pos += 1;
+        }
+        Some(text)
+    }
+
     /// Check if at end of file (only newlines/whitespace remaining).
     pub fn at_eof(&self) -> bool {
         self.peek().is_none()

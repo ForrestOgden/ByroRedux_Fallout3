@@ -104,6 +104,11 @@ are case-preserving; comparison goes through `Identifier::eq_ignore_case`.
 
 **Comments:** `;` single-line, `;/ ... /;` block, `{ ... }` doc comments. Line and block
 comments are skipped at lex time; doc comments survive as `Token::DocComment(String)`.
+A doc comment belongs to the item whose header line it *follows* (FO4 CK *Script File
+Structure*) — `Parser::take_trailing_doc` attaches it to the `Function` / `Event` /
+`Property` before it, and consumes it after the script header, a `Group` header and each
+`Struct` member, which carry no doc field (#5325). A leading `{…}` is still accepted as a
+fallback for functions, events and properties.
 
 **Line continuation:** `\` at end of line joins the next line. Handled in `preprocess()`
 before lexing; an `OffsetMap` records the removed bytes so diagnostics still point at the
@@ -117,7 +122,14 @@ distinction is load-bearing in two directions: empty-`Return` detection (see
 next LINE cannot become a continuation of it.
 
 **Namespaces (FO4+):** colon-delimited — `MyNamespace:MyScript:MyStruct`, parsed by
-`parse_qualified_ident` and folded into a single `Identifier` with embedded `:`.
+`parse_qualified_ident` and folded into a single `Identifier` with embedded `:`. That
+covers type positions, expression primaries, the `ScriptName` and `Extends` names and the
+`Import` target (#5328).
+
+**Remote events (FO4+):** `Event Actor.OnDeath(Actor akSender, …)` handles another
+object's event. The event's `name` keeps the dotted source spelling (`Actor.OnDeath`, the
+sender itself possibly namespaced), so a consumer matching the script's own `OnDeath`
+declines it (#5328).
 
 ## AST Types
 
@@ -132,7 +144,7 @@ Every node carries a `Span` (byte offset range, in `span.rs`) for diagnostics, w
 | `Variable` | typed field: `ty`, `name`, `initial_value`, `is_conditional`, `is_const`, `is_hidden` (FO4 struct members) |
 | `Property` | typed field, `flags: PropertyFlags`, `initial_value`, optional `getter`/`setter`, `doc_comment` |
 | `Function` | `return_type`, `name`, `params: Vec<Param>`, `flags: FunctionFlags`, `body: Vec<Spanned<Stmt>>`, `doc_comment` |
-| `Event` | like `Function` but no return type |
+| `Event` | like `Function` but no return type; a remote handler's `name` is `Sender.EventName` |
 | `Param` | `ty`, `name`, optional `default` expression |
 | `State` | `name`, `is_auto`, `body: Vec<Spanned<StateItem>>` |
 | `StateItem` | `Function` or `Event` |
