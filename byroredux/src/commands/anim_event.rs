@@ -141,3 +141,50 @@ impl ConsoleCommand for AnimPoseCommand {
         }
     }
 }
+
+/// `actor.walk <entity|.> <speed> <seconds> [turns]`: walk an actor in a straight line at
+/// `speed` units a second for `seconds`, heading `turns` of a turn clockwise from where it
+/// faces (default 0, straight ahead). A stand-in mover: the graph's locomotion inputs
+/// (`Speed`, `Direction`, `moveStart`/`moveStop`) follow the motion like any other.
+pub(crate) struct ActorWalkCommand;
+
+impl ConsoleCommand for ActorWalkCommand {
+    fn name(&self) -> &str {
+        "actor.walk"
+    }
+
+    fn description(&self) -> &str {
+        "Walk an actor in a straight line: actor.walk <entity|.> <speed> <seconds> [turns]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let mut tokens = args.split_whitespace();
+        let (Some(entity_token), Some(speed), Some(seconds)) = (tokens.next(), tokens.next(), tokens.next()) else {
+            return CommandOutput::error("usage: actor.walk <entity|.> <speed> <seconds> [turns]");
+        };
+        let entity = match resolve_console_entity(world, entity_token) {
+            Ok(entity) => entity,
+            Err(message) => return CommandOutput::error(format!("actor.walk: {message}")),
+        };
+        let (Ok(speed), Ok(seconds)) = (speed.parse::<f32>(), seconds.parse::<f32>()) else {
+            return CommandOutput::error("actor.walk: speed and seconds are numbers");
+        };
+        let turns = tokens.next().and_then(|turns| turns.parse::<f32>().ok()).unwrap_or(0.0);
+        let Some(rotation) = world
+            .query::<byroredux_core::ecs::components::Transform>()
+            .and_then(|transforms| transforms.get(entity).map(|transform| transform.rotation))
+        else {
+            return CommandOutput::error("actor.walk: the entity has no Transform");
+        };
+        // Clockwise from above, as `heading_fraction` measures: right is -X on the body.
+        let angle = turns * std::f32::consts::TAU;
+        let forward = rotation * byroredux_core::math::Vec3::Z;
+        let right = rotation * byroredux_core::math::Vec3::NEG_X;
+        let velocity = (forward * angle.cos() + right * angle.sin()) * speed;
+        let Some(mut walks) = world.query_mut::<crate::systems::ConsoleWalk>() else {
+            return CommandOutput::error("actor.walk: ConsoleWalk is not registered");
+        };
+        walks.insert(entity, crate::systems::ConsoleWalk { velocity, remaining: seconds });
+        CommandOutput::line(format!("walking {entity} at {speed} for {seconds}s"))
+    }
+}

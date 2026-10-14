@@ -63,7 +63,7 @@ use byroredux_core::math::Vec3;
 /// sane framerate; the margin exists so a blocked-against-a-wall actor
 /// (KCC delivered ~zero translation) reads as idle instead of grinding a
 /// walk cycle in place.
-const WALK_ANIM_MIN_SPEED: f32 = 8.0;
+pub(crate) const WALK_ANIM_MIN_SPEED: f32 = 8.0;
 
 /// Hysteresis dwell windows (seconds). A take needs the actor to have been
 /// moving for [`WALK_ANIM_TAKE_DWELL`]; a restore needs it continuously
@@ -72,8 +72,8 @@ const WALK_ANIM_MIN_SPEED: f32 = 8.0;
 /// a walk leg: single near-zero-displacement ticks must not cut the walk
 /// clip (Camp McCarran Travel walkers, 2026-09-18 — 64 take/restore pairs
 /// in ~70 s before the dwell windows landed).
-const WALK_ANIM_TAKE_DWELL: f32 = 0.1;
-const WALK_ANIM_RELEASE_DWELL: f32 = 0.4;
+pub(crate) const WALK_ANIM_TAKE_DWELL: f32 = 0.1;
+pub(crate) const WALK_ANIM_RELEASE_DWELL: f32 = 0.4;
 
 /// One actor's computed playback decision for this tick, applied in Pass 2
 /// after all Pass-1 reads have dropped (the shared two-pass convention of

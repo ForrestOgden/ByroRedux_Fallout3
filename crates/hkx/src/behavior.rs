@@ -16,7 +16,9 @@
 //! Skyrim Special Edition lever, door and trap graphs (`examples/probe_behavior.rs`).
 //! A 32-bit (Skyrim LE) packfile is reported as an unsupported layout.
 
+use crate::expression::Condition;
 use crate::packfile::Packfile;
+use std::sync::Arc;
 use crate::{HkxError, Result};
 
 /// Sanity caps on array sizes read from a file.
@@ -40,8 +42,11 @@ const BINDING_SET_BINDINGS: usize = 0x10;
 const BINDING_STRIDE: usize = 0x28;
 const BINDING_MEMBER_PATH: usize = 0x00;
 const BINDING_VARIABLE_INDEX: usize = 0x1C;
-/// `hkbStateMachineTransitionInfoArray` element: the transition effect pointer.
+/// `hkbStateMachineTransitionInfoArray` element: the transition effect and condition
+/// pointers; `hkbExpressionCondition::m_expression` / `hkbStringCondition::m_conditionString`.
 const TRANSITION_EFFECT: usize = 0x20;
+const TRANSITION_CONDITION: usize = 0x28;
+const CONDITION_TEXT: usize = 0x10;
 /// `hkbBlenderGeneratorChild::m_weight` (the child's position on a parametric blender's
 /// axis, or its weight) and the `hkbBindable` base of its fields.
 const BLENDER_CHILD_WEIGHT: usize = 0x40;
@@ -272,7 +277,7 @@ pub struct StateClip {
 }
 
 /// A state's (or the machine's wildcard) transition on an event.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Transition {
     /// Index into [`BehaviorGraph::events`]; negative for none.
     pub event: i32,
@@ -284,6 +289,8 @@ pub struct Transition {
     pub blend_duration: f32,
     /// The variable that supplies the duration instead, when the effect binds one.
     pub blend_duration_variable: Option<usize>,
+    /// The expression over the graph's variables the event's transition is gated on.
+    pub condition: Option<Arc<Condition>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -668,7 +675,14 @@ fn read_transitions(file: &Packfile, array_object: usize) -> Result<Vec<Transiti
                 Some(effect) => read_transition_effect(file, effect)?,
                 None => (0.0, None),
             };
+            let condition = match file.object_pointer(element + TRANSITION_CONDITION) {
+                Some(object) if matches!(file.class_at(object), Some("hkbExpressionCondition" | "hkbStringCondition")) => {
+                    Some(Arc::new(Condition::parse(&string(file, object + CONDITION_TEXT, "condition text")?)))
+                }
+                _ => None,
+            };
             Ok(Transition {
+                condition,
                 event: file.u32(element + l.transition_event_id, "transition event")? as i32,
                 to_state: file.u32(element + l.transition_to_state, "transition target")? as i32,
                 priority: file.u16(element + l.transition_priority, "transition priority")? as i16,

@@ -20,9 +20,10 @@
 //! blender* (an actor's locomotion: walk and run by `Speed`, a heading by
 //! `Direction`) plays every clip of its blend tree at once as an `AnimationStack`,
 //! weighted from the graph's variables each frame, and a transition with a blending
-//! effect fades the old pose out as the new one fades in. Not run: layered
-//! (non-parametric, bone-masked) blenders, which keep their first child; transition
-//! conditions; modifiers; root motion; and the sound events (`SoundPlay.*`) the
+//! effect fades the old pose out as the new one fades in, and a transition gated on a
+//! condition (`iSyncIdleLocomotion == 1`, `!IsPlayer`) fires only while it holds over
+//! the variables. Not run: layered (non-parametric, bone-masked) blenders, which keep
+//! their first child; modifiers; root motion; and the sound events (`SoundPlay.*`) the
 //! triggers carry.
 //!
 //! The CK's results apply: `PlayAnimation` returns true when the graph accepted
@@ -570,14 +571,19 @@ impl ObjectAnimationGraph {
     }
 
     /// The transition `event` takes in the machine at `machine`/`run`: the current
-    /// state's own first, then the machine's wildcard; disabled ones never fire.
-    fn transition_of(machine: &StateMachine, run: &MachineRun, event: i32) -> Option<Transition> {
+    /// state's own first, then the machine's wildcard; disabled ones never fire, and one
+    /// gated on a condition fires only while the condition holds over the variables.
+    fn transition_of(&self, machine: &StateMachine, run: &MachineRun, event: i32) -> Option<Transition> {
         if event < 0 {
             return None;
         }
         let state = machine.states.iter().find(|state| state.id == run.state)?;
-        let usable = |t: &&Transition| t.event == event && t.flags & TRANSITION_FLAG_DISABLED == 0;
-        state.transitions.iter().find(usable).or_else(|| machine.wildcard.iter().find(usable)).copied()
+        let usable = |t: &&Transition| {
+            t.event == event
+                && t.flags & TRANSITION_FLAG_DISABLED == 0
+                && t.condition.as_ref().is_none_or(|condition| condition.holds(&|name| self.variable(name)))
+        };
+        state.transitions.iter().find(usable).or_else(|| machine.wildcard.iter().find(usable)).cloned()
     }
 
     /// Give `event` to the machine at `path`: its own transition if it has one,
@@ -587,7 +593,7 @@ impl ObjectAnimationGraph {
         let graph = Arc::clone(&self.graph);
         let Some(root) = graph.graph.machine.as_ref() else { return };
         let Some((machine, run)) = locate(root, &self.run, path) else { return };
-        if let Some(transition) = Self::transition_of(machine, run, event) {
+        if let Some(transition) = self.transition_of(machine, run, event) {
             self.pending_fade = self.pending_fade.max(self.transition_fade(&transition));
             let entered = MachineRun::enter(machine, transition.to_state);
             if let Some(slot) = locate_mut(&mut self.run, path) {
@@ -1398,7 +1404,7 @@ mod tests {
         assert!(world.get::<AnimationStack>(3).is_some());
         // The fade completes: the old layers are gone and the new one is at full weight.
         {
-            let mut stack = world.get_mut::<AnimationStack>(3).unwrap();
+            let stack = &mut *world.get_mut::<AnimationStack>(3).unwrap();
             stack.layers.retain(|layer| layer.blend_in_total > 0.0 && layer.clip_handle == 1);
             let layer = &mut stack.layers[0];
             layer.blend_in_remaining = 0.0;
@@ -1409,6 +1415,35 @@ mod tests {
         assert!(world.get::<AnimationStack>(3).is_none());
         let player = world.get::<AnimationPlayer>(3).expect("a player");
         assert_eq!((player.clip_handle, player.local_time, player.root_entity), (1, 0.75, Some(3)));
+    }
+
+    /// A transition gated on a condition fires only while the expression holds over the
+    /// graph's variables; one without a condition (or whose text is unreadable) always
+    /// does.
+    #[test]
+    fn a_conditioned_transition_waits_for_its_condition() {
+        let mut graph = locomotion();
+        let mut shared = (*graph.graph).clone();
+        let machine = shared.graph.machine.as_mut().unwrap();
+        machine.states[0].transitions[0].condition = Some(Arc::new(byroredux_hkx::Condition::parse("Speed > 50 && !bFlag")));
+        graph.graph = Arc::new(shared);
+        graph.start();
+        assert_eq!(graph.send_event(0), None, "Speed is 0: Move is refused");
+        graph.set_variable("Speed", 80.0);
+        graph.set_variable("bFlag", 1.0);
+        assert_eq!(graph.send_event(0), None, "bFlag blocks it");
+        graph.set_variable("bFlag", 0.0);
+        assert!(graph.send_event(0).is_some(), "now it holds");
+        assert_eq!(graph.state(), 1);
+
+        // Text the grammar cannot read does not block.
+        let mut graph = locomotion();
+        let mut shared = (*graph.graph).clone();
+        shared.graph.machine.as_mut().unwrap().states[0].transitions[0].condition =
+            Some(Arc::new(byroredux_hkx::Condition::parse("iMode=18")));
+        graph.graph = Arc::new(shared);
+        graph.start();
+        assert!(graph.send_event(0).is_some());
     }
 
     /// A transition's duration comes from its bound variable when it has one.

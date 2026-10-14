@@ -8,6 +8,7 @@
 
 mod animation;
 mod behavior;
+mod expression;
 mod packfile;
 
 pub use animation::{
@@ -15,6 +16,7 @@ pub use animation::{
     HkxTransform,
 };
 
+pub use expression::Condition;
 pub use behavior::{
     class_census, decode_behavior_graph, decode_character, decode_project, dump_objects, BehaviorGraph, BlendChild,
     BlendNode, Blender, Character, ClipMode, ClipTrigger, State, StateClip, StateContent, StateMachine, Transition,

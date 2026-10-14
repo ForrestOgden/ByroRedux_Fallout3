@@ -41,6 +41,7 @@ pub(crate) mod forcegreet;
 // location contexts; KILL lives at the combat death site).
 pub(crate) mod story_events;
 mod travel;
+mod graph_locomotion;
 mod walk_anim;
 mod combat_anim;
 mod wander;
@@ -72,6 +73,7 @@ pub(crate) use patrol::*;
 pub(crate) use eat_sleep::make_eat_sleep_system;
 pub(crate) use sandbox::*;
 pub(crate) use travel::*;
+pub(crate) use graph_locomotion::*;
 pub(crate) use walk_anim::*;
 pub(crate) use combat_anim::*;
 pub(crate) use wander::*;

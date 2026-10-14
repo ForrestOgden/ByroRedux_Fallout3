@@ -338,6 +338,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // storage that was never registered and would drop the pose silently.
     world.register::<byroredux_core::animation::AnimationStack>();
     world.register::<byroredux_core::animation::RootMotionDelta>();
+    world.register::<crate::systems::GraphLocomotion>();
+    world.register::<crate::systems::ConsoleWalk>();
 
     // M42 — pre-register the Sandbox marker storages so
     // `sandbox_seat_system`'s `query_mut::<Seated>().insert(...)` and the

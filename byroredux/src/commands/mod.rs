@@ -63,7 +63,7 @@ use actor_value::*;
 use anim_archetype::AnimArchetypeCommand;
 use cndf::CndfCommand;
 use bribe_info::BribeInfoCommand;
-use anim_event::{AnimEventCommand, AnimPoseCommand, AnimVarCommand};
+use anim_event::{ActorWalkCommand, AnimEventCommand, AnimPoseCommand, AnimVarCommand};
 use script_var::{QuestForceAliasCommand, ScanInfoCommand, ScriptCallCommand, ScriptExecCommand, ScriptQuestCallCommand, ScriptVarCommand};
 use assets::*;
 use condition::*;
@@ -99,6 +99,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(AnimEventCommand);
     registry.register(AnimVarCommand);
     registry.register(AnimPoseCommand);
+    registry.register(ActorWalkCommand);
     registry.register(ScriptVarCommand);
     registry.register(ScriptCallCommand);
     registry.register(ScriptExecCommand);

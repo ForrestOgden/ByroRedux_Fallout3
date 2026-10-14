@@ -527,6 +527,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActorGraphCache", "behavior graphs resolved for actor subgraph entries; rebuilt from the archives"),
         ("ActorClipProvider", "archives an interior session resolves actor clips from"),
         ("ArchetypeIdle", "marker of the idle clip archetype_idle_system gave an actor; re-derived from the actor's keywords and the archives"),
+        ("ConsoleWalk", "an actor.walk debugging aid with a lifetime of seconds"),
+        ("GraphLocomotion", "an actor's smoothed speed and moveStart/moveStop state for its behavior graph; re-derived from the next frames' displacement"),
         ("ArchetypeIdleSeen", "the archetype overrides the last idle pass saw; a pass after a load runs once more"),
         ("ArchetypeIdleClips", "the idle clip of each MT subgraph entry; rebuilt from the archives at every world setup"),
         ("TrapContacts", "which trap/actor pairs touched last tick; re-derived from the physics world every tick"),

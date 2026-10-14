@@ -133,6 +133,11 @@ pub(super) fn register_post_update_systems(scheduler: &mut Scheduler) {
             Stage::PostUpdate,
             crate::systems::make_npc_walk_animation_system(),
         );
+        // M47.2 — the same motion, read for the behavior graphs of the actors the
+        // walk-clip system does not drive (Fallout 4): `Speed` / `Direction` and
+        // `moveStart` / `moveStop`. See `systems::graph_locomotion` module docs.
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::console_walk_system);
+        scheduler.add_exclusive(Stage::PostUpdate, crate::systems::graph_locomotion_system);
     }
     // P2 combat tail — combat feedback (attack/hit/death clip takes +
     // combat sounds), AFTER walk_anim when it is registered: a death take
