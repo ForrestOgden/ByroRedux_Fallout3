@@ -5207,6 +5207,50 @@ fn weapon_fire_records_a_projectile_launch() {
     );
 }
 
+/// `CreateDetectionEvent(akOwner, aiSoundLevel)` is recorded at the object it is
+/// called on (the level defaulting to 0).
+#[test]
+fn create_detection_event_is_recorded() {
+    const OWNER: u32 = 0x0001_0F70;
+    let script = parsed_source(
+        "ScriptName QF_VmDetect extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Actor Property Bob Auto\n\
+         Function Fragment_1()\n\
+           Marker.CreateDetectionEvent(Bob, 60)\n\
+           Marker.CreateDetectionEvent(Bob)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    let property = |name: &str, form_id| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias: -1 },
+    };
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance {
+                name: "QF_VmDetect".into(),
+                status: 0,
+                properties: vec![property("Marker", MARKER), property("Bob", OWNER)],
+            }],
+        },
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(
+        world.resource::<crate::PendingDetectionEvents>().0,
+        [
+            crate::DetectionEvent { source: MARKER, owner: OWNER, sound_level: 60 },
+            crate::DetectionEvent { source: MARKER, owner: OWNER, sound_level: 0 },
+        ]
+    );
+}
+
 /// `Game.AdvanceSkill` queues the usage XP for the host's skill system.
 #[test]
 fn advance_skill_queues_the_usage_xp() {

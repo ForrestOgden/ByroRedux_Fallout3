@@ -1589,6 +1589,16 @@ the projectile model, impact force on bodies, and the explosion a record names. 
 `Activate` (`OnActivate` reads the activating `TrapTriggerBase`'s `Type`), so a live test needs a
 trigger crossing, and the flight and hit are covered by tests against a real physics world.
 
+### CreateDetectionEvent (M47.2)
+
+CK *CreateDetectionEvent - ObjectReference*: "creates a detection event at this object's location"
+for an `akOwner` at an `aiSoundLevel` (0 to 100, default 0). The engine has no hearing: an actor
+notices a target by sight alone (`faction_hostility`'s detection range and line-of-sight test) and
+nothing maps a sound level to a distance, so the call is recorded in order in a capped
+`PendingDetectionEvents` for the hearing system that will read it, and nothing reacts to it yet. A
+tripwire built on it (`SoundTrap`, 166 Skyrim references, which now passes the VM) plays its sound,
+animation and physics nudge and wakes no one. Skyrim VM coverage 63.5% to 64.4%.
+
 ### Utility.GetCurrentRealTime (M47.2)
 
 CK: "the number of real-world seconds that have elapsed since the game has launched", with time in

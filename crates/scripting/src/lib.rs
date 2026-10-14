@@ -34,6 +34,7 @@ pub mod load_order;
 pub mod map_markers;
 pub mod anim_subgraph;
 pub mod destruction;
+pub mod detection_events;
 pub mod keywords;
 pub mod menus;
 pub mod alias_collections;
@@ -179,6 +180,7 @@ pub use ownership::{
     OwnerKinds, OwnerOverrides,
 };
 pub use crime_gold::{crime_gold_with, CrimeGoldChange, FactionCrimeGold};
+pub use detection_events::{DetectionEvent, PendingDetectionEvents};
 pub use projectile_requests::{PendingProjectileLaunches, ProjectileLaunch};
 pub use sound_requests::{install_sound_editor_ids, PendingSoundPlays, SoundEditorIds, SoundPlay};
 pub use reference_flags::{ReferenceFlag, ReferenceFlagChange, ReferenceFlags};
@@ -348,6 +350,9 @@ pub fn register(world: &mut World) {
         world.insert_resource(ReferenceFlags::default());
     }
     // M47.2 — Sound.Play requests awaiting the host (transient).
+    if world.try_resource::<PendingDetectionEvents>().is_none() {
+        world.insert_resource(PendingDetectionEvents::default());
+    }
     if world.try_resource::<PendingProjectileLaunches>().is_none() {
         world.insert_resource(PendingProjectileLaunches::default());
     }

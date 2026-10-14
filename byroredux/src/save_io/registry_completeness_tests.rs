@@ -519,6 +519,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SubgraphTable", "RACE subgraph entries, the AnimArchetype keywords and gender flags; rebuilt from the records by install_subgraph_table every boot"),
         ("DestructionTable", "base objects' DEST/DSTD stages; rebuilt from the records by install_destruction_table every boot"),
         ("SoundEditorIds", "sound descriptor editor id -> form; rebuilt from the records by install_sound_editor_ids every boot"),
+        ("PendingDetectionEvents", "CreateDetectionEvent calls awaiting a hearing system (capped; none exists yet)"),
         ("PendingProjectileLaunches", "Weapon.Fire requests awaiting the host; drained the frame they are made"),
         ("ActiveProjectiles", "projectiles in flight; transient (a saved game restarts with none in the air, as the game resets traps on load)"),
         ("KeywordTable", "base objects' keywords (an actor's with its race's); rebuilt from the records by install_keyword_table every boot"),
