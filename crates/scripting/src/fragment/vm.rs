@@ -2704,6 +2704,7 @@ impl Vm<'_> {
                     | "isbribed"
                     | "setintimidated"
                     | "modfavorpoints"
+                    | "modfavorpointswithglobal"
                     | "makeplayerfriend"
                     | "isintimidated"
                     | "changeanimarchetype"
@@ -3509,13 +3510,20 @@ impl Vm<'_> {
             // `ModFavorPoints(iFavorPoints)` is `If iFavorPoints > 0: MakePlayerFriend()`, and
             // `MakePlayerFriend()` (CK *MakePlayerFriend*) is "if the actor's base is unique
             // and its relationship rank with the player is 0, set it to 1".
-            (Value::Form(actor), "modfavorpoints" | "makeplayerfriend")
-                if args.len() == usize::from(name == "modfavorpoints") =>
+            (Value::Form(actor), "modfavorpoints" | "modfavorpointswithglobal" | "makeplayerfriend")
+                if args.len() == usize::from(name != "makeplayerfriend") =>
             {
                 let values = self.eval_args(frame, args)?;
-                let friend = match values.first() {
-                    Some(points) => points.number().is_some_and(|points| points as i32 > 0),
-                    None => true,
+                let friend = match (name.as_str(), values.first()) {
+                    // `ModFavorPointsWithGlobal(g)` is `ModFavorPoints(g.GetValueInt())`.
+                    ("modfavorpointswithglobal", Some(Value::Form(global))) => self
+                        .world
+                        .try_resource::<crate::Globals>()
+                        .and_then(|globals| globals.get(*global))
+                        .is_some_and(|points| points as i32 > 0),
+                    ("modfavorpointswithglobal", _) => return stop("ModFavorPointsWithGlobal without a global".to_owned()),
+                    (_, Some(points)) => points.number().is_some_and(|points| points as i32 > 0),
+                    (_, None) => true,
                 };
                 if friend {
                     let Some(entity) = self.entity_of(*actor) else {
@@ -5688,6 +5696,11 @@ impl<'l> Checker<'l> {
             }
             (Kind::Object | Kind::Player, "modfavorpoints")
                 if statement && matches!(arg_kinds.as_slice(), [Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num)]) =>
+            {
+                return Some(Kind::None);
+            }
+            (Kind::Object | Kind::Player, "modfavorpointswithglobal")
+                if statement && matches!(arg_kinds.as_slice(), [Arg::Kind(Kind::Object)]) =>
             {
                 return Some(Kind::None);
             }

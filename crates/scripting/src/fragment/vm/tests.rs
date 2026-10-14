@@ -3094,16 +3094,22 @@ fn mod_favor_points_befriends_a_unique_actor_with_a_positive_amount() {
     use byroredux_plugin::esm::records::{EsmIndex, NpcRecord};
     const FRIEND: u32 = 0x0001_0F91;
     const FOE: u32 = 0x0001_0F92;
+    const OTHER_UNIQUE: u32 = 0x0001_0F93;
+    const FAVOR_GLOBAL: u32 = 0x0001_0F94;
     const UNIQUE_NPC: u32 = 0x0002_0001;
     const COMMON_NPC: u32 = 0x0002_0002;
+    const OTHER_NPC: u32 = 0x0002_0003;
     let script = parsed_source(
         "ScriptName QF_VmFavor extends Quest\n\
          Actor Property Friend Auto\n\
          Actor Property Common Auto\n\
+         Actor Property Other Auto\n\
+         GlobalVariable Property Favor Auto\n\
          Function Fragment_1()\n\
            Friend.ModFavorPoints(0)\n\
            Common.ModFavorPoints(50)\n\
            Friend.ModFavorPoints(50)\n\
+           Other.ModFavorPointsWithGlobal(Favor)\n\
          EndFunction\n",
     );
     assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
@@ -3112,7 +3118,9 @@ fn mod_favor_points_befriends_a_unique_actor_with_a_positive_amount() {
     let mut index = EsmIndex::default();
     index.npcs.insert(UNIQUE_NPC, NpcRecord { form_id: UNIQUE_NPC, acbs_flags: 0x20, ..Default::default() });
     index.npcs.insert(COMMON_NPC, NpcRecord { form_id: COMMON_NPC, acbs_flags: 0, ..Default::default() });
+    index.npcs.insert(OTHER_NPC, NpcRecord { form_id: OTHER_NPC, acbs_flags: 0x20, ..Default::default() });
     crate::actor_base_traits::install_actor_base_traits(&mut world, &index);
+    world.insert_resource(crate::Globals([(FAVOR_GLOBAL, 25.0)].into_iter().collect()));
     crate::relationships::install_relationships(&mut world, &index);
     let mut pool = FormIdPool::default();
     let mut spawn = |world: &mut World, local: u32, base: u32| {
@@ -3124,11 +3132,12 @@ fn mod_favor_points_befriends_a_unique_actor_with_a_positive_amount() {
     };
     let friend = spawn(&mut world, FRIEND, UNIQUE_NPC);
     let common = spawn(&mut world, FOE, COMMON_NPC);
+    let other = spawn(&mut world, OTHER_UNIQUE, OTHER_NPC);
     world.insert_resource(pool);
     {
         let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
         let mut vmad = vmad();
-        for (name, form_id) in [("Friend", FRIEND), ("Common", FOE)] {
+        for (name, form_id) in [("Friend", FRIEND), ("Common", FOE), ("Other", OTHER_UNIQUE), ("Favor", FAVOR_GLOBAL)] {
             vmad.scripts[0].properties.push(ScriptProperty {
                 name: name.into(),
                 status: 1,
@@ -3143,6 +3152,11 @@ fn mod_favor_points_befriends_a_unique_actor_with_a_positive_amount() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(crate::relationships::relationship_rank(&world, friend, player), 1, "the unique actor became a friend");
     assert_eq!(crate::relationships::relationship_rank(&world, common, player), 0, "a common actor stays as it was");
+    assert_eq!(
+        crate::relationships::relationship_rank(&world, other, player),
+        1,
+        "ModFavorPointsWithGlobal(g) is ModFavorPoints(g.GetValueInt()): the global holds 25"
+    );
 }
 
 /// `SetBribed` / `SetIntimidated` flag the actor (visible to `IsBribed` in the

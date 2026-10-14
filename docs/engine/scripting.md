@@ -1750,9 +1750,9 @@ Guild, Mages College and Dark Brotherhood quest rewards, e.g. `akSpeaker.ModFavo
 no CK page and SkyrimSE.exe does not define it (a case-insensitive search of the binary for
 `modfavor` finds nothing) - because it is not a native: the game's own `Skyrim - Misc.bsa`
 `Actor.pex` defines it in Papyrus, `If iFavorPoints > 0: Self.MakePlayerFriend()`, and
-`ModFavorPointsWithGlobal(g)` as `ModFavorPoints(g.GetValueInt())` (that wrapper is not built). `MakePlayerFriend()` has a CK
+`ModFavorPointsWithGlobal(g)` as `ModFavorPoints(g.GetValueInt())`. `MakePlayerFriend()` has a CK
 page with its body: for an actor whose base `IsUnique()`, if `GetRelationshipRank(player) == 0`,
-`SetRelationshipRank(player, 1)`. `ModFavorPoints` and `MakePlayerFriend` now run as written: a positive amount makes a *unique*
+`SetRelationshipRank(player, 1)`. `ModFavorPoints`, `ModFavorPointsWithGlobal` and `MakePlayerFriend` now run as written: a positive amount makes a *unique*
 actor (ACBS flag `0x20`, xEdit `wbDefinitionsTES5`) whose rank with the player is 0 a rank-1 friend
 (recorded in `ScriptedRelationships`, which `GetRelationshipRank` reads); zero, a negative amount, a
 common actor or an actor already ranked changes nothing
