@@ -1541,13 +1541,27 @@ state:
   calls that undetermined). A race's entries are its own, its `SRAC` template's and those of races
   `SADD`-additive onto it (`RaceRecord::subgraph_data`, xEdit `wbRACE`). Vanilla check
   (`vanilla_fo4_archetype_npcs_select_their_entries`): 710 of the 726 archetype-authoring `NPC_`s
-  select an MT entry, and all 710 name their own archetype. What is **not** built is the actor
-  behavior graph that would run the selected `behavior_graph` and `animation_paths` (the
-  engine animates FO4 actors with no graph at all), so a script's archetype change is observable
-  through keywords and selection, not yet on screen. The first step of that milestone is measured: all 328 behavior graphs
-  in `Fallout4 - Animations.ba2` fail `decode_behavior_graph` ("expected a version-8 (Havok 2010)
-  packfile"), so Fallout 4 needs its own HKX reader (a newer packfile or tagfile layout) before the
-  graph runtime that animates placed props can run an actor's.
+  select an MT entry, and all 710 name their own archetype. What is **not** built is a *running* actor
+  behavior graph (variables, blends and events of `MTBehavior` are not evaluated), but its *start* is data and
+  the archetype is visible on screen through it. Fallout 4's HKX files are Havok 2014 packfiles
+  (file version 11, a predicate area before the section table; `byroredux-hkx` reads them: all 328
+  behavior graphs decode with `LAYOUT_2014`, 13,133 of 14,000 clips and all 121 skeletons;
+  the 857 `hkaLosslessCompressedAnimation` clips, first-person additive poses, are not read). A graph's start
+  is `BehaviorGraph::start_clip`: follow each machine's start state down and into the sub-behaviors a
+  state refers to, to the first clip. The humanoid `MTBehavior.hkx` enters `MTIdles`, refers to
+  `DialogueBehavior.hkx` and starts in `Animations\PoseA_Idle1.hkt`. Which file that name means is the
+  subgraph entry's job (CK *Subgraphs*): it names the graph and an ordered list of animation folders,
+  and the clip is the first folder holding the file, so a nervous woman idles in
+  `...\MT\Nervous\Female\PoseA_Idle1.hkx` and a neutral man in `...\MT\Neutral\PoseA_Idle1.hkx`.
+  `populate_archetype_idles` resolves every third-person `MT` entry once per world (50 of the 556
+  entries of Fallout4.esm have an idle that resolves: the humanoid ones) into `ArchetypeIdleClips`;
+  `archetype_idle_system` gives each actor with a skeleton and no animation the clip of the entry it
+  selects, and when `AnimArchetypeOverrides` changes it re-selects, so `ChangeAnimArchetype` swaps the
+  idle (`an_actor_idles_in_its_archetype_and_change_anim_archetype_swaps_it`). An actor something else
+  animates (a seat, a walk, a played idle), the player and the dead are left alone. Live in
+  Goodneighbor's Third Rail: Magnolia, the drifters and the ghoul patrons stand in their idles (before,
+  Fallout 4 actors had no animation at all). Not modelled: the rest of the graph (locomotion, the
+  flavor idles `MTIdles` picks, dialogue poses) and root motion.
 - **`SetScanned`, `IsScanned`, `AddToMapScanned`** (Starfield; `scanning.rs`,
   `ScannedReferences`): no CK page, but the game's own `ObjectReference.pex` defines
   `AddToMapScanned(b)` as `Self.SetScanned(true)` then `Self.AddToMap(b)`, and xEdit's condition

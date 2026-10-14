@@ -1,0 +1,212 @@
+//! Fallout 4 actors stand in the idle their animation archetype names (M47.2).
+//!
+//! The clips come from `asset_provider::populate_archetype_idles`
+//! ([`ArchetypeIdleClips`]); this system gives each actor the one its subgraph
+//! entry resolves to, and swaps it when `Actor.ChangeAnimArchetype` changes the
+//! entry. An actor something else already animates (a seat, a walk, a played
+//! idle) keeps that: only an actor with no player, or one carrying this system's
+//! [`ArchetypeIdle`] marker, is touched. The player and the dead are left alone.
+
+use crate::asset_provider::ArchetypeIdleClips;
+use crate::components::AnimationTarget;
+use byroredux_core::animation::{AnimationClipRegistry, AnimationPlayer};
+use byroredux_core::ecs::components::Dead;
+use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::sparse_set::SparseSetStorage;
+use byroredux_core::ecs::storage::{Component, EntityId};
+use byroredux_core::ecs::World;
+use byroredux_plugin::esm::records::SubgraphRole;
+use byroredux_scripting::AnimArchetypeOverrides;
+
+/// The idle clip this system last gave an actor. `NOT_SAVED_BY_DESIGN`: derived
+/// from the actor's keywords and the archives every time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ArchetypeIdle {
+    pub(crate) clip: u32,
+}
+
+impl Component for ArchetypeIdle {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// The archetype overrides the last pass saw: a change re-selects every actor.
+/// `NOT_SAVED_BY_DESIGN`: a pass after a load simply runs once more.
+#[derive(Default)]
+pub(crate) struct ArchetypeIdleSeen(AnimArchetypeOverrides);
+
+impl Resource for ArchetypeIdleSeen {}
+
+/// Give each actor its archetype idle; see the module docs.
+pub(crate) fn archetype_idle_system(world: &World, _dt: f32) {
+    if world.try_resource::<ArchetypeIdleClips>().is_none() {
+        return;
+    }
+    let overrides = world.try_resource::<AnimArchetypeOverrides>().map(|o| o.clone()).unwrap_or_default();
+    let changed = match world.try_resource_mut::<ArchetypeIdleSeen>() {
+        Some(mut seen) if seen.0 != overrides => {
+            seen.0 = overrides;
+            true
+        }
+        Some(_) => false,
+        None => false,
+    };
+    let actors: Vec<(EntityId, EntityId)> = match world.query::<AnimationTarget>() {
+        Some(targets) => targets.iter().map(|(entity, target)| (entity, target.skeleton_root)).collect(),
+        None => return,
+    };
+    let player = world
+        .try_resource::<byroredux_scripting::papyrus_demo::PapyrusPlayerEntity>()
+        .map(|player| player.0);
+    for (actor, skeleton_root) in actors {
+        if Some(actor) == player || world.get::<Dead>(actor).is_some() {
+            continue;
+        }
+        let marker = world.get::<ArchetypeIdle>(actor).map(|marker| *marker);
+        let animated = world.get::<AnimationPlayer>(actor).is_some();
+        if (animated && marker.is_none()) || (marker.is_some() && !changed) {
+            continue;
+        }
+        let Some(entry) = byroredux_scripting::anim_subgraph::select_subgraph(world, actor, SubgraphRole::Mt, &[]) else {
+            continue;
+        };
+        let Some(clip) = world.try_resource::<ArchetypeIdleClips>().and_then(|clips| clips.clip_for(&entry)) else {
+            continue;
+        };
+        if marker.is_some_and(|marker| marker.clip == clip) {
+            continue;
+        }
+        let duration = world
+            .try_resource::<AnimationClipRegistry>()
+            .and_then(|registry| registry.get(clip).map(|clip| clip.duration))
+            .unwrap_or(0.0);
+        let base = byroredux_scripting::relationships::actor_base(world, actor).unwrap_or(actor);
+        let (start, speed) = crate::npc_spawn::idle_desync(base, duration);
+        let mut player = AnimationPlayer::new(clip).with_root(skeleton_root);
+        player.local_time = start;
+        player.prev_time = start;
+        player.speed = speed;
+        if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
+            players.insert(actor, player);
+        }
+        if let Some(mut markers) = world.query_mut::<ArchetypeIdle>() {
+            markers.insert(actor, ArchetypeIdle { clip });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_plugin::esm::records::{EsmIndex, KywdRecord, NpcRecord, RaceRecord, SubgraphData};
+
+    const HUMAN: u32 = 0x0001_3746;
+    const SETTLER: u32 = 0x0002_0001;
+    const CONFIDENT: u32 = 0x0002_2E49;
+    const SCARED: u32 = 0x0005_F763;
+
+    fn entry(keys: &[u32], folder: &str) -> SubgraphData {
+        SubgraphData {
+            actor_keywords: keys.to_vec(),
+            behavior_graph: r"Actors\Character\Behaviors\MTBehavior.hkx".to_owned(),
+            animation_paths: vec![folder.to_owned()],
+            target_keywords: Vec::new(),
+            role: SubgraphRole::Mt,
+            first_person: false,
+        }
+    }
+
+    /// A confident settler (authored archetype) with a body that has a skeleton:
+    /// `(world, actor, the actor's override key)`.
+    fn world_with_settler() -> (World, EntityId, u32) {
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<AnimationTarget>();
+        world.register::<AnimationPlayer>();
+        world.register::<ArchetypeIdle>();
+        world.register::<Dead>();
+        world.insert_resource(AnimationClipRegistry::new());
+        world.insert_resource(ArchetypeIdleSeen::default());
+        let mut index = EsmIndex::default();
+        for (form_id, name) in [(CONFIDENT, "AnimArchetypeConfident"), (SCARED, "AnimArchetypeScared")] {
+            index.keywords.insert(form_id, KywdRecord { form_id, editor_id: name.to_owned() });
+        }
+        index.races.insert(
+            HUMAN,
+            RaceRecord {
+                form_id: HUMAN,
+                subgraph_data: vec![entry(&[], "Neutral"), entry(&[CONFIDENT], "Confident"), entry(&[SCARED], "Scared")],
+                ..Default::default()
+            },
+        );
+        index.npcs.insert(
+            SETTLER,
+            NpcRecord { form_id: SETTLER, race_form_id: HUMAN, keywords: vec![CONFIDENT], ..Default::default() },
+        );
+        byroredux_scripting::keywords::install_keyword_table(&mut world, &index);
+        byroredux_scripting::anim_subgraph::install_subgraph_table(&mut world, &index);
+        world.insert_resource(AnimArchetypeOverrides::default());
+        world.insert_resource(ArchetypeIdleClips::for_test(&[
+            (&entry(&[], "Neutral"), 10),
+            (&entry(&[CONFIDENT], "Confident"), 11),
+            (&entry(&[SCARED], "Scared"), 12),
+        ]));
+        world.insert_resource(FormIdPool::new());
+        let actor = world.spawn();
+        let skeleton = world.spawn();
+        world.insert(actor, byroredux_scripting::scene::SceneAliasCandidate { base_form_id: SETTLER, ..Default::default() });
+        world.insert(actor, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+        let id = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Fallout4.esm"),
+            local: LocalFormId(0x0002_0777),
+        });
+        world.insert(actor, byroredux_core::ecs::components::FormIdComponent(id));
+        let key = byroredux_scripting::condition::entity_global_form_id(&world, actor).unwrap();
+        (world, actor, key)
+    }
+
+    fn clip_of(world: &World, actor: EntityId) -> Option<u32> {
+        world.get::<AnimationPlayer>(actor).map(|player| player.clip_handle)
+    }
+
+    /// An actor idles in its authored archetype's clip, and a script's
+    /// `ChangeAnimArchetype` swaps it - to the new archetype's, and with none to
+    /// Neutral's.
+    #[test]
+    fn an_actor_idles_in_its_archetype_and_change_anim_archetype_swaps_it() {
+        let (world, actor, key) = world_with_settler();
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(11), "the authored Confident idle");
+        assert_eq!(world.get::<ArchetypeIdle>(actor).map(|marker| marker.clip), Some(11));
+        let skeleton = world.get::<AnimationTarget>(actor).unwrap().skeleton_root;
+        assert_eq!(world.get::<AnimationPlayer>(actor).unwrap().root_entity, Some(skeleton));
+
+        // Nothing changed: the player is left running (no restart).
+        world.query_mut::<AnimationPlayer>().unwrap().get_mut(actor).unwrap().local_time = 0.7;
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(world.get::<AnimationPlayer>(actor).unwrap().local_time, 0.7);
+
+        world.resource_mut::<AnimArchetypeOverrides>().set(key, SCARED);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(12), "ChangeAnimArchetype(Scared)");
+
+        world.resource_mut::<AnimArchetypeOverrides>().set(key, 0);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(10), "no archetype: Neutral");
+    }
+
+    /// An actor something else animates keeps that, and the dead are left alone.
+    #[test]
+    fn an_actor_another_system_animates_or_a_corpse_is_left_alone() {
+        let (world, actor, _) = world_with_settler();
+        world.query_mut::<AnimationPlayer>().unwrap().insert(actor, AnimationPlayer::new(99));
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, actor), Some(99), "a seat, walk or played idle is not replaced");
+        assert!(world.get::<ArchetypeIdle>(actor).is_none());
+
+        let (world, corpse, _) = world_with_settler();
+        world.query_mut::<Dead>().unwrap().insert(corpse, Dead);
+        archetype_idle_system(&world, 0.0);
+        assert_eq!(clip_of(&world, corpse), None);
+    }
+}

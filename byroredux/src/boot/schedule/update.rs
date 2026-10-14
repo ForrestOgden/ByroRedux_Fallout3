@@ -554,6 +554,9 @@ pub(super) fn register_update_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_motion_type_system);
     // ApplyHavokImpulse requests, after the motion-type change that made the body dynamic.
     scheduler.add_exclusive(Stage::Update, crate::systems::scripted_havok_impulse_system);
+    // Fallout 4 actors stand in the idle their animation archetype names; a script's
+    // `ChangeAnimArchetype` (run above) swaps it.
+    scheduler.add_exclusive(Stage::Update, crate::systems::archetype_idle::archetype_idle_system);
     // M47.2 — `Weapon.Fire` projectiles: start the requested ones, then fly them
     // (a hit on a live actor queues the `HitEvent` the damage system consumes).
     scheduler.add_exclusive(Stage::Update, crate::systems::trap_hits::trap_contact_system);

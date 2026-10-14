@@ -677,6 +677,7 @@ pub fn load_cell_with_masters(
     crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
     crate::asset_provider::populate_object_graphs(world, tex_provider);
     crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
+    crate::asset_provider::populate_archetype_idles(world, &index, tex_provider);
     // P2 combat tail — the --cell route must install the combat family
     // too: the P2 gate smoke drives exactly this route, and both spawn
     // finalizes (runtime and, since #4700, pre-baked) insert the
@@ -1083,6 +1084,7 @@ impl InteriorCellApplyJob {
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
         crate::asset_provider::populate_object_graphs(world, tex_provider);
         crate::asset_provider::populate_skyrim_walk_clip(world, &index, tex_provider);
+        crate::asset_provider::populate_archetype_idles(world, &index, tex_provider);
         crate::asset_provider::populate_draugr_combat_clips(world, &index, tex_provider);
 
         let cell_name = cell.editor_id.clone();

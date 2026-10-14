@@ -1,6 +1,7 @@
 //! BSA/BA2-backed texture and mesh extraction.
 
 mod animation;
+mod archetype_idle;
 mod archive;
 pub(crate) mod audio;
 pub(crate) mod material;
@@ -10,6 +11,7 @@ mod texture;
 mod texture_prefetch;
 
 pub(crate) use animation::*;
+pub(crate) use archetype_idle::*;
 pub(crate) use archive::*;
 pub(crate) use audio::*;
 pub(crate) use material::*;

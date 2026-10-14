@@ -88,6 +88,16 @@ impl SubgraphTable {
     pub fn archetype_count(&self) -> usize {
         self.archetypes.len()
     }
+
+    /// Every race's third-person entry for `role` (the same entry repeats across
+    /// the races that share it), for a host that pre-resolves what the entries'
+    /// graphs play.
+    pub fn entries_for(&self, role: SubgraphRole) -> impl Iterator<Item = &SubgraphData> {
+        self.races
+            .values()
+            .flatten()
+            .filter(move |entry| entry.role == role && !entry.first_person)
+    }
 }
 
 /// A race's own entries, its template's, and the additive races' onto it.
