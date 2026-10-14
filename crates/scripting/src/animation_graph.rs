@@ -136,6 +136,12 @@ impl ObjectAnimationGraph {
         std::mem::take(&mut self.raised)
     }
 
+    /// Raise an event by name without a transition (tests).
+    #[cfg(test)]
+    pub(crate) fn push_raised_for_test(&mut self, name: &str) {
+        self.raised.push(name.to_owned());
+    }
+
     fn note_raised(&mut self, event: i32) {
         if let Some(name) = self.graph.graph.event_name(event) {
             self.raised.push(name.to_owned());

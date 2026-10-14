@@ -1019,6 +1019,8 @@ pub(crate) fn populate_scene_runtime(
     // HasKeyword.
     let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
     log::info!("Installed keyword table: {keyworded} base objects");
+    // M47.2 — sound editor ids, for the SoundPlay.<name> notifies of animation graphs.
+    byroredux_scripting::install_sound_editor_ids(world, index);
     // M47.2 — base objects' destructible data, for DamageObject.
     let destructible = byroredux_scripting::destruction::install_destruction_table(world, index);
     log::info!("Installed destruction table: {destructible} destructible base objects");

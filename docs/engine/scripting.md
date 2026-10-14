@@ -1473,8 +1473,12 @@ separate run like a custom event's receivers. Registrations are a saved `Animati
 (FORMAT 101) and end when the owning quest stops. When the sender's graph unloads with its cell the
 registrations for it are dropped and each script is sent the unregistered event with the sender and
 the event name (CK: "automatically unregistered by the game due to the target animation graph
-unloading", not for a manual unregister). Not modelled: actors' graphs (none runs) and the
-`SoundPlay.*` notifies. `UnregisterForAnimationEvent` removes the
+unloading", not for a manual unregister). A `SoundPlay.<name>` event
+a graph raises plays the sound descriptor with that editor id from the object, through the same
+queue as `Sound.Play`: 120 distinct `SoundPlay.*` names occur in the vanilla Skyrim graphs, 77 of
+them descriptors of Skyrim.esm (the rest are in the DLC masters), and the lever and pull-chain
+graphs play live. The node-attached `SoundPlayAt.<name>.<node>` form is not played. Not modelled:
+actors' graphs (none runs). `UnregisterForAnimationEvent` removes the
 registration; `SetAnimationVariable*` have no graph variable to act on and do nothing.
 
 **Animated nodes.** The cell loader flattens a placed NIF to one entity per mesh, but the graph's

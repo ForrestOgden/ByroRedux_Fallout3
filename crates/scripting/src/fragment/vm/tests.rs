@@ -5069,6 +5069,23 @@ fn animation_events_reach_registered_scripts() {
     assert_eq!(variable(&world, "Heard"), None, "Done is not due yet");
     tick(&world, 0.2);
     assert_eq!(variable(&world, "Heard"), Some(1.0), "Done reached OnAnimationEvent");
+    // A `SoundPlay.<name>` notify plays the named descriptor from the object.
+    assert!(world.resource::<crate::PendingSoundPlays>().0.is_empty());
+    let mut sounds = byroredux_plugin::esm::records::EsmIndex::default();
+    sounds.sounds.insert(
+        0x0005_0001,
+        byroredux_plugin::esm::records::SounRecord { form_id: 0x0005_0001, editor_id: "OBJClack".into(), ..Default::default() },
+    );
+    crate::install_sound_editor_ids(&mut world, &sounds);
+    {
+        let mut graphs = world.query_mut::<crate::ObjectAnimationGraph>().unwrap();
+        graphs.get_mut(marker).unwrap().push_raised_for_test("soundplay.OBJClack");
+    }
+    crate::animation_event_system(&world, 0.0);
+    assert_eq!(
+        world.resource::<crate::PendingSoundPlays>().0,
+        [crate::SoundPlay { sound: 0x0005_0001, source: MARKER }]
+    );
     // The sender's cell unloads: the registration is dropped and the script told.
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);

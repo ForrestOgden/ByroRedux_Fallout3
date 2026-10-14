@@ -139,6 +139,28 @@ pub fn animation_event_system(world: &World, _dt: f32) {
             })
             .collect()
     };
+    // A `SoundPlay.<name>` notify plays the sound descriptor of that editor id from
+    // the object (the names are SNDR / SOUN editor ids: 77 of the 120 the vanilla
+    // graphs raise are in Skyrim.esm, the rest in the DLC masters).
+    if let Some(sounds) = world.try_resource::<crate::SoundEditorIds>() {
+        let mut plays = Vec::new();
+        for (entity, events) in &raised {
+            let Some(source) = crate::condition::entity_global_form_id(world, *entity) else {
+                continue;
+            };
+            for event in events {
+                if let Some(sound) = sounds.of_graph_event(event) {
+                    plays.push(crate::SoundPlay { sound, source });
+                }
+            }
+        }
+        drop(sounds);
+        if !plays.is_empty() {
+            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
+                pending.0.extend(plays);
+            }
+        }
+    }
     let registered: Vec<AnimationEventRegistration> = match world.try_resource::<AnimationEventRegistrations>() {
         Some(registrations) if !registrations.entries.is_empty() => registrations.entries.clone(),
         _ => return,

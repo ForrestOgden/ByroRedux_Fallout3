@@ -72,6 +72,11 @@ pub(crate) fn sound_loops(sounds: &HashMap<u32, SounRecord>, form_id: u32) -> bo
 /// Mirrors `script::pex_archive_path`.
 pub(crate) fn sound_archive_path(sound_path: &str) -> String {
     let mut path = sound_path.replace('/', "\\").to_ascii_lowercase();
+    // Some records author the path from the game root (`Data\Sound\FX\OBJ\PullChain\…`,
+    // Skyrim.esm's pull-chain descriptors); the archive key is `sound\fx\…`.
+    if let Some(rest) = path.strip_prefix("data\\") {
+        path = rest.to_owned();
+    }
     if !path.starts_with("sound\\") {
         path = format!("sound\\{path}");
     }
@@ -398,6 +403,17 @@ mod tests {
         sounds.insert(0x1234, soun(0x1234, "fx\\explosion01.wav"));
         assert!(!sound_is_folder(&sounds, 0x1234));
         assert!(!sound_is_folder(&sounds, 0xDEAD_BEEF));
+    }
+
+    /// Skyrim.esm authors the pull-chain descriptors from the game root
+    /// (`Data\Sound\FX\OBJ\PullChain\…`); the archive key has neither prefix.
+    #[test]
+    fn sound_archive_path_drops_a_game_root_prefix() {
+        assert_eq!(
+            sound_archive_path("Data\\Sound\\FX\\OBJ\\PullChain\\OBJ_PullChain_Down_01.wav"),
+            "sound\\fx\\obj\\pullchain\\obj_pullchain_down_01.wav"
+        );
+        assert_eq!(sound_archive_path("fx\\a.wav"), "sound\\fx\\a.wav");
     }
 
     /// #3914 — a folder-form value keeps its trailing separator through
