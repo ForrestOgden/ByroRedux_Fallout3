@@ -3371,6 +3371,25 @@ fn drop_object_moves_inventory_items_into_the_world() {
     assert_eq!(world.resource::<crate::CreatedReferences>().iter().count(), 2, "one reference per dropped item");
 }
 
+/// Starfield guards, as the decompiler lifts them (`Guard.lock(Name)` and
+/// `Guard.unlock(Name)`), pass: the arguments name guards, not values.
+#[test]
+fn guard_operations_do_not_evaluate_their_guard_names() {
+    let script = parsed_source(
+        "ScriptName QF_VmGuard extends Quest\n\
+         Function Fragment_1()\n\
+           Guard.lock(SomeDataGuard, OtherGuard)\n\
+           Self.SetStage(20)\n\
+           Guard.unlock(SomeDataGuard, OtherGuard)\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let world = world_with_fragment(script);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
 /// `GetLinkedRefChain` lists the chain after the reference and stops at a
 /// loop or the cap; `GetLinkedRefChildren` lists the loaded references linked to
 /// it.
@@ -3441,25 +3460,6 @@ fn count_linked_ref_chain_follows_the_pages_script() {
     );
     assert_eq!(check_function_reason(Arc::clone(&looped), "Fragment_1", None).err(), None);
     {
-/// Starfield guards, as the decompiler lifts them (`Guard.lock(Name)` and
-/// `Guard.unlock(Name)`), pass: the arguments name guards, not values.
-#[test]
-fn guard_operations_do_not_evaluate_their_guard_names() {
-    let script = parsed_source(
-        "ScriptName QF_VmGuard extends Quest\n\
-         Function Fragment_1()\n\
-           Guard.lock(SomeDataGuard, OtherGuard)\n\
-           Self.SetStage(20)\n\
-           Guard.unlock(SomeDataGuard, OtherGuard)\n\
-         EndFunction\n",
-    );
-    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
-    let world = world_with_fragment(script);
-    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
-    crate::fragment::quest_fragment_dispatch_system(&world);
-    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
-}
-
         let name = looped.name.node.0.clone();
         let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
         fragments.insert_vm_script(looped);

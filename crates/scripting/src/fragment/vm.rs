@@ -3480,11 +3480,11 @@ impl Vm<'_> {
     }
 
     fn call_value(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Value> {
-        if let Some(value) = self.array_call(frame, callee, args)? {
-            return Ok(value);
-        }
         if matches!(guard_call(callee), Some(GuardCall::TryLock)) {
             return Ok(Value::Bool(true));
+        }
+        if let Some(value) = self.array_call(frame, callee, args)? {
+            return Ok(value);
         }
         if let Some(value) = self.collection_call(frame, callee, args)? {
             return Ok(value);
@@ -3562,12 +3562,12 @@ impl Vm<'_> {
                 return Ok(Flow::Normal);
             }
         }
-        if help_message_housekeeping(&callee.node).is_some() {
-            self.eval_args(frame, args)?;
-            return Ok(Flow::Normal);
         if matches!(guard_call(&callee.node), Some(GuardCall::Lock | GuardCall::Unlock)) {
             return Ok(Flow::Normal);
         }
+        if help_message_housekeeping(&callee.node).is_some() {
+            self.eval_args(frame, args)?;
+            return Ok(Flow::Normal);
         }
         if self.array_call(frame, &callee.node, args)?.is_some() {
             return Ok(Flow::Normal);
@@ -3689,9 +3689,6 @@ impl Vm<'_> {
     }
 }
 
-/// `Global.Value = n` as the native it is: `Global.SetValue(n)`.
-fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned<Expr>>, Vec<CallArg>) {
-    let callee = spanned(Expr::MemberAccess {
 /// A Starfield guard operation, as the decompiler lifts it.
 enum GuardCall {
     Lock,
@@ -3720,6 +3717,9 @@ fn guard_call(callee: &Expr) -> Option<GuardCall> {
     }
 }
 
+/// `Global.Value = n` as the native it is: `Global.SetValue(n)`.
+fn set_value_call(global: &Spanned<Expr>, value: &Spanned<Expr>) -> (Box<Spanned<Expr>>, Vec<CallArg>) {
+    let callee = spanned(Expr::MemberAccess {
         object: Box::new(global.clone()),
         member: spanned(Identifier("SetValue".into())),
     });
@@ -4686,9 +4686,6 @@ impl<'l> Checker<'l> {
 
     /// A call's result kind, or `None` when the VM cannot run it.
     fn check_call(&mut self, frame: &mut CheckFrame, callee: &Expr, args: &[CallArg], statement: bool) -> Option<Kind> {
-        let mut arg_kinds = Vec::with_capacity(args.len());
-        for arg in args {
-            let kind = self.kind(frame, &arg.value.node)?;
         // Starfield guards: the decompiler lifts `LockGuards` / `UnlockGuards` /
         // `TryLockGuards` to `Guard.lock(...)` / `.unlock(...)` / `.trylock(...)`
         // whose arguments name guards, which are not values (see `guard_call`).
@@ -4699,6 +4696,9 @@ impl<'l> Checker<'l> {
                 _ => self.fail(|| "a guard call used for its value".into()),
             };
         }
+        let mut arg_kinds = Vec::with_capacity(args.len());
+        for arg in args {
+            let kind = self.kind(frame, &arg.value.node)?;
             // A literal argument is checked as written: the run sees it too;
             // so is an engine constant, which the run passes by name.
             let constant = constant_name(&arg.value.node)
@@ -5043,10 +5043,10 @@ impl<'l> Checker<'l> {
                 return Some(Kind::Array);
             }
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object, "isloaded") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "dropobject")
                 if matches!(arg_kinds.first(), Some(Arg::Kind(Kind::Object | Kind::Player)))
                     && arg_kinds.get(1).is_none_or(|count| matches!(count, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)))
-            (Kind::Object, "isloaded") if arg_kinds.is_empty() => return Some(Kind::Bool),
                     && arg_kinds.len() <= 2 =>
             {
                 return Some(Kind::Object);
