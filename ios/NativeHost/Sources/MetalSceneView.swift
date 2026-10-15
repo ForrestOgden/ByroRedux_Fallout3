@@ -1,0 +1,114 @@
+import Metal
+import MetalKit
+import SwiftUI
+import simd
+
+struct MetalSceneView: UIViewRepresentable {
+    func makeCoordinator() -> SceneCoordinator { SceneCoordinator() }
+    func makeUIView(context: Context) -> MTKView {
+        let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
+        view.colorPixelFormat = .bgra8Unorm
+        view.depthStencilPixelFormat = .depth32Float
+        view.clearColor = MTLClearColor(red: 0.025, green: 0.035, blue: 0.05, alpha: 1)
+        view.preferredFramesPerSecond = 60
+        context.coordinator.configure(view)
+        view.delegate = context.coordinator
+        return view
+    }
+    func updateUIView(_ view: MTKView, context: Context) {}
+}
+
+private struct SceneVertex {
+    var position: SIMD3<Float>
+    var color: SIMD3<Float>
+}
+
+private struct SceneUniforms {
+    var mvp: simd_float4x4
+}
+
+final class SceneCoordinator: NSObject, MTKViewDelegate {
+    private var pipeline: MTLRenderPipelineState?
+    private var depthState: MTLDepthStencilState?
+    private var queue: MTLCommandQueue?
+    private var vertices: MTLBuffer?
+    private var vertexCount = 0
+    private var start = CACurrentMediaTime()
+
+    func configure(_ view: MTKView) {
+        guard let device = view.device,
+              let lib = device.makeDefaultLibrary(),
+              let vs = lib.makeFunction(name: "fnv_scene_vertex"),
+              let fs = lib.makeFunction(name: "fnv_scene_fragment") else { return }
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = vs
+        desc.fragmentFunction = fs
+        desc.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        desc.depthAttachmentPixelFormat = view.depthStencilPixelFormat
+        do { pipeline = try device.makeRenderPipelineState(descriptor: desc) }
+        catch { NSLog("FNV 3D pipeline error: %@", String(describing: error)); return }
+        let depth = MTLDepthStencilDescriptor()
+        depth.depthCompareFunction = .less
+        depth.isDepthWriteEnabled = true
+        depthState = device.makeDepthStencilState(descriptor: depth)
+        queue = device.makeCommandQueue()
+
+        let corners: [SIMD3<Float>] = [
+            [-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
+            [-1,-1,1], [1,-1,1], [1,1,1], [-1,1,1]
+        ]
+        let faces: [([Int], SIMD3<Float>)] = [
+            ([0,1,2, 0,2,3], [0.95,0.65,0.18]),
+            ([5,4,7, 5,7,6], [0.15,0.70,0.80]),
+            ([4,0,3, 4,3,7], [0.75,0.35,0.85]),
+            ([1,5,6, 1,6,2], [0.35,0.85,0.40]),
+            ([3,2,6, 3,6,7], [0.85,0.35,0.35]),
+            ([4,5,1, 4,1,0], [0.35,0.45,0.95])
+        ]
+        let mesh = faces.flatMap { indices, color in
+            indices.map { SceneVertex(position: corners[$0], color: color) }
+        }
+        vertexCount = mesh.count
+        vertices = device.makeBuffer(bytes: mesh, length: MemoryLayout<SceneVertex>.stride * mesh.count)
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        guard let pipeline, let depthState, let queue, let vertices,
+              let pass = view.currentRenderPassDescriptor,
+              let drawable = view.currentDrawable,
+              let cmd = queue.makeCommandBuffer(),
+              let encoder = cmd.makeRenderCommandEncoder(descriptor: pass) else { return }
+        let t = Float(CACurrentMediaTime() - start)
+        let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
+        let fov: Float = .pi / 3
+        let y = 1 / tan(fov / 2)
+        let x = y / max(aspect, 0.01)
+        let near: Float = 0.1
+        let far: Float = 100
+        // Metal clip space z is [0,1]; camera looks toward -Z.
+        let projection = simd_float4x4(columns: (
+            SIMD4<Float>(x,0,0,0),
+            SIMD4<Float>(0,y,0,0),
+            SIMD4<Float>(0,0,far/(near-far),-1),
+            SIMD4<Float>(0,0,(far*near)/(near-far),0)
+        ))
+        let c = cos(t * 0.55), s = sin(t * 0.55)
+        let rotation = simd_float4x4(columns: (
+            SIMD4<Float>(c,0,-s,0), SIMD4<Float>(0,1,0,0),
+            SIMD4<Float>(s,0,c,0), SIMD4<Float>(0,0,0,1)
+        ))
+        var translation = matrix_identity_float4x4
+        translation.columns.3.z = -5
+        var uniforms = SceneUniforms(mvp: projection * translation * rotation)
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setDepthStencilState(depthState)
+        encoder.setVertexBuffer(vertices, offset: 0, index: 0)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount)
+        encoder.endEncoding()
+        cmd.present(drawable)
+        cmd.commit()
+    }
+}
