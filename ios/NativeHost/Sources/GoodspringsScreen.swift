@@ -10,6 +10,7 @@ struct GoodspringsScreen: View {
     @State private var loadedWorld: GoodspringsWorld?
     @State private var joystick = SIMD2<Float>(0,0)
     @State private var loading = false
+    @State private var attemptedOfflineRestore = false
     @State private var status = "Load a real FalloutNV.esm interior exported from your installed PC game."
     @State private var sceneName = "Prospector Saloon · Goodsprings"
 
@@ -88,11 +89,11 @@ struct GoodspringsScreen: View {
                         .font(.system(size:46,weight:.thin))
                     Text("ENTER GOODSPRINGS")
                         .font(.title2.bold())
-                    Text("Load the actual Prospector Saloon interior from your own FalloutNV.esm and BSA archives. Geometry is placed at original game-world reference positions, not arranged in a gallery.")
+                    Text("The real Prospector Saloon interior from your installed Fallout: New Vegas data. Original world placements, native rendering, first-person movement. Import once; the world remains on your iPhone.")
                         .font(.subheadline)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
-                    Button(loading ? "Loading world..." : "Load Goodsprings .fnvworld") {
+                    Button(loading ? "Loading world..." : "Install Goodsprings world (one time)") {
                         importerVisible = true
                     }
                     .buttonStyle(.borderedProminent)
@@ -109,6 +110,17 @@ struct GoodspringsScreen: View {
                 Spacer()
             }
         }
+        .onAppear {
+            // This is a standalone local app. Load the last installed game
+            // scene automatically on later offline launches without a PC,
+            // internet access, or another Files picker interaction.
+            guard !attemptedOfflineRestore else { return }
+            attemptedOfflineRestore = true
+            let existing = cachedWorldURL()
+            if FileManager.default.fileExists(atPath:existing.path) {
+                openWorld(existing, persist: false)
+            }
+        }
         .fileImporter(
             isPresented:$importerVisible,
             allowedContentTypes:[UTType(filenameExtension:"fnvworld",conformingTo:.data) ?? .data]
@@ -122,24 +134,61 @@ struct GoodspringsScreen: View {
         }
     }
 
-    private func openWorld(_ url: URL) {
+    /// Private original-data cache under the app sandbox. No network, no
+    /// external URL, no upload, no connection to the running Windows game.
+    private func cachedWorldURL() -> URL {
+        let base = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
+        return base.appendingPathComponent("owned-goodsprings.fnvworld")
+    }
+
+    private func openWorld(_ url: URL, persist: Bool = true) {
         guard !loading else { return }
         loading = true
-        status = "Reading your original New Vegas world geometry..."
-        // Original-cell geometry may need to parse tens/hundreds of meshes.
-        // Do not freeze the SwiftUI main thread while Rust decodes them.
+        status = "Reading original Fallout: New Vegas cell geometry..."
+        let installed = cachedWorldURL()
+        // Do not block the UI while decoding 100+ original NIFs and textures.
         DispatchQueue.global(qos:.userInitiated).async {
-            let result=Result { try GoodspringsWorld.load(from:url) }
+            let result: Result<GoodspringsWorld,Error> =
+                Result { try GoodspringsWorld.load(from:url) }
+            var cacheWarning: String? = nil
+            if persist, case .success = result {
+                // Do not preserve a malformed or non-renderable package.
+                // Copy to a private staging file and atomically replace the
+                // old working world ONLY after the copy succeeds.
+                do {
+                    let fm=FileManager.default
+                    try fm.createDirectory(at:installed.deletingLastPathComponent(),
+                                           withIntermediateDirectories:true)
+                    let staging=installed.deletingLastPathComponent()
+                        .appendingPathComponent("world-stage-" + UUID().uuidString)
+                    defer {try? fm.removeItem(at:staging)}
+                    let granted=url.startAccessingSecurityScopedResource()
+                    defer {if granted{url.stopAccessingSecurityScopedResource()}}
+                    try fm.copyItem(at:url,to:staging)
+                    if fm.fileExists(atPath:installed.path) {
+                        _ = try fm.replaceItemAt(installed,withItemAt:staging)
+                    } else {
+                        try fm.moveItem(at:staging,to:installed)
+                    }
+                    var owned=installed
+                    var attributes=URLResourceValues()
+                    attributes.isExcludedFromBackup=true
+                    try owned.setResourceValues(attributes)
+                } catch {
+                    cacheWarning=" (offline save failed: \(error.localizedDescription))"
+                }
+            }
             DispatchQueue.main.async {
                 loading=false
                 switch result {
                 case .failure(let error):
-                    status="Goodspings world import failed: \(error.localizedDescription)"
+                    status="Goodsprings world import failed: \(error.localizedDescription)"
                 case .success(let world):
                     loadedWorld=world
                     sceneName=world.cellName
                     joystick=SIMD2<Float>(0,0)
-                    status="Loaded \(world.instances.count) original placed references from \(world.cellName)."
+                    status="Loaded \(world.instances.count) authored New Vegas references. Offline world stored locally."
+                        + (cacheWarning ?? "")
                 }
             }
         }
