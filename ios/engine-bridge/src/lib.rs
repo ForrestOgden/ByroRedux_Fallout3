@@ -30,6 +30,27 @@ pub struct FnvMesh {
     pub count: usize,
 }
 
+/// One contiguous triangle batch from an imported NIF submesh.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FnvWorldBatch {
+    pub start: usize,
+    pub count: usize,
+    pub material_index: u32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct FnvWorldMesh {
+    pub vertices: *mut FnvVertex,
+    pub count: usize,
+    pub batches: *mut FnvWorldBatch,
+    pub batch_count: usize,
+    /// Original count, including submeshes whose geometry could not be decoded.
+    pub mesh_count: usize,
+}
+
 #[derive(Clone, Copy)]
 struct Rigid {
     position: Vec3,
@@ -93,7 +114,20 @@ fn diagnostic_face_light(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     (0.28 + 0.72 * normal.dot(light).abs()).clamp(0.28, 1.0)
 }
 
-fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
+/// Exclude geometrically impossible triangles before they become
+/// camera-filling spikes. Interior meshes are expressed in original game units.
+fn plausible_triangle(a: Vec3, b: Vec3, c: Vec3) -> bool {
+    if !a.is_finite() || !b.is_finite() || !c.is_finite() { return false; }
+    const MAX_EDGE_SQUARED: f32 = 8192.0 * 8192.0;
+    let ab = (a-b).length_squared();
+    let bc = (b-c).length_squared();
+    let ca = (c-a).length_squared();
+    [ab,bc,ca].iter().all(|v| v.is_finite() && *v <= MAX_EDGE_SQUARED)
+        && (b-a).cross(c-a).length_squared() > 1.0e-8
+}
+
+fn load_vertices_batched(path: &str, normalize_for_preview: bool)
+    -> Result<(Vec<FnvVertex>, Vec<FnvWorldBatch>, usize), &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
         return Err("NIF size is zero or exceeds 24 MiB");
@@ -106,7 +140,10 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     let mut string_pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut string_pool);
     let mut vertices = Vec::new();
+    let mut batches = Vec::new();
+    let mut skipped_triangles = 0usize;
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
+        let start = vertices.len();
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
         if !transform.position.is_finite() || !transform.scale.is_finite() {
@@ -124,8 +161,12 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                 transform.point(mesh.positions[tri[1] as usize]),
                 transform.point(mesh.positions[tri[2] as usize]),
             ];
-            // Reject an entire corrupt triangle, never partial vertices.
-            if points.iter().any(|p| !p.is_finite()) { continue; }
+            // Invalid or grossly stretched imported triangles can span the
+            // entire viewport. Keep only physically plausible triangles.
+            if !plausible_triangle(points[0], points[1], points[2]) {
+                skipped_triangles += 1;
+                continue;
+            }
             let brightness = diagnostic_face_light(points[0], points[1], points[2]);
             for (corner, pos) in points.into_iter().enumerate() {
                 let vertex_idx = tri[corner] as usize;
@@ -138,7 +179,18 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                 });
             }
         }
+        if vertices.len() > start {
+            batches.push(FnvWorldBatch {
+                start,
+                count: vertices.len() - start,
+                material_index: mesh_index as u32,
+                reserved: 0,
+            });
+        }
         if vertices.len() >= MAX_RENDER_VERTICES { break; }
+    }
+    if skipped_triangles > 0 {
+        eprintln!("FNV NIF {}: dropped {} degenerate/oversized triangles", path, skipped_triangles);
     }
     if vertices.len() < 3 || vertices.len() % 3 != 0 {
         return Err("NIF has no usable triangle geometry");
@@ -164,11 +216,15 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
             v.position = [p.x, p.y, p.z, 1.0];
         }
     }
-    Ok(vertices)
+    Ok((vertices, batches, imported.meshes.len()))
+}
+
+fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
+    load_vertices_batched(path, normalize_for_preview).map(|(vertices, _, _)| vertices)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fnv_ios_abi_version() -> u32 { 3 }
+pub extern "C" fn fnv_ios_abi_version() -> u32 { 4 }
 
 /// Probe a local BSA using the existing ByroRedux archive parser.
 /// Caller must provide a live NUL-terminated UTF-8 C string, or null.
@@ -231,6 +287,61 @@ pub unsafe extern "C" fn fnv_ios_load_nif_mesh_raw(path: *const c_char, out: *mu
     0
 }
 
+/// Load the original unnormalized geometry and explicit material draw ranges.
+/// Each material_index is the original ImportedMesh ordinal, matching the
+/// Windows world's authored DDS entries. The caller owns both allocations.
+///
+/// # Safety
+/// path/out must be valid, writable, NUL-terminated pointers as documented
+/// by fnv_ios_load_nif_mesh. Each successful buffer must be released once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_load_nif_mesh_world(
+    path: *const c_char, out: *mut FnvWorldMesh
+) -> i32 {
+    if path.is_null() || out.is_null() { return -1; }
+    unsafe {
+        *out = FnvWorldMesh {
+            vertices: ptr::null_mut(), count: 0,
+            batches: ptr::null_mut(), batch_count: 0, mesh_count: 0
+        }
+    };
+    let cpath = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = cpath.to_str() else { return -2; };
+    let Ok((vertices, batches, mesh_count)) = load_vertices_batched(path, false) else {
+        return if fs::metadata(path).map_or(true, |m| m.len() > MAX_NIF_BYTES) { 1 } else { 2 };
+    };
+    let vertices = vertices.into_boxed_slice();
+    let batches = batches.into_boxed_slice();
+    let count = vertices.len();
+    let batch_count = batches.len();
+    unsafe {
+        *out = FnvWorldMesh {
+            vertices: Box::into_raw(vertices) as *mut FnvVertex,
+            count,
+            batches: Box::into_raw(batches) as *mut FnvWorldBatch,
+            batch_count,
+            mesh_count,
+        }
+    };
+    0
+}
+
+/// # Safety
+/// Both pointer/count pairs must exactly match one successful world import;
+/// neither pointer may be released twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_release_world_mesh(
+    vertices: *mut FnvVertex, count: usize,
+    batches: *mut FnvWorldBatch, batch_count: usize,
+) {
+    if !vertices.is_null() && count > 0 {
+        unsafe { drop(Box::from_raw(ptr::slice_from_raw_parts_mut(vertices, count))); }
+    }
+    if !batches.is_null() && batch_count > 0 {
+        unsafe { drop(Box::from_raw(ptr::slice_from_raw_parts_mut(batches, batch_count))); }
+    }
+}
+
 /// # Safety
 /// ptr/count must be exactly the pair returned once by fnv_ios_load_nif_mesh.
 /// Double release or a different count is invalid.
@@ -259,7 +370,15 @@ mod tests {
         assert_eq!(mesh.count, 0);
     }
     #[test]
-    fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }
+    fn abi_4() { assert_eq!(fnv_ios_abi_version(), 4); }
+    #[test]
+    fn rejects_stretched_and_degenerate_triangles() {
+        assert!(plausible_triangle(Vec3::ZERO, Vec3::X, Vec3::Y));
+        assert!(!plausible_triangle(Vec3::ZERO, Vec3::X, Vec3::X));
+        assert!(!plausible_triangle(Vec3::ZERO, Vec3::new(9000.0,0.0,0.0), Vec3::Y));
+        assert!(!plausible_triangle(Vec3::ZERO, Vec3::new(f32::NAN,0.0,0.0), Vec3::Y));
+        assert_eq!(std::mem::size_of::<FnvWorldBatch>(), 24);
+    }
     #[test]
     fn null_pointer_is_rejected() {
         let mut out = FnvMesh { vertices: ptr::null_mut(), count: 0 };
