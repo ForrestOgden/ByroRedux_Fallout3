@@ -60,11 +60,11 @@ fn bc3_alpha(block: &[u8], pixel: u32) -> u8 {
         1 => a1,
         2..=7 if a0 > a1 => {
             let k = (id - 1) as u16;
-            (((8-k) * a0 as u16 + k * a1 as u16) / 7) as u8
+            (((7-k) * a0 as u16 + k * a1 as u16) / 7) as u8
         }
         2..=5 => {
             let k = (id - 1) as u16;
-            (((6-k) * a0 as u16 + k * a1 as u16) / 5) as u8
+            (((5-k) * a0 as u16 + k * a1 as u16) / 5) as u8
         }
         6 => 0,
         _ => 255,
@@ -194,6 +194,28 @@ mod tests {
         let block = [0x88,0x88,0x88,0x88,0x88,0x88,0x88,0x88, 0,0xF8,0xE0,0x07,0,0,0,0];
         let d = decode_dds(&fixture(4,4,b"DXT3",&block)).unwrap();
         assert_eq!(&d.rgba[..4], &[255,0,0,136]);
+    }
+    #[test]
+    fn bc3_interpolation_is_bounded() {
+        let mut block = [255, 0, 0, 0, 0, 0, 0, 0];
+        let expected = [255, 0, 218, 182, 145, 109, 72, 36];
+        for (i, &value) in expected.iter().enumerate() {
+            block[2] = i as u8;
+            assert_eq!(bc3_alpha(&block, 0), value);
+        }
+        // 6-alpha-value variant includes explicit 0 and 255.
+        block[0] = 0;
+        block[1] = 255;
+        block[2] = 6;
+        assert_eq!(bc3_alpha(&block, 0), 0);
+        block[2] = 7;
+        assert_eq!(bc3_alpha(&block, 0), 255);
+    }
+    #[test]
+    fn rejects_oversized_and_bad_header() {
+        let mut bytes = fixture(4,4,b"DXT1",&[0u8;8]);
+        bytes[0] = 0;
+        assert!(decode_dds(&bytes).is_err());
     }
     #[test]
     fn truncation_and_limit_are_rejected() {

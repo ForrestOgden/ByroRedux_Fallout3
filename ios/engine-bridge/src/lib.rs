@@ -16,7 +16,7 @@ const MAX_RENDER_VERTICES: usize = 180_000;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FnvVertex {
-    /// float4 in Metal; entire vertex is exactly 32 bytes.
+    /// Three float4s in Metal: exactly 48 bytes per vertex.
     pub position: [f32; 4],
     pub color: [f32; 4],
     /// U, V, per-triangle light intensity, reserved: 16 bytes.
@@ -127,14 +127,14 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
             // Reject an entire corrupt triangle, never partial vertices.
             if points.iter().any(|p| !p.is_finite()) { continue; }
             let brightness = diagnostic_face_light(points[0], points[1], points[2]);
-            for pos in points {
-                let vertex_idx = tri[vertices.len() % 3] as usize;
+            for (corner, pos) in points.into_iter().enumerate() {
+                let vertex_idx = tri[corner] as usize;
                 let uv = mesh.uvs.get(vertex_idx).copied().unwrap_or([0.0, 0.0]);
                 let uv = if uv[0].is_finite() && uv[1].is_finite() { uv } else { [0.0, 0.0] };
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
                     color: [base[0] * brightness, base[1] * brightness, base[2] * brightness, 1.0],
-                    uv_light: [uv[0], uv[1], brightness, 0.0],
+                    uv_light: [uv[0], uv[1], brightness, if mesh.uvs.is_empty() { 0.0 } else { 1.0 }],
                 });
             }
         }
@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use std::ffi::CString;
     #[test]
-    fn layout_is_exactly_thirty_two_bytes() {
+    fn layout_is_exactly_forty_eight_bytes() {
         assert_eq!(std::mem::size_of::<FnvVertex>(), 48);
     }
     #[test]
