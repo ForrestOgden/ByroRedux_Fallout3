@@ -19,8 +19,9 @@ struct MetalSceneView: UIViewRepresentable {
 }
 
 private struct SceneVertex {
-    var position: SIMD3<Float>
-    var color: SIMD3<Float>
+    // Explicit 16-byte lanes: 32 bytes per vertex, identical to Metal float4/float4.
+    var position: SIMD4<Float>
+    var color: SIMD4<Float>
 }
 
 private struct SceneUniforms {
@@ -66,10 +67,25 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
             ([4,5,1, 4,1,0], [0.35,0.45,0.95])
         ]
         let mesh = faces.flatMap { indices, color in
-            indices.map { SceneVertex(position: corners[$0], color: color) }
+            indices.map { index in
+                let p = corners[index]
+                return SceneVertex(
+                    position: SIMD4<Float>(p.x, p.y, p.z, 1),
+                    color: SIMD4<Float>(color.x, color.y, color.z, 1)
+                )
+            }
+        }
+        // Catch an ABI regression on-device instead of silently drawing corrupt triangles.
+        guard MemoryLayout<SceneVertex>.stride == 32,
+              MemoryLayout<SceneVertex>.offset(of: \.color) == 16 else {
+            NSLog("FNV 3D probe: invalid SceneVertex memory layout")
+            return
         }
         vertexCount = mesh.count
-        vertices = device.makeBuffer(bytes: mesh, length: MemoryLayout<SceneVertex>.stride * mesh.count)
+        vertices = mesh.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return nil }
+            return device.makeBuffer(bytes: base, length: bytes.count)
+        }
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
