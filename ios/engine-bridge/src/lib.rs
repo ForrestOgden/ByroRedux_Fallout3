@@ -8,6 +8,7 @@ use glam::{Quat, Vec3};
 use std::ffi::{c_char, CStr};
 use std::fs;
 use std::ptr;
+mod dds;
 
 const MAX_NIF_BYTES: u64 = 24 * 1024 * 1024;
 const MAX_RENDER_VERTICES: usize = 180_000;
@@ -18,6 +19,8 @@ pub struct FnvVertex {
     /// float4 in Metal; entire vertex is exactly 32 bytes.
     pub position: [f32; 4],
     pub color: [f32; 4],
+    /// U, V, per-triangle light intensity, reserved: 16 bytes.
+    pub uv_light: [f32; 4],
 }
 
 #[repr(C)]
@@ -125,9 +128,13 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
             if points.iter().any(|p| !p.is_finite()) { continue; }
             let brightness = diagnostic_face_light(points[0], points[1], points[2]);
             for pos in points {
+                let vertex_idx = tri[vertices.len() % 3] as usize;
+                let uv = mesh.uvs.get(vertex_idx).copied().unwrap_or([0.0, 0.0]);
+                let uv = if uv[0].is_finite() && uv[1].is_finite() { uv } else { [0.0, 0.0] };
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
                     color: [base[0] * brightness, base[1] * brightness, base[2] * brightness, 1.0],
+                    uv_light: [uv[0], uv[1], brightness, 0.0],
                 });
             }
         }
@@ -157,7 +164,7 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fnv_ios_abi_version() -> u32 { 2 }
+pub extern "C" fn fnv_ios_abi_version() -> u32 { 3 }
 
 /// Probe a local BSA using the existing ByroRedux archive parser.
 /// Caller must provide a live NUL-terminated UTF-8 C string, or null.
@@ -213,10 +220,10 @@ mod tests {
     use std::ffi::CString;
     #[test]
     fn layout_is_exactly_thirty_two_bytes() {
-        assert_eq!(std::mem::size_of::<FnvVertex>(), 32);
+        assert_eq!(std::mem::size_of::<FnvVertex>(), 48);
     }
     #[test]
-    fn abi_2() { assert_eq!(fnv_ios_abi_version(), 2); }
+    fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }
     #[test]
     fn null_pointer_is_rejected() {
         let mut out = FnvMesh { vertices: ptr::null_mut(), count: 0 };
@@ -247,5 +254,58 @@ mod tests {
         let a = Rigid::default().extend([2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 2.0);
         let b = a.extend([1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0);
         assert!((b.point([1.0, 0.0, 0.0]).x - 6.0).abs() < 0.0001);
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct FnvTexture {
+    pub pixels: *mut u8,
+    pub len: usize,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Decode a locally selected DDS to CPU RGBA8, suitable for Apple Metal.
+/// BC1/DXT1, BC2/DXT3, BC3/DXT5 and 32-bit RGB masks only.
+/// On success call fnv_ios_release_texture exactly once with returned pointer and len.
+///
+/// # Safety
+/// path must be a valid NUL-terminated string and out a writable FnvTexture.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_load_dds_rgba(path: *const c_char, out: *mut FnvTexture) -> i32 {
+    if path.is_null() || out.is_null() { return -1; }
+    unsafe { *out = FnvTexture { pixels: ptr::null_mut(), len: 0, width: 0, height: 0 } };
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else { return -2 };
+    let Ok(meta) = fs::metadata(path) else { return 1 };
+    if meta.len() < 128 || meta.len() > 48 * 1024 * 1024 { return 1; }
+    let Ok(bytes) = fs::read(path) else { return 1 };
+    let Ok(decoded) = dds::decode_dds(&bytes) else { return 2 };
+    let len = decoded.rgba.len();
+    let pixels = Box::into_raw(decoded.rgba.into_boxed_slice()) as *mut u8;
+    unsafe {
+        *out = FnvTexture { pixels, len, width: decoded.width, height: decoded.height };
+    }
+    0
+}
+
+/// # Safety
+/// pointer/length must exactly match a successful fnv_ios_load_dds_rgba
+/// allocation; each allocation may only be released once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_release_texture(pixels: *mut u8, len: usize) {
+    if pixels.is_null() || len == 0 { return; }
+    unsafe { drop(Box::from_raw(ptr::slice_from_raw_parts_mut(pixels, len))); }
+}
+
+#[cfg(test)]
+mod texture_ffi_tests {
+    use super::*;
+    #[test]
+    fn null_rejected() {
+        let mut dst = FnvTexture { pixels: ptr::null_mut(), len: 0, width: 0, height: 0 };
+        assert_eq!(unsafe { fnv_ios_load_dds_rgba(ptr::null(), &mut dst) }, -1);
+        assert_eq!(unsafe { fnv_ios_load_dds_rgba(ptr::null(), ptr::null_mut()) }, -1);
     }
 }
