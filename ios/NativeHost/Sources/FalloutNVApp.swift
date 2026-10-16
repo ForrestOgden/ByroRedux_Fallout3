@@ -11,8 +11,11 @@ struct FalloutNVNativeApp: App {
 
 /// User imports a small authentic .nif from Files. Assets stay on the iPhone.
 private struct FNVPreviewScreen: View {
+    // Keep a single SwiftUI file importer: two .fileImporter modifiers on the
+    // same view conflicted on iOS and the NIF Files sheet never appeared.
+    private enum ImportKind { case nif, dds }
+    @State private var importKind: ImportKind = .nif
     @State private var filePickerVisible = false
-    @State private var ddsPickerVisible = false
     @State private var textureData: Data?
     @State private var textureWidth = 0
     @State private var textureHeight = 0
@@ -33,7 +36,7 @@ private struct FNVPreviewScreen: View {
                     .font(.system(.footnote, design: .monospaced))
                 Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
                     .font(.system(.footnote, design: .monospaced))
-                Text("Native NIF mesh preview — DDS textures v5")
+                Text("Native NIF mesh preview — DDS textures v5.1 (picker fix)")
                     .font(.headline)
                 MetalSceneView(
                     nifData: previewBytes, revision: previewRevision,
@@ -47,13 +50,14 @@ private struct FNVPreviewScreen: View {
                 Text("Preview source: \(assetName)")
                 Text("Diffuse texture: \(textureName)")
                     .font(.footnote)
-                    .font(.footnote)
                 Button("Import Fallout New Vegas .nif from Files") {
+                    importKind = .nif
                     filePickerVisible = true
                 }
                 .buttonStyle(.borderedProminent)
                 Button("Import matching Fallout New Vegas .dds from Files") {
-                    ddsPickerVisible = true
+                    importKind = .dds
+                    filePickerVisible = true
                 }
                 .buttonStyle(.bordered)
                 .disabled(previewBytes == nil)
@@ -66,25 +70,22 @@ private struct FNVPreviewScreen: View {
                     Text("Hardware ray tracing: \(gpu.supportsRaytracing ? "supported" : "unavailable")")
                     Text("GPU family 8: \(gpu.supportsFamily(.apple8) ? "supported" : "unavailable")")
                 }
-                Text("Geometry diagnostic only; no textures, NPCs, quests or gameplay.")
+                Text("NIF/DDS preview only; no full New Vegas materials, NPCs, quests or gameplay.")
                     .foregroundStyle(.secondary)
             }
             .padding()
         }
+        // Both file types share the *same* presentation modifier.
+        // The previously verified Phase 6/7 NIF picker also used one importer.
         .fileImporter(isPresented: $filePickerVisible, allowedContentTypes: [.data]) { result in
             switch result {
             case .failure(let error):
-                message = "File picker failed: \(error.localizedDescription)"
+                message = "Files picker failed: \(error.localizedDescription)"
             case .success(let url):
-                importNif(url)
-            }
-        }
-        .fileImporter(isPresented: $ddsPickerVisible, allowedContentTypes: [.data]) { result in
-            switch result {
-            case .failure(let error):
-                message = "Texture picker failed: \(error.localizedDescription)"
-            case .success(let url):
-                importDDS(url)
+                switch importKind {
+                case .nif: importNif(url)
+                case .dds: importDDS(url)
+                }
             }
         }
     }
@@ -135,7 +136,7 @@ private struct FNVPreviewScreen: View {
         var texture = FnvTexture(pixels: nil, len: 0, width: 0, height: 0)
         let code = url.path.withCString { fnv_ios_load_dds_rgba($0, &texture) }
         guard code == 0, let pixels = texture.pixels else {
-            message = "DDS decode failed (error \\(code)). Only BC1/DXT1, BC2/DXT3, BC3/DXT5 or 32-bit RGB DDS supported."
+            message = "DDS decode failed (error \(code)). Only BC1/DXT1, BC2/DXT3, BC3/DXT5 or 32-bit RGB DDS supported."
             return
         }
         defer { fnv_ios_release_texture(pixels, texture.len) }
@@ -151,6 +152,6 @@ private struct FNVPreviewScreen: View {
         textureHeight = h
         textureRevision += 1
         textureName = url.lastPathComponent
-        message = "Imported \\(w) x \\(h) DDS texture for native Metal UV preview. Texture is supplied independently; ensure it belongs to this mesh."
+        message = "Imported \(w) x \(h) DDS texture for native Metal UV preview. Texture is supplied independently; ensure it belongs to this mesh."
     }
 }
