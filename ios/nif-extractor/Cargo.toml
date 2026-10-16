@@ -6,3 +6,5 @@ license.workspace = true
 
 [dependencies]
 byroredux-bsa = { workspace = true }
+byroredux-nif = { workspace = true }
+byroredux-core = { workspace = true }
