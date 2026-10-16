@@ -9,6 +9,7 @@ on:
       - 'fnv/phase9-automatic-material-pair'
       - 'fnv/phase11-distinct-asset-discovery'
       - 'fnv/playable-goodsprings-interior'
+      - 'fnv/phase13-world-materials'
 
 permissions:
   contents: read
