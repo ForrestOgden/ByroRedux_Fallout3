@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - 'fnv/native-nif-preview'
+      - 'fnv/phase8-dds-textures'
 
 permissions:
   contents: read
