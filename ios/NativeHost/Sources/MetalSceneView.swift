@@ -4,6 +4,8 @@ import SwiftUI
 import simd
 
 struct MetalSceneView: UIViewRepresentable {
+    let nifData: Data?
+    let revision: Int
     func makeCoordinator() -> SceneCoordinator { SceneCoordinator() }
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
@@ -12,10 +14,13 @@ struct MetalSceneView: UIViewRepresentable {
         view.clearColor = MTLClearColor(red: 0.025, green: 0.035, blue: 0.05, alpha: 1)
         view.preferredFramesPerSecond = 60
         context.coordinator.configure(view)
+        context.coordinator.setPreview(nifData, revision: revision, device: view.device)
         view.delegate = context.coordinator
         return view
     }
-    func updateUIView(_ view: MTKView, context: Context) {}
+    func updateUIView(_ view: MTKView, context: Context) {
+        context.coordinator.setPreview(nifData, revision: revision, device: view.device)
+    }
 }
 
 private struct SceneVertex {
@@ -35,6 +40,25 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
     private var vertices: MTLBuffer?
     private var vertexCount = 0
     private var start = CACurrentMediaTime()
+    private var activeRevision = -1
+    private var importedVertices: MTLBuffer?
+    private var importedVertexCount = 0
+
+    func setPreview(_ bytes: Data?, revision: Int, device: MTLDevice?) {
+        guard revision != activeRevision else { return }
+        activeRevision = revision
+        importedVertices = nil
+        importedVertexCount = 0
+        guard let bytes, !bytes.isEmpty, bytes.count % 32 == 0,
+              bytes.count <= 180_000 * 32, let device else { return }
+        let buffer = bytes.withUnsafeBytes { raw -> MTLBuffer? in
+            guard let base = raw.baseAddress else { return nil }
+            return device.makeBuffer(bytes: base, length: raw.count)
+        }
+        importedVertices = buffer
+        importedVertexCount = buffer == nil ? 0 : bytes.count / 32
+        NSLog("FNV NIF preview: %d triangle vertices", importedVertexCount)
+    }
 
     func configure(_ view: MTKView) {
         guard let device = view.device,
@@ -120,9 +144,9 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
         var uniforms = SceneUniforms(mvp: projection * translation * rotation)
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
-        encoder.setVertexBuffer(vertices, offset: 0, index: 0)
+        encoder.setVertexBuffer(importedVertices ?? vertices, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: importedVertices == nil ? vertexCount : importedVertexCount)
         encoder.endEncoding()
         cmd.present(drawable)
         cmd.commit()
