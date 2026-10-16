@@ -5,7 +5,26 @@ import UniformTypeIdentifiers
 @main
 struct FalloutNVNativeApp: App {
     var body: some Scene {
-        WindowGroup { FNVPreviewScreen() }
+        WindowGroup { FNVIPhoneGameRoot() }
+    }
+}
+
+/// Play-first home route: retain the proven old geometry viewer as an
+/// opt-in diagnostic without making it the front page of the game.
+private struct FNVIPhoneGameRoot: View {
+    @State private var showDeveloperViewer = false
+    var body: some View {
+        if showDeveloperViewer {
+            VStack(spacing:0) {
+                Button("← Return to Goodsprings") {
+                    showDeveloperViewer = false
+                }
+                .padding(.vertical,9)
+                FNVPreviewScreen()
+            }
+        } else {
+            GoodspringsScreen(onOpenViewer: { showDeveloperViewer = true })
+        }
     }
 }
 

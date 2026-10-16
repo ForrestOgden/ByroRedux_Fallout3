@@ -8,6 +8,7 @@ on:
       - 'fnv/phase8-dds-textures'
       - 'fnv/phase9-automatic-material-pair'
       - 'fnv/phase11-distinct-asset-discovery'
+      - 'fnv/playable-goodsprings-interior'
 
 permissions:
   contents: read
