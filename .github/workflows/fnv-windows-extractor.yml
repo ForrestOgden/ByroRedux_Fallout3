@@ -6,6 +6,7 @@ on:
     branches:
       - 'fnv/native-nif-preview'
       - 'fnv/phase8-dds-textures'
+      - 'fnv/phase9-automatic-material-pair'
 
 permissions:
   contents: read

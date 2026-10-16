@@ -13,7 +13,7 @@ struct FalloutNVNativeApp: App {
 private struct FNVPreviewScreen: View {
     // Keep a single SwiftUI file importer: two .fileImporter modifiers on the
     // same view conflicted on iOS and the NIF Files sheet never appeared.
-    private enum ImportKind { case nif, dds }
+    private enum ImportKind { case nif, dds, package }
     @State private var importKind: ImportKind = .nif
     @State private var filePickerVisible = false
     @State private var textureData: Data?
@@ -36,7 +36,7 @@ private struct FNVPreviewScreen: View {
                     .font(.system(.footnote, design: .monospaced))
                 Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
                     .font(.system(.footnote, design: .monospaced))
-                Text("Native NIF mesh preview — DDS textures v5.2 (sRGB fix)")
+                Text("Native NIF mesh preview — v6 auto material package")
                     .font(.headline)
                 Text("Mesh: \(assetName) · DDS: \(textureData == nil ? "none" : textureName)")
                     .font(.caption)
@@ -58,6 +58,14 @@ private struct FNVPreviewScreen: View {
                 Text("Preview source: \(assetName)")
                 Text("Diffuse texture: \(textureName)")
                     .font(.footnote)
+                Button("Import automatically matched FNV asset package") {
+                    importKind = .package
+                    filePickerVisible = true
+                }
+                .buttonStyle(.borderedProminent)
+                Text("One .fnvpack contains the NIF and its authored diffuse DDS, matched by ByroRedux on your PC.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Button("Import Fallout New Vegas .nif from Files") {
                     importKind = .nif
                     filePickerVisible = true
@@ -85,7 +93,9 @@ private struct FNVPreviewScreen: View {
         }
         // Both file types share the *same* presentation modifier.
         // The previously verified Phase 6/7 NIF picker also used one importer.
-        .fileImporter(isPresented: $filePickerVisible, allowedContentTypes: [.data]) { result in
+        .fileImporter(
+            isPresented: $filePickerVisible,
+            allowedContentTypes: [.data, UTType(filenameExtension: "fnvpack", conformingTo: .data) ?? .data]) { result in
             switch result {
             case .failure(let error):
                 message = "Files picker failed: \(error.localizedDescription)"
@@ -93,6 +103,7 @@ private struct FNVPreviewScreen: View {
                 switch importKind {
                 case .nif: importNif(url)
                 case .dds: importDDS(url)
+                case .package: importPackage(url)
                 }
             }
         }
@@ -162,4 +173,68 @@ private struct FNVPreviewScreen: View {
         textureName = url.lastPathComponent
         message = "Imported \(w) x \(h) DDS texture for native Metal UV preview. Texture is supplied independently; ensure it belongs to this mesh."
     }
+    private func importPackage(_ url: URL) {
+        guard url.pathExtension.lowercased() == "fnvpack" else {
+            message = "Select the private .fnvpack package created by the Windows extractor."
+            return
+        }
+        let granted = url.startAccessingSecurityScopedResource()
+        defer { if granted { url.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let payload = try Data(contentsOf: url, options: [.mappedIfSafe])
+            guard payload.count >= 16,
+                  payload.count <= 16 + 24 * 1024 * 1024 + 48 * 1024 * 1024 else {
+                message = "Invalid FNV package size."
+                return
+            }
+            let header = Array(payload.prefix(16))
+            guard Array(header[0..<8]) == Array("FNVPK001".utf8) else {
+                message = "Invalid package header. Expected FNVPK001."
+                return
+            }
+            // Explicit little-endian byte decoding; avoids unaligned pointer
+            // loads and preserves exactly the Rust packer's wire format.
+            func uint32(_ offset: Int) -> Int {
+                Int(UInt32(header[offset]) |
+                    (UInt32(header[offset+1]) << 8) |
+                    (UInt32(header[offset+2]) << 16) |
+                    (UInt32(header[offset+3]) << 24))
+            }
+            let nifLength = uint32(8)
+            let ddsLength = uint32(12)
+            guard nifLength > 0, nifLength <= 24 * 1024 * 1024,
+                  ddsLength > 0, ddsLength <= 48 * 1024 * 1024,
+                  16 + nifLength + ddsLength == payload.count else {
+                message = "Package NIF/DDS lengths are invalid."
+                return
+            }
+            let manager = FileManager.default
+            let scratch = manager.temporaryDirectory.appendingPathComponent(
+                UUID().uuidString, isDirectory: true)
+            try manager.createDirectory(at: scratch, withIntermediateDirectories: true)
+            defer { try? manager.removeItem(at: scratch) }
+            let nifURL = scratch.appendingPathComponent("matched-model.nif")
+            let ddsURL = scratch.appendingPathComponent("matched-diffuse.dds")
+            try payload.subdata(in: 16..<(16+nifLength)).write(to: nifURL, options: .atomic)
+            try payload.subdata(in: (16+nifLength)..<payload.count).write(to: ddsURL, options: .atomic)
+            let oldRevision = previewRevision
+            importNif(nifURL)
+            guard previewRevision > oldRevision else {
+                message = "Package NIF mesh failed to parse; DDS import was skipped."
+                return
+            }
+            importDDS(ddsURL)
+            guard textureData != nil else {
+                message = "Packaged geometry loaded, but its authored DDS could not be decoded. " + message
+                return
+            }
+            assetName = url.lastPathComponent
+            textureName = "Authored diffuse (auto matched in package)"
+            message = "Automatically imported New Vegas geometry and matching diffuse texture from \(url.lastPathComponent). No separate DDS file selection required."
+        } catch {
+            message = "Could not read FNV package: \(error.localizedDescription)"
+        }
+    }
+
 }
