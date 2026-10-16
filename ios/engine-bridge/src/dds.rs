@@ -73,9 +73,9 @@ fn bc3_alpha(block: &[u8], pixel: u32) -> u8 {
 
 fn scale_mask(v: u32, mask: u32, opaque: u8) -> u8 {
     if mask == 0 { return opaque; }
-    let shifted = (v & mask) >> mask.trailing_zeros();
-    let max = mask >> mask.trailing_zeros();
-    ((shifted * 255 + max/2) / max) as u8
+    let shifted = ((v & mask) >> mask.trailing_zeros()) as u64;
+    let max = (mask >> mask.trailing_zeros()) as u64;
+    ((shifted * 255 + max / 2) / max) as u8
 }
 
 pub fn decode_dds(bytes: &[u8]) -> Result<DecodedDds, &'static str> {
@@ -216,6 +216,23 @@ mod tests {
         let mut bytes = fixture(4,4,b"DXT1",&[0u8;8]);
         bytes[0] = 0;
         assert!(decode_dds(&bytes).is_err());
+    }
+    #[test]
+    fn uncompressed_rgba32_uses_dds_channel_masks() {
+        let mut bytes = fixture(1, 1, b"NONE", &[0x20, 0x40, 0x80, 0xFF]);
+        bytes[80..84].copy_from_slice(&0x40u32.to_le_bytes());
+        bytes[88..92].copy_from_slice(&32u32.to_le_bytes());
+        bytes[92..96].copy_from_slice(&0x00ff0000u32.to_le_bytes());
+        bytes[96..100].copy_from_slice(&0x0000ff00u32.to_le_bytes());
+        bytes[100..104].copy_from_slice(&0x000000ffu32.to_le_bytes());
+        bytes[104..108].copy_from_slice(&0xff000000u32.to_le_bytes());
+        let decoded = decode_dds(&bytes).unwrap();
+        assert_eq!(decoded.rgba, [128, 64, 32, 255]);
+    }
+    #[test]
+    fn large_channel_mask_does_not_overflow() {
+        assert_eq!(scale_mask(0xFFFF_FFFF, 0xFFFF_FFFF, 0), 255);
+        assert_eq!(scale_mask(0, 0xFFFF_FFFF, 0), 0);
     }
     #[test]
     fn truncation_and_limit_are_rejected() {
