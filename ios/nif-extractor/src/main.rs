@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 mod package;
+mod world;
 const MAX_EXTRACTED_BYTES: usize = 48 * 1024 * 1024;
 
 
@@ -43,6 +44,13 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let kind = args.get(1).map(String::as_str);
     let texture_mode = kind == Some("--texture");
+    if kind == Some("--export-cell") {
+        if args.len() < 6 || args.len() > 7 {
+            return Err("Usage: fnv-ios-nif-extractor.exe --export-cell <FalloutNV.esm> <Meshes.bsa> <Textures.bsa> <out.fnvworld> [CELL_EDITOR_ID]".into());
+        }
+        return world::export_cell(&args[2], &args[3], &args[4], &args[5],
+                                  args.get(6).map(String::as_str).unwrap_or("GSProspectorSaloonInterior"));
+    }
     if kind == Some("--discover-pairs") {
         if args.len() < 4 || args.len() > 5 {
             return Err("Usage: fnv-ios-nif-extractor.exe --discover-pairs <Meshes.bsa> <Textures.bsa> [filename-substring]".into());
@@ -64,6 +72,7 @@ fn run() -> Result<(), String> {
 --texture: extracts a diffuse texture (prefer beer bottle) with an optional case-insensitive substring filter.
 --package: inspects an actual NIF material and bundles the exact referenced diffuse texture (no filename guessing).
 --discover-pairs: examines up to 400 matching NIFs locally, showing up to 12 authored NIF+DDS candidates.
+--export-cell: converts ESM-authored cell references and owned BSAs into a bounded native world package for offline iPhone navigation.
 --list-textures: prints up to 40 matching texture paths, without extracting data.";
 
     if list_mode {
