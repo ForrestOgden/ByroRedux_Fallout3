@@ -1,5 +1,12 @@
 # Phase 8 — DirectX DDS surface sampling on native iPhone Metal
 
+## Phase 8 v5.2 — physical NIF import and color-pipeline correction
+
+The owner supplied a 14.63-second screen recording of **v5.1** on an Apple A19 Pro. The NIF picker regression is resolved: `fnv-preview.nif` appears in the preview source, and the bottle rotates with geometry intact. The bottle shows surface detail consistent with DDS sampling, but the recording does not show the DDS filename, so the matching texture path remains unconfirmed.
+
+The bottle appears unusually dark. Root cause candidate: a `.rgba8Unorm_srgb` texture converts sampled colors to linear RGB, while the destination drawable was `.bgra8Unorm`, leaving linear colors stored without gamma encoding. v5.2 uses `.bgra8Unorm_srgb` as the Metal target and displays the mesh filename, DDS filename, and texture dimensions **above** the preview. This fixes color-space handling without artificially boosting brightness. Real-device validation is necessary.
+
+
 **Goal:** The user-verified 142-triangle New Vegas bottle NIF gains a companion locally obtained DDS diffuse texture, mapped by the NIF's original UV coordinates. This is a **one-material-per-preview diagnostic**, not a complete Fallout New Vegas material system or playable game.
 
 ## What this change does

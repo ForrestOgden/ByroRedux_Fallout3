@@ -36,8 +36,16 @@ private struct FNVPreviewScreen: View {
                     .font(.system(.footnote, design: .monospaced))
                 Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
                     .font(.system(.footnote, design: .monospaced))
-                Text("Native NIF mesh preview — DDS textures v5.1 (picker fix)")
+                Text("Native NIF mesh preview — DDS textures v5.2 (sRGB fix)")
                     .font(.headline)
+                Text("Mesh: \(assetName) · DDS: \(textureData == nil ? "none" : textureName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(textureData == nil
+                     ? "Material: diagnostic shading"
+                     : "Texture: \(textureWidth) × \(textureHeight) · sRGB display output")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 MetalSceneView(
                     nifData: previewBytes, revision: previewRevision,
                     textureData: textureData, textureWidth: textureWidth,

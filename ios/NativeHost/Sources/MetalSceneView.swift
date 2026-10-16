@@ -13,7 +13,10 @@ struct MetalSceneView: UIViewRepresentable {
     func makeCoordinator() -> SceneCoordinator { SceneCoordinator() }
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
-        view.colorPixelFormat = .bgra8Unorm
+        // DDS texture sampling decodes sRGB into linear RGB.
+        // The display target must encode linear fragments back to sRGB.
+        // The previous unorm drawable caused unexpectedly dark textures.
+        view.colorPixelFormat = .bgra8Unorm_srgb
         view.depthStencilPixelFormat = .depth32Float
         view.clearColor = MTLClearColor(red: 0.025, green: 0.035, blue: 0.05, alpha: 1)
         view.preferredFramesPerSecond = 60
@@ -39,7 +42,7 @@ struct MetalSceneView: UIViewRepresentable {
 }
 
 private struct SceneVertex {
-    // Explicit 16-byte lanes: 32 bytes per vertex, identical to Metal float4/float4.
+    // Three 16-byte float4 lanes = 48-byte vertex ABI, matching Rust and Metal.
     var position: SIMD4<Float>
     var color: SIMD4<Float>
     var uvLight: SIMD4<Float>
