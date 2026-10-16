@@ -123,7 +123,10 @@ struct GoodspringsScreen: View {
         }
         .fileImporter(
             isPresented:$importerVisible,
-            allowedContentTypes:[.data] // Same Files presentation type as the verified v5.1 picker
+            allowedContentTypes:[.data,
+                UTType(filenameExtension:"fnvworld",conformingTo:.data) ?? .data]
+            // One Files importer, with an explicit custom extension just as
+            // the physically verified Phase 9 .fnvpack picker requires.
         ) { selection in
             switch selection {
             case .failure(let error):
