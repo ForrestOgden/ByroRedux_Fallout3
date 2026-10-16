@@ -21,11 +21,6 @@ jobs:
           rustup toolchain install 1.96.0 --profile minimal
           rustup target add aarch64-apple-ios --toolchain 1.96.0
           rustup default 1.96.0
-      - name: Diagnose workspace lockfile changes before pinned builds
-        run: |
-          cargo metadata --format-version 1 > /dev/null
-          echo '=== Cargo.lock diff diagnostic ==='
-          git diff -- Cargo.lock
       - name: Verify Rust bridge unit tests on macOS
         run: cargo test -p falloutnv-ios-bridge --locked
       - name: Compile native arm64-apple-ios Rust static library

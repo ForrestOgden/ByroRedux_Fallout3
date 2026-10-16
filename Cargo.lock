@@ -2295,23 +2295,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
-name = "fancy-regex"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b95f7c0680e4142284cf8b22c14a476e87d61b004a3a0861872b32ef7ead40a2"
-dependencies = [
- "bit-set 0.5.3",
- "regex",
-]
-
-[[package]]
 name = "falloutnv-ios-bridge"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-nif",
- "glam",
+ "glam 0.33.12",
 ]
 
 [[package]]
@@ -2319,6 +2309,16 @@ name = "falloutnv-ios-nif-extractor"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b95f7c0680e4142284cf8b22c14a476e87d61b004a3a0861872b32ef7ead40a2"
+dependencies = [
+ "bit-set 0.5.3",
+ "regex",
 ]
 
 [[package]]
