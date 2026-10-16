@@ -4,6 +4,7 @@ use byroredux_bsa::BsaArchive;
 use std::env;
 use std::fs;
 use std::path::Path;
+mod package;
 const MAX_EXTRACTED_BYTES: usize = 48 * 1024 * 1024;
 
 
@@ -42,6 +43,12 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let kind = args.get(1).map(String::as_str);
     let texture_mode = kind == Some("--texture");
+    if kind == Some("--package") {
+        if args.len() < 5 || args.len() > 6 {
+            return Err("Usage: fnv-ios-nif-extractor.exe --package <Meshes.bsa> <Textures.bsa> <output.fnvpack> [nif-name-filter]".into());
+        }
+        return package::build_package(&args[2], &args[3], &args[4], args.get(5).map(String::as_str));
+    }
     let list_mode = kind == Some("--list-textures");
     let usage = "Usage:
   fnv-ios-nif-extractor.exe <Meshes.bsa> <out.nif>
@@ -49,6 +56,7 @@ fn run() -> Result<(), String> {
   fnv-ios-nif-extractor.exe --list-textures <Textures.bsa> [search]
 
 --texture: extracts a diffuse texture (prefer beer bottle) with an optional case-insensitive substring filter.
+--package: inspects an actual NIF material and bundles the exact referenced diffuse texture (no filename guessing).
 --list-textures: prints up to 40 matching texture paths, without extracting data.";
 
     if list_mode {
