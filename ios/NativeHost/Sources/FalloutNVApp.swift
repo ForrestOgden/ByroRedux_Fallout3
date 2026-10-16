@@ -13,7 +13,7 @@ struct FalloutNVNativeApp: App {
 private struct FNVPreviewScreen: View {
     // Keep a single SwiftUI file importer: two .fileImporter modifiers on the
     // same view conflicted on iOS and the NIF Files sheet never appeared.
-    private enum ImportKind { case nif, dds, package }
+    private enum ImportKind { case nif, dds, package, addPackage }
     @State private var importKind: ImportKind = .nif
     @State private var filePickerVisible = false
     @State private var textureData: Data?
@@ -23,6 +23,8 @@ private struct FNVPreviewScreen: View {
     @State private var textureName = "No DDS texture imported"
     @State private var previewBytes: Data?
     @State private var previewRevision = 0
+    @State private var additionalAssets: [ScenePreviewAsset] = []
+    @State private var sceneRevision = 0
     @State private var message = "Showing procedural cube. Import a New Vegas .nif to test genuine geometry."
     @State private var assetName = "Procedural cube"
     private let gpu = MTLCreateSystemDefaultDevice()
@@ -36,7 +38,7 @@ private struct FNVPreviewScreen: View {
                     .font(.system(.footnote, design: .monospaced))
                 Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
                     .font(.system(.footnote, design: .monospaced))
-                Text("Native NIF mesh preview — v6 auto material package")
+                Text("Native multi-object Metal preview — Phase 10")
                     .font(.headline)
                 Text("Mesh: \(assetName) · DDS: \(textureData == nil ? "none" : textureName)")
                     .font(.caption)
@@ -49,13 +51,21 @@ private struct FNVPreviewScreen: View {
                 MetalSceneView(
                     nifData: previewBytes, revision: previewRevision,
                     textureData: textureData, textureWidth: textureWidth,
-                    textureHeight: textureHeight, textureRevision: textureRevision)
+                    textureHeight: textureHeight, textureRevision: textureRevision,
+                    additionalAssets: additionalAssets, sceneRevision: sceneRevision)
                     .frame(height: 340)
                     .accessibilityLabel("3D native Metal preview of imported New Vegas NIF")
                 Text("Drag to orbit · Pinch to zoom · Double-tap to reset")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text("Preview source: \(assetName)")
+                Text("Scene objects: \((previewBytes == nil ? 0 : 1) + additionalAssets.count) / 4")
+                    .font(.footnote)
+                ForEach(additionalAssets) { item in
+                    Text("Additional: \(item.name) · \(item.triangleCount) triangles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Diffuse texture: \(textureName)")
                     .font(.footnote)
                 Button("Import automatically matched FNV asset package") {
@@ -63,7 +73,21 @@ private struct FNVPreviewScreen: View {
                     filePickerVisible = true
                 }
                 .buttonStyle(.borderedProminent)
-                Text("One .fnvpack contains the NIF and its authored diffuse DDS, matched by ByroRedux on your PC.")
+                Button("Add another FNV asset package to scene") {
+                    importKind = .addPackage
+                    filePickerVisible = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(previewBytes == nil || additionalAssets.count >= 3)
+                Button("Clear additional scene objects") {
+                    additionalAssets.removeAll()
+                    sceneRevision += 1
+                    message = "Scene cleared to the original model."
+                }
+                .disabled(additionalAssets.isEmpty)
+                Text("Each .fnvpack contains one model and its authored diffuse DDS; up to four objects are displayed together.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Import Fallout New Vegas .nif from Files") {
@@ -104,6 +128,7 @@ private struct FNVPreviewScreen: View {
                 case .nif: importNif(url)
                 case .dds: importDDS(url)
                 case .package: importPackage(url)
+                case .addPackage: importSceneAsset(url)
                 }
             }
         }
@@ -134,6 +159,9 @@ private struct FNVPreviewScreen: View {
         }
         // Copy into Swift-owned Data BEFORE releasing the Rust-owned memory.
         previewBytes = Data(bytes: vertices, count: Int(mesh.count) * stride)
+        // A fresh main mesh replaces the previous multi-object scene.
+        additionalAssets.removeAll()
+        sceneRevision += 1
         // A different mesh must never inherit the previous mesh's texture.
         textureData = nil
         textureWidth = 0
@@ -234,6 +262,26 @@ private struct FNVPreviewScreen: View {
             message = "Automatically imported New Vegas geometry and matching diffuse texture from \(url.lastPathComponent). No separate DDS file selection required."
         } catch {
             message = "Could not read FNV package: \(error.localizedDescription)"
+        }
+    }
+
+    private func importSceneAsset(_ url: URL) {
+        guard previewBytes != nil else {
+            message = "Import a primary .fnvpack first."
+            return
+        }
+        guard additionalAssets.count < 3 else {
+            message = "Four-object preview limit reached. Clear scene to add more."
+            return
+        }
+        do {
+            let item = try ScenePreviewAsset.load(from: url)
+            additionalAssets.append(item)
+            sceneRevision += 1
+            let total = additionalAssets.count + 1
+            message = "Now rendering \(total) independent New Vegas models, each with its own DDS. New model: \(item.name), \(item.triangleCount) triangles."
+        } catch {
+            message = "Additional asset import failed: \(error.localizedDescription)"
         }
     }
 
