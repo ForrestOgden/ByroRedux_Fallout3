@@ -35,6 +35,7 @@ members = [
     "tools/texture-upscale",
     "byroredux",
     "ios/engine-bridge",
+    "ios/nif-extractor",
 ]
 resolver = "2"
 

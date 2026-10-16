@@ -9,3 +9,6 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 byroredux-bsa = { workspace = true }
+byroredux-nif = { workspace = true }
+byroredux-core = { workspace = true }
+glam = { workspace = true }

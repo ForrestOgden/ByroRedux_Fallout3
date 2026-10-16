@@ -2309,6 +2309,16 @@ name = "falloutnv-ios-bridge"
 version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
+ "byroredux-core",
+ "byroredux-nif",
+ "glam",
+]
+
+[[package]]
+name = "falloutnv-ios-nif-extractor"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
 ]
 
 [[package]]
