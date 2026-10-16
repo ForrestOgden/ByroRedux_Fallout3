@@ -15,6 +15,13 @@ struct MetalSceneView: UIViewRepresentable {
         view.preferredFramesPerSecond = 60
         context.coordinator.configure(view)
         context.coordinator.setPreview(nifData, revision: revision, device: view.device)
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(SceneCoordinator.handlePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(UIPinchGestureRecognizer(target: context.coordinator, action: #selector(SceneCoordinator.handlePinch(_:))))
+        let reset = UITapGestureRecognizer(target: context.coordinator, action: #selector(SceneCoordinator.resetCamera(_:)))
+        reset.numberOfTapsRequired = 2
+        view.addGestureRecognizer(reset)
         view.delegate = context.coordinator
         return view
     }
@@ -40,6 +47,31 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
     private var vertices: MTLBuffer?
     private var vertexCount = 0
     private var start = CACurrentMediaTime()
+    private var orbitYaw: Float = 0
+    private var orbitPitch: Float = 0.12
+    private var cameraDistance: Float = 5
+
+    @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard let view = gesture.view else { return }
+        let p = gesture.translation(in: view)
+        orbitYaw += Float(p.x) * 0.012
+        orbitPitch = max(-1.35, min(1.35, orbitPitch + Float(p.y) * 0.012))
+        gesture.setTranslation(.zero, in: view)
+    }
+
+    @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        let scale = Float(gesture.scale)
+        guard scale.isFinite && scale > 0 else { return }
+        cameraDistance = max(2.8, min(12, cameraDistance / scale))
+        gesture.scale = 1
+    }
+
+    @objc func resetCamera(_ gesture: UITapGestureRecognizer) {
+        orbitYaw = 0
+        orbitPitch = 0.12
+        cameraDistance = 5
+        start = CACurrentMediaTime()
+    }
     private var activeRevision = -1
     private var importedVertices: MTLBuffer?
     private var importedVertexCount = 0
@@ -134,14 +166,20 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
             SIMD4<Float>(0,0,far/(near-far),-1),
             SIMD4<Float>(0,0,(far*near)/(near-far),0)
         ))
-        let c = cos(t * 0.55), s = sin(t * 0.55)
-        let rotation = simd_float4x4(columns: (
+        let angle = t * 0.28 + orbitYaw
+        let c = cos(angle), s = sin(angle)
+        let yaw = simd_float4x4(columns: (
             SIMD4<Float>(c,0,-s,0), SIMD4<Float>(0,1,0,0),
             SIMD4<Float>(s,0,c,0), SIMD4<Float>(0,0,0,1)
         ))
+        let cp = cos(orbitPitch), sp = sin(orbitPitch)
+        let pitch = simd_float4x4(columns: (
+            SIMD4<Float>(1,0,0,0), SIMD4<Float>(0,cp,sp,0),
+            SIMD4<Float>(0,-sp,cp,0), SIMD4<Float>(0,0,0,1)
+        ))
         var translation = matrix_identity_float4x4
-        translation.columns.3.z = -5
-        var uniforms = SceneUniforms(mvp: projection * translation * rotation)
+        translation.columns.3.z = -cameraDistance
+        var uniforms = SceneUniforms(mvp: projection * translation * yaw * pitch)
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
         encoder.setVertexBuffer(importedVertices ?? vertices, offset: 0, index: 0)

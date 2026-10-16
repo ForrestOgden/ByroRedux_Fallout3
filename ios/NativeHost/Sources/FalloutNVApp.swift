@@ -27,11 +27,14 @@ private struct FNVPreviewScreen: View {
                     .font(.system(.footnote, design: .monospaced))
                 Text("ByroRedux BSA probe: \(bsaProbeResult) (1 = missing, expected)")
                     .font(.system(.footnote, design: .monospaced))
-                Text("Native NIF mesh preview — v3")
+                Text("Native NIF mesh preview — lit orbit v4")
                     .font(.headline)
                 MetalSceneView(nifData: previewBytes, revision: previewRevision)
-                    .frame(height: 280)
+                    .frame(height: 340)
                     .accessibilityLabel("3D native Metal preview of imported New Vegas NIF")
+                Text("Drag to orbit · Pinch to zoom · Double-tap to reset")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Text("Preview source: \(assetName)")
                     .font(.footnote)
                 Button("Import Fallout New Vegas .nif from Files") {
@@ -89,6 +92,6 @@ private struct FNVPreviewScreen: View {
         previewBytes = Data(bytes: vertices, count: Int(mesh.count) * stride)
         previewRevision += 1
         assetName = url.lastPathComponent
-        message = "Loaded \(mesh.count / 3) actual NIF triangles using native ByroRedux. Flat diagnostic colors; textures are not imported yet."
+        message = "Loaded \(mesh.count / 3) actual NIF triangles using native ByroRedux. Faceted preview shading from geometry; original textures not yet imported."
     }
 }
