@@ -7,6 +7,7 @@ on:
       - 'fnv/native-nif-preview'
       - 'fnv/phase8-dds-textures'
       - 'fnv/phase9-automatic-material-pair'
+      - 'fnv/phase11-distinct-asset-discovery'
 
 permissions:
   contents: read
