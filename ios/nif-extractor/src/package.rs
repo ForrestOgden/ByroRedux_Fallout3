@@ -82,6 +82,61 @@ fn authored_diffuse(nif: &[u8]) -> Result<(String, usize), String> {
     Ok((path.to_string(), mesh_count))
 }
 
+/// Bounded, read-only discovery of another local NIF and its authored DDS.
+/// A candidate is not a guarantee that every submesh uses one material.
+pub fn discover_pairs(meshes_bsa: &str, textures_bsa: &str, filter: Option<&str>) -> Result<(), String> {
+    use std::collections::HashMap;
+    const SCAN_LIMIT: usize = 400;
+    const RESULT_LIMIT: usize = 12;
+
+    let meshes = BsaArchive::open(meshes_bsa).map_err(|e| format!("Cannot open meshes BSA: {e}"))?;
+    let textures = BsaArchive::open(textures_bsa).map_err(|e| format!("Cannot open textures BSA: {e}"))?;
+    if meshes.version() != 104 || textures.version() != 104 {
+        return Err("Expected Fallout New Vegas BSA version 104".into());
+    }
+    let mut names = meshes.list_files();
+    names.sort_unstable();
+    let needle = filter.unwrap_or("clutter").to_ascii_lowercase();
+    let candidates: Vec<&str> = names.into_iter()
+        .filter(|name| name.ends_with(".nif") && name.contains(&needle)).collect();
+    let mut texture_names = textures.list_files();
+    texture_names.sort_unstable();
+    let texture_lookup: HashMap<String, &str> = texture_names.into_iter()
+        .filter_map(|name| texture_key(name).map(|key| (key, name))).collect();
+
+    let mut scanned = 0;
+    let mut matches = 0;
+    println!("Searching owned archive NIF and DDS pairs containing {needle:?} (max {SCAN_LIMIT} NIFs).");
+    for path in candidates.into_iter().take(SCAN_LIMIT) {
+        scanned += 1;
+        if path.contains("beerbottle") { continue; }
+        let Ok(nif) = extract_limited(&meshes, path, MAX_NIF) else { continue };
+        let Ok((authored, mesh_count)) = authored_diffuse(&nif) else { continue };
+        let Some(key) = texture_key(&authored) else { continue };
+        let Some(&dds_path) = texture_lookup.get(&key) else { continue };
+        let Ok(dds) = extract_limited(&textures, dds_path, MAX_DDS) else { continue };
+        // Share the same classic DDS decoder implementation used by the
+        // native iOS bridge; no acceptance of unsupported DX10 formats.
+        if dds::decode_dds(&dds).is_err() { continue; }
+        matches += 1;
+        println!("{matches}. NIF: {path}");
+        println!("   authored DDS: {dds_path} | imported submeshes: {mesh_count}");
+        if matches >= RESULT_LIMIT { break; }
+    }
+    println!("Scanned {scanned} NIFs; found {matches} candidate pairs.");
+    if matches == 0 {
+        return Err("No matching pairs in this bounded window. Try a different filename substring such as 'food' or 'furniture'.".into());
+    }
+    println!("Run --package with the COMPLETE NIF path above as the final argument.");
+    println!("No game data leaves this machine.");
+    Ok(())
+}
+
+// Reuse the production DDS decoder, including its synthetic unit tests,
+// instead of maintaining a separate Windows-only compatibility approximation.
+#[path = "../../engine-bridge/src/dds.rs"]
+mod dds;
+
 pub fn build_package(
     meshes_bsa: &str,
     textures_bsa: &str,
@@ -159,6 +214,11 @@ mod tests {
     fn avoids_guessed_materials() {
         let paths = ["textures\\clutter\\glass01.dds", "textures\\clutter\\glass02.dds"];
         assert_eq!(match_texture(&paths, "textures\\clutter\\beerbottle01.dds"), None);
+    }
+    #[test]
+    fn specific_paths_select_distinct_models() {
+        let names = ["meshes\\clutter\\food\\apple.nif", "meshes\\clutter\\food\\apple2.nif"];
+        assert_eq!(preferred_nif(&names, Some("meshes\\clutter\\food\\apple2.nif")), Some(names[1]));
     }
     #[test]
     fn picks_specific_mesh_when_filtered() {

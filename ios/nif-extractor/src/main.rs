@@ -43,6 +43,12 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let kind = args.get(1).map(String::as_str);
     let texture_mode = kind == Some("--texture");
+    if kind == Some("--discover-pairs") {
+        if args.len() < 4 || args.len() > 5 {
+            return Err("Usage: fnv-ios-nif-extractor.exe --discover-pairs <Meshes.bsa> <Textures.bsa> [filename-substring]".into());
+        }
+        return package::discover_pairs(&args[2], &args[3], args.get(4).map(String::as_str));
+    }
     if kind == Some("--package") {
         if args.len() < 5 || args.len() > 6 {
             return Err("Usage: fnv-ios-nif-extractor.exe --package <Meshes.bsa> <Textures.bsa> <output.fnvpack> [nif-name-filter]".into());
@@ -57,6 +63,7 @@ fn run() -> Result<(), String> {
 
 --texture: extracts a diffuse texture (prefer beer bottle) with an optional case-insensitive substring filter.
 --package: inspects an actual NIF material and bundles the exact referenced diffuse texture (no filename guessing).
+--discover-pairs: examines up to 400 matching NIFs locally, showing up to 12 authored NIF+DDS candidates.
 --list-textures: prints up to 40 matching texture paths, without extracting data.";
 
     if list_mode {
