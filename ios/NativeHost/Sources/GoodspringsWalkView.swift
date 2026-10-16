@@ -3,6 +3,7 @@ import MetalKit
 import SwiftUI
 import simd
 import QuartzCore
+import GameController
 
 /// The first native Metal walk camera for a real (not gallery-arranged)
 /// FalloutNV.esm CELL. Draws source NIF objects at original REFR transforms.
@@ -200,12 +201,27 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
 
         // First-person movement on the game's horizontal plane. Collision,
         // gravity, doors and Havok integration are NOT done in this milestone.
+        // Game Controller support is native, optional, and uses no streaming.
+        var walking = move
+        var speed:Float = 2.5
+        if let gamepad=GCController.controllers().first(where:{$0.extendedGamepad != nil})?.extendedGamepad {
+            let left=SIMD2<Float>(gamepad.leftThumbstick.xAxis.value,
+                                  gamepad.leftThumbstick.yAxis.value)
+            if simd_length(left)>0.14 { walking=left }
+            let rightStick=SIMD2<Float>(gamepad.rightThumbstick.xAxis.value,
+                                        gamepad.rightThumbstick.yAxis.value)
+            if simd_length(rightStick)>0.12 {
+                yaw+=rightStick.x * delta * 2.5
+                pitch=max(-1.36,min(1.36,pitch+rightStick.y * delta * 1.8))
+            }
+            if gamepad.leftTrigger.value>0.5 {speed=4.4}
+        }
         let forward=SIMD3<Float>(sin(yaw),0,-cos(yaw))
         let right=SIMD3<Float>(cos(yaw),0,sin(yaw))
-        let magnitude=simd_length(move)
+        let magnitude=simd_length(walking)
         if magnitude>0.02 {
-            let velocity=(forward*move.y+right*move.x)/max(1,magnitude)
-            eye+=velocity * delta * 2.5 // metres / second
+            let velocity=(forward*walking.y+right*walking.x)/max(1,magnitude)
+            eye+=velocity * delta * speed // metres / second
         }
         let aspect=Float(view.drawableSize.width / max(view.drawableSize.height,1))
         let viewProjection=projection(aspect) * cameraMatrix()
