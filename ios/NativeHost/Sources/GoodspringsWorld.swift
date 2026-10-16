@@ -36,6 +36,9 @@ struct GoodspringsWorld {
     let models: [Model?] // preserves index if a single NIF fails to decode
     let instances: [Instance]
     let usableModelCount: Int
+    let formatVersion: UInt32
+    let texturedBatchCount: Int
+    let totalBatchCount: Int
 
     enum WorldError: LocalizedError {
         case invalid(String)
@@ -246,8 +249,15 @@ struct GoodspringsWorld {
         guard cursor == payload.count, validModels >= 5, instances.count >= 10 else {
             throw WorldError.invalid("World import incomplete; too few valid placed New Vegas meshes.")
         }
+        let usableModels = models.compactMap { $0 }
+        let batchCount = usableModels.reduce(0) { $0 + $1.batches.count }
+        let textureCount = usableModels.reduce(0) { total, model in
+            total + model.batches.filter { model.materials[$0.materialIndex] != nil }.count
+        }
         return GoodspringsWorld(cellName: cellName, initialYaw: initialYaw,
                                models: models, instances: instances,
-                               usableModelCount: validModels)
+                               usableModelCount: validModels,
+                               formatVersion: version, texturedBatchCount: textureCount,
+                               totalBatchCount: batchCount)
     }
 }
