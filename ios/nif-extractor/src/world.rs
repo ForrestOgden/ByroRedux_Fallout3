@@ -64,15 +64,7 @@ fn choose_spawn(
     let mut coords: Vec<[f32; 3]> = refs.iter().map(|r| r.position)
         .filter(|p| p.iter().all(|v| v.is_finite())).collect();
     if coords.is_empty() { return ([0.;3], "no references (invalid)"); }
-    // Robust median avoids being pulled outside the room by a distant marker.
-    for axis in 0..3 {
-        coords.sort_by(|a,b| a[axis].total_cmp(&b[axis]));
-        let mid = coords.len()/2;
-        let mut median = [0.;3];
-        median[axis] = coords[mid][axis];
-        // Each axis gets its own median below; no accumulated result needed.
-        if axis == 0 { /* sorted again for y, z */ }
-    }
+    // Median of the authored REFR coordinates when no safe marker exists.
     let mut center=[0.;3];
     for axis in 0..3 {
         coords.sort_by(|a,b| a[axis].total_cmp(&b[axis]));

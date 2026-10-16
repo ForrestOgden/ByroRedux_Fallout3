@@ -17,6 +17,9 @@ typedef struct { FnvVertex *vertices; size_t count; } FnvMesh;
 int32_t fnv_ios_load_nif_mesh(const char *path, FnvMesh *out);
 /* Release successful mesh pointer using the exact count, once. */
 void fnv_ios_release_mesh(FnvVertex *vertices, size_t count);
+/* World scene import: preserve original authored Y-up NIF coordinates
+ * instead of normalizing a mesh to the single-object preview scale. */
+int32_t fnv_ios_load_nif_mesh_raw(const char *path, FnvMesh *out);
 typedef struct {
     uint8_t *pixels;
     size_t len;
