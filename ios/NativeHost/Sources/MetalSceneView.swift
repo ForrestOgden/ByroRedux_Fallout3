@@ -10,6 +10,8 @@ struct MetalSceneView: UIViewRepresentable {
     let textureWidth: Int
     let textureHeight: Int
     let textureRevision: Int
+    let additionalAssets: [ScenePreviewAsset]
+    let sceneRevision: Int
     func makeCoordinator() -> SceneCoordinator { SceneCoordinator() }
     func makeUIView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: MTLCreateSystemDefaultDevice())
@@ -24,6 +26,7 @@ struct MetalSceneView: UIViewRepresentable {
         context.coordinator.setPreview(nifData, revision: revision, device: view.device)
         context.coordinator.setTexture(textureData, width: textureWidth, height: textureHeight,
                                        revision: textureRevision, device: view.device)
+        context.coordinator.setAdditionalAssets(additionalAssets, revision: sceneRevision, device: view.device)
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(SceneCoordinator.handlePan(_:)))
         pan.maximumNumberOfTouches = 1
         view.addGestureRecognizer(pan)
@@ -38,6 +41,7 @@ struct MetalSceneView: UIViewRepresentable {
         context.coordinator.setPreview(nifData, revision: revision, device: view.device)
         context.coordinator.setTexture(textureData, width: textureWidth, height: textureHeight,
                                        revision: textureRevision, device: view.device)
+        context.coordinator.setAdditionalAssets(additionalAssets, revision: sceneRevision, device: view.device)
     }
 }
 
@@ -74,14 +78,14 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
     @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
         let scale = Float(gesture.scale)
         guard scale.isFinite && scale > 0 else { return }
-        cameraDistance = max(2.8, min(12, cameraDistance / scale))
+        cameraDistance = max(2.8, min(26, cameraDistance / scale))
         gesture.scale = 1
     }
 
     @objc func resetCamera(_ gesture: UITapGestureRecognizer) {
         orbitYaw = 0
         orbitPitch = 0.12
-        cameraDistance = 5
+        cameraDistance = extraModels.isEmpty ? 5 : Float(extraModels.count + 1) * 4.5
         start = CACurrentMediaTime()
     }
     private var activeRevision = -1
@@ -90,6 +94,57 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
     private var activeTextureRevision = -1
     private var importedTexture: MTLTexture?
     private var fallbackTexture: MTLTexture?
+    private struct ExtraModel {
+        let vertices: MTLBuffer
+        let vertexCount: Int
+        let texture: MTLTexture
+    }
+    private var extraModels: [ExtraModel] = []
+    private var activeSceneRevision = -1
+
+    /// Independent GPU vertex/texture resources, one draw call per model.
+    func setAdditionalAssets(_ assets: [ScenePreviewAsset],
+                             revision: Int, device: MTLDevice?) {
+        guard revision != activeSceneRevision else { return }
+        activeSceneRevision = revision
+        extraModels.removeAll()
+        guard let device else { return }
+        for asset in assets.prefix(3) {
+            guard asset.vertices.count > 0,
+                  asset.vertices.count % 48 == 0,
+                  asset.vertices.count <= 180_000 * 48,
+                  asset.width > 0, asset.height > 0,
+                  asset.width <= 2048, asset.height <= 2048,
+                  asset.texture.count == asset.width * asset.height * 4 else {
+                NSLog("FNV scene: invalid supplemental model dimensions")
+                continue
+            }
+            let buffer = asset.vertices.withUnsafeBytes { bytes -> MTLBuffer? in
+                guard let base = bytes.baseAddress else { return nil }
+                return device.makeBuffer(bytes: base, length: bytes.count)
+            }
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm_srgb, width: asset.width,
+                height: asset.height, mipmapped: false)
+            descriptor.usage = [.shaderRead]
+            guard let buffer, let texture = device.makeTexture(descriptor: descriptor) else {
+                NSLog("FNV scene: GPU allocation failed for supplemental model")
+                continue
+            }
+            asset.texture.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                texture.replace(region: MTLRegionMake2D(0, 0, asset.width, asset.height),
+                                mipmapLevel: 0, withBytes: base,
+                                bytesPerRow: asset.width * 4)
+            }
+            extraModels.append(ExtraModel(vertices: buffer, vertexCount: asset.vertices.count / 48,
+                                         texture: texture))
+        }
+        if !extraModels.isEmpty {
+            cameraDistance = max(cameraDistance, Float(extraModels.count + 1) * 4.5)
+        }
+        NSLog("FNV scene: %d additional independent Metal models", extraModels.count)
+    }
 
     func setTexture(_ data: Data?, width: Int, height: Int,
                     revision: Int, device: MTLDevice?) {
@@ -229,15 +284,50 @@ final class SceneCoordinator: NSObject, MTKViewDelegate {
         ))
         var translation = matrix_identity_float4x4
         translation.columns.3.z = -cameraDistance
-        var uniforms = SceneUniforms(mvp: projection * translation * yaw * pitch)
         encoder.setRenderPipelineState(pipeline)
         encoder.setDepthStencilState(depthState)
-        encoder.setVertexBuffer(importedVertices ?? vertices, offset: 0, index: 0)
-        encoder.setVertexBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
-        var textureMode: UInt32 = importedVertices != nil && importedTexture != nil ? 1 : 0
-        encoder.setFragmentBytes(&textureMode, length: MemoryLayout<UInt32>.stride, index: 0)
-        encoder.setFragmentTexture(importedTexture ?? fallbackTexture, index: 0)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: importedVertices == nil ? vertexCount : importedVertexCount)
+
+        // Separate real GPU buffers, textures, and draw submissions for each
+        // source package. Positions are arranged for a diagnostic gallery,
+        // NOT taken from FalloutNV.esm cell references.
+        let count = (importedVertices == nil ? 0 : 1) + extraModels.count
+        if count >= 2, let primary = importedVertices {
+            let horizontalSpacing: Float = 3.3
+            for index in 0..<count {
+                let x = (Float(index) - Float(count - 1) * 0.5) * horizontalSpacing
+                var local = matrix_identity_float4x4
+                local.columns.3.x = x
+                var uniforms = SceneUniforms(mvp: projection * translation * yaw * pitch * local)
+                let buffer: MTLBuffer
+                let nVertices: Int
+                let selectedTexture: MTLTexture?
+                if index == 0 {
+                    buffer = primary
+                    nVertices = importedVertexCount
+                    selectedTexture = importedTexture
+                } else {
+                    let model = extraModels[index - 1]
+                    buffer = model.vertices
+                    nVertices = model.vertexCount
+                    selectedTexture = model.texture
+                }
+                encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+                encoder.setVertexBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
+                var textureMode: UInt32 = selectedTexture == nil ? 0 : 1
+                encoder.setFragmentBytes(&textureMode, length: MemoryLayout<UInt32>.stride, index: 0)
+                encoder.setFragmentTexture(selectedTexture ?? fallbackTexture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: nVertices)
+            }
+        } else {
+            var uniforms = SceneUniforms(mvp: projection * translation * yaw * pitch)
+            encoder.setVertexBuffer(importedVertices ?? vertices, offset: 0, index: 0)
+            encoder.setVertexBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 1)
+            var textureMode: UInt32 = importedVertices != nil && importedTexture != nil ? 1 : 0
+            encoder.setFragmentBytes(&textureMode, length: MemoryLayout<UInt32>.stride, index: 0)
+            encoder.setFragmentTexture(importedTexture ?? fallbackTexture, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0,
+                                   vertexCount: importedVertices == nil ? vertexCount : importedVertexCount)
+        }
         encoder.endEncoding()
         cmd.present(drawable)
         cmd.commit()
