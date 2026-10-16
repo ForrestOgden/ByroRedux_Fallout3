@@ -1,0 +1,33 @@
+name: FNV / Windows local NIF extractor
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'fnv/native-nif-preview'
+
+permissions:
+  contents: read
+
+jobs:
+  extractor:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust pinned toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup default 1.96.0
+      - name: Test extractor selection without Bethesda assets
+        shell: pwsh
+        run: cargo test -p falloutnv-ios-nif-extractor --locked
+      - name: Compile extractor for Windows
+        shell: pwsh
+        run: cargo build -p falloutnv-ios-nif-extractor --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FalloutNV-local-NIF-extractor-Windows
+          path: target/release/falloutnv-ios-nif-extractor.exe
+          if-no-files-found: error

@@ -1,0 +1,8 @@
+[package]
+name = "falloutnv-ios-nif-extractor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+byroredux-bsa = { workspace = true }
