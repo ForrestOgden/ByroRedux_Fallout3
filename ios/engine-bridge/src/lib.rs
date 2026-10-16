@@ -93,7 +93,7 @@ fn diagnostic_face_light(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     (0.28 + 0.72 * normal.dot(light).abs()).clamp(0.28, 1.0)
 }
 
-fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
+fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
         return Err("NIF size is zero or exceeds 24 MiB");
@@ -144,21 +144,25 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
         return Err("NIF has no usable triangle geometry");
     }
 
-    // Center and normalize geometry for the fixed camera; preserve the original shape.
-    let mut lo = Vec3::splat(f32::INFINITY);
-    let mut hi = Vec3::splat(f32::NEG_INFINITY);
-    for v in &vertices {
-        let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
-        lo = lo.min(p);
-        hi = hi.max(p);
-    }
-    let span = (hi - lo).max_element();
-    if !span.is_finite() || span < 0.00001 { return Err("Degenerate mesh bounds"); }
-    let center = (lo + hi) * 0.5;
-    let factor = 2.7 / span;
-    for v in &mut vertices {
-        let p = (Vec3::new(v.position[0], v.position[1], v.position[2]) - center) * factor;
-        v.position = [p.x, p.y, p.z, 1.0];
+    // The original editor/game-world loader needs AUTHORED mesh units.
+    // The older single-mesh gallery still requests normalized geometry.
+    if normalize_for_preview {
+        // Center and normalize geometry for the fixed camera; preserve the original shape.
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for v in &vertices {
+            let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let span = (hi - lo).max_element();
+        if !span.is_finite() || span < 0.00001 { return Err("Degenerate mesh bounds"); }
+        let center = (lo + hi) * 0.5;
+        let factor = 2.7 / span;
+        for v in &mut vertices {
+            let p = (Vec3::new(v.position[0], v.position[1], v.position[2]) - center) * factor;
+            v.position = [p.x, p.y, p.z, 1.0];
+        }
     }
     Ok(vertices)
 }
@@ -194,13 +198,36 @@ pub unsafe extern "C" fn fnv_ios_load_nif_mesh(path: *const c_char, out: *mut Fn
     unsafe { *out = FnvMesh { vertices: ptr::null_mut(), count: 0 } };
     let cpath = unsafe { CStr::from_ptr(path) };
     let Ok(path) = cpath.to_str() else { return -2 };
-    let Ok(vertices) = load_vertices(path) else {
+    let Ok(vertices) = load_vertices(path, true) else {
         return if fs::metadata(path).map_or(true, |m| m.len() > MAX_NIF_BYTES) { 1 } else { 2 };
     };
     let boxed = vertices.into_boxed_slice();
     let count = boxed.len();
     let data = Box::into_raw(boxed) as *mut FnvVertex;
     unsafe { *out = FnvMesh { vertices: data, count } };
+    0
+}
+
+/// Load NIF coordinates in their original ByroRedux imported Y-up world
+/// units, without the preview's normalize-to-2.7 size/centering step.
+/// Caller must provide the original REFR world transform and game-unit scale.
+///
+/// # Safety
+/// Same invariants as fnv_ios_load_nif_mesh; release the successful pointer
+/// once with fnv_ios_release_mesh.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_load_nif_mesh_raw(path: *const c_char, out: *mut FnvMesh) -> i32 {
+    if path.is_null() || out.is_null() { return -1; }
+    unsafe { *out = FnvMesh { vertices: ptr::null_mut(), count: 0 } };
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else { return -2 };
+    let Ok(vertices) = load_vertices(path, false) else {
+        return if fs::metadata(path).map_or(true, |m| m.len() > MAX_NIF_BYTES) { 1 } else { 2 };
+    };
+    let boxed = vertices.into_boxed_slice();
+    let count = boxed.len();
+    let ptr = Box::into_raw(boxed) as *mut FnvVertex;
+    unsafe { *out = FnvMesh { vertices: ptr, count } };
     0
 }
 
@@ -221,6 +248,15 @@ mod tests {
     #[test]
     fn layout_is_exactly_forty_eight_bytes() {
         assert_eq!(std::mem::size_of::<FnvVertex>(), 48);
+    }
+    #[test]
+    fn raw_mesh_invalid_path_releases_nothing() {
+        use std::ffi::CString;
+        let filename = CString::new("/__native_world__/nonexistent.nif").unwrap();
+        let mut mesh = FnvMesh { vertices: ptr::null_mut(), count: 99 };
+        assert_eq!(unsafe { fnv_ios_load_nif_mesh_raw(filename.as_ptr(), &mut mesh) }, 1);
+        assert!(mesh.vertices.is_null());
+        assert_eq!(mesh.count, 0);
     }
     #[test]
     fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }
