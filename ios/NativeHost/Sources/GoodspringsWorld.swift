@@ -129,7 +129,7 @@ struct GoodspringsWorld {
             guard nifLength > 0 && nifLength <= 24 * 1024 * 1024,
                   materialCount > 0 && materialCount <= 256,
                   legacyDDSLength <= 48 * 1024 * 1024 else {
-                throw WorldError.invalid("Invalid NIF/material length for original mesh \\(i).")
+                throw WorldError.invalid("Invalid NIF/material length for original mesh \(i).")
             }
             let nif = try take(nifLength)
             var ddsPayloads: [Data] = []
@@ -137,7 +137,7 @@ struct GoodspringsWorld {
             for _ in 0..<materialCount {
                 let length = version == 3 ? Int(try u32()) : legacyDDSLength
                 guard length >= 0 && length <= 48 * 1024 * 1024 else {
-                    throw WorldError.invalid("Oversized authored DDS in mesh \\(i).")
+                    throw WorldError.invalid("Oversized authored DDS in mesh \(i).")
                 }
                 ddsPayloads.append(try take(length))
             }
