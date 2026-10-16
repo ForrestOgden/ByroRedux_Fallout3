@@ -52,8 +52,8 @@ struct GoodspringsScreen: View {
                                 MoveStick(value:$joystick)
                                 Spacer()
                                 VStack(alignment:.trailing,spacing:5) {
-                                    Text("DRAG SCREEN TO LOOK")
-                                    Text("MOVE WITH LEFT STICK")
+                                    Text("DRAG SCREEN / RIGHT STICK TO LOOK")
+                                    Text("TOUCH / GAMEPAD LEFT STICK: MOVE")
                                     Text("FIRST PERSON · NATIVE METAL")
                                 }
                                 .font(.system(size:9,design:.monospaced))
@@ -123,7 +123,7 @@ struct GoodspringsScreen: View {
         }
         .fileImporter(
             isPresented:$importerVisible,
-            allowedContentTypes:[UTType(filenameExtension:"fnvworld",conformingTo:.data) ?? .data]
+            allowedContentTypes:[.data] // Same Files presentation type as the verified v5.1 picker
         ) { selection in
             switch selection {
             case .failure(let error):
