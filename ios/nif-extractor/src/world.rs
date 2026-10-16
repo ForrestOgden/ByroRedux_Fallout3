@@ -7,6 +7,8 @@
 //! This is a geometry-only world milestone, not actors/quests/collision yet.
 use byroredux_bsa::BsaArchive;
 use byroredux_core::math::coord::{euler_zup_to_quat_yup_mode, zup_to_yup_pos};
+use byroredux_core::string::StringPool;
+use byroredux_nif::import::import_nif_scene;
 use byroredux_plugin::esm;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -14,19 +16,21 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"FNVWLD01";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const MAX_ESM: u64 = 750 * 1024 * 1024;
 const MAX_MODELS: usize = 160;
 const MAX_INSTANCES: usize = 480;
 const MAX_NIF: usize = 24 * 1024 * 1024;
 const MAX_DDS: usize = 48 * 1024 * 1024;
+const MAX_MATERIALS_PER_MODEL: usize = 256;
 const MAX_PACKAGE: usize = 192 * 1024 * 1024;
 const WORLD_UNITS_PER_METER: f32 = 70.0;
 
 struct ModelBlob {
     name: String,
     nif: Vec<u8>,
-    dds: Vec<u8>,
+    /// One authored DDS per ImportedMesh ordinal; empty means absent.
+    materials: Vec<Vec<u8>>,
 }
 struct Instance {
     model: u32,
@@ -83,12 +87,15 @@ fn write_model<W: Write>(w: &mut W, model: &ModelBlob) -> Result<(), String> {
     let name=model.name.as_bytes();
     let name_len=u16::try_from(name.len()).map_err(|_|"NIF name too long")?;
     let nif_len=u32::try_from(model.nif.len()).map_err(|_|"NIF too large")?;
-    let dds_len=u32::try_from(model.dds.len()).map_err(|_|"DDS too large")?;
+    let material_count=u16::try_from(model.materials.len()).map_err(|_|"Too many NIF materials")?;
     w.write_all(&name_len.to_le_bytes()).and_then(|_|w.write_all(name))
         .map_err(|e|e.to_string())?;
-    write_u32(w,nif_len).and_then(|_|write_u32(w,dds_len))
-        .and_then(|_|w.write_all(&model.nif))
-        .and_then(|_|w.write_all(&model.dds)).map_err(|e|e.to_string())?;
+    write_u32(w,nif_len).and_then(|_|w.write_all(&material_count.to_le_bytes()))
+        .and_then(|_|w.write_all(&model.nif)).map_err(|e|e.to_string())?;
+    for material in &model.materials {
+        let length=u32::try_from(material.len()).map_err(|_|"DDS too large")?;
+        write_u32(w,length).and_then(|_|w.write_all(material)).map_err(|e|e.to_string())?;
+    }
     Ok(())
 }
 
@@ -191,24 +198,45 @@ pub fn export_cell(
             if size==0 || size>MAX_NIF{failed.insert(key.clone());failures+=1;continue;}
             let Ok(nif)=meshes.extract(path)else{failed.insert(key.clone());failures+=1;continue};
             if nif.is_empty()||nif.len()>MAX_NIF {failed.insert(key.clone());failures+=1;continue;}
-            let dds=super::package::authored_diffuse(&nif)
-                .ok().and_then(|(authored,_)|{
-                    let path=super::package::texture_key(&authored)?;
-                    let &(which,archive_path)=tex_lookup.get(&path)?;
+            // Import each source NIF once and preserve one material slot
+            // per submesh in the same deterministic order as native ARM64.
+            let Ok(scene)=byroredux_nif::parse_nif(&nif)else{
+                failed.insert(key.clone());failures+=1;continue
+            };
+            if scene.truncated {failed.insert(key.clone());failures+=1;continue}
+            let mut pool=StringPool::new();
+            let imported=import_nif_scene(&scene,&mut pool);
+            if imported.meshes.is_empty() || imported.meshes.len()>MAX_MATERIALS_PER_MODEL {
+                failed.insert(key.clone());failures+=1;continue
+            }
+            let mut materials=Vec::with_capacity(imported.meshes.len());
+            let mut local_cache:HashMap<String,Vec<u8>>=HashMap::new();
+            for submesh in &imported.meshes {
+                let authored=submesh.material.textures.base_color
+                    .and_then(|symbol|pool.resolve(symbol))
+                    .and_then(super::package::texture_key);
+                let bytes=authored.and_then(|tex_key|{
+                    if let Some(value)=local_cache.get(&tex_key){return Some(value.clone())}
+                    let &(which,archive_path)=tex_lookup.get(&tex_key)?;
                     let source=if which==1{textures2.as_ref()?}else{&textures};
                     let declared=source.declared_size(archive_path).ok()?;
                     if declared==0 || declared>MAX_DDS{return None}
                     let bytes=source.extract(archive_path).ok()?;
-                    (bytes.len()<=MAX_DDS && bytes.starts_with(b"DDS ")).then_some(bytes)
+                    if bytes.len()>MAX_DDS || !bytes.starts_with(b"DDS "){return None}
+                    local_cache.insert(tex_key,bytes.clone());
+                    Some(bytes)
                 }).unwrap_or_default();
-            let contribution=2+path.len()+8+nif.len()+dds.len();
+                materials.push(bytes);
+            }
+            let contribution=2+path.len()+4+2+nif.len()
+                +materials.iter().map(|dds|4+dds.len()).sum::<usize>();
             if payload_size.saturating_add(contribution)>MAX_PACKAGE {
                 println!("Reached bounded world archive byte budget; cannot add {path}");
                 break;
             }
             payload_size+=contribution;
             let idx=models.len() as u32;
-            models.push(ModelBlob{name:path.to_string(),nif,dds});
+            models.push(ModelBlob{name:path.to_string(),nif,materials});
             model_ids.insert(key.clone(),idx);
             idx
         };
@@ -269,6 +297,23 @@ mod tests{
         for p in ["../bad.nif","C:\\x.nif","\\private.nif","foo//bar.nif","foo.nif\\..\\bad.nif","foo.dds"]{
             assert!(asset_key(p).is_none(),"invalid path {p}");
         }
+    }
+    #[test] fn v3_model_keeps_untextured_material_slots(){
+        let blob=ModelBlob {
+            name:"test.nif".into(), nif:vec![1,2,3],
+            materials:vec![vec![4,5],Vec::new(),vec![6]]
+        };
+        let mut wire=Vec::new();
+        write_model(&mut wire,&blob).unwrap();
+        assert_eq!(&wire[0..2],&8u16.to_le_bytes());
+        assert_eq!(&wire[10..14],&3u32.to_le_bytes());
+        assert_eq!(&wire[14..16],&3u16.to_le_bytes());
+        assert_eq!(&wire[16..19],&[1,2,3]);
+        assert_eq!(&wire[19..23],&2u32.to_le_bytes());
+        assert_eq!(&wire[23..25],&[4,5]);
+        assert_eq!(&wire[25..29],&0u32.to_le_bytes());
+        assert_eq!(&wire[29..33],&1u32.to_le_bytes());
+        assert_eq!(wire[33],6);
     }
     #[test] fn spawn_uses_real_marker(){
         let blank:[f32;3]=[0.,0.,0.];

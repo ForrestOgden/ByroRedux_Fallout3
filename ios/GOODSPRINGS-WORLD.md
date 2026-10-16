@@ -41,3 +41,17 @@ The upstream Vulkan desktop application has relevant reusable systems but cannot
 ## Spawn orientation / world wire protocol
 
 The Windows generator now writes **FNVWLD01 version 2**, including the first-person starting yaw computed from the authored `COCMarkerHeading` REFR rotation. The iPhone loader enforces version 2 and the renderer initializes the native camera to the game's authored facing rather than fixed north. This intentionally requires the matching Windows exporter and IPA from the same build. The previous version 1 world format was never released for a user device test; do not mix these versions.
+
+
+## Phase 13 — source-material-preserving interior (2026-10-16)
+
+The physical iPhone recording showed recognizable Prospector Saloon geometry with large intrusive white polygons and incorrect gray/textured wall surfaces. Root cause of each polygon is not proven from video alone; the earlier renderer assigned one DDS to an entire NIF, irrespective of its constituent shapes.
+
+- Windows exporter now writes **FNVWLD01 v3**. Per source NIF it writes the full NIF and one optional authored diffuse DDS **for each ByroRedux ImportedMesh ordinal**, including empty entries so indices never shift. It supports a bounded 256 material slots per model, looks in owned Textures and Textures2 archives, and does not guess names.
+- Rust ARM64 adds `fnv_ios_load_nif_mesh_world`, returning the existing 48-byte vertices plus explicit, contiguous per-shape triangle ranges. This is a new FFI entrypoint; the single-mesh viewer ABI and workflows remain intact.
+- Swift validates batch boundaries and requires v3 material count to match the same native parser's submesh count. Metal now binds each batch's own DDS or uses local untextured diagnostic shading if missing/unsupported.
+- The bridge rejects degenerate triangles and triangles with edges exceeding 8192 original world units; emits diagnostics of skipped triangles. This is an intentionally conservative safety check, **not** proof every white spike is fixed.
+- Device accepts existing v2 `.fnvworld` packages for compatibility, but they retain the old single-texture behavior. **To test the v3 improvements, rebuild GoodspringsSaloon.fnvworld with the matching new Windows executable**, transfer it to the iPhone and select **Load different location**; the app caches the successful replacement.
+- Full original shader semantics (normal/specular maps, alpha handling, transparency, vertex materials and lighting), per-texture mipmaps and draw-call optimization are not yet finished. Collision, gravity, NPCs, exteriors and quest scripting also remain unimplemented.
+
+Acceptance gates: native Rust unit tests; matching Windows optimized exporter and unsigned iPhone IPA CI; source-only assets; **new owner device recording on v3** to establish whether the white geometry artifacts are actually resolved. Do not represent CI build success as a physically verified visual fix.
