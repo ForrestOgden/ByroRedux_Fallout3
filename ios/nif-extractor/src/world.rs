@@ -119,9 +119,27 @@ pub fn export_cell(
     let mut mesh_paths=meshes.list_files();mesh_paths.sort_unstable();
     let mesh_lookup: HashMap<String,&str>=mesh_paths.into_iter()
         .filter_map(|s|asset_key(s).map(|k|(k,s))).collect();
+    // FNV spreads diffuse content across Textures.bsa and Textures2.bsa.
+    // Auto-discover the standard sibling when installed; never fabricate
+    // missing data or require the user to hand-match model textures.
+    let second_path=Path::new(tex_bsa).with_file_name("Fallout - Textures2.bsa");
+    let textures2=if second_path.exists() {
+        BsaArchive::open(&second_path).ok().filter(|a|a.version()==104)
+    }else{None};
+    if textures2.is_some(){println!("Discovered optional Fallout - Textures2.bsa");}
+    let mut tex_lookup:HashMap<String,(u8,&str)>=HashMap::new();
     let mut texture_paths=textures.list_files();texture_paths.sort_unstable();
-    let tex_lookup:HashMap<String,&str>=texture_paths.into_iter()
-        .filter_map(|s|super::package::texture_key(s).map(|k|(k,s))).collect();
+    for path in texture_paths {
+        if let Some(key)=super::package::texture_key(path){tex_lookup.insert(key,(0,path));}
+    }
+    if let Some(extra)=textures2.as_ref(){
+        let mut other=extra.list_files();other.sort_unstable();
+        for path in other{
+            if let Some(key)=super::package::texture_key(path){
+                tex_lookup.entry(key).or_insert((1,path));
+            }
+        }
+    }
 
     // References nearest the authored spawn first. The limit is explicit
     // and output logs disclose omissions; this is NOT a full-game export.
@@ -159,10 +177,11 @@ pub fn export_cell(
             let dds=super::package::authored_diffuse(&nif)
                 .ok().and_then(|(authored,_)|{
                     let path=super::package::texture_key(&authored)?;
-                    let &archive_path=tex_lookup.get(&path)?;
-                    let declared=textures.declared_size(archive_path).ok()?;
+                    let &(which,archive_path)=tex_lookup.get(&path)?;
+                    let source=if which==1{textures2.as_ref()?}else{&textures};
+                    let declared=source.declared_size(archive_path).ok()?;
                     if declared==0 || declared>MAX_DDS{return None}
-                    let bytes=textures.extract(archive_path).ok()?;
+                    let bytes=source.extract(archive_path).ok()?;
                     (bytes.len()<=MAX_DDS && bytes.starts_with(b"DDS ")).then_some(bytes)
                 }).unwrap_or_default();
             let contribution=2+path.len()+8+nif.len()+dds.len();
