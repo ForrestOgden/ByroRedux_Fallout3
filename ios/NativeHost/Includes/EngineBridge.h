@@ -20,6 +20,25 @@ void fnv_ios_release_mesh(FnvVertex *vertices, size_t count);
 /* World scene import: preserve original authored Y-up NIF coordinates
  * instead of normalizing a mesh to the single-object preview scale. */
 int32_t fnv_ios_load_nif_mesh_raw(const char *path, FnvMesh *out);
+// World NIF import preserves authored per-submesh material draw ranges.
+// material_index is the original ByroRedux ImportedMesh ordinal.
+typedef struct {
+    size_t start;
+    size_t count;
+    uint32_t material_index;
+    uint32_t reserved;
+} FnvWorldBatch;
+typedef struct {
+    FnvVertex *vertices;
+    size_t count;
+    FnvWorldBatch *batches;
+    size_t batch_count;
+    size_t mesh_count;
+} FnvWorldMesh;
+/* Call release once with BOTH returned pointer/count pairs. */
+int32_t fnv_ios_load_nif_mesh_world(const char *path, FnvWorldMesh *out);
+void fnv_ios_release_world_mesh(FnvVertex *vertices, size_t count,
+                                FnvWorldBatch *batches, size_t batch_count);
 typedef struct {
     uint8_t *pixels;
     size_t len;
