@@ -80,6 +80,16 @@ fn world_of(nodes: &[ImportedNode], start: Option<usize>) -> Option<Rigid> {
     Some(x)
 }
 
+/// Two-sided, geometry-derived flat shading. This is not Bethesda material lighting.
+fn diagnostic_face_light(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+    let cross = (b - a).cross(c - a);
+    let squared = cross.length_squared();
+    if !squared.is_finite() || squared < 1.0e-12 { return 0.35; }
+    let normal = cross / squared.sqrt();
+    let light = Vec3::new(0.45, 0.78, 0.44).normalize();
+    (0.28 + 0.72 * normal.dot(light).abs()).clamp(0.28, 1.0)
+}
+
 fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
@@ -106,12 +116,18 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
         for tri in mesh.indices.chunks_exact(3) {
             if vertices.len() + 3 > MAX_RENDER_VERTICES { break; }
             if tri.iter().any(|&index| index as usize >= mesh.positions.len()) { continue; }
-            for &index in tri {
-                let pos = transform.point(mesh.positions[index as usize]);
-                if !pos.is_finite() { continue; }
+            let points = [
+                transform.point(mesh.positions[tri[0] as usize]),
+                transform.point(mesh.positions[tri[1] as usize]),
+                transform.point(mesh.positions[tri[2] as usize]),
+            ];
+            // Reject an entire corrupt triangle, never partial vertices.
+            if points.iter().any(|p| !p.is_finite()) { continue; }
+            let brightness = diagnostic_face_light(points[0], points[1], points[2]);
+            for pos in points {
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
-                    color: [base[0], base[1], base[2], 1.0],
+                    color: [base[0] * brightness, base[1] * brightness, base[2] * brightness, 1.0],
                 });
             }
         }
@@ -215,6 +231,16 @@ mod tests {
         assert_eq!(unsafe { fnv_ios_load_nif_mesh(p.as_ptr(), &mut out) }, 1);
         assert!(out.vertices.is_null());
         assert_eq!(out.count, 0);
+    }
+    #[test]
+    fn faceted_light_is_bounded_and_winding_invariant() {
+        let a = Vec3::ZERO;
+        let b = Vec3::X;
+        let c = Vec3::Y;
+        let f = diagnostic_face_light(a,b,c);
+        assert!((0.28..=1.0).contains(&f));
+        assert!((f - diagnostic_face_light(a,c,b)).abs() < 1e-6);
+        assert_eq!(diagnostic_face_light(a,a,a), 0.35);
     }
     #[test]
     fn local_transform_composes() {
