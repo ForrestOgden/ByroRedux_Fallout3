@@ -187,8 +187,8 @@ struct GoodspringsScreen: View {
                     loadedWorld=world
                     sceneName=world.cellName
                     joystick=SIMD2<Float>(0,0)
-                    status="Loaded \(world.instances.count) authored New Vegas references. Offline world stored locally."
-                        + (cacheWarning ?? "")
+                    status="Loaded \(world.instances.count) authored New Vegas references."
+                        + (cacheWarning == nil ? " Offline world stored locally." : (cacheWarning ?? ""))
                 }
             }
         }

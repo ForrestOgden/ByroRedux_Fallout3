@@ -14,7 +14,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"FNVWLD01";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const MAX_ESM: u64 = 750 * 1024 * 1024;
 const MAX_MODELS: usize = 160;
 const MAX_INSTANCES: usize = 480;
@@ -52,25 +52,25 @@ fn asset_key(path: &str) -> Option<String> {
 fn choose_spawn(
     refs: &[esm::cell::PlacedRef],
     statics: &HashMap<u32, esm::cell::StaticObject>,
-) -> ([f32; 3], &'static str) {
+) -> ([f32; 3], [f32; 3], &'static str) {
     if let Some(marker) = refs.iter().find(|r| {
         statics.get(&r.base_form_id).is_some_and(|s| s.editor_id.eq_ignore_ascii_case("COCMarkerHeading"))
     }) {
-        return (marker.position, "authored COCMarkerHeading");
+        return (marker.position, marker.rotation, "authored COCMarkerHeading");
     }
     if let Some(door) = refs.iter().find(|r| r.teleport.is_some()) {
-        return (door.position, "authored door placement (fallback, NOT verified floor spawn)");
+        return (door.position, door.rotation, "authored door placement (fallback, NOT verified floor spawn)");
     }
     let mut coords: Vec<[f32; 3]> = refs.iter().map(|r| r.position)
         .filter(|p| p.iter().all(|v| v.is_finite())).collect();
-    if coords.is_empty() { return ([0.;3], "no references (invalid)"); }
+    if coords.is_empty() { return ([0.;3], [0.;3], "no references (invalid)"); }
     // Median of the authored REFR coordinates when no safe marker exists.
     let mut center=[0.;3];
     for axis in 0..3 {
         coords.sort_by(|a,b| a[axis].total_cmp(&b[axis]));
         center[axis]=coords[coords.len()/2][axis];
     }
-    (center, "median of authored REFR positions (no floor guarantee)")
+    (center, [0.;3], "median of authored REFR positions (no floor guarantee)")
 }
 
 fn write_u32<W: Write>(w: &mut W, v: u32) -> std::io::Result<()> {
@@ -110,7 +110,14 @@ pub fn export_cell(
     let cell=index.cells.cells.get(&key)
         .ok_or_else(||format!("Interior CELL {cell_id:?} not found in FalloutNV.esm"))?;
     if !cell.is_interior { return Err("This first milestone exports interior CELLs only".into()); }
-    let (spawn,method)=choose_spawn(&cell.references,&index.cells.statics);
+    let (spawn,rotation,method)=choose_spawn(&cell.references,&index.cells.statics);
+    // Reproduce the COC marker's facing direction instead of always staring
+    // north. On fallback cases, zero angles face the camera's default -Z.
+    if !rotation.iter().all(|v|v.is_finite()){return Err("Invalid spawn facing rotation".into());}
+    let facing=euler_zup_to_quat_yup_mode(1,rotation[0],rotation[1],rotation[2])
+        * byroredux_core::math::Vec3::NEG_Z;
+    let spawn_yaw=facing.x.atan2(-facing.z);
+    if !spawn_yaw.is_finite(){return Err("Invalid spawn camera yaw".into());}
     if !spawn.iter().all(|v|v.is_finite()) {return Err("Invalid authored spawn position".into());}
     println!("Real CELL: {} {:08X}, {} REFRs; spawn: {method}",cell.editor_id,cell.form_id,cell.references.len());
     let meshes=BsaArchive::open(mesh_bsa).map_err(|e|format!("Cannot open Meshes BSA: {e}"))?;
@@ -234,6 +241,8 @@ pub fn export_cell(
         let title=cell.editor_id.as_bytes();
         let title_len=u16::try_from(title.len()).map_err(|_|"CELL name too long")?;
         w.write_all(&title_len.to_le_bytes()).and_then(|_|w.write_all(title)).map_err(|e|e.to_string())?;
+        // FNVWLD01 v2: source-authored initial heading follows the cell title.
+        write_f32(&mut w,spawn_yaw).map_err(|e|e.to_string())?;
         for m in &models{write_model(&mut w,m)?;}
         for r in &instances{
             write_u32(&mut w,r.model).map_err(|e|e.to_string())?;
@@ -263,6 +272,6 @@ mod tests{
     }
     #[test] fn spawn_uses_real_marker(){
         let blank:[f32;3]=[0.,0.,0.];
-        assert_eq!(choose_spawn(&[],&HashMap::new()),(blank,"no references (invalid)"));
+        assert_eq!(choose_spawn(&[],&HashMap::new()),(blank,blank,"no references (invalid)"));
     }
 }

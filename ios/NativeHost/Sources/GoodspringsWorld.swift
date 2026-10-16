@@ -21,6 +21,7 @@ struct GoodspringsWorld {
         let formID: UInt32
     }
     let cellName: String
+    let initialYaw: Float // authored COCMarkerHeading, or fallback facing
     let models: [Model?] // preserves index if a single NIF fails to decode
     let instances: [Instance]
     let usableModelCount: Int
@@ -73,7 +74,7 @@ struct GoodspringsWorld {
         }
 
         guard String(data: try take(8), encoding: .ascii) == "FNVWLD01",
-              try u32() == 1 else {
+              try u32() == 2 else {
             throw WorldError.invalid("Incompatible FNVWLD01 world-package format.")
         }
         let modelCount = Int(try u32())
@@ -83,6 +84,10 @@ struct GoodspringsWorld {
             throw WorldError.invalid("World contains unsupported model/instance counts.")
         }
         let cellName = try label(512)
+        let initialYaw = try float32()
+        guard initialYaw.isFinite, abs(initialYaw) <= 4 * .pi else {
+            throw WorldError.invalid("Invalid authored Goodsprings spawn orientation.")
+        }
         let fm = FileManager.default
         let scratch = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -169,7 +174,8 @@ struct GoodspringsWorld {
         guard cursor == payload.count, validModels >= 5, instances.count >= 10 else {
             throw WorldError.invalid("World import incomplete; too few valid placed New Vegas meshes.")
         }
-        return GoodspringsWorld(cellName: cellName, models: models,
-                               instances: instances, usableModelCount: validModels)
+        return GoodspringsWorld(cellName: cellName, initialYaw: initialYaw,
+                               models: models, instances: instances,
+                               usableModelCount: validModels)
     }
 }

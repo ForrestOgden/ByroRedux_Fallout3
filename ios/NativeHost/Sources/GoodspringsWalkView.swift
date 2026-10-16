@@ -113,6 +113,7 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
     }
 
     func configure(_ view: MTKView, world: GoodspringsWorld) {
+        yaw = world.initialYaw
         guard let device=view.device,let library=device.makeDefaultLibrary(),
               let vertex=library.makeFunction(name:"fnv_scene_vertex"),
               let fragment=library.makeFunction(name:"fnv_scene_fragment") else {

@@ -37,3 +37,7 @@ The produced GoodspringsSaloon.fnvworld file is kept PRIVATE. Transfer it to iPh
 6. Full quest/campaign/base-game and DLC compatibility, optimizations.
 
 The upstream Vulkan desktop application has relevant reusable systems but cannot simply be dropped into a Metal iPhone application. A consistent native runtime remains substantial work.
+
+## Spawn orientation / world wire protocol
+
+The Windows generator now writes **FNVWLD01 version 2**, including the first-person starting yaw computed from the authored `COCMarkerHeading` REFR rotation. The iPhone loader enforces version 2 and the renderer initializes the native camera to the game's authored facing rather than fixed north. This intentionally requires the matching Windows exporter and IPA from the same build. The previous version 1 world format was never released for a user device test; do not mix these versions.
