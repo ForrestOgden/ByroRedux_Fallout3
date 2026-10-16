@@ -41,7 +41,10 @@ struct GoodspringsScreen: View {
                                     .padding(7)
                                     .background(.black.opacity(0.65),in:RoundedRectangle(cornerRadius:6))
                                 Spacer()
-                                Text("\(world.instances.count) REFR")
+                                VStack(alignment:.trailing,spacing:2) {
+                                    Text("\(world.instances.count) REFR · FNVWLD v\(world.formatVersion)")
+                                    Text("\(world.texturedBatchCount)/\(world.totalBatchCount) textured material batches")
+                                }
                                     .font(.system(.caption2,design:.monospaced))
                                     .padding(7)
                                     .background(.black.opacity(0.65),in:RoundedRectangle(cornerRadius:6))
