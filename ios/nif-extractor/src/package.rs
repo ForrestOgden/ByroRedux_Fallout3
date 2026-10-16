@@ -116,18 +116,22 @@ pub fn build_package(
 
     // Atomic-like create_new policy prevents overwriting a user's existing
     // hand-extracted assets. Delete only a partial output of this operation.
-    let write_result = (|| -> Result<(), String> {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(output)
-            .map_err(|e| format!("Cannot create package: {e}"))?;
-        f.write_all(MAGIC).and_then(|_| f.write_all(&nif_len.to_le_bytes()))
-            .and_then(|_| f.write_all(&dds_len.to_le_bytes()))
-            .and_then(|_| f.write_all(&nif))
-            .and_then(|_| f.write_all(&dds))
-            .and_then(|_| f.flush())
-            .map_err(|e| format!("Failed to write package: {e}"))
-    })();
-    if write_result.is_err() { let _ = fs::remove_file(output); }
-    write_result?;
+    // Acquire ownership first. If create_new fails (a concurrent process
+    // created the path), never remove the other process's file.
+    let mut f = OpenOptions::new().write(true).create_new(true).open(output)
+        .map_err(|e| format!("Cannot create package: {e}"))?;
+    let write_result = f.write_all(MAGIC)
+        .and_then(|_| f.write_all(&nif_len.to_le_bytes()))
+        .and_then(|_| f.write_all(&dds_len.to_le_bytes()))
+        .and_then(|_| f.write_all(&nif))
+        .and_then(|_| f.write_all(&dds))
+        .and_then(|_| f.flush());
+    drop(f);
+    if let Err(error) = write_result {
+        // Only this process's successfully opened output can be removed.
+        let _ = fs::remove_file(output);
+        return Err(format!("Failed to write package: {error}"));
+    }
     println!("NIF: {nif_path} ({mesh_count} imported submeshes)");
     println!("Authored diffuse reference: {authored}");
     println!("Matched archive DDS: {dds_path}");
