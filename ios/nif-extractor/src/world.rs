@@ -164,8 +164,18 @@ pub fn export_cell(
         if !reference.position.iter().all(|v|v.is_finite())
             || !reference.rotation.iter().all(|v|v.is_finite())
             || !reference.scale.is_finite() || reference.scale.abs()<0.0001 {continue;}
-        let Some(base)=index.cells.statics.get(&reference.base_form_id) else {continue};
-        let Some(key)=asset_key(&base.model_path) else {continue};
+        // Use the same three base record families as the desktop cell
+        // loader: structural STAT/MSTT/FURN, placed MISC/WEAP/ALCH/etc,
+        // and CONT containers. Ignoring the latter two made the authored
+        // saloon unexpectedly empty even though REFRs existed in its ESM.
+        let model_path=if let Some(base)=index.cells.statics.get(&reference.base_form_id) {
+            base.model_path.as_str()
+        } else if let Some(item)=index.items.get(&reference.base_form_id) {
+            item.common.model_path.as_str()
+        } else if let Some(container)=index.containers.get(&reference.base_form_id) {
+            container.model_path.as_str()
+        } else {continue};
+        let Some(key)=asset_key(model_path) else {continue};
         if failed.contains(&key){continue;}
         let model=if let Some(&id)=model_ids.get(&key){id}else{
             if models.len()>=MAX_MODELS{continue;}
