@@ -41,7 +41,8 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
     private struct GPUModel {
         let vertexBuffer: MTLBuffer
         let vertexCount: Int
-        let texture: MTLTexture?
+        let textures: [MTLTexture?]
+        let batches: [GoodspringsWorld.DrawBatch]
     }
     private struct GPUInstance {
         let modelIndex: Int
@@ -155,24 +156,26 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
                 return device.makeBuffer(bytes:base,length:raw.count,options:.storageModeShared)
             }
             guard let vertexBuffer else {models.append(nil);continue}
-            var image:MTLTexture?=nil
-            if let pixels=source.pixels,
-               source.width>0, source.height>0,
-               pixels.count==source.width*source.height*4 {
+            // Each NIF can contain multiple independently textured
+            // NiTriShapes. Upload one Metal texture for every authored
+            // diffuse slot; preserve nil for unavailable DDS payloads.
+            let textures: [MTLTexture?] = source.textures.map { material in
+                guard let material else { return nil }
                 let tx=MTLTextureDescriptor.texture2DDescriptor(
-                    pixelFormat:.rgba8Unorm_srgb,width:source.width,
-                    height:source.height,mipmapped:false)
+                    pixelFormat:.rgba8Unorm_srgb,width:material.width,
+                    height:material.height,mipmapped:false)
                 tx.usage=[.shaderRead]
-                image=device.makeTexture(descriptor:tx)
-                pixels.withUnsafeBytes { raw in
+                let image=device.makeTexture(descriptor:tx)
+                material.pixels.withUnsafeBytes { raw in
                     if let ptr=raw.baseAddress {
-                        image?.replace(region:MTLRegionMake2D(0,0,source.width,source.height),
-                                       mipmapLevel:0,withBytes:ptr,bytesPerRow:source.width*4)
+                        image?.replace(region:MTLRegionMake2D(0,0,material.width,material.height),
+                                       mipmapLevel:0,withBytes:ptr,bytesPerRow:material.width*4)
                     }
                 }
+                return image
             }
             models.append(GPUModel(vertexBuffer:vertexBuffer,vertexCount:source.vertexData.count/48,
-                                   texture:image))
+                                   textures:textures,batches:source.batches))
             if idx%40 == 0 {NSLog("Goodsprings: uploaded model %d/%d",idx,world.models.count)}
         }
         for instance in world.instances {
@@ -235,12 +238,20 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
             let distance=simd_length(instance.authoredPosition-eye)
             if distance>180 {continue} // bounded distance budget for mobile
             var uniforms=WorldUniforms(mvp:viewProjection*instance.transform)
-            var textured:UInt32=model.texture==nil ? 0 : 1
             encoder.setVertexBuffer(model.vertexBuffer,offset:0,index:0)
             encoder.setVertexBytes(&uniforms,length:MemoryLayout<WorldUniforms>.stride,index:1)
-            encoder.setFragmentBytes(&textured,length:MemoryLayout<UInt32>.stride,index:0)
-            encoder.setFragmentTexture(model.texture ?? whiteTexture,index:0)
-            encoder.drawPrimitives(type:.triangle,vertexStart:0,vertexCount:model.vertexCount)
+            // A draw call samples only the source diffuse for that group's
+            // NiTriShape(s), never an unrelated NIF's primary material.
+            for batch in model.batches {
+                let texture: MTLTexture? =
+                    batch.materialSlot >= 0 && batch.materialSlot < model.textures.count
+                    ? model.textures[batch.materialSlot] : nil
+                var textured:UInt32=texture==nil ? 0 : 1
+                encoder.setFragmentBytes(&textured,length:MemoryLayout<UInt32>.stride,index:0)
+                encoder.setFragmentTexture(texture ?? whiteTexture,index:0)
+                encoder.drawPrimitives(type:.triangle,vertexStart:batch.start,
+                                       vertexCount:batch.count)
+            }
         }
         encoder.endEncoding()
         command.present(drawable)

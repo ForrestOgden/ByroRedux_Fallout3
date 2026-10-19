@@ -82,6 +82,24 @@ pub(crate) fn authored_diffuse(nif: &[u8]) -> Result<(String, usize), String> {
     Ok((path.to_string(), mesh_count))
 }
 
+/// Enumerate *every* diffuse used by a NIF, in stable first-appearance
+/// submesh order. The iOS importer uses the same byroredux_nif traversal;
+/// FNVWLD01 v3 encodes each slot in this order instead of using a single
+/// texture for the entire scene graph.
+pub(crate) fn authored_diffuses(nif: &[u8]) -> Result<Vec<String>, String> {
+    let scene = byroredux_nif::parse_nif(nif).map_err(|e| format!("Cannot parse NIF: {e}"))?;
+    if scene.truncated { return Err("NIF is truncated".into()); }
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+    let mut paths = Vec::new();
+    for mesh in &imported.meshes {
+        let Some(path) = mesh.material.textures.base_color.and_then(|s| pool.resolve(s)) else { continue };
+        let Some(key) = texture_key(path) else { continue };
+        if !paths.contains(&key) { paths.push(key); }
+    }
+    Ok(paths)
+}
+
 /// Bounded, read-only discovery of another local NIF and its authored DDS.
 /// A candidate is not a guarantee that every submesh uses one material.
 pub fn discover_pairs(meshes_bsa: &str, textures_bsa: &str, filter: Option<&str>) -> Result<(), String> {

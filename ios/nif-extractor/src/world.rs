@@ -14,19 +14,21 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"FNVWLD01";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
+const MAX_TEXTURES_PER_MODEL: usize = 64;
 const MAX_ESM: u64 = 750 * 1024 * 1024;
 const MAX_MODELS: usize = 160;
 const MAX_INSTANCES: usize = 480;
 const MAX_NIF: usize = 24 * 1024 * 1024;
 const MAX_DDS: usize = 48 * 1024 * 1024;
-const MAX_PACKAGE: usize = 192 * 1024 * 1024;
+const MAX_PACKAGE: usize = 240 * 1024 * 1024;
 const WORLD_UNITS_PER_METER: f32 = 70.0;
 
 struct ModelBlob {
     name: String,
     nif: Vec<u8>,
-    dds: Vec<u8>,
+    /// One source DDS payload (possibly empty) for each authored diffuse slot.
+    dds: Vec<Vec<u8>>,
 }
 struct Instance {
     model: u32,
@@ -83,12 +85,16 @@ fn write_model<W: Write>(w: &mut W, model: &ModelBlob) -> Result<(), String> {
     let name=model.name.as_bytes();
     let name_len=u16::try_from(name.len()).map_err(|_|"NIF name too long")?;
     let nif_len=u32::try_from(model.nif.len()).map_err(|_|"NIF too large")?;
-    let dds_len=u32::try_from(model.dds.len()).map_err(|_|"DDS too large")?;
+    let texture_count=u16::try_from(model.dds.len()).map_err(|_|"Too many material slots")?;
     w.write_all(&name_len.to_le_bytes()).and_then(|_|w.write_all(name))
         .map_err(|e|e.to_string())?;
-    write_u32(w,nif_len).and_then(|_|write_u32(w,dds_len))
-        .and_then(|_|w.write_all(&model.nif))
-        .and_then(|_|w.write_all(&model.dds)).map_err(|e|e.to_string())?;
+    write_u32(w,nif_len)
+        .and_then(|_|w.write_all(&texture_count.to_le_bytes()))
+        .and_then(|_|w.write_all(&model.nif)).map_err(|e|e.to_string())?;
+    for dds in &model.dds {
+        let len=u32::try_from(dds.len()).map_err(|_|"DDS too large")?;
+        write_u32(w,len).and_then(|_|w.write_all(dds)).map_err(|e|e.to_string())?;
+    }
     Ok(())
 }
 
@@ -191,17 +197,27 @@ pub fn export_cell(
             if size==0 || size>MAX_NIF{failed.insert(key.clone());failures+=1;continue;}
             let Ok(nif)=meshes.extract(path)else{failed.insert(key.clone());failures+=1;continue};
             if nif.is_empty()||nif.len()>MAX_NIF {failed.insert(key.clone());failures+=1;continue;}
-            let dds=super::package::authored_diffuse(&nif)
-                .ok().and_then(|(authored,_)|{
-                    let path=super::package::texture_key(&authored)?;
-                    let &(which,archive_path)=tex_lookup.get(&path)?;
+            // Keep the complete, authored per-submesh material mapping.
+            // Missing textures preserve empty slots so slot numbers cannot shift.
+            let diffuse_keys=super::package::authored_diffuses(&nif)
+                .unwrap_or_default();
+            if diffuse_keys.len()>MAX_TEXTURES_PER_MODEL {
+                println!("NIF {path} uses {} diffuse materials; including first {MAX_TEXTURES_PER_MODEL}",diffuse_keys.len());
+            }
+            let mut dds:Vec<Vec<u8>>=Vec::new();
+            for key in diffuse_keys.iter().take(MAX_TEXTURES_PER_MODEL) {
+                let payload=(||{
+                    let &(which,archive_path)=tex_lookup.get(key)?;
                     let source=if which==1{textures2.as_ref()?}else{&textures};
                     let declared=source.declared_size(archive_path).ok()?;
                     if declared==0 || declared>MAX_DDS{return None}
                     let bytes=source.extract(archive_path).ok()?;
                     (bytes.len()<=MAX_DDS && bytes.starts_with(b"DDS ")).then_some(bytes)
-                }).unwrap_or_default();
-            let contribution=2+path.len()+8+nif.len()+dds.len();
+                })().unwrap_or_default();
+                dds.push(payload);
+            }
+            let contribution=2+path.len()+4+2+nif.len()
+                +dds.iter().map(|bytes|4+bytes.len()).sum::<usize>();
             if payload_size.saturating_add(contribution)>MAX_PACKAGE {
                 println!("Reached bounded world archive byte budget; cannot add {path}");
                 break;
@@ -228,8 +244,11 @@ pub fn export_cell(
     if models.len()<5 || instances.len()<10 {
         return Err(format!("CELL {} yielded only {} unique models / {} placements; refusing to call this a real world",cell_id,models.len(),instances.len()));
     }
+    let diffuse_slots:usize=models.iter().map(|m|m.dds.len()).sum();
+    let present_textures:usize=models.iter().map(|m|m.dds.iter().filter(|t|!t.is_empty()).count()).sum();
     println!("Exporting {} UNIQUE original meshes, {} authored placements (source REFRs: {}); {} mesh lookups unavailable",
              models.len(),instances.len(),cell.references.len(),failures);
+    println!("Authored NIF diffuse slots: {diffuse_slots}; embedded DDS: {present_textures}; unavailable DDS: {}",diffuse_slots-present_textures);
     println!("Limits: {MAX_MODELS} unique models, {MAX_INSTANCES} instances, {} MiB compressed source content. Missing models or materials are reported, never fabricated.",MAX_PACKAGE/1048576);
     let mut output_file=OpenOptions::new().write(true).create_new(true).open(output)
         .map_err(|e|format!("Cannot create world package: {e}"))?;
@@ -241,7 +260,7 @@ pub fn export_cell(
         let title=cell.editor_id.as_bytes();
         let title_len=u16::try_from(title.len()).map_err(|_|"CELL name too long")?;
         w.write_all(&title_len.to_le_bytes()).and_then(|_|w.write_all(title)).map_err(|e|e.to_string())?;
-        // FNVWLD01 v2: source-authored initial heading follows the cell title.
+        // FNVWLD01 v3: original heading and all per-submesh diffuse slots.
         write_f32(&mut w,spawn_yaw).map_err(|e|e.to_string())?;
         for m in &models{write_model(&mut w,m)?;}
         for r in &instances{

@@ -101,11 +101,22 @@ fn normalized_diffuse_path(path: &str) -> String {
     text.strip_prefix("textures\\").unwrap_or(text).to_owned()
 }
 
-fn matches_primary_diffuse(candidate: Option<&str>, primary: Option<&str>) -> bool {
-    match (candidate, primary) {
-        (Some(candidate), Some(primary)) => normalized_diffuse_path(candidate) == primary,
-        _ => false,
+/// Return a safe normalized diffuse key, matching the Windows exporter.
+fn diffuse_key(path: &str) -> Option<String> {
+    if path.contains('\0') { return None; }
+    let key = normalized_diffuse_path(path);
+    if !key.ends_with(".dds") || key.contains(':')
+        || key.starts_with('\\')
+        || key.split('\\').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
     }
+    Some(key)
+}
+
+fn diffuse_slot(slots: &[String], path: Option<&str>) -> Option<usize> {
+    let key = diffuse_key(path?)?;
+    slots.iter().position(|item| item == &key)
 }
 
 /// Suppress isolated corrupt triangles whose edges are extreme outliers against
@@ -148,16 +159,19 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     let mut string_pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut string_pool);
-    // FNVWLD01 v2 carries one DDS per NIF, selected from the first submesh
-    // with an authored diffuse. Other submeshes can use different materials.
-    // Keep the older standalone preview import path unchanged.
-    let primary_diffuse = if normalize_for_preview { None } else {
-        imported.meshes.iter().find_map(|mesh| {
-            mesh.material.textures.base_color
-                .and_then(|id| string_pool.resolve(id))
-                .map(normalized_diffuse_path)
-        })
-    };
+    // FNVWLD01 v3 packs every diffuse in stable first-appearance order.
+    // The Windows exporter uses the same imported.meshes traversal. v2
+    // packages continue to work with only slot 0 available on the device.
+    let mut diffuse_slots: Vec<String> = Vec::new();
+    if !normalize_for_preview {
+        for mesh in &imported.meshes {
+            let path = mesh.material.textures.base_color
+                .and_then(|id| string_pool.resolve(id));
+            if let Some(key) = path.and_then(diffuse_key) {
+                if !diffuse_slots.contains(&key) { diffuse_slots.push(key); }
+            }
+        }
+    }
     let mut unmatched_submeshes = 0usize;
     let mut rejected_outlier_triangles = 0usize;
     let mut rejected_degenerate_triangles = 0usize;
@@ -166,9 +180,9 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
         let source_diffuse = mesh.material.textures.base_color
             .and_then(|id| string_pool.resolve(id));
-        let may_sample_packed_dds = normalize_for_preview
-            || matches_primary_diffuse(source_diffuse, primary_diffuse.as_deref());
-        if !may_sample_packed_dds { unmatched_submeshes += 1; }
+        let slot = if normalize_for_preview { Some(0) }
+            else { diffuse_slot(&diffuse_slots, source_diffuse).filter(|&s|s<64) };
+        if slot.is_none() { unmatched_submeshes += 1; }
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
         if !transform.position.is_finite() || !transform.scale.is_finite()
@@ -218,8 +232,12 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                     position: [pos.x, pos.y, pos.z, 1.0],
                     color: [color[0] * brightness, color[1] * brightness,
                             color[2] * brightness, 1.0],
+                    // 0 = untextured; 1..64 = material's authored diffuse slot.
+                    // Same 48-byte vertex ABI; a stable sort below creates
+                    // contiguous per-material Metal draw batches.
                     uv_light: [uv[0], uv[1], brightness,
-                               if mesh.uvs.is_empty() || !may_sample_packed_dds { 0.0 } else { 1.0 }],
+                               if mesh.uvs.is_empty() { 0.0 }
+                               else { slot.map(|s|(s+1) as f32).unwrap_or(0.0) }],
                 });
             }
         }
@@ -239,9 +257,16 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     if !normalize_for_preview && unmatched_submeshes > 0 {
         eprintln!(
-            "FNV world: NIF {} has {} submeshes without the packaged primary DDS; neutral shading (multi-material export pending)",
+            "FNV world: NIF {} has {} submeshes without supported diffuse slots; neutral shading",
             path, unmatched_submeshes
         );
+    }
+
+    // Stable sort preserves vertex order *within each triangle*, while
+    // grouping equal material slots for a single texture bind per submesh
+    // group on Metal. Never sort the diagnostic single-mesh gallery.
+    if !normalize_for_preview {
+        vertices.sort_by(|a,b|a.uv_light[3].total_cmp(&b.uv_light[3]));
     }
 
     // The original editor/game-world loader needs AUTHORED mesh units.
@@ -359,14 +384,16 @@ mod tests {
         assert_eq!(mesh.count, 0);
     }
     #[test]
-    fn original_world_matches_only_its_authored_submesh_diffuse() {
-        let primary = normalized_diffuse_path("Textures/Clutter/Food/Bottle.DDS");
-        assert!(matches_primary_diffuse(
-            Some("data\\textures\\clutter\\food\\bottle.dds"), Some(&primary)));
-        assert!(!matches_primary_diffuse(
-            Some("textures\\clutter\\food\\other.dds"), Some(&primary)));
-        assert!(!matches_primary_diffuse(None, Some(&primary)));
-        assert!(!matches_primary_diffuse(Some("bottle.dds"), None));
+    fn world_assigns_separate_slots_to_multiple_authored_materials() {
+        let keys = vec![
+            "clutter\\food\\bottle.dds".into(),
+            "clutter\\food\\label.dds".into(),
+        ];
+        assert_eq!(diffuse_slot(&keys, Some("Data/Textures/Clutter/Food/Bottle.DDS")), Some(0));
+        assert_eq!(diffuse_slot(&keys, Some("textures\\clutter\\food\\label.dds")), Some(1));
+        assert_eq!(diffuse_slot(&keys, Some("textures\\clutter\\food\\missing.dds")), None);
+        assert_eq!(diffuse_slot(&keys, None), None);
+        assert_eq!(diffuse_key("data/Textures/../other.dds"), None);
     }
     #[test]
     fn outlier_edge_limit_ignores_one_stretched_triangle() {

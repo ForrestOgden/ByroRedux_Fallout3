@@ -5,13 +5,22 @@ import simd
 /// installed NIF/DDS archives by the Windows exporter. Source formats are
 /// re-parsed by the same Rust ARM64 bridge used for the verified model viewer.
 struct GoodspringsWorld {
+    struct MaterialTexture {
+        let pixels: Data
+        let width: Int
+        let height: Int
+    }
+    struct DrawBatch {
+        let start: Int
+        let count: Int
+        let materialSlot: Int // -1 means untextured, else 0-based diffuse slot
+    }
     struct Model {
         let sourcePath: String
         let vertexData: Data
         let triangleCount: Int
-        let pixels: Data?
-        let width: Int
-        let height: Int
+        let textures: [MaterialTexture?]
+        let batches: [DrawBatch]
     }
     struct Instance {
         let modelIndex: Int
@@ -41,8 +50,8 @@ struct GoodspringsWorld {
         let permission = url.startAccessingSecurityScopedResource()
         defer { if permission { url.stopAccessingSecurityScopedResource() } }
         let payload = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard payload.count >= 22 && payload.count <= 256 * 1024 * 1024 else {
-            throw WorldError.invalid("World file empty or exceeds the 256 MiB mobile import cap.")
+        guard payload.count >= 22 && payload.count <= 320 * 1024 * 1024 else {
+            throw WorldError.invalid("World file empty or exceeds the 320 MiB mobile import cap.")
         }
         var cursor = 0
         func take(_ length: Int) throws -> Data {
@@ -73,9 +82,12 @@ struct GoodspringsWorld {
             return name
         }
 
-        guard String(data: try take(8), encoding: .ascii) == "FNVWLD01",
-              try u32() == 2 else {
-            throw WorldError.invalid("Incompatible FNVWLD01 world-package format.")
+        guard String(data: try take(8), encoding: .ascii) == "FNVWLD01" else {
+            throw WorldError.invalid("Invalid FNVWLD01 world-package signature.")
+        }
+        let version = try u32()
+        guard version == 2 || version == 3 else {
+            throw WorldError.invalid("Unsupported FNVWLD01 world-package version.")
         }
         let modelCount = Int(try u32())
         let instanceCount = Int(try u32())
@@ -98,16 +110,35 @@ struct GoodspringsWorld {
         var models: [Model?] = []
         models.reserveCapacity(modelCount)
         var validModels = 0
+        var decodedTextureBytes = 0
+        let decodedTextureBudget = 384 * 1024 * 1024
         for i in 0..<modelCount {
             let name = try label(1024)
             let nifLength = Int(try u32())
-            let ddsLength = Int(try u32())
+            let oldDDSLength: Int
+            let textureCount: Int
+            if version == 2 {
+                oldDDSLength = Int(try u32())
+                textureCount = 1
+            } else {
+                oldDDSLength = 0
+                textureCount = try u16()
+            }
             guard nifLength > 0 && nifLength <= 24 * 1024 * 1024,
-                  ddsLength >= 0 && ddsLength <= 48 * 1024 * 1024 else {
-                throw WorldError.invalid("Invalid length for original NIF/DDS model \(i).")
+                  textureCount >= 0 && textureCount <= 64,
+                  oldDDSLength >= 0 && oldDDSLength <= 48 * 1024 * 1024 else {
+                throw WorldError.invalid("Invalid NIF/material lengths in model \(i).")
             }
             let nif = try take(nifLength)
-            let dds = try take(ddsLength)
+            var ddsPayloads: [Data] = []
+            ddsPayloads.reserveCapacity(textureCount)
+            for _ in 0..<textureCount {
+                let length = version == 2 ? oldDDSLength : Int(try u32())
+                guard length >= 0 && length <= 48 * 1024 * 1024 else {
+                    throw WorldError.invalid("Invalid diffuse texture length for model \(i).")
+                }
+                ddsPayloads.append(try take(length))
+            }
             try nif.write(to: meshURL, options: .atomic)
             var mesh = FnvMesh(vertices: nil, count: 0)
             let status = meshURL.path.withCString {
@@ -126,29 +157,61 @@ struct GoodspringsWorld {
             let triangleCount = Int(mesh.count) / 3
             fnv_ios_release_mesh(raw, mesh.count)
 
-            var pixels: Data? = nil
-            var width = 0
-            var height = 0
-            if !dds.isEmpty {
+            var textures: [MaterialTexture?] = []
+            textures.reserveCapacity(ddsPayloads.count)
+            for dds in ddsPayloads {
+                guard !dds.isEmpty else { textures.append(nil); continue }
                 try dds.write(to: textureURL, options: .atomic)
                 var image = FnvTexture(pixels: nil, len: 0, width: 0, height: 0)
                 let result = textureURL.path.withCString {
                     fnv_ios_load_dds_rgba($0, &image)
                 }
+                var decoded: MaterialTexture? = nil
                 if result == 0, let ptr = image.pixels {
                     let w = Int(image.width), h = Int(image.height)
                     if w > 0 && h > 0 && w <= 2048 && h <= 2048,
-                       image.len == w * h * 4 {
-                        pixels = Data(bytes: ptr, count: image.len)
-                        width = w; height = h
+                       image.len == w * h * 4,
+                       decodedTextureBytes + image.len <= decodedTextureBudget {
+                        decoded = MaterialTexture(pixels: Data(bytes: ptr, count: image.len),
+                                                  width: w, height: h)
+                        decodedTextureBytes += image.len
                     }
                     fnv_ios_release_texture(ptr, image.len)
+                }
+                textures.append(decoded)
+            }
+            // The Rust importer orders triangles by their authored diffuse
+            // slot. Read the final float of each 48-byte vertex, one triangle
+            // at a time, to identify precise contiguous draw ranges.
+            var batches: [DrawBatch] = []
+            vertexData.withUnsafeBytes { raw in
+                var batchStart = 0
+                var currentSlot = -2
+                for triangleStart in stride(from: 0, to: Int(mesh.count), by: 3) {
+                    let tag = raw.loadUnaligned(fromByteOffset: triangleStart * 48 + 44,
+                                                as: Float.self)
+                    let slot = tag.isFinite && tag >= 1 && tag <= 64
+                        ? Int(tag) - 1 : -1
+                    if slot != currentSlot {
+                        if triangleStart > batchStart {
+                            batches.append(DrawBatch(start: batchStart,
+                                                     count: triangleStart - batchStart,
+                                                     materialSlot: currentSlot))
+                        }
+                        batchStart = triangleStart
+                        currentSlot = slot
+                    }
+                }
+                if batchStart < Int(mesh.count) {
+                    batches.append(DrawBatch(start: batchStart,
+                                             count: Int(mesh.count) - batchStart,
+                                             materialSlot: currentSlot))
                 }
             }
             validModels += 1
             models.append(Model(sourcePath: name, vertexData: vertexData,
-                                triangleCount: triangleCount, pixels: pixels,
-                                width: width, height: height))
+                                triangleCount: triangleCount, textures: textures,
+                                batches: batches))
         }
         var instances: [Instance] = []
         instances.reserveCapacity(instanceCount)
