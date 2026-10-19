@@ -147,10 +147,11 @@ final class WalkMotor {
     private(set) var verticalSpeed: Float = 0
     private(set) var grounded: Bool = false
     private var lastJumpRequested = false
-    private let origin = SIMD3<Float>(0,0,0)
+    private let origin: SIMD3<Float>
 
     init(collision: WalkCollisionMap, origin: SIMD3<Float> = .zero) {
         self.collision = collision
+        self.origin = origin
         self.feet = origin
         if let floor = collision.ground(x: origin.x,z: origin.z,
                                          nearY: origin.y, climb:2.5, drop:3.0) {
@@ -164,7 +165,10 @@ final class WalkMotor {
         let delta=max(0.001,min(0.05,dt))
         let horizontal=SIMD3<Float>(move.x,0,move.z)
         let len=simd_length(horizontal)
-        let displacement = len > 0.001 ? horizontal/max(1,len)*delta : .zero
+        // Caller supplies metres/second (e.g. 2.5 for walking); retain
+        // actual speed rather than incorrectly normalizing it to 1 m/s.
+        let capped = len > 6 ? horizontal * (6 / len) : horizontal
+        let displacement = len > 0.001 ? capped * delta : SIMD3<Float>.zero
 
         // Compare both axes independently to permit sliding along a wall.
         let targetX=feet.x+displacement.x
