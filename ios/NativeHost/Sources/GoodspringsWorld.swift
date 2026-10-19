@@ -30,6 +30,7 @@ struct GoodspringsWorld {
         let formID: UInt32
     }
     let cellName: String
+    let formatVersion: UInt32 // visible proof that the material-complete v3 file is loaded
     let initialYaw: Float // authored COCMarkerHeading, or fallback facing
     let models: [Model?] // preserves index if a single NIF fails to decode
     let instances: [Instance]
@@ -237,7 +238,7 @@ struct GoodspringsWorld {
         guard cursor == payload.count, validModels >= 5, instances.count >= 10 else {
             throw WorldError.invalid("World import incomplete; too few valid placed New Vegas meshes.")
         }
-        return GoodspringsWorld(cellName: cellName, initialYaw: initialYaw,
+        return GoodspringsWorld(cellName: cellName, formatVersion: version, initialYaw: initialYaw,
                                models: models, instances: instances,
                                usableModelCount: validModels)
     }
