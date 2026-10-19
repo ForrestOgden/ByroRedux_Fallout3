@@ -160,6 +160,8 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     };
     let mut unmatched_submeshes = 0usize;
     let mut rejected_outlier_triangles = 0usize;
+    let mut rejected_degenerate_triangles = 0usize;
+    let mut rejected_invalid_transforms = 0usize;
     let mut vertices = Vec::new();
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
         let source_diffuse = mesh.material.textures.base_color
@@ -169,7 +171,11 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
         if !may_sample_packed_dds { unmatched_submeshes += 1; }
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
-        if !transform.position.is_finite() || !transform.scale.is_finite() {
+        if !transform.position.is_finite() || !transform.scale.is_finite()
+            || transform.scale.abs() < 1.0e-6 || transform.scale.abs() > 1.0e4
+            || !transform.rotation.is_finite()
+        {
+            rejected_invalid_transforms += 1;
             continue;
         }
         let edge_limit = if normalize_for_preview { None } else { mesh_edge_limit(mesh, transform) };
@@ -187,6 +193,13 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
             ];
             // Reject an entire corrupt triangle, never partial vertices.
             if points.iter().any(|p| !p.is_finite()) { continue; }
+            // Zero-area faces and duplicate-index triangles cannot represent
+            // valid surfaces. Exclude them before GPU rasterization.
+            let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+            if !cross.is_finite() || cross.length_squared() <= 1.0e-12 {
+                rejected_degenerate_triangles += 1;
+                continue;
+            }
             if let Some(limit) = edge_limit {
                 if triangle_longest_edge(points) > limit {
                     rejected_outlier_triangles += 1;
@@ -214,6 +227,12 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     if vertices.len() < 3 || vertices.len() % 3 != 0 {
         return Err("NIF has no usable triangle geometry");
+    }
+    if !normalize_for_preview && (rejected_invalid_transforms > 0 || rejected_degenerate_triangles > 0) {
+        eprintln!(
+            "FNV world: NIF {} skipped {} invalid transforms and {} degenerate triangles",
+            path, rejected_invalid_transforms, rejected_degenerate_triangles
+        );
     }
     if !normalize_for_preview && rejected_outlier_triangles > 0 {
         eprintln!("FNV world: NIF {} rejected {} extreme triangle-edge outliers", path, rejected_outlier_triangles);
