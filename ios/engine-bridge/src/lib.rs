@@ -93,6 +93,21 @@ fn diagnostic_face_light(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     (0.28 + 0.72 * normal.dot(light).abs()).clamp(0.28, 1.0)
 }
 
+/// Match the Windows exporter's first authored diffuse, ignoring optional BSA
+/// root prefixes. A multi-material NIF is NOT a single-texture model.
+fn normalized_diffuse_path(path: &str) -> String {
+    let text = path.trim().replace('/', "\\").to_ascii_lowercase();
+    let text = text.strip_prefix("data\\").unwrap_or(&text);
+    text.strip_prefix("textures\\").unwrap_or(text).to_owned()
+}
+
+fn matches_primary_diffuse(candidate: Option<&str>, primary: Option<&str>) -> bool {
+    match (candidate, primary) {
+        (Some(candidate), Some(primary)) => normalized_diffuse_path(candidate) == primary,
+        _ => false,
+    }
+}
+
 fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
@@ -105,8 +120,24 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     let mut string_pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut string_pool);
+    // FNVWLD01 v2 carries one DDS per NIF, selected from the first submesh
+    // with an authored diffuse. Other submeshes can use different materials.
+    // Keep the older standalone preview import path unchanged.
+    let primary_diffuse = if normalize_for_preview { None } else {
+        imported.meshes.iter().find_map(|mesh| {
+            mesh.material.textures.base_color
+                .and_then(|id| string_pool.resolve(id))
+                .map(normalized_diffuse_path)
+        })
+    };
+    let mut unmatched_submeshes = 0usize;
     let mut vertices = Vec::new();
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
+        let source_diffuse = mesh.material.textures.base_color
+            .and_then(|id| string_pool.resolve(id));
+        let may_sample_packed_dds = normalize_for_preview
+            || matches_primary_diffuse(source_diffuse, primary_diffuse.as_deref());
+        if !may_sample_packed_dds { unmatched_submeshes += 1; }
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
         if !transform.position.is_finite() || !transform.scale.is_finite() {
@@ -131,10 +162,15 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                 let vertex_idx = tri[corner] as usize;
                 let uv = mesh.uvs.get(vertex_idx).copied().unwrap_or([0.0, 0.0]);
                 let uv = if uv[0].is_finite() && uv[1].is_finite() { uv } else { [0.0, 0.0] };
+                // Neutral shading preserves the shape without applying the
+                // wrong submesh's alpha/diffuse. Gallery colors remain intact.
+                let color = if normalize_for_preview { base } else { [0.68, 0.68, 0.68] };
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
-                    color: [base[0] * brightness, base[1] * brightness, base[2] * brightness, 1.0],
-                    uv_light: [uv[0], uv[1], brightness, if mesh.uvs.is_empty() { 0.0 } else { 1.0 }],
+                    color: [color[0] * brightness, color[1] * brightness,
+                            color[2] * brightness, 1.0],
+                    uv_light: [uv[0], uv[1], brightness,
+                               if mesh.uvs.is_empty() || !may_sample_packed_dds { 0.0 } else { 1.0 }],
                 });
             }
         }
@@ -142,6 +178,12 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     if vertices.len() < 3 || vertices.len() % 3 != 0 {
         return Err("NIF has no usable triangle geometry");
+    }
+    if !normalize_for_preview && unmatched_submeshes > 0 {
+        eprintln!(
+            "FNV world: NIF {} has {} submeshes without the packaged primary DDS; neutral shading (multi-material export pending)",
+            path, unmatched_submeshes
+        );
     }
 
     // The original editor/game-world loader needs AUTHORED mesh units.
@@ -257,6 +299,16 @@ mod tests {
         assert_eq!(unsafe { fnv_ios_load_nif_mesh_raw(filename.as_ptr(), &mut mesh) }, 1);
         assert!(mesh.vertices.is_null());
         assert_eq!(mesh.count, 0);
+    }
+    #[test]
+    fn original_world_matches_only_its_authored_submesh_diffuse() {
+        let primary = normalized_diffuse_path("Textures/Clutter/Food/Bottle.DDS");
+        assert!(matches_primary_diffuse(
+            Some("data\\textures\\clutter\\food\\bottle.dds"), Some(&primary)));
+        assert!(!matches_primary_diffuse(
+            Some("textures\\clutter\\food\\other.dds"), Some(&primary)));
+        assert!(!matches_primary_diffuse(None, Some(&primary)));
+        assert!(!matches_primary_diffuse(Some("bottle.dds"), None));
     }
     #[test]
     fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }
