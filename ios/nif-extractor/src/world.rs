@@ -14,7 +14,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"FNVWLD01";
-const VERSION: u32 = 3;
+pub(crate) const VERSION: u32 = 3;
 const MAX_TEXTURES_PER_MODEL: usize = 64;
 const MAX_ESM: u64 = 750 * 1024 * 1024;
 const MAX_MODELS: usize = 160;
