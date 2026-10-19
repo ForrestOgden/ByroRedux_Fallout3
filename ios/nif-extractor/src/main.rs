@@ -44,6 +44,15 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let kind = args.get(1).map(String::as_str);
     let texture_mode = kind == Some("--texture");
+    // Machine-checkable handshake. An older executable does not support
+    // this flag, so the v3 one-click builder refuses to run against it.
+    if kind == Some("--require-world-v3") {
+        if args.len()!=2 || world::VERSION!=3 {
+            return Err("This exporter does not support FNVWLD01 v3 worlds.".into());
+        }
+        println!("FNVWLD01 v{}",world::VERSION);
+        return Ok(());
+    }
     if kind == Some("--export-cell") {
         if args.len() < 6 || args.len() > 7 {
             return Err("Usage: fnv-ios-nif-extractor.exe --export-cell <FalloutNV.esm> <Meshes.bsa> <Textures.bsa> <out.fnvworld> [CELL_EDITOR_ID]".into());
@@ -156,6 +165,10 @@ mod tests {
         assert_eq!(choose_texture(&paths, None), Some(paths[1]));
         assert_eq!(choose_texture(&paths, Some("other")), Some(paths[2]));
         assert_eq!(choose_texture(&paths, Some("absent")), None);
+    }
+    #[test]
+    fn builder_world_format_is_v3() {
+        assert_eq!(world::VERSION,3);
     }
     #[test]
     fn rejects_non_nifs() {
