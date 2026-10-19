@@ -12,6 +12,8 @@ struct GoodspringsScreen: View {
     @State private var loading = false
     @State private var attemptedOfflineRestore = false
     @State private var status = "Load a real FalloutNV.esm interior exported from your installed PC game."
+    @State private var failedImportDetails = ""
+    @State private var showImportFailure = false
     @State private var sceneName = "Prospector Saloon · Goodsprings"
 
     var body: some View {
@@ -31,6 +33,10 @@ struct GoodspringsScreen: View {
                 GeometryReader { _ in
                     ZStack {
                         GoodspringsWalkView(world:world,move:joystick)
+                            // UIViewRepresentable.updateUIView updates input movement
+                            // only; without a new identity Metal keeps the OLD model
+                            // buffers even after a successful second world import.
+                            .id(world.loadID)
                             .ignoresSafeArea(edges:.bottom)
                         // HUD and touch controls are separate from the GPU view,
                         // so dragging the right side changes the look direction.
@@ -77,10 +83,23 @@ struct GoodspringsScreen: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                 }
+                if loading {
+                    ProgressView("Loading selected world...")
+                        .font(.caption)
+                        .padding(.horizontal,12)
+                        .padding(.vertical,5)
+                }
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal,12)
+                    .padding(.vertical,5)
+                    .frame(maxWidth:.infinity,alignment:.leading)
                 HStack {
                     Button("Load different location") {
                         importerVisible = true
                     }
+                    .disabled(loading)
                     .font(.caption)
                     Spacer()
                     Text("World geometry preview · collision, AI, combat not integrated")
@@ -137,11 +156,22 @@ struct GoodspringsScreen: View {
         ) { selection in
             switch selection {
             case .failure(let error):
-                status = "Files import failed: \(error.localizedDescription)"
+                showWorldImportFailure("Files could not open the selected world: \(error.localizedDescription)")
             case .success(let url):
                 openWorld(url)
             }
         }
+        .alert("Goodsprings import failed", isPresented:$showImportFailure) {
+            Button("OK",role:.cancel) {}
+        } message: {
+            Text(failedImportDetails)
+        }
+    }
+
+    private func showWorldImportFailure(_ explanation: String) {
+        status = explanation
+        failedImportDetails = explanation
+        showImportFailure = true
     }
 
     /// Private original-data cache under the app sandbox. No network, no
@@ -152,9 +182,12 @@ struct GoodspringsScreen: View {
     }
 
     private func openWorld(_ url: URL, persist: Bool = true) {
-        guard !loading else { return }
+        guard !loading else {
+            showWorldImportFailure("A world is still loading. Wait for it to finish before selecting another .fnvworld file.")
+            return
+        }
         loading = true
-        status = "Reading original Fallout: New Vegas cell geometry..."
+        status = "Importing \(url.lastPathComponent) — reading source NIF geometry and material textures..."
         let installed = cachedWorldURL()
         // Do not block the UI while decoding 100+ original NIFs and textures.
         DispatchQueue.global(qos:.userInitiated).async {
@@ -192,12 +225,12 @@ struct GoodspringsScreen: View {
                 loading=false
                 switch result {
                 case .failure(let error):
-                    status="Goodsprings world import failed: \(error.localizedDescription)"
+                    showWorldImportFailure("Unable to import \(url.lastPathComponent): \(error.localizedDescription). The previously loaded world has been kept unchanged.")
                 case .success(let world):
                     loadedWorld=world
                     sceneName=world.cellName
                     joystick=SIMD2<Float>(0,0)
-                    status="Loaded v\(world.formatVersion) with \(world.instances.count) authored New Vegas references."
+                    status="Imported \(url.lastPathComponent): world format v\(world.formatVersion), \(world.instances.count) authored references."
                         + (cacheWarning == nil ? " Offline world stored locally." : (cacheWarning ?? ""))
                 }
             }
