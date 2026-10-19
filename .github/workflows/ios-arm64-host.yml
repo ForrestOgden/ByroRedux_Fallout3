@@ -23,6 +23,11 @@ jobs:
           rustup default 1.96.0
       - name: Verify Rust bridge unit tests on macOS
         run: cargo test -p falloutnv-ios-bridge --locked
+      - name: Test standalone geometry-backed iOS movement mathematics on macOS
+        run: |
+          swiftc ios/NativeHost/Sources/WalkCollision.swift ios/tests/WalkCollisionSelfTests.swift \
+            -o "$RUNNER_TEMP/fnv-walk-collision-tests"
+          "$RUNNER_TEMP/fnv-walk-collision-tests"
       - name: Compile native arm64-apple-ios Rust static library
         run: cargo build -p falloutnv-ios-bridge --target aarch64-apple-ios --release --locked
       - name: Install reproducible Xcode project generator
