@@ -39,6 +39,7 @@ struct GoodspringsWorld {
     let formatVersion: UInt32
     let texturedBatchCount: Int
     let totalBatchCount: Int
+    let collision: WalkCollisionMap
 
     enum WorldError: LocalizedError {
         case invalid(String)
@@ -254,10 +255,11 @@ struct GoodspringsWorld {
         let textureCount = usableModels.reduce(0) { total, model in
             total + model.batches.filter { model.materials[$0.materialIndex] != nil }.count
         }
+        let collision = GoodspringsCollisionBuilder.build(models:models,instances:instances)
         return GoodspringsWorld(cellName: cellName, initialYaw: initialYaw,
                                models: models, instances: instances,
                                usableModelCount: validModels,
                                formatVersion: version, texturedBatchCount: textureCount,
-                               totalBatchCount: batchCount)
+                               totalBatchCount: batchCount, collision: collision)
     }
 }
