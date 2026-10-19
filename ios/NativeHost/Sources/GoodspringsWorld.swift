@@ -29,6 +29,7 @@ struct GoodspringsWorld {
         let scale: Float          // includes 1 / 70 world-unit conversion
         let formID: UInt32
     }
+    let loadID: UUID // forces a new Metal view for every successfully selected world
     let cellName: String
     let formatVersion: UInt32 // visible proof that the material-complete v3 file is loaded
     let initialYaw: Float // authored COCMarkerHeading, or fallback facing
@@ -88,7 +89,13 @@ struct GoodspringsWorld {
         }
         let version = try u32()
         guard version == 2 || version == 3 else {
-            throw WorldError.invalid("Unsupported FNVWLD01 world-package version.")
+            throw WorldError.invalid("Unsupported FNVWLD01 world-package version (header v\(version)).")
+        }
+        // Renaming the old file to '-v3' does NOT upgrade its binary format.
+        // Fail before decoding models so users cannot mistake a recycled v2
+        // package for an export with complete authored material slots.
+        if url.lastPathComponent.lowercased().contains("-v3") && version != 3 {
+            throw WorldError.invalid("\(url.lastPathComponent) contains a legacy v\(version) header. The file was made by an old Windows exporter (or merely renamed). Rebuild using the new downloaded Windows exporter.")
         }
         let modelCount = Int(try u32())
         let instanceCount = Int(try u32())
@@ -238,7 +245,7 @@ struct GoodspringsWorld {
         guard cursor == payload.count, validModels >= 5, instances.count >= 10 else {
             throw WorldError.invalid("World import incomplete; too few valid placed New Vegas meshes.")
         }
-        return GoodspringsWorld(cellName: cellName, formatVersion: version, initialYaw: initialYaw,
+        return GoodspringsWorld(loadID: UUID(), cellName: cellName, formatVersion: version, initialYaw: initialYaw,
                                models: models, instances: instances,
                                usableModelCount: validModels)
     }
