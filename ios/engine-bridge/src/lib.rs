@@ -108,6 +108,34 @@ fn matches_primary_diffuse(candidate: Option<&str>, primary: Option<&str>) -> bo
     }
 }
 
+/// Suppress isolated corrupt triangles whose edges are extreme outliers against
+/// the same authored submesh. Do not clip large valid walls by absolute size.
+fn triangle_longest_edge(points: [Vec3; 3]) -> f32 {
+    (points[1] - points[0]).length()
+        .max((points[2] - points[1]).length())
+        .max((points[0] - points[2]).length())
+}
+
+fn mesh_edge_limit(mesh: &byroredux_nif::import::ImportedMesh, transform: Rigid) -> Option<f32> {
+    let mut lengths = Vec::new();
+    for tri in mesh.indices.chunks_exact(3).take(12_000) {
+        if tri.iter().any(|&i| i as usize >= mesh.positions.len()) { continue; }
+        let p = [
+            transform.point(mesh.positions[tri[0] as usize]),
+            transform.point(mesh.positions[tri[1] as usize]),
+            transform.point(mesh.positions[tri[2] as usize]),
+        ];
+        if p.iter().any(|v| !v.is_finite()) { continue; }
+        let longest = triangle_longest_edge(p);
+        if longest.is_finite() && longest > 1.0e-5 { lengths.push(longest); }
+    }
+    if lengths.len() < 12 { return None; }
+    lengths.sort_unstable_by(f32::total_cmp);
+    let median = lengths[lengths.len() / 2];
+    // Deliberately conservative: avoid discarding real broad architecture.
+    Some(median * 32.0)
+}
+
 fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
@@ -131,6 +159,7 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
         })
     };
     let mut unmatched_submeshes = 0usize;
+    let mut rejected_outlier_triangles = 0usize;
     let mut vertices = Vec::new();
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
         let source_diffuse = mesh.material.textures.base_color
@@ -143,6 +172,7 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
         if !transform.position.is_finite() || !transform.scale.is_finite() {
             continue;
         }
+        let edge_limit = if normalize_for_preview { None } else { mesh_edge_limit(mesh, transform) };
         // Diagnostic palette differentiates submeshes; actual textures are not yet used.
         let palette = [[0.90, 0.70, 0.37], [0.45, 0.78, 0.73],
                        [0.81, 0.52, 0.45], [0.62, 0.68, 0.88]];
@@ -157,6 +187,12 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
             ];
             // Reject an entire corrupt triangle, never partial vertices.
             if points.iter().any(|p| !p.is_finite()) { continue; }
+            if let Some(limit) = edge_limit {
+                if triangle_longest_edge(points) > limit {
+                    rejected_outlier_triangles += 1;
+                    continue;
+                }
+            }
             let brightness = diagnostic_face_light(points[0], points[1], points[2]);
             for (corner, pos) in points.into_iter().enumerate() {
                 let vertex_idx = tri[corner] as usize;
@@ -178,6 +214,9 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
     }
     if vertices.len() < 3 || vertices.len() % 3 != 0 {
         return Err("NIF has no usable triangle geometry");
+    }
+    if !normalize_for_preview && rejected_outlier_triangles > 0 {
+        eprintln!("FNV world: NIF {} rejected {} extreme triangle-edge outliers", path, rejected_outlier_triangles);
     }
     if !normalize_for_preview && unmatched_submeshes > 0 {
         eprintln!(
@@ -309,6 +348,15 @@ mod tests {
             Some("textures\\clutter\\food\\other.dds"), Some(&primary)));
         assert!(!matches_primary_diffuse(None, Some(&primary)));
         assert!(!matches_primary_diffuse(Some("bottle.dds"), None));
+    }
+    #[test]
+    fn outlier_edge_limit_ignores_one_stretched_triangle() {
+        let mut lengths = vec![2.0_f32; 24];
+        lengths.push(400.0);
+        lengths.sort_unstable_by(f32::total_cmp);
+        let limit = lengths[lengths.len() / 2] * 32.0;
+        assert!(400.0 > limit);
+        assert!(2.0 <= limit);
     }
     #[test]
     fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }
