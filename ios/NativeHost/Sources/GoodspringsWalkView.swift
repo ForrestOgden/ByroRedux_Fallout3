@@ -10,6 +10,7 @@ import GameController
 struct GoodspringsWalkView: UIViewRepresentable {
     let world: GoodspringsWorld
     let move: SIMD2<Float>
+    let jumpSerial: Int
 
     func makeCoordinator() -> GoodspringsWorldRenderer { GoodspringsWorldRenderer() }
     func makeUIView(context: Context) -> MTKView {
@@ -30,6 +31,7 @@ struct GoodspringsWalkView: UIViewRepresentable {
     }
     func updateUIView(_ view: MTKView, context: Context) {
         context.coordinator.move = move
+        context.coordinator.enqueueJump(jumpSerial)
     }
 }
 
@@ -67,6 +69,16 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
     private var yaw: Float = 0
     private var pitch: Float = 0
     var move = SIMD2<Float>(0,0)
+    private var motor: WalkMotor?
+    private var lastJumpSerial = 0
+    private var jumpQueued = false
+
+    func enqueueJump(_ serial: Int) {
+        if serial != lastJumpSerial {
+            lastJumpSerial = serial
+            jumpQueued = true
+        }
+    }
 
     @objc func look(_ gesture: UIPanGestureRecognizer) {
         guard let view = gesture.view else { return }
@@ -119,6 +131,10 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
 
     func configure(_ view: MTKView, world: GoodspringsWorld) {
         yaw = world.initialYaw
+        motor = WalkMotor(collision:world.collision)
+        if let motor { eye = motor.feet + SIMD3<Float>(0,1.65,0) }
+        NSLog("Goodsprings movement: %d source triangles indexed for floor/walls",
+              world.collision.triangleCount)
         guard let device=view.device,let library=device.makeDefaultLibrary(),
               let vertex=library.makeFunction(name:"fnv_scene_vertex"),
               let fragment=library.makeFunction(name:"fnv_scene_fragment") else {
@@ -217,9 +233,10 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
         let delta=Float(max(0,min(now-lastTick,0.05)))
         lastTick=now
 
-        // First-person movement on the game's horizontal plane. Collision,
-        // gravity, doors and Havok integration are NOT done in this milestone.
-        // Game Controller support is native, optional, and uses no streaming.
+        // Walk with grounded foot position, 0.28m wall radius, gravity and
+        // jump, using authored NIF collision triangles as a conservative
+        // fallback. Original Havok collision meshes remain future work.
+        // Optional game controller works entirely offline.
         var walking = move
         var speed:Float = 2.5
         if let gamepad=GCController.controllers().first(where:{$0.extendedGamepad != nil})?.extendedGamepad {
@@ -237,10 +254,15 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
         let forward=SIMD3<Float>(sin(yaw),0,-cos(yaw))
         let right=SIMD3<Float>(cos(yaw),0,sin(yaw))
         let magnitude=simd_length(walking)
-        if magnitude>0.02 {
-            let velocity=(forward*walking.y+right*walking.x)/max(1,magnitude)
-            eye+=velocity * delta * speed // metres / second
-        }
+        let direction = magnitude>0.02
+            ? (forward*walking.y+right*walking.x) / max(1,magnitude)
+            : SIMD3<Float>(repeating:0)
+        let controllerJump=GCController.controllers().first(where:{$0.extendedGamepad != nil})?
+            .extendedGamepad?.buttonA.isPressed ?? false
+        let jumpNow=jumpQueued || controllerJump
+        jumpQueued=false
+        motor?.tick(move:direction*speed,dt:delta,jump:jumpNow)
+        if let motor { eye = motor.feet + SIMD3<Float>(0,1.65,0) }
         let aspect=Float(view.drawableSize.width / max(view.drawableSize.height,1))
         let viewProjection=projection(aspect) * cameraMatrix()
         encoder.setRenderPipelineState(pipeline)

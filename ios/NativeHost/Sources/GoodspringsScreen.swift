@@ -9,6 +9,7 @@ struct GoodspringsScreen: View {
     @State private var importerVisible = false
     @State private var loadedWorld: GoodspringsWorld?
     @State private var joystick = SIMD2<Float>(0,0)
+    @State private var jumpSerial = 0
     @State private var loading = false
     @State private var attemptedOfflineRestore = false
     @State private var status = "Load a real FalloutNV.esm interior exported from your installed PC game."
@@ -30,7 +31,7 @@ struct GoodspringsScreen: View {
             if let world = loadedWorld {
                 GeometryReader { _ in
                     ZStack {
-                        GoodspringsWalkView(world:world,move:joystick)
+                        GoodspringsWalkView(world:world,move:joystick,jumpSerial:jumpSerial)
                             .ignoresSafeArea(edges:.bottom)
                         // HUD and touch controls are separate from the GPU view,
                         // so dragging the right side changes the look direction.
@@ -54,10 +55,18 @@ struct GoodspringsScreen: View {
                             HStack(alignment:.bottom) {
                                 MoveStick(value:$joystick)
                                 Spacer()
-                                VStack(alignment:.trailing,spacing:5) {
-                                    Text("DRAG SCREEN / RIGHT STICK TO LOOK")
-                                    Text("TOUCH / GAMEPAD LEFT STICK: MOVE")
-                                    Text("FIRST PERSON · NATIVE METAL")
+                                VStack(alignment:.trailing,spacing:8) {
+                                    Button {
+                                        jumpSerial += 1
+                                    } label: {
+                                        Image(systemName:"arrow.up.circle.fill")
+                                            .font(.system(size:40))
+                                            .foregroundStyle(.white)
+                                    }
+                                    .accessibilityLabel("Jump")
+                                    Text("LOOK: DRAG / RIGHT STICK")
+                                    Text("MOVE: STICK · JUMP: A / BUTTON")
+                                    Text("GEOMETRY COLLISION + GRAVITY")
                                 }
                                 .font(.system(size:9,design:.monospaced))
                                 .foregroundStyle(.white.opacity(0.85))
@@ -79,7 +88,7 @@ struct GoodspringsScreen: View {
                     }
                     .font(.caption)
                     Spacer()
-                    Text("World geometry preview · collision, AI, combat not integrated")
+                    Text("World navigation · NIF-geometry collision (not Havok) · NPCs and combat pending")
                         .font(.system(size:9))
                         .foregroundStyle(.secondary)
                 }
@@ -92,7 +101,7 @@ struct GoodspringsScreen: View {
                         .font(.system(size:46,weight:.thin))
                     Text("ENTER GOODSPRINGS")
                         .font(.title2.bold())
-                    Text("The real Prospector Saloon interior from your installed Fallout: New Vegas data. Original world placements, native rendering, first-person movement. Import once; the world remains on your iPhone.")
+                    Text("The real Prospector Saloon interior from your installed Fallout: New Vegas data. Native rendering, grounded movement, gravity, and collision against source geometry. Import once; play without a PC connected.")
                         .font(.subheadline)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
@@ -193,7 +202,7 @@ struct GoodspringsScreen: View {
                     loadedWorld=world
                     sceneName=world.cellName
                     joystick=SIMD2<Float>(0,0)
-                    status="Loaded \(world.instances.count) authored New Vegas references."
+                    status="Loaded \(world.instances.count) authored New Vegas references and \(world.collision.triangleCount) walkable/collision triangles."
                         + (cacheWarning == nil ? " Offline world stored locally." : (cacheWarning ?? ""))
                 }
             }
