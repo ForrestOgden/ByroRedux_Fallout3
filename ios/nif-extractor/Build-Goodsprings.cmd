@@ -4,6 +4,7 @@ title Fallout New Vegas - Goodsprings World Builder
 echo.
 echo  FALLOUT: NEW VEGAS - NATIVE iPHONE WORLD BUILDER
 echo  Source-only ByroRedux tool. Runs entirely on your PC.
+echo  Multi-material world export (FNVWLD01 v3).
 echo.
 set "EXE=%~dp0falloutnv-ios-nif-extractor.exe"
 if not exist "%EXE%" (
@@ -39,7 +40,7 @@ if not exist "%DATA%\Fallout - Textures.bsa" (
   pause
   exit /b 1
 )
-set "OUTPUT=%USERPROFILE%\Desktop\GoodspringsSaloon.fnvworld"
+set "OUTPUT=%USERPROFILE%\Desktop\GoodspringsSaloon-v3.fnvworld"
 if exist "%OUTPUT%" (
   echo The output already exists at:
   echo "%OUTPUT%"
@@ -61,7 +62,7 @@ if errorlevel 1 (
 )
 echo.
 echo COMPLETE: A private, source-authored Goodsprings world was exported.
-echo Copy GoodspringsSaloon.fnvworld from Desktop to iPhone Files.
+echo Copy GoodspringsSaloon-v3.fnvworld from Desktop to iPhone Files.
 echo It will be stored in the app for offline, unplugged launches.
 echo No original Bethesda files were uploaded anywhere.
 pause
