@@ -12,6 +12,17 @@ if not exist "%EXE%" (
   pause
   exit /b 1
 )
+rem This handshake fails with any older v2 exporter, even if someone renamed
+rem its output .fnvworld file to "-v3".
+"%EXE%" --require-world-v3
+if errorlevel 1 (
+  echo ERROR: The extractor EXE is an old or incompatible version.
+  echo Download the latest Windows exporter artifact and extract BOTH
+  echo Build-Goodsprings.cmd and falloutnv-ios-nif-extractor.exe together.
+  echo Do not copy the new CMD beside an old EXE.
+  pause
+  exit /b 1
+)
 set "DATA=%ProgramFiles(x86)%\Steam\steamapps\common\Fallout New Vegas\Data"
 if not exist "%DATA%\FalloutNV.esm" (
   for %%D in (C D E F G H) do (
