@@ -41,7 +41,7 @@ struct GoodspringsScreen: View {
                                     .padding(7)
                                     .background(.black.opacity(0.65),in:RoundedRectangle(cornerRadius:6))
                                 Spacer()
-                                Text("\(world.instances.count) REFR")
+                                Text("v\(world.formatVersion) · \(world.instances.count) REFR")
                                     .font(.system(.caption2,design:.monospaced))
                                     .padding(7)
                                     .background(.black.opacity(0.65),in:RoundedRectangle(cornerRadius:6))
@@ -69,6 +69,13 @@ struct GoodspringsScreen: View {
                             .foregroundStyle(.white.opacity(0.70))
                             .allowsHitTesting(false)
                     }
+                }
+                if world.formatVersion < 3 {
+                    Text("Legacy v2 world: most NIF materials were never exported. Run the updated Windows builder, then load GoodspringsSaloon-v3.fnvworld.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
                 }
                 HStack {
                     Button("Load different location") {
@@ -190,7 +197,7 @@ struct GoodspringsScreen: View {
                     loadedWorld=world
                     sceneName=world.cellName
                     joystick=SIMD2<Float>(0,0)
-                    status="Loaded \(world.instances.count) authored New Vegas references."
+                    status="Loaded v\(world.formatVersion) with \(world.instances.count) authored New Vegas references."
                         + (cacheWarning == nil ? " Offline world stored locally." : (cacheWarning ?? ""))
                 }
             }
