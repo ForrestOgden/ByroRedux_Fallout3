@@ -183,6 +183,15 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
         let slot = if normalize_for_preview { Some(0) }
             else { diffuse_slot(&diffuse_slots, source_diffuse).filter(|&s|s<64) };
         if slot.is_none() { unmatched_submeshes += 1; }
+        // The NIF importer has already decoded NiAlphaProperty's actual
+        // blend-enable, alpha-test precedence, and Gamebryo blend factors.
+        // Carry those *per-submesh* semantics through the existing FFI ABI
+        // without adding a second global material to the whole model.
+        // tag integer part: 0=untextured, 1..64=diffuse slot + 1.
+        // tag fractional part: 0=opaque/cutout, .25=alpha, .50=additive.
+        let blend_tag = if !normalize_for_preview && mesh.material.has_alpha {
+            if mesh.material.dst_blend_mode == 0 { 0.50 } else { 0.25 }
+        } else { 0.0 };
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
         if !transform.position.is_finite() || !transform.scale.is_finite()
@@ -220,7 +229,10 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                     continue;
                 }
             }
-            let brightness = diagnostic_face_light(points[0], points[1], points[2]);
+            // Animated/glow lighting meshes are unlit in the original data.
+            // Do not apply opaque-world diagnostic face lighting to them.
+            let brightness = if blend_tag > 0.0 { 1.0 }
+                else { diagnostic_face_light(points[0], points[1], points[2]) };
             for (corner, pos) in points.into_iter().enumerate() {
                 let vertex_idx = tri[corner] as usize;
                 let uv = mesh.uvs.get(vertex_idx).copied().unwrap_or([0.0, 0.0]);
@@ -231,13 +243,18 @@ fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVerte
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
                     color: [color[0] * brightness, color[1] * brightness,
-                            color[2] * brightness, 1.0],
-                    // 0 = untextured; 1..64 = material's authored diffuse slot.
-                    // Same 48-byte vertex ABI; a stable sort below creates
-                    // contiguous per-material Metal draw batches.
+                            color[2] * brightness,
+                            if blend_tag > 0.0 {
+                                mesh.material.mat_alpha.clamp(0.0, 1.0)
+                            } else { 1.0 }],
+                    // Integer portion selects the actual authored texture.
+                    // Fractional .25/.50 marks alpha/additive blending.
+                    // Identical tags keep whole triangles together in the
+                    // existing stable sort and retain the 48-byte FFI ABI.
                     uv_light: [uv[0], uv[1], brightness,
-                               if mesh.uvs.is_empty() { 0.0 }
-                               else { slot.map(|s|(s+1) as f32).unwrap_or(0.0) }],
+                               (if mesh.uvs.is_empty() { 0.0 }
+                                else { slot.map(|s|(s+1) as f32).unwrap_or(0.0) })
+                                + blend_tag],
                 });
             }
         }
@@ -403,6 +420,16 @@ mod tests {
         let limit = lengths[lengths.len() / 2] * 32.0;
         assert!(400.0 > limit);
         assert!(2.0 <= limit);
+    }
+    #[test]
+    fn alpha_material_tag_stays_in_its_original_diffuse_slot() {
+        for slot in 0..64 {
+            for mode in [0.0f32, 0.25, 0.5] {
+                let tag = (slot + 1) as f32 + mode;
+                assert_eq!(tag.trunc() as usize - 1, slot);
+                assert!((tag.fract() - mode).abs() < 1e-6);
+            }
+        }
     }
     #[test]
     fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }

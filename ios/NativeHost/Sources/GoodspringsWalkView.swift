@@ -52,7 +52,10 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
     private var models: [GPUModel?] = []
     private var instances: [GPUInstance] = []
     private var pipeline: MTLRenderPipelineState?
+    private var alphaPipeline: MTLRenderPipelineState?
+    private var additivePipeline: MTLRenderPipelineState?
     private var depthState: MTLDepthStencilState?
+    private var translucentDepthState: MTLDepthStencilState?
     private var queue: MTLCommandQueue?
     private var whiteTexture: MTLTexture?
     private var lastTick = CACurrentMediaTime()
@@ -126,12 +129,30 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
         desc.fragmentFunction=fragment
         desc.colorAttachments[0].pixelFormat=view.colorPixelFormat
         desc.depthAttachmentPixelFormat=view.depthStencilPixelFormat
-        do { pipeline=try device.makeRenderPipelineState(descriptor:desc) }
+        do {
+            pipeline=try device.makeRenderPipelineState(descriptor:desc)
+            // Legacy Gamebryo NiAlphaProperty meshes must not be in the
+            // depth-writing opaque pass. Separate pipeline states match
+            // authored SrcAlpha/InvSrcAlpha and SrcAlpha/One effects.
+            let color=desc.colorAttachments[0]!
+            color.isBlendingEnabled=true
+            color.rgbBlendOperation = .add
+            color.alphaBlendOperation = .add
+            color.sourceRGBBlendFactor = .sourceAlpha
+            color.destinationRGBBlendFactor = .oneMinusSourceAlpha
+            color.sourceAlphaBlendFactor = .one
+            color.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            alphaPipeline=try device.makeRenderPipelineState(descriptor:desc)
+            color.destinationRGBBlendFactor = .one
+            additivePipeline=try device.makeRenderPipelineState(descriptor:desc)
+        }
         catch {NSLog("Goodsprings: Metal pipeline error %@",String(describing:error));return}
         let depth=MTLDepthStencilDescriptor()
         depth.depthCompareFunction = .less
         depth.isDepthWriteEnabled = true
         depthState=device.makeDepthStencilState(descriptor:depth)
+        depth.isDepthWriteEnabled = false
+        translucentDepthState=device.makeDepthStencilState(descriptor:depth)
         queue=device.makeCommandQueue()
         let fallback=MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat:.rgba8Unorm_srgb,width:1,height:1,mipmapped:false)
@@ -194,7 +215,8 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard let pipeline,let depthState,let queue,
+        guard let pipeline,let alphaPipeline,let additivePipeline,
+              let depthState,let translucentDepthState,let queue,
               let renderPass=view.currentRenderPassDescriptor,
               let drawable=view.currentDrawable,
               let command=queue.makeCommandBuffer(),
@@ -229,28 +251,43 @@ final class GoodspringsWorldRenderer: NSObject, MTKViewDelegate {
         }
         let aspect=Float(view.drawableSize.width / max(view.drawableSize.height,1))
         let viewProjection=projection(aspect) * cameraMatrix()
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setDepthStencilState(depthState)
-        // Every placement retains the CELL's original transform; the same
-        // mesh can occur several times without duplicating its GPU buffer.
-        for instance in instances {
-            guard let model=models[instance.modelIndex] else {continue}
-            let distance=simd_length(instance.authoredPosition-eye)
-            if distance>180 {continue} // bounded distance budget for mobile
-            var uniforms=WorldUniforms(mvp:viewProjection*instance.transform)
-            encoder.setVertexBuffer(model.vertexBuffer,offset:0,index:0)
-            encoder.setVertexBytes(&uniforms,length:MemoryLayout<WorldUniforms>.stride,index:1)
-            // A draw call samples only the source diffuse for that group's
-            // NiTriShape(s), never an unrelated NIF's primary material.
-            for batch in model.batches {
-                let texture: MTLTexture? =
-                    batch.materialSlot >= 0 && batch.materialSlot < model.textures.count
-                    ? model.textures[batch.materialSlot] : nil
-                var textured:UInt32=texture==nil ? 0 : 1
-                encoder.setFragmentBytes(&textured,length:MemoryLayout<UInt32>.stride,index:0)
-                encoder.setFragmentTexture(texture ?? whiteTexture,index:0)
-                encoder.drawPrimitives(type:.triangle,vertexStart:batch.start,
-                                       vertexCount:batch.count)
+        // Render all opaque geometry first so alpha-blended light shafts
+        // depth-test against actual room surfaces. Then render translucent
+        // submeshes back-to-front without writing depth. Additive light
+        // textures use the authored source-alpha + destination-one factors.
+        let visible=instances.filter {
+            simd_length_squared($0.authoredPosition-eye) < 180*180
+        }
+        let backToFront=visible.sorted {
+            simd_length_squared($0.authoredPosition-eye) >
+                simd_length_squared($1.authoredPosition-eye)
+        }
+        for blendMode in 0...2 {
+            let selectedPipeline = blendMode == 0 ? pipeline
+                : (blendMode == 1 ? alphaPipeline : additivePipeline)
+            encoder.setRenderPipelineState(selectedPipeline)
+            encoder.setDepthStencilState(blendMode == 0 ? depthState : translucentDepthState)
+            var blendEnabled:UInt32 = blendMode == 0 ? 0 : 1
+            encoder.setFragmentBytes(&blendEnabled,length:MemoryLayout<UInt32>.stride,index:1)
+            let ordered=blendMode == 1 ? backToFront : visible
+            for instance in ordered {
+                guard let model=models[instance.modelIndex] else {continue}
+                var uniforms=WorldUniforms(mvp:viewProjection*instance.transform)
+                encoder.setVertexBuffer(model.vertexBuffer,offset:0,index:0)
+                encoder.setVertexBytes(&uniforms,length:MemoryLayout<WorldUniforms>.stride,index:1)
+                for batch in model.batches where batch.blendMode == blendMode {
+                    let texture: MTLTexture? =
+                        batch.materialSlot >= 0 && batch.materialSlot < model.textures.count
+                        ? model.textures[batch.materialSlot] : nil
+                    // A missing source DDS must not become a solid rectangular
+                    // light card, even when a valid NIF has UVs.
+                    if blendMode != 0 && texture == nil {continue}
+                    var textured:UInt32=texture==nil ? 0 : 1
+                    encoder.setFragmentBytes(&textured,length:MemoryLayout<UInt32>.stride,index:0)
+                    encoder.setFragmentTexture(texture ?? whiteTexture,index:0)
+                    encoder.drawPrimitives(type:.triangle,vertexStart:batch.start,
+                                           vertexCount:batch.count)
+                }
             }
         }
         encoder.endEncoding()

@@ -14,6 +14,7 @@ struct GoodspringsWorld {
         let start: Int
         let count: Int
         let materialSlot: Int // -1 means untextured, else 0-based diffuse slot
+        let blendMode: Int // 0=opaque/cutout, 1=source-alpha, 2=additive
     }
     struct Model {
         let sourcePath: String
@@ -195,25 +196,31 @@ struct GoodspringsWorld {
             vertexData.withUnsafeBytes { raw in
                 var batchStart = 0
                 var currentSlot = -2
+                var currentBlend = -1
                 for triangleStart in stride(from: 0, to: Int(mesh.count), by: 3) {
                     let tag = raw.loadUnaligned(fromByteOffset: triangleStart * 48 + 44,
                                                 as: Float.self)
-                    let slot = tag.isFinite && tag >= 1 && tag <= 64
-                        ? Int(tag) - 1 : -1
-                    if slot != currentSlot {
+                    let base = tag.isFinite && tag >= 0 ? Int(tag) : 0
+                    let slot = base >= 1 && base <= 64 ? base - 1 : -1
+                    let fraction = tag.isFinite ? tag - Float(base) : 0
+                    let blend = fraction > 0.375 ? 2 : (fraction > 0.125 ? 1 : 0)
+                    if slot != currentSlot || blend != currentBlend {
                         if triangleStart > batchStart {
                             batches.append(DrawBatch(start: batchStart,
                                                      count: triangleStart - batchStart,
-                                                     materialSlot: currentSlot))
+                                                     materialSlot: currentSlot,
+                                                     blendMode: currentBlend))
                         }
                         batchStart = triangleStart
                         currentSlot = slot
+                        currentBlend = blend
                     }
                 }
                 if batchStart < Int(mesh.count) {
                     batches.append(DrawBatch(start: batchStart,
                                              count: Int(mesh.count) - batchStart,
-                                             materialSlot: currentSlot))
+                                             materialSlot: currentSlot,
+                                             blendMode: currentBlend))
                 }
             }
             validModels += 1
