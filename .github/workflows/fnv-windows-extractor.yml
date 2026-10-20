@@ -8,6 +8,7 @@ on:
       - 'fnv/phase8-dds-textures'
       - 'fnv/phase9-automatic-material-pair'
       - 'fnv/phase11-distinct-asset-discovery'
+      - 'fnv/playable-goodsprings-interior'
 
 permissions:
   contents: read
@@ -29,8 +30,13 @@ jobs:
       - name: Compile extractor for Windows
         shell: pwsh
         run: cargo build -p falloutnv-ios-nif-extractor --release --locked
+      - name: Place Goodsprings one-click builder beside the executable
+        shell: pwsh
+        run: Copy-Item ios/nif-extractor/Build-Goodsprings.cmd target/release/Build-Goodsprings.cmd
       - uses: actions/upload-artifact@v4
         with:
           name: FalloutNV-local-NIF-extractor-Windows
-          path: target/release/falloutnv-ios-nif-extractor.exe
+          path: |
+            target/release/falloutnv-ios-nif-extractor.exe
+            target/release/Build-Goodsprings.cmd
           if-no-files-found: error

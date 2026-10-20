@@ -8,3 +8,4 @@ license.workspace = true
 byroredux-bsa = { workspace = true }
 byroredux-nif = { workspace = true }
 byroredux-core = { workspace = true }
+byroredux-plugin = { workspace = true }

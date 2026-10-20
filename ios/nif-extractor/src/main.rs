@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 mod package;
+mod world;
 const MAX_EXTRACTED_BYTES: usize = 48 * 1024 * 1024;
 
 
@@ -43,6 +44,22 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
     let kind = args.get(1).map(String::as_str);
     let texture_mode = kind == Some("--texture");
+    // Machine-checkable handshake. An older executable does not support
+    // this flag, so the v3 one-click builder refuses to run against it.
+    if kind == Some("--require-world-v3") {
+        if args.len()!=2 || world::VERSION!=3 {
+            return Err("This exporter does not support FNVWLD01 v3 worlds.".into());
+        }
+        println!("FNVWLD01 v{}",world::VERSION);
+        return Ok(());
+    }
+    if kind == Some("--export-cell") {
+        if args.len() < 6 || args.len() > 7 {
+            return Err("Usage: fnv-ios-nif-extractor.exe --export-cell <FalloutNV.esm> <Meshes.bsa> <Textures.bsa> <out.fnvworld> [CELL_EDITOR_ID]".into());
+        }
+        return world::export_cell(&args[2], &args[3], &args[4], &args[5],
+                                  args.get(6).map(String::as_str).unwrap_or("GSProspectorSaloonInterior"));
+    }
     if kind == Some("--discover-pairs") {
         if args.len() < 4 || args.len() > 5 {
             return Err("Usage: fnv-ios-nif-extractor.exe --discover-pairs <Meshes.bsa> <Textures.bsa> [filename-substring]".into());
@@ -64,6 +81,7 @@ fn run() -> Result<(), String> {
 --texture: extracts a diffuse texture (prefer beer bottle) with an optional case-insensitive substring filter.
 --package: inspects an actual NIF material and bundles the exact referenced diffuse texture (no filename guessing).
 --discover-pairs: examines up to 400 matching NIFs locally, showing up to 12 authored NIF+DDS candidates.
+--export-cell: converts ESM-authored cell references and owned BSAs into a bounded native world package for offline iPhone navigation.
 --list-textures: prints up to 40 matching texture paths, without extracting data.";
 
     if list_mode {
@@ -147,6 +165,10 @@ mod tests {
         assert_eq!(choose_texture(&paths, None), Some(paths[1]));
         assert_eq!(choose_texture(&paths, Some("other")), Some(paths[2]));
         assert_eq!(choose_texture(&paths, Some("absent")), None);
+    }
+    #[test]
+    fn builder_world_format_is_v3() {
+        assert_eq!(world::VERSION,3);
     }
     #[test]
     fn rejects_non_nifs() {

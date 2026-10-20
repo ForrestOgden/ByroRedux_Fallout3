@@ -93,7 +93,61 @@ fn diagnostic_face_light(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     (0.28 + 0.72 * normal.dot(light).abs()).clamp(0.28, 1.0)
 }
 
-fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
+/// Match the Windows exporter's first authored diffuse, ignoring optional BSA
+/// root prefixes. A multi-material NIF is NOT a single-texture model.
+fn normalized_diffuse_path(path: &str) -> String {
+    let text = path.trim().replace('/', "\\").to_ascii_lowercase();
+    let text = text.strip_prefix("data\\").unwrap_or(&text);
+    text.strip_prefix("textures\\").unwrap_or(text).to_owned()
+}
+
+/// Return a safe normalized diffuse key, matching the Windows exporter.
+fn diffuse_key(path: &str) -> Option<String> {
+    if path.contains('\0') { return None; }
+    let key = normalized_diffuse_path(path);
+    if !key.ends_with(".dds") || key.contains(':')
+        || key.starts_with('\\')
+        || key.split('\\').any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return None;
+    }
+    Some(key)
+}
+
+fn diffuse_slot(slots: &[String], path: Option<&str>) -> Option<usize> {
+    let key = diffuse_key(path?)?;
+    slots.iter().position(|item| item == &key)
+}
+
+/// Suppress isolated corrupt triangles whose edges are extreme outliers against
+/// the same authored submesh. Do not clip large valid walls by absolute size.
+fn triangle_longest_edge(points: [Vec3; 3]) -> f32 {
+    (points[1] - points[0]).length()
+        .max((points[2] - points[1]).length())
+        .max((points[0] - points[2]).length())
+}
+
+fn mesh_edge_limit(mesh: &byroredux_nif::import::ImportedMesh, transform: Rigid) -> Option<f32> {
+    let mut lengths = Vec::new();
+    for tri in mesh.indices.chunks_exact(3).take(12_000) {
+        if tri.iter().any(|&i| i as usize >= mesh.positions.len()) { continue; }
+        let p = [
+            transform.point(mesh.positions[tri[0] as usize]),
+            transform.point(mesh.positions[tri[1] as usize]),
+            transform.point(mesh.positions[tri[2] as usize]),
+        ];
+        if p.iter().any(|v| !v.is_finite()) { continue; }
+        let longest = triangle_longest_edge(p);
+        if longest.is_finite() && longest > 1.0e-5 { lengths.push(longest); }
+    }
+    if lengths.len() < 12 { return None; }
+    lengths.sort_unstable_by(f32::total_cmp);
+    let median = lengths[lengths.len() / 2];
+    // Deliberately conservative: avoid discarding real broad architecture.
+    Some(median * 32.0)
+}
+
+fn load_vertices(path: &str, normalize_for_preview: bool) -> Result<Vec<FnvVertex>, &'static str> {
     let meta = fs::metadata(path).map_err(|_| "NIF file is not readable")?;
     if meta.len() == 0 || meta.len() > MAX_NIF_BYTES {
         return Err("NIF size is zero or exceeds 24 MiB");
@@ -105,13 +159,49 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
     }
     let mut string_pool = StringPool::new();
     let imported = import_nif_scene(&scene, &mut string_pool);
+    // FNVWLD01 v3 packs every diffuse in stable first-appearance order.
+    // The Windows exporter uses the same imported.meshes traversal. v2
+    // packages continue to work with only slot 0 available on the device.
+    let mut diffuse_slots: Vec<String> = Vec::new();
+    if !normalize_for_preview {
+        for mesh in &imported.meshes {
+            let path = mesh.material.textures.base_color
+                .and_then(|id| string_pool.resolve(id));
+            if let Some(key) = path.and_then(diffuse_key) {
+                if !diffuse_slots.contains(&key) { diffuse_slots.push(key); }
+            }
+        }
+    }
+    let mut unmatched_submeshes = 0usize;
+    let mut rejected_outlier_triangles = 0usize;
+    let mut rejected_degenerate_triangles = 0usize;
+    let mut rejected_invalid_transforms = 0usize;
     let mut vertices = Vec::new();
     for (mesh_index, mesh) in imported.meshes.iter().enumerate() {
+        let source_diffuse = mesh.material.textures.base_color
+            .and_then(|id| string_pool.resolve(id));
+        let slot = if normalize_for_preview { Some(0) }
+            else { diffuse_slot(&diffuse_slots, source_diffuse).filter(|&s|s<64) };
+        if slot.is_none() { unmatched_submeshes += 1; }
+        // The NIF importer has already decoded NiAlphaProperty's actual
+        // blend-enable, alpha-test precedence, and Gamebryo blend factors.
+        // Carry those *per-submesh* semantics through the existing FFI ABI
+        // without adding a second global material to the whole model.
+        // tag integer part: 0=untextured, 1..64=diffuse slot + 1.
+        // tag fractional part: 0=opaque/cutout, .25=alpha, .50=additive.
+        let blend_tag = if !normalize_for_preview && mesh.material.has_alpha {
+            if mesh.material.dst_blend_mode == 0 { 0.50 } else { 0.25 }
+        } else { 0.0 };
         let Some(parent) = world_of(&imported.nodes, mesh.parent_node) else { continue };
         let transform = parent.extend(mesh.translation, mesh.rotation, mesh.scale);
-        if !transform.position.is_finite() || !transform.scale.is_finite() {
+        if !transform.position.is_finite() || !transform.scale.is_finite()
+            || transform.scale.abs() < 1.0e-6 || transform.scale.abs() > 1.0e4
+            || !transform.rotation.is_finite()
+        {
+            rejected_invalid_transforms += 1;
             continue;
         }
+        let edge_limit = if normalize_for_preview { None } else { mesh_edge_limit(mesh, transform) };
         // Diagnostic palette differentiates submeshes; actual textures are not yet used.
         let palette = [[0.90, 0.70, 0.37], [0.45, 0.78, 0.73],
                        [0.81, 0.52, 0.45], [0.62, 0.68, 0.88]];
@@ -126,15 +216,45 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
             ];
             // Reject an entire corrupt triangle, never partial vertices.
             if points.iter().any(|p| !p.is_finite()) { continue; }
-            let brightness = diagnostic_face_light(points[0], points[1], points[2]);
+            // Zero-area faces and duplicate-index triangles cannot represent
+            // valid surfaces. Exclude them before GPU rasterization.
+            let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+            if !cross.is_finite() || cross.length_squared() <= 1.0e-12 {
+                rejected_degenerate_triangles += 1;
+                continue;
+            }
+            if let Some(limit) = edge_limit {
+                if triangle_longest_edge(points) > limit {
+                    rejected_outlier_triangles += 1;
+                    continue;
+                }
+            }
+            // Animated/glow lighting meshes are unlit in the original data.
+            // Do not apply opaque-world diagnostic face lighting to them.
+            let brightness = if blend_tag > 0.0 { 1.0 }
+                else { diagnostic_face_light(points[0], points[1], points[2]) };
             for (corner, pos) in points.into_iter().enumerate() {
                 let vertex_idx = tri[corner] as usize;
                 let uv = mesh.uvs.get(vertex_idx).copied().unwrap_or([0.0, 0.0]);
                 let uv = if uv[0].is_finite() && uv[1].is_finite() { uv } else { [0.0, 0.0] };
+                // Neutral shading preserves the shape without applying the
+                // wrong submesh's alpha/diffuse. Gallery colors remain intact.
+                let color = if normalize_for_preview { base } else { [0.68, 0.68, 0.68] };
                 vertices.push(FnvVertex {
                     position: [pos.x, pos.y, pos.z, 1.0],
-                    color: [base[0] * brightness, base[1] * brightness, base[2] * brightness, 1.0],
-                    uv_light: [uv[0], uv[1], brightness, if mesh.uvs.is_empty() { 0.0 } else { 1.0 }],
+                    color: [color[0] * brightness, color[1] * brightness,
+                            color[2] * brightness,
+                            if blend_tag > 0.0 {
+                                mesh.material.mat_alpha.clamp(0.0, 1.0)
+                            } else { 1.0 }],
+                    // Integer portion selects the actual authored texture.
+                    // Fractional .25/.50 marks alpha/additive blending.
+                    // Identical tags keep whole triangles together in the
+                    // existing stable sort and retain the 48-byte FFI ABI.
+                    uv_light: [uv[0], uv[1], brightness,
+                               (if mesh.uvs.is_empty() { 0.0 }
+                                else { slot.map(|s|(s+1) as f32).unwrap_or(0.0) })
+                                + blend_tag],
                 });
             }
         }
@@ -143,22 +263,48 @@ fn load_vertices(path: &str) -> Result<Vec<FnvVertex>, &'static str> {
     if vertices.len() < 3 || vertices.len() % 3 != 0 {
         return Err("NIF has no usable triangle geometry");
     }
-
-    // Center and normalize geometry for the fixed camera; preserve the original shape.
-    let mut lo = Vec3::splat(f32::INFINITY);
-    let mut hi = Vec3::splat(f32::NEG_INFINITY);
-    for v in &vertices {
-        let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
-        lo = lo.min(p);
-        hi = hi.max(p);
+    if !normalize_for_preview && (rejected_invalid_transforms > 0 || rejected_degenerate_triangles > 0) {
+        eprintln!(
+            "FNV world: NIF {} skipped {} invalid transforms and {} degenerate triangles",
+            path, rejected_invalid_transforms, rejected_degenerate_triangles
+        );
     }
-    let span = (hi - lo).max_element();
-    if !span.is_finite() || span < 0.00001 { return Err("Degenerate mesh bounds"); }
-    let center = (lo + hi) * 0.5;
-    let factor = 2.7 / span;
-    for v in &mut vertices {
-        let p = (Vec3::new(v.position[0], v.position[1], v.position[2]) - center) * factor;
-        v.position = [p.x, p.y, p.z, 1.0];
+    if !normalize_for_preview && rejected_outlier_triangles > 0 {
+        eprintln!("FNV world: NIF {} rejected {} extreme triangle-edge outliers", path, rejected_outlier_triangles);
+    }
+    if !normalize_for_preview && unmatched_submeshes > 0 {
+        eprintln!(
+            "FNV world: NIF {} has {} submeshes without supported diffuse slots; neutral shading",
+            path, unmatched_submeshes
+        );
+    }
+
+    // Stable sort preserves vertex order *within each triangle*, while
+    // grouping equal material slots for a single texture bind per submesh
+    // group on Metal. Never sort the diagnostic single-mesh gallery.
+    if !normalize_for_preview {
+        vertices.sort_by(|a,b|a.uv_light[3].total_cmp(&b.uv_light[3]));
+    }
+
+    // The original editor/game-world loader needs AUTHORED mesh units.
+    // The older single-mesh gallery still requests normalized geometry.
+    if normalize_for_preview {
+        // Center and normalize geometry for the fixed camera; preserve the original shape.
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for v in &vertices {
+            let p = Vec3::new(v.position[0], v.position[1], v.position[2]);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        let span = (hi - lo).max_element();
+        if !span.is_finite() || span < 0.00001 { return Err("Degenerate mesh bounds"); }
+        let center = (lo + hi) * 0.5;
+        let factor = 2.7 / span;
+        for v in &mut vertices {
+            let p = (Vec3::new(v.position[0], v.position[1], v.position[2]) - center) * factor;
+            v.position = [p.x, p.y, p.z, 1.0];
+        }
     }
     Ok(vertices)
 }
@@ -194,13 +340,36 @@ pub unsafe extern "C" fn fnv_ios_load_nif_mesh(path: *const c_char, out: *mut Fn
     unsafe { *out = FnvMesh { vertices: ptr::null_mut(), count: 0 } };
     let cpath = unsafe { CStr::from_ptr(path) };
     let Ok(path) = cpath.to_str() else { return -2 };
-    let Ok(vertices) = load_vertices(path) else {
+    let Ok(vertices) = load_vertices(path, true) else {
         return if fs::metadata(path).map_or(true, |m| m.len() > MAX_NIF_BYTES) { 1 } else { 2 };
     };
     let boxed = vertices.into_boxed_slice();
     let count = boxed.len();
     let data = Box::into_raw(boxed) as *mut FnvVertex;
     unsafe { *out = FnvMesh { vertices: data, count } };
+    0
+}
+
+/// Load NIF coordinates in their original ByroRedux imported Y-up world
+/// units, without the preview's normalize-to-2.7 size/centering step.
+/// Caller must provide the original REFR world transform and game-unit scale.
+///
+/// # Safety
+/// Same invariants as fnv_ios_load_nif_mesh; release the successful pointer
+/// once with fnv_ios_release_mesh.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fnv_ios_load_nif_mesh_raw(path: *const c_char, out: *mut FnvMesh) -> i32 {
+    if path.is_null() || out.is_null() { return -1; }
+    unsafe { *out = FnvMesh { vertices: ptr::null_mut(), count: 0 } };
+    let path = unsafe { CStr::from_ptr(path) };
+    let Ok(path) = path.to_str() else { return -2 };
+    let Ok(vertices) = load_vertices(path, false) else {
+        return if fs::metadata(path).map_or(true, |m| m.len() > MAX_NIF_BYTES) { 1 } else { 2 };
+    };
+    let boxed = vertices.into_boxed_slice();
+    let count = boxed.len();
+    let ptr = Box::into_raw(boxed) as *mut FnvVertex;
+    unsafe { *out = FnvMesh { vertices: ptr, count } };
     0
 }
 
@@ -221,6 +390,46 @@ mod tests {
     #[test]
     fn layout_is_exactly_forty_eight_bytes() {
         assert_eq!(std::mem::size_of::<FnvVertex>(), 48);
+    }
+    #[test]
+    fn raw_mesh_invalid_path_releases_nothing() {
+        use std::ffi::CString;
+        let filename = CString::new("/__native_world__/nonexistent.nif").unwrap();
+        let mut mesh = FnvMesh { vertices: ptr::null_mut(), count: 99 };
+        assert_eq!(unsafe { fnv_ios_load_nif_mesh_raw(filename.as_ptr(), &mut mesh) }, 1);
+        assert!(mesh.vertices.is_null());
+        assert_eq!(mesh.count, 0);
+    }
+    #[test]
+    fn world_assigns_separate_slots_to_multiple_authored_materials() {
+        let keys = vec![
+            "clutter\\food\\bottle.dds".into(),
+            "clutter\\food\\label.dds".into(),
+        ];
+        assert_eq!(diffuse_slot(&keys, Some("Data/Textures/Clutter/Food/Bottle.DDS")), Some(0));
+        assert_eq!(diffuse_slot(&keys, Some("textures\\clutter\\food\\label.dds")), Some(1));
+        assert_eq!(diffuse_slot(&keys, Some("textures\\clutter\\food\\missing.dds")), None);
+        assert_eq!(diffuse_slot(&keys, None), None);
+        assert_eq!(diffuse_key("data/Textures/../other.dds"), None);
+    }
+    #[test]
+    fn outlier_edge_limit_ignores_one_stretched_triangle() {
+        let mut lengths = vec![2.0_f32; 24];
+        lengths.push(400.0);
+        lengths.sort_unstable_by(f32::total_cmp);
+        let limit = lengths[lengths.len() / 2] * 32.0;
+        assert!(400.0 > limit);
+        assert!(2.0 <= limit);
+    }
+    #[test]
+    fn alpha_material_tag_stays_in_its_original_diffuse_slot() {
+        for slot in 0..64 {
+            for mode in [0.0f32, 0.25, 0.5] {
+                let tag = (slot + 1) as f32 + mode;
+                assert_eq!(tag.trunc() as usize - 1, slot);
+                assert!((tag.fract() - mode).abs() < 1e-6);
+            }
+        }
     }
     #[test]
     fn abi_3() { assert_eq!(fnv_ios_abi_version(), 3); }

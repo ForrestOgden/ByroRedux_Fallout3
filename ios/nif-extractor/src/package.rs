@@ -17,7 +17,7 @@ const MAX_DDS: usize = 48 * 1024 * 1024;
 
 /// Validate and normalize an *archive-relative* texture path. A NIF may
 /// include "Textures\\" while a BSA file index may omit that archive root.
-fn texture_key(path: &str) -> Option<String> {
+pub(crate) fn texture_key(path: &str) -> Option<String> {
     if path.contains('\0') { return None; }
     let mut text = path.trim().replace('/', "\\").to_ascii_lowercase();
     if text.starts_with('\\') || text.contains(':') { return None; }
@@ -70,7 +70,7 @@ fn extract_limited(archive: &BsaArchive, path: &str, max_bytes: usize) -> Result
 
 /// Return the NIF's actual first diffuse map, not a filename guess. Full
 /// multi-material asset resolution will be required for full game scenes.
-fn authored_diffuse(nif: &[u8]) -> Result<(String, usize), String> {
+pub(crate) fn authored_diffuse(nif: &[u8]) -> Result<(String, usize), String> {
     let scene = byroredux_nif::parse_nif(nif).map_err(|e| format!("Cannot parse NIF: {e}"))?;
     if scene.truncated { return Err("NIF is truncated".into()); }
     let mut pool = StringPool::new();
@@ -80,6 +80,24 @@ fn authored_diffuse(nif: &[u8]) -> Result<(String, usize), String> {
         mesh.material.textures.base_color.and_then(|sym| pool.resolve(sym))
     }).ok_or("No authored diffuse texture path in selected NIF")?;
     Ok((path.to_string(), mesh_count))
+}
+
+/// Enumerate *every* diffuse used by a NIF, in stable first-appearance
+/// submesh order. The iOS importer uses the same byroredux_nif traversal;
+/// FNVWLD01 v3 encodes each slot in this order instead of using a single
+/// texture for the entire scene graph.
+pub(crate) fn authored_diffuses(nif: &[u8]) -> Result<Vec<String>, String> {
+    let scene = byroredux_nif::parse_nif(nif).map_err(|e| format!("Cannot parse NIF: {e}"))?;
+    if scene.truncated { return Err("NIF is truncated".into()); }
+    let mut pool = StringPool::new();
+    let imported = import_nif_scene(&scene, &mut pool);
+    let mut paths = Vec::new();
+    for mesh in &imported.meshes {
+        let Some(path) = mesh.material.textures.base_color.and_then(|s| pool.resolve(s)) else { continue };
+        let Some(key) = texture_key(path) else { continue };
+        if !paths.contains(&key) { paths.push(key); }
+    }
+    Ok(paths)
 }
 
 /// Bounded, read-only discovery of another local NIF and its authored DDS.

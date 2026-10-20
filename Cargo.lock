@@ -2311,6 +2311,7 @@ dependencies = [
  "byroredux-bsa",
  "byroredux-core",
  "byroredux-nif",
+ "byroredux-plugin",
 ]
 
 [[package]]
